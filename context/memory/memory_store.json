@@ -1,31 +1,55 @@
 {
-  "system_version": "1.0.0",
-  "learning_model": "rule_and_feedback_preference",
-  "user_preferences": {
-    "preferred_notification_style": "action_cards_only",
-    "budget_safety_limit": 50000.0,
-    "confidence_threshold": 0.85
-  },
   "feedback_history": [
     {
-      "timestamp": "2026-11-11T12:00:00Z",
       "action_type": "stock_reorder",
-      "target_item": "Café Chiapas 500g",
+      "notes": "Aprobación rápida por alta rotación de inventario en temporada.",
       "recommended_qty": 20,
-      "user_decision": "approved",
-      "notes": "Aprobación rápida por alta rotación de inventario en temporada."
+      "target_item": "Café Chiapas 500g",
+      "timestamp": "2026-11-11T12:00:00Z",
+      "user_decision": "approved"
     },
     {
       "card_id": "card_CF-01_1",
       "decision": "approved",
       "notes": "Aprobado por el administrador"
+    },
+    {
+      "action_type": "stock_reorder",
+      "adjusted_qty": null,
+      "card_id": "card_cafe_01",
+      "decision": "approved",
+      "notes": "Autorizado por el administrador",
+      "timestamp": "2026-11-11T21:41:50.864081+00:00"
+    },
+    {
+      "action_type": "stock_reorder",
+      "adjusted_qty": null,
+      "card_id": "card_te_02",
+      "decision": "approved",
+      "notes": "Autorizado por el administrador",
+      "timestamp": "2026-11-11T21:41:58.667845+00:00"
+    },
+    {
+      "action_type": "stock_reorder",
+      "adjusted_qty": null,
+      "card_id": "card_cafe_01",
+      "decision": "approved",
+      "notes": "Autorizado por el administrador",
+      "timestamp": "2026-11-11T21:56:01.575541+00:00"
     }
   ],
   "inferred_patterns": [
     {
-      "pattern_id": "pat_01",
+      "confidence": 0.95,
       "description": "El usuario autoriza compras sin objeción para 'Café Chiapas' si el proveedor es 'Distribuidora del Sur'.",
-      "confidence": 0.95
+      "pattern_id": "pat_01"
     }
-  ]
+  ],
+  "learning_model": "rule_and_feedback_preference",
+  "system_version": "1.0.0",
+  "user_preferences": {
+    "budget_safety_limit": 50000.0,
+    "confidence_threshold": 0.85,
+    "preferred_notification_style": "action_cards_only"
+  }
 }

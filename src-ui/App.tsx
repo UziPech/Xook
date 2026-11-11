@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   ShieldCheck, 
-  CheckCircle, 
+  CheckCircle2, 
   Brain, 
   Store, 
   Sparkles,
@@ -13,8 +13,11 @@ import {
   Zap,
   Check,
   Eye,
-  Sliders
+  Sliders,
+  X,
+  FileText
 } from "lucide-react";
+import { XoxStar, XoxState } from "./components/XoxStar";
 
 interface ActionCard {
   card_id: string;
@@ -46,6 +49,35 @@ interface ContextItem {
   content: string;
 }
 
+// Emblema geométrico vectorial Xook (sin emojis, estética stealth y titanio)
+function XookGlyph({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+    >
+      <path
+        d="M4 19C7 19 11.5 17 14 13.5C16.5 10 18.5 4 18.5 4C18.5 4 14.5 7.5 11 11C8.2 13.8 5.5 16.5 4 19Z"
+        fill="url(#xook-grad-fin)"
+      />
+      <path
+        d="M7 19C10 19 13.5 17.5 15.5 14.5C13.5 15.5 10.5 16.5 7 19Z"
+        fill="#FFFFFF"
+        opacity="0.3"
+      />
+      <defs>
+        <linearGradient id="xook-grad-fin" x1="4" y1="4" x2="18.5" y2="19" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#FFFFFF" />
+          <stop offset="0.6" stopColor="#A1A1AA" />
+          <stop offset="1" stopColor="#52525B" />
+        </linearGradient>
+      </defs>
+    </svg>
+  );
+}
+
 export default function App() {
   const [cards, setCards] = useState<ActionCard[]>([]);
   const [patterns, setPatterns] = useState<MemoryPattern[]>([]);
@@ -54,9 +86,15 @@ export default function App() {
   const [isTauriEnv, setIsTauriEnv] = useState<boolean>(false);
   const [inputPrompt, setInputPrompt] = useState<string>("");
   
-  // Estado para la "Ventana de Contexto" (estilo Antigravity / Gemini)
+  // Estado de Xox (Mascota Digital y Orquestador Estelar)
+  const [xoxState, setXoxState] = useState<XoxState>("idle");
+  const [xoxMessage, setXoxMessage] = useState<string>("Vigilando inventario en tiempo real. ¿En qué te ayudo hoy?");
+  
+  // Estado para la Ventana de Contexto
   const [showContextDrawer, setShowContextDrawer] = useState<boolean>(true);
   const [selectedContext, setSelectedContext] = useState<ContextItem | null>(null);
+
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // Lista de elementos en la Ventana de Contexto
   const [contextItems, setContextItems] = useState<ContextItem[]>([
@@ -167,8 +205,19 @@ export default function App() {
       }
     }
     loadData();
-    // Seleccionar por defecto el primer contexto
     setSelectedContext(contextItems[0]);
+  }, []);
+
+  // Atajo de teclado ⌘K para enfocar el input
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
   const handleApprove = async (card: ActionCard) => {
@@ -185,7 +234,16 @@ export default function App() {
         });
       }
       setApprovedCards((prev) => [...prev, card.card_id]);
-      setStatusMessage(`✅ Orden para "${card.product_name}" autorizada y registrada en la memoria local.`);
+      setStatusMessage(`Orden para "${card.product_name}" autorizada y registrada.`);
+      
+      // Xox reacciona con alegría a la aprobación HITL
+      setXoxState("success");
+      setXoxMessage(`¡Orden de ${card.product_name} autorizada y firmada!`);
+      setTimeout(() => {
+        setXoxState("idle");
+        setXoxMessage("Vigilando inventario en tiempo real. ¿En qué te ayudo hoy?");
+      }, 3500);
+
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err) {
       console.error(err);
@@ -195,123 +253,326 @@ export default function App() {
 
   const handlePromptSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputPrompt.trim()) return;
-    setStatusMessage(`Instrucción recibida: "${inputPrompt}". Xook está procesando con el contexto activo...`);
+    if (!inputPrompt.trim() || xoxState === "thinking") return;
+    
+    const query = inputPrompt;
     setInputPrompt("");
-    setTimeout(() => setStatusMessage(null), 4000);
+    
+    // Activar estado de pensamiento de Xox
+    setXoxState("thinking");
+    setXoxMessage(`Xox está analizando tu instrucción: "${query}"...`);
+
+    // Fases de pensamiento de Xox con los 12 principios de animación
+    setTimeout(() => {
+      setXoxMessage("Consultando reglas activas en @store-profile.json y niveles de stock...");
+    }, 900);
+
+    setTimeout(() => {
+      setXoxMessage("Verificando límites de presupuesto y auditando proveedores...");
+    }, 1900);
+
+    setTimeout(() => {
+      setXoxState("success");
+      setXoxMessage("¡Análisis completado! He evaluado las directivas y el estado está sincronizado.");
+      setStatusMessage(`Instrucción procesada con éxito por Xox.`);
+
+      setTimeout(() => {
+        setXoxState("idle");
+        setXoxMessage("Vigilando inventario en tiempo real. ¿En qué te ayudo hoy?");
+      }, 4000);
+
+      setTimeout(() => setStatusMessage(null), 4500);
+    }, 3000);
   };
 
+  const handleXoxClick = () => {
+    if (xoxState !== "idle") return;
+    setXoxState("success");
+    setXoxMessage("✨ ¡Hola! Soy Xox, tu copiloto estelar de orquestación.");
+    setTimeout(() => {
+      setXoxState("idle");
+      setXoxMessage("Vigilando inventario en tiempo real. ¿En qué te ayudo hoy?");
+    }, 3000);
+  };
+
+  const appendContextToPrompt = (name: string) => {
+    setInputPrompt((prev) => (prev ? `${prev} @${name} ` : `@${name} `));
+    inputRef.current?.focus();
+  };
+
+  const pendingCount = cards.filter(c => !approvedCards.includes(c.card_id)).length;
+
   return (
-    <div className="h-screen w-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans select-none overflow-hidden">
-      {/* 1. Barra Superior Global */}
-      <header className="h-13 border-b border-zinc-800/80 bg-zinc-900/60 backdrop-blur px-4 flex items-center justify-between shrink-0">
+    <div className="h-screen w-screen bg-[#060709] text-zinc-100 flex flex-col font-sans select-none overflow-hidden antialiased">
+      
+      {/* 1. Header Minimalista & Stealth (Sin emojis, sin neón) */}
+      <header className="h-12 border-b border-white/[0.06] bg-[#090a0f]/80 backdrop-blur-xl px-4 flex items-center justify-between shrink-0 z-20">
+        
+        {/* Identidad de Marca */}
         <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500/20 to-blue-500/20 border border-cyan-500/40 flex items-center justify-center text-lg font-black text-cyan-400 shadow-sm shadow-cyan-950/50">
-            🦈
+          <div className="w-7 h-7 rounded-lg bg-white/[0.04] border border-white/[0.08] flex items-center justify-center shadow-inner">
+            <XookGlyph className="w-3.5 h-3.5" />
           </div>
           <div className="flex items-center gap-2">
-            <span className="font-bold text-sm tracking-tight text-white">XOOK</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono border border-zinc-700/60">
-              Agentic Orchestrator
+            <span className="font-semibold text-xs tracking-wider text-white">XOOK</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.04] text-zinc-400 font-mono border border-white/[0.06]">
+              AGENTIC ORCHESTRATOR
             </span>
           </div>
         </div>
 
-        {/* Chips de Contexto Activo (estilo Antigravity / Gemini) */}
+        {/* Chips de Contexto Activo (Monocromáticos y sutiles) */}
         <div className="hidden md:flex items-center space-x-2">
-          <span className="text-[11px] text-zinc-500 uppercase tracking-wider font-semibold mr-1">Contexto Activo:</span>
-          {contextItems.filter(c => c.pinned).map((item) => (
-            <button
-              key={item.id}
-              onClick={() => {
-                setSelectedContext(item);
-                setShowContextDrawer(true);
-              }}
-              className={`text-xs px-2.5 py-1 rounded-md border flex items-center gap-1.5 transition-all ${
-                selectedContext?.id === item.id
-                  ? "bg-cyan-950/60 border-cyan-500/50 text-cyan-300 shadow-sm shadow-cyan-950"
-                  : "bg-zinc-900/80 border-zinc-800 text-zinc-300 hover:border-zinc-700 hover:text-white"
-              }`}
-            >
-              <Pin className="w-3 h-3 text-cyan-400" />
-              <span>@{item.name}</span>
-            </button>
-          ))}
+          <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium mr-1">
+            Contexto Activo:
+          </span>
+          {contextItems.filter(c => c.pinned).map((item) => {
+            const isSelected = selectedContext?.id === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => {
+                  setSelectedContext(item);
+                  setShowContextDrawer(true);
+                }}
+                className={`text-xs px-2.5 py-1 rounded-md border flex items-center gap-1.5 transition-all cursor-pointer ${
+                  isSelected
+                    ? "liquid-glass-pill-active"
+                    : "liquid-glass-pill text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <Pin className="w-2.5 h-2.5 text-zinc-400" />
+                <span className="font-mono text-[11px]">@{item.name}</span>
+              </button>
+            );
+          })}
         </div>
 
         {/* Controles de Estado y Toggle de Ventana de Contexto */}
-        <div className="flex items-center space-x-3">
-          <div className="flex items-center space-x-2 text-xs bg-zinc-900 border border-zinc-800 px-2.5 py-1 rounded-full">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span className="text-zinc-300 text-[11px] font-medium">Zero-Trust HITL</span>
+        <div className="flex items-center space-x-2.5">
+          {/* Micro Status de Xox */}
+          <div 
+            onClick={handleXoxClick}
+            className="hidden sm:flex items-center space-x-1.5 text-xs bg-white/[0.03] hover:bg-white/[0.06] border border-white/[0.06] px-2.5 py-1 rounded-full cursor-pointer transition-colors"
+            title="Xox Copiloto Estelar (Click para interactuar)"
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${
+              xoxState === "thinking" 
+                ? "bg-cyan-400 animate-ping" 
+                : xoxState === "success" 
+                ? "bg-emerald-400" 
+                : "bg-cyan-400"
+            }`} />
+            <span className="text-zinc-300 text-[11px] font-mono">Xox:</span>
+            <span className="text-zinc-400 text-[11px] capitalize">
+              {xoxState === "thinking" ? "Pensando..." : xoxState === "success" ? "Completado" : "Vigilando"}
+            </span>
+          </div>
+
+          <div className="flex items-center space-x-2 text-xs bg-white/[0.03] border border-white/[0.06] px-2.5 py-1 rounded-full">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+            <span className="text-zinc-300 text-[11px] font-medium tracking-wide">Zero-Trust HITL</span>
           </div>
 
           <button
             onClick={() => setShowContextDrawer(!showContextDrawer)}
-            className={`text-xs px-3 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all ${
+            className={`text-xs px-2.5 py-1 rounded-md border flex items-center gap-1.5 transition-all cursor-pointer ${
               showContextDrawer 
-                ? "bg-cyan-500 text-black font-semibold border-cyan-400"
-                : "bg-zinc-900 text-zinc-300 border-zinc-800 hover:border-zinc-700"
+                ? "bg-white/[0.1] text-white border-white/20 shadow-sm"
+                : "bg-white/[0.03] text-zinc-400 border-white/[0.06] hover:text-zinc-200 hover:border-white/10"
             }`}
-            title="Abrir o cerrar la Ventana de Contexto (como Antigravity)"
+            title="Alternar Ventana de Contexto"
           >
-            <Sliders className="w-3.5 h-3.5" />
-            <span>Ventana de Contexto</span>
+            <Sliders className="w-3 h-3 text-zinc-300" />
+            <span className="text-[11px] font-medium">Ventana de Contexto</span>
           </button>
         </div>
       </header>
 
-      {/* 2. Cuerpo Principal (Layout de 2 Columnas: Feed Central + Ventana de Contexto Lateral) */}
+      {/* 2. Cuerpo Principal */}
       <div className="flex-1 flex overflow-hidden">
         
-        {/* COLUMNA CENTRAL: Feed de Trabajo, Tarjetas de Decisión y Chat */}
-        <section className="flex-1 flex flex-col bg-zinc-950 overflow-hidden">
+        {/* COLUMNA CENTRAL: Consola Principal + Tarjetas + Memoria */}
+        <section className="flex-1 flex flex-col bg-[#060709] overflow-hidden">
           
-          {/* Notificación temporal de acción */}
+          {/* Notificación de Sistema (Sutil, dark glass, sin neón) */}
           {statusMessage && (
-            <div className="m-4 mb-0 p-3 bg-cyan-950/40 border border-cyan-500/40 rounded-xl text-cyan-300 text-xs flex items-center justify-between shadow-lg backdrop-blur">
-              <span>{statusMessage}</span>
-              <CheckCircle className="w-4 h-4 text-cyan-400 shrink-0" />
+            <div className="mx-6 mt-4 p-3 bg-zinc-900/95 border border-white/10 rounded-xl text-zinc-200 text-xs flex items-center justify-between shadow-2xl backdrop-blur-xl animate-in fade-in duration-200">
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{statusMessage}</span>
+              </div>
+              <button 
+                onClick={() => setStatusMessage(null)}
+                className="text-zinc-500 hover:text-zinc-300 p-1 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
             </div>
           )}
 
-          {/* Área con scroll para el trabajo del asistente */}
-          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* Área de Trabajo con Scroll */}
+          <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
             
-            {/* Banner de Bienvenida y Estado */}
-            <div className="border border-zinc-800/80 bg-zinc-900/40 rounded-2xl p-5 relative overflow-hidden backdrop-blur">
-              <div className="absolute top-0 right-0 w-64 h-64 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none"></div>
-              <div className="flex items-start justify-between">
-                <div>
-                  <h2 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
-                    Panel Operativo del Administrador
-                  </h2>
-                  <p className="text-xs text-zinc-400 mt-1 max-w-xl leading-relaxed">
-                    Xook supervisa el almacén en segundo plano mediante la habilidad <span className="text-cyan-400 font-mono">@inventory-advisor</span> y el contexto de tu empresa. Ninguna mutación se ejecuta sin tu confirmación.
-                  </p>
+            {/* ========================================================================= */}
+            {/* 1. XOX DIGITAL COMPANION (FLOTANDO LIBREMENTE ARRIBA DEL CHAT)           */}
+            {/* ========================================================================= */}
+            <div className="flex flex-col items-center justify-center pb-1 space-y-1">
+              
+              {/* Xox: Estrella de 5 picos redondeada, flotante y sin ningún contenedor */}
+              <div className="relative flex flex-col items-center -my-3">
+                <XoxStar 
+                  state={xoxState} 
+                  size={150} 
+                  onClick={handleXoxClick}
+                />
+              </div>
+
+              {/* Estado y Pensamiento de Xox (Limpio, tipografía etérea, sin caja pesada) */}
+              <div className="flex flex-col items-center text-center space-y-1 max-w-lg">
+                <div className="flex items-center gap-2">
+                  <span className={`w-1.5 h-1.5 rounded-full transition-all ${
+                    xoxState === "thinking" 
+                      ? "bg-cyan-400 animate-ping" 
+                      : xoxState === "success" 
+                      ? "bg-emerald-400" 
+                      : xoxState === "alert" 
+                      ? "bg-amber-400" 
+                      : "bg-cyan-400/80"
+                  }`} />
+                  <span className="text-[11px] font-mono tracking-widest uppercase text-zinc-400 font-medium">
+                    {xoxState === "thinking" ? "Xox Pensando..." : xoxState === "success" ? "Xox Sincronizado" : "Xox Activo"}
+                  </span>
                 </div>
-                <div className="flex items-center gap-1 text-[11px] bg-zinc-950 border border-zinc-800 px-3 py-1.5 rounded-lg text-zinc-400">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Modo Seguro Activo</span>
+                <p className={`text-xs transition-all duration-300 leading-relaxed ${
+                  xoxState === "thinking" ? "text-cyan-300 font-medium animate-pulse" : "text-zinc-400"
+                }`}>
+                  {xoxMessage}
+                </p>
+              </div>
+
+            </div>
+
+            {/* ========================================================================= */}
+            {/* 2. CONSOLA DE INSTRUCCIÓN & ORQUESTACIÓN (LIQUID GLASS HERO)              */}
+            {/* ========================================================================= */}
+            <div className="liquid-glass-hero rounded-2xl p-4 sm:p-5 relative overflow-hidden group shadow-2xl">
+              {/* Reflejo especular superior tenue */}
+              <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/25 to-transparent pointer-events-none" />
+
+              {/* Cabecera de la consola de comando */}
+              <div className="flex items-center justify-between pb-2.5 mb-2 border-b border-white/[0.05]">
+                <div className="flex items-center gap-2 text-xs text-zinc-400">
+                  <Sparkles className="w-3.5 h-3.5 text-zinc-400" />
+                  <span className="font-medium tracking-wide text-zinc-300">
+                    Consola de Instrucción & Orquestación
+                  </span>
                 </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono text-zinc-500">Gemini 2.5 Pro · HITL Enabled</span>
+                  <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 bg-white/[0.04] border border-white/[0.08] rounded">
+                    ⌘K
+                  </kbd>
+                </div>
+              </div>
+
+              {/* Formulario Principal de Entrada */}
+              <form onSubmit={handlePromptSubmit} className="space-y-3">
+                <div className="relative flex items-center">
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={inputPrompt}
+                    onChange={(e) => setInputPrompt(e.target.value)}
+                    disabled={xoxState === "thinking"}
+                    placeholder={
+                      xoxState === "thinking" 
+                        ? "Xox está procesando tu instrucción en segundo plano..." 
+                        : "Instruye a Xox, formula consultas o escribe @ para inyectar contexto..."
+                    }
+                    className="w-full bg-transparent text-sm sm:text-base text-zinc-100 placeholder:text-zinc-500 focus:outline-none py-1 pr-12 font-normal disabled:opacity-50"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!inputPrompt.trim() || xoxState === "thinking"}
+                    className="absolute right-0 bg-white hover:bg-zinc-200 disabled:opacity-30 disabled:hover:bg-white text-zinc-950 p-2 rounded-xl transition-all active:scale-95 cursor-pointer shadow-md disabled:cursor-not-allowed"
+                    title="Enviar instrucción a Xox (Enter)"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {/* Accesos rápidos de contexto y sugerencias en Liquid Glass */}
+                <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.04]">
+                  {/* Inserción rápida de @contexto */}
+                  <div className="flex items-center gap-1.5 text-xs text-zinc-400 overflow-x-auto">
+                    <span className="text-[10px] text-zinc-500 uppercase font-mono">Inyectar:</span>
+                    {contextItems.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => appendContextToPrompt(item.name)}
+                        className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-white/[0.03] hover:bg-white/[0.08] text-zinc-400 hover:text-white border border-white/[0.06] transition-colors cursor-pointer"
+                      >
+                        @{item.name}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Sugerencias Rápidas */}
+                  <div className="flex items-center gap-1.5 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => setInputPrompt("¿Cuál es el proveedor más rápido para reponer café?")}
+                      className="px-2.5 py-0.5 rounded-full bg-white/[0.02] hover:bg-white/[0.06] text-zinc-400 hover:text-zinc-200 border border-white/[0.05] transition-colors cursor-pointer"
+                    >
+                      ¿Proveedor más rápido?
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInputPrompt("Auditar si alguna orden supera los $50,000 MXN de límite")}
+                      className="px-2.5 py-0.5 rounded-full bg-white/[0.02] hover:bg-white/[0.06] text-zinc-400 hover:text-zinc-200 border border-white/[0.05] transition-colors cursor-pointer"
+                    >
+                      Auditar límite de presupuesto
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </div>
+
+            {/* Banner de Estado Operativo (Sobrio, fondo oscuro, sin resplandores) */}
+            <div className="liquid-glass-card rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-sm font-semibold text-white tracking-tight flex items-center gap-2">
+                  Panel Operativo del Administrador
+                </h2>
+                <p className="text-xs text-zinc-400 mt-1 max-w-xl leading-relaxed">
+                  Supervisión continua con habilidad <span className="text-zinc-200 font-mono">@inventory-advisor</span>. Ninguna mutación se ejecuta sin tu firma digital explícita.
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5 text-[11px] bg-black/40 border border-white/[0.06] px-3 py-1.5 rounded-lg text-zinc-300 shrink-0">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="font-medium">Modo Seguro HITL</span>
               </div>
             </div>
 
-            {/* Sección: Tarjetas de Decisión Pendientes */}
-            <div className="space-y-4">
+            {/* ========================================================================= */}
+            {/* 2. TARJETAS DE DECISIÓN REQUERIDAS (Sin neón, estética oscura de lujo)   */}
+            {/* ========================================================================= */}
+            <div className="space-y-3.5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider">
+                  <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
                     Tarjetas de Decisión Requeridas
                   </h3>
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400 font-mono">
-                    {cards.filter(c => !approvedCards.includes(c.card_id)).length} pendientes
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/[0.04] text-zinc-300 font-mono border border-white/[0.08]">
+                    {pendingCount} {pendingCount === 1 ? "pendiente" : "pendientes"}
                   </span>
                 </div>
               </div>
 
               {cards.length === 0 ? (
-                <div className="border border-dashed border-zinc-800 rounded-xl p-10 text-center text-zinc-500 text-sm">
+                <div className="border border-dashed border-white/[0.08] rounded-xl p-10 text-center text-zinc-500 text-xs">
                   Todo tu inventario está en niveles óptimos. No se requieren acciones en este momento.
                 </div>
               ) : (
@@ -321,72 +582,74 @@ export default function App() {
                     return (
                       <div
                         key={card.card_id}
-                        className={`border rounded-2xl p-5 transition-all flex flex-col justify-between ${
-                          isApproved
-                            ? "bg-zinc-900/30 border-emerald-900/40 opacity-75"
-                            : "bg-zinc-900/70 border-zinc-800 hover:border-zinc-700/80 shadow-xl shadow-black/40"
+                        className={`liquid-glass-card rounded-2xl p-5 flex flex-col justify-between transition-all ${
+                          isApproved ? "opacity-60" : ""
                         }`}
                       >
                         <div className="space-y-3.5">
-                          {/* Cabecera de la tarjeta */}
+                          {/* Cabecera de la tarjeta: Urgencia y Stock */}
                           <div className="flex items-start justify-between">
                             <span
-                              className={`text-[10px] px-2.5 py-1 rounded-full font-semibold uppercase tracking-wider ${
+                              className={`text-[10px] px-2.5 py-0.5 rounded-full font-semibold uppercase tracking-wider ${
                                 card.urgency === "alta"
-                                  ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
-                                  : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                                  ? "bg-rose-500/10 text-rose-300 border border-rose-500/20"
+                                  : "bg-amber-500/10 text-amber-300 border border-amber-500/20"
                               }`}
                             >
                               Urgencia {card.urgency}
                             </span>
                             <span className="text-xs text-zinc-400 font-mono">
-                              Stock en bodega: <strong className="text-white">{card.current_stock} un.</strong>
+                              Stock en bodega: <strong className="text-zinc-100">{card.current_stock} un.</strong>
                             </span>
                           </div>
 
                           {/* Título y descripción */}
                           <div>
-                            <h4 className="text-base font-semibold text-white tracking-tight">{card.title}</h4>
-                            <p className="text-xs text-zinc-400 mt-1 leading-relaxed">{card.description}</p>
+                            <h4 className="text-sm sm:text-base font-semibold text-white tracking-tight">
+                              {card.title}
+                            </h4>
+                            <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+                              {card.description}
+                            </p>
                           </div>
 
-                          {/* Resumen de la orden sugerida */}
-                          <div className="bg-zinc-950/70 rounded-xl p-3.5 border border-zinc-800/80 space-y-2">
+                          {/* Resumen de la orden sugerida (Fondo ultra-oscuro y datos limpios) */}
+                          <div className="liquid-glass-inset rounded-xl p-3.5 space-y-2">
                             <div className="flex justify-between text-xs">
                               <span className="text-zinc-400">Proveedor sugerido:</span>
                               <span className="font-medium text-zinc-200">{card.supplier_name}</span>
                             </div>
                             <div className="flex justify-between text-xs">
                               <span className="text-zinc-400">Cantidad recomendada:</span>
-                              <span className="font-bold text-cyan-400">+{card.recommended_order} unidades</span>
+                              <span className="font-medium text-zinc-100 font-mono">+{card.recommended_order} unidades</span>
                             </div>
-                            <div className="flex justify-between text-xs pt-1.5 border-t border-zinc-800/80">
+                            <div className="flex justify-between text-xs pt-1.5 border-t border-white/[0.05]">
                               <span className="text-zinc-400">Costo total proyectado:</span>
-                              <span className="font-bold text-emerald-400 text-sm">
+                              <span className="font-semibold text-white font-mono text-sm">
                                 ${card.estimated_cost.toLocaleString()} {card.currency}
                               </span>
                             </div>
                           </div>
 
-                          {/* Razón explicada en lenguaje humano */}
-                          <div className="flex items-start gap-2 text-xs text-zinc-300 bg-cyan-950/20 border border-cyan-800/30 p-3 rounded-xl">
-                            <Sparkles className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
-                            <span className="leading-relaxed">{card.reasoning}</span>
+                          {/* Razonamiento formulado por el agente */}
+                          <div className="flex items-start gap-2.5 text-xs text-zinc-300 bg-white/[0.02] border border-white/[0.05] p-3 rounded-xl leading-relaxed">
+                            <Sparkles className="w-3.5 h-3.5 text-zinc-400 shrink-0 mt-0.5" />
+                            <span>{card.reasoning}</span>
                           </div>
                         </div>
 
                         {/* Botones de acción Human-in-the-Loop */}
-                        <div className="pt-4 mt-4 border-t border-zinc-800/80 flex items-center justify-between">
+                        <div className="pt-4 mt-4 border-t border-white/[0.05] flex items-center justify-between">
                           {isApproved ? (
-                            <div className="w-full py-2.5 bg-emerald-950/50 border border-emerald-800/50 rounded-xl text-emerald-400 text-xs font-semibold flex items-center justify-center gap-2">
-                              <CheckCircle className="w-4 h-4" />
+                            <div className="w-full py-2.5 bg-white/[0.03] border border-white/[0.08] rounded-xl text-zinc-300 text-xs font-medium flex items-center justify-center gap-2">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                               Orden Autorizada y Firmada
                             </div>
                           ) : (
                             <div className="w-full flex gap-2">
                               <button
                                 onClick={() => handleApprove(card)}
-                                className="flex-1 bg-cyan-500 hover:bg-cyan-400 text-black font-semibold text-xs py-2.5 px-4 rounded-xl transition-all flex items-center justify-center gap-2 shadow-sm active:scale-95 cursor-pointer"
+                                className="flex-1 bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-xs py-2.5 px-4 rounded-xl transition-all flex items-center justify-center gap-2 shadow-md active:scale-95 cursor-pointer"
                               >
                                 Aprobar Orden
                                 <ArrowRight className="w-3.5 h-3.5" />
@@ -395,7 +658,7 @@ export default function App() {
                                 onClick={() => {
                                   setCards(cards.filter(c => c.card_id !== card.card_id));
                                 }}
-                                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs py-2.5 px-3 rounded-xl transition-colors cursor-pointer"
+                                className="bg-white/[0.03] hover:bg-white/[0.08] text-zinc-400 hover:text-zinc-200 text-xs py-2.5 px-3.5 rounded-xl border border-white/[0.06] transition-colors cursor-pointer"
                               >
                                 Descartar
                               </button>
@@ -409,19 +672,31 @@ export default function App() {
               )}
             </div>
 
-            {/* Sección: Memoria Aprendida en Resumen */}
-            <div className="border border-zinc-800/80 bg-zinc-900/30 rounded-2xl p-5 space-y-3">
-              <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider flex items-center gap-2">
-                <Brain className="w-4 h-4 text-cyan-400" />
-                Aprendizaje Reciente del Asistente
-              </h3>
+            {/* ========================================================================= */}
+            {/* 3. MEMORIA APRENDIDA DEL ASISTENTE (Sobria, datos limpios, sin neón)       */}
+            {/* ========================================================================= */}
+            <div className="liquid-glass-card rounded-2xl p-5 space-y-3.5">
+              <div className="flex items-center gap-2">
+                <Brain className="w-4 h-4 text-zinc-400" />
+                <h3 className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
+                  Aprendizaje Reciente del Asistente
+                </h3>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {patterns.map((p) => (
-                  <div key={p.pattern_id} className="p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl space-y-1">
-                    <p className="text-xs text-zinc-300">{p.description}</p>
-                    <div className="flex items-center justify-between text-[10px] text-zinc-500 pt-1 font-mono">
-                      <span>Confianza</span>
-                      <span className="text-cyan-400 font-bold">{Math.round(p.confidence * 100)}%</span>
+                  <div key={p.pattern_id} className="p-3.5 liquid-glass-inset rounded-xl space-y-2">
+                    <p className="text-xs text-zinc-300 leading-relaxed">{p.description}</p>
+                    <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-1 font-mono border-t border-white/[0.04]">
+                      <span>Nivel de Confianza</span>
+                      <div className="flex items-center gap-2">
+                        <div className="w-16 bg-white/[0.08] h-1 rounded-full overflow-hidden">
+                          <div 
+                            className="bg-zinc-300 h-full rounded-full" 
+                            style={{ width: `${Math.round(p.confidence * 100)}%` }} 
+                          />
+                        </div>
+                        <span className="text-zinc-200 font-semibold">{Math.round(p.confidence * 100)}%</span>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -430,79 +705,42 @@ export default function App() {
 
           </div>
 
-          {/* Input de Instrucción Inferior (Prompt Bar estilo Gemini) */}
-          <div className="p-4 border-t border-zinc-800/80 bg-zinc-900/40 backdrop-blur">
-            <form onSubmit={handlePromptSubmit} className="relative flex items-center">
-              <input
-                type="text"
-                value={inputPrompt}
-                onChange={(e) => setInputPrompt(e.target.value)}
-                placeholder="Escribe una instrucción para Xook o escribe @ para invocar contexto..."
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-3 pl-4 pr-24 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500/70 transition-colors"
-              />
-              <div className="absolute right-2 flex items-center space-x-1">
-                <button
-                  type="submit"
-                  disabled={!inputPrompt.trim()}
-                  className="bg-cyan-500 hover:bg-cyan-400 disabled:opacity-40 disabled:hover:bg-cyan-500 text-black p-2 rounded-lg transition-all active:scale-95 cursor-pointer"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </form>
-            <div className="flex items-center gap-2 mt-2 text-[11px] text-zinc-500 overflow-x-auto">
-              <span>Sugerencias rápidas:</span>
-              <button
-                type="button"
-                onClick={() => setInputPrompt("¿Cuál es el proveedor más rápido para reponer café?")}
-                className="bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 px-2.5 py-0.5 rounded-full border border-zinc-700/40 transition-colors cursor-pointer"
-              >
-                ¿Proveedor más rápido?
-              </button>
-              <button
-                type="button"
-                onClick={() => setInputPrompt("Auditar si alguna orden supera los $50,000 MXN de límite")}
-                className="bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 px-2.5 py-0.5 rounded-full border border-zinc-700/40 transition-colors cursor-pointer"
-              >
-                Revisar límite de presupuesto
-              </button>
-            </div>
-          </div>
-
         </section>
 
-        {/* 3. VENTANA DE CONTEXTO (Drawer / Lateral Derecho estilo Antigravity / Gemini) */}
+        {/* ========================================================================= */}
+        {/* 4. VENTANA DE CONTEXTO (DRAWER LATERAL EN OBSIDIANA OSCURA)               */}
+        {/* ========================================================================= */}
         {showContextDrawer && (
-          <aside className="w-80 md:w-96 border-l border-zinc-800/80 bg-zinc-900/80 flex flex-col shrink-0 animate-in slide-in-from-right duration-200">
+          <aside className="w-80 md:w-96 border-l border-white/[0.06] bg-[#08090d] flex flex-col shrink-0 animate-in slide-in-from-right duration-200">
             
-            {/* Cabecera del Panel de Contexto */}
-            <div className="p-4 border-b border-zinc-800/80 flex items-center justify-between bg-zinc-900">
+            {/* Cabecera del Panel */}
+            <div className="p-4 border-b border-white/[0.06] flex items-center justify-between bg-[#0a0b10]">
               <div className="flex items-center space-x-2">
-                <FolderOpen className="w-4 h-4 text-cyan-400" />
-                <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-200">
+                <FolderOpen className="w-4 h-4 text-zinc-400" />
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-200">
                   Ventana de Contexto
                 </h3>
               </div>
-              <span className="text-[10px] text-zinc-400 font-mono bg-zinc-800 px-2 py-0.5 rounded">
+              <span className="text-[10px] text-zinc-400 font-mono bg-white/[0.04] border border-white/[0.06] px-2 py-0.5 rounded">
                 5.05k / 128k
               </span>
             </div>
 
-            {/* Barra de Consumo de Contexto (Visual como en Antigravity) */}
-            <div className="px-4 py-2 bg-zinc-950/60 border-b border-zinc-800/60">
-              <div className="flex justify-between text-[11px] text-zinc-400 mb-1">
+            {/* Medidor de Consumo de Contexto */}
+            <div className="px-4 py-2.5 bg-black/40 border-b border-white/[0.04]">
+              <div className="flex justify-between text-[11px] text-zinc-400 mb-1.5">
                 <span>Capacidad del Modelo</span>
-                <span className="text-cyan-400 font-mono font-bold">4% Usado</span>
+                <span className="text-zinc-200 font-mono font-medium">4% Usado</span>
               </div>
-              <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden">
-                <div className="bg-gradient-to-r from-cyan-400 to-emerald-400 h-full w-[4%]"></div>
+              <div className="w-full bg-white/[0.06] h-1 rounded-full overflow-hidden">
+                <div className="bg-zinc-300 h-full w-[4%] rounded-full"></div>
               </div>
             </div>
 
             {/* Lista de Fuentes de Contexto */}
-            <div className="p-3 border-b border-zinc-800/80 space-y-1.5">
-              <div className="flex items-center justify-between text-[11px] text-zinc-400 font-semibold px-1 pb-1">
-                <span>ARCHIVOS DE CONTEXTO FIJADOS</span>
+            <div className="p-3 border-b border-white/[0.06] space-y-1.5">
+              <div className="flex items-center justify-between text-[10px] text-zinc-500 font-semibold uppercase tracking-wider px-1 pb-1">
+                <span>Archivos Fijados</span>
                 <button 
                   onClick={() => {
                     const newItem: ContextItem = {
@@ -512,58 +750,64 @@ export default function App() {
                       path: "context/business-profiles/catalogo.json",
                       tokens: "620 tokens",
                       pinned: true,
-                      content: JSON.stringify({ "nota": "Nuevo catálogo de productos adjuntado al contexto." }, null, 2)
+                      content: JSON.stringify({ "nota": "Nuevo catálogo de productos adjuntado al contexto activo." }, null, 2)
                     };
                     setContextItems(prev => [...prev, newItem]);
                     setSelectedContext(newItem);
                   }}
-                  className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1 text-[10px] cursor-pointer"
+                  className="text-zinc-400 hover:text-white flex items-center gap-1 text-[10px] cursor-pointer"
                 >
                   <Plus className="w-3 h-3" />
                   Agregar
                 </button>
               </div>
 
-              {contextItems.map((item) => (
-                <div
-                  key={item.id}
-                  onClick={() => setSelectedContext(item)}
-                  className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all flex items-center justify-between ${
-                    selectedContext?.id === item.id
-                      ? "bg-zinc-800/90 border-cyan-500/50 text-white shadow-sm"
-                      : "bg-zinc-950/40 border-zinc-800/60 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
-                  }`}
-                >
-                  <div className="flex items-center space-x-2.5 truncate">
-                    {item.type === "profile" && <Store className="w-3.5 h-3.5 text-amber-400 shrink-0" />}
-                    {item.type === "memory" && <Brain className="w-3.5 h-3.5 text-purple-400 shrink-0" />}
-                    {item.type === "skill" && <Zap className="w-3.5 h-3.5 text-cyan-400 shrink-0" />}
-                    <div className="truncate">
-                      <div className="font-semibold text-zinc-200 truncate">{item.name}</div>
-                      <div className="text-[10px] text-zinc-500 truncate font-mono">{item.path}</div>
+              {contextItems.map((item) => {
+                const isSelected = selectedContext?.id === item.id;
+                return (
+                  <div
+                    key={item.id}
+                    onClick={() => setSelectedContext(item)}
+                    className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all flex items-center justify-between ${
+                      isSelected
+                        ? "bg-white/[0.08] border-white/20 text-white shadow-sm"
+                        : "bg-white/[0.02] border-white/[0.05] text-zinc-400 hover:border-white/10 hover:text-zinc-200"
+                    }`}
+                  >
+                    <div className="flex items-center space-x-2.5 truncate">
+                      {item.type === "profile" && <Store className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+                      {item.type === "memory" && <Brain className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+                      {item.type === "skill" && <Zap className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+                      {item.type === "catalog" && <FileText className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+                      <div className="truncate">
+                        <div className="font-medium text-zinc-200 truncate">{item.name}</div>
+                        <div className="text-[10px] text-zinc-500 truncate font-mono">{item.path}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-1.5 shrink-0 ml-2">
+                      <span className="text-[10px] text-zinc-500 font-mono">{item.tokens}</span>
+                      <Pin className="w-3 h-3 text-zinc-400" />
                     </div>
                   </div>
-                  <div className="flex items-center space-x-1.5 shrink-0 ml-2">
-                    <span className="text-[10px] text-zinc-500 font-mono">{item.tokens}</span>
-                    <Pin className="w-3 h-3 text-cyan-400" />
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
-            {/* Visor Inspector de Contexto Seleccionado */}
-            <div className="flex-1 flex flex-col overflow-hidden bg-zinc-950/50">
+            {/* Inspector de Archivo Seleccionado */}
+            <div className="flex-1 flex flex-col overflow-hidden bg-black/30">
               {selectedContext ? (
                 <>
-                  <div className="px-4 py-2.5 border-b border-zinc-800/60 bg-zinc-900/50 flex items-center justify-between text-xs">
-                    <span className="font-semibold text-zinc-300 flex items-center gap-1.5">
-                      <Eye className="w-3.5 h-3.5 text-cyan-400" />
-                      Inspeccionar: {selectedContext.name}
+                  <div className="px-4 py-2 border-b border-white/[0.05] bg-[#0a0b10] flex items-center justify-between text-xs">
+                    <span className="font-medium text-zinc-300 flex items-center gap-1.5 truncate">
+                      <Eye className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                      <span className="truncate">Inspeccionar: {selectedContext.name}</span>
                     </span>
-                    <span className="text-[10px] font-mono text-zinc-500 uppercase">{selectedContext.type}</span>
+                    <span className="text-[10px] font-mono text-zinc-500 uppercase shrink-0">
+                      {selectedContext.type}
+                    </span>
                   </div>
                   <div className="flex-1 p-3 overflow-y-auto">
-                    <pre className="text-[11px] font-mono text-zinc-300 bg-zinc-950 p-3 rounded-xl border border-zinc-800/80 overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                    <pre className="text-[11px] font-mono text-zinc-300 bg-black/60 p-3 rounded-xl border border-white/[0.05] overflow-x-auto whitespace-pre-wrap leading-relaxed">
                       {selectedContext.content}
                     </pre>
                   </div>
@@ -576,10 +820,10 @@ export default function App() {
             </div>
 
             {/* Pie del Panel de Contexto */}
-            <div className="p-3 border-t border-zinc-800/80 bg-zinc-900/90 text-[11px] text-zinc-400 flex items-center justify-between">
+            <div className="p-3 border-t border-white/[0.06] bg-[#0a0b10] text-[11px] text-zinc-400 flex items-center justify-between">
               <span>Almacenamiento Local</span>
-              <span className="text-emerald-400 font-medium flex items-center gap-1">
-                <Check className="w-3 h-3" /> Sincronizado
+              <span className="text-zinc-300 font-medium flex items-center gap-1">
+                <Check className="w-3 h-3 text-emerald-400" /> Sincronizado
               </span>
             </div>
 
