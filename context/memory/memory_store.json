@@ -1,0 +1,31 @@
+{
+  "system_version": "1.0.0",
+  "learning_model": "rule_and_feedback_preference",
+  "user_preferences": {
+    "preferred_notification_style": "action_cards_only",
+    "budget_safety_limit": 50000.0,
+    "confidence_threshold": 0.85
+  },
+  "feedback_history": [
+    {
+      "timestamp": "2026-11-11T12:00:00Z",
+      "action_type": "stock_reorder",
+      "target_item": "Café Chiapas 500g",
+      "recommended_qty": 20,
+      "user_decision": "approved",
+      "notes": "Aprobación rápida por alta rotación de inventario en temporada."
+    },
+    {
+      "card_id": "card_CF-01_1",
+      "decision": "approved",
+      "notes": "Aprobado por el administrador"
+    }
+  ],
+  "inferred_patterns": [
+    {
+      "pattern_id": "pat_01",
+      "description": "El usuario autoriza compras sin objeción para 'Café Chiapas' si el proveedor es 'Distribuidora del Sur'.",
+      "confidence": 0.95
+    }
+  ]
+}

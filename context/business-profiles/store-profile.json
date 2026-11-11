@@ -1,0 +1,27 @@
+{
+  "company_name": "Tienda Xook Demo",
+  "currency": "MXN",
+  "stock_threshold_days": 7,
+  "auto_alert_low_stock": true,
+  "max_budget_per_order": 50000.0,
+  "preferred_suppliers": [
+    {
+      "id": "prov-01",
+      "name": "Distribuidora del Sur",
+      "delivery_lead_time_days": 3,
+      "rating": 4.8
+    },
+    {
+      "id": "prov-02",
+      "name": "Comercializadora Bajío",
+      "delivery_lead_time_days": 5,
+      "rating": 4.5
+    }
+  ],
+  "business_rules": [
+    "No emitir órdenes de compra a proveedores con menos de 4 estrellas sin confirmación.",
+    "Si un producto tiene menos de 5 unidades, marcar urgencia como ALTA.",
+    "Nunca ejecutar pagos ni mutaciones sin autorización visual del administrador."
+  ]
+}
+
