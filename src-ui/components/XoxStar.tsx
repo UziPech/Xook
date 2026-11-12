@@ -1,6 +1,13 @@
 import React, { useEffect, useId, useMemo, useRef } from "react";
 
-export type XoxState = "idle" | "thinking" | "success" | "talking" | "alert";
+export type XoxState =
+  | "idle"
+  | "thinking"
+  | "success"
+  | "talking"
+  | "alert"
+  | "reading"
+  | "syncing";
 
 interface XoxStarProps {
   state?: XoxState;
@@ -52,7 +59,9 @@ const PALETTE: Record<XoxState, { core: string; mid: string; glow: string }> = {
   talking: { core: "#FFFFFF", mid: "#7DD3FC", glow: "#7DD3FC" },
   thinking: { core: "#38BDF8", mid: "#0284C7", glow: "#38BDF8" },
   success: { core: "#34D399", mid: "#059669", glow: "#34D399" },
-  alert: { core: "#FBBF24", mid: "#D97706", glow: "#FBBF24" },
+  alert: { core: "#FCA5A5", mid: "#DC2626", glow: "#EF4444" },
+  reading: { core: "#FFFFFF", mid: "#7DD3FC", glow: "#7DD3FC" },
+  syncing: { core: "#FFFFFF", mid: "#2DD4BF", glow: "#2DD4BF" },
 };
 
 type Spring = { x: number; v: number };
@@ -149,6 +158,12 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const eyeRRef = useRef<SVGGElement>(null);
   const mouthRef = useRef<SVGPathElement>(null);
   const sparkRefs = useRef<(SVGCircleElement | null)[]>([]);
+  // Props (accesorios) que aparecen según el estado
+  const lensRef = useRef<SVGGElement>(null);
+  const bubbleRef = useRef<SVGGElement>(null);
+  const dotRefs = useRef<(SVGCircleElement | null)[]>([]);
+  const bangRef = useRef<SVGGElement>(null);
+  const syncRef = useRef<SVGGElement>(null);
 
   const stateRef = useRef<XoxState>(state);
   const hoverRef = useRef(false);
@@ -188,6 +203,12 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   useEffect(() => {
     stateRef.current = state;
     if (state === "success") triggerSpin();
+    // Sincronizando: pirueta repetida mientras dure el estado
+    if (state === "syncing") {
+      triggerSpin();
+      const id = window.setInterval(triggerSpin, 2200);
+      return () => window.clearInterval(id);
+    }
   }, [state]);
 
   // Seguimiento global del cursor: Xox mira hacia donde esté el puntero
@@ -217,6 +238,17 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     const jump: Spring = { x: 0, v: 0 };
     const squash: Spring = { x: 0, v: 0 };
     const hover: Spring = { x: 0, v: 0 };
+    // Resortes de aparición (pop con overshoot) de cada accesorio
+    const popLens: Spring = { x: 0, v: 0 };
+    const popBubble: Spring = { x: 0, v: 0 };
+    const popBang: Spring = { x: 0, v: 0 };
+    const popSync: Spring = { x: 0, v: 0 };
+    const setProp = (el: SVGElement | null, pop: number, transform: string) => {
+      if (!el) return;
+      const s = Math.max(pop, 0.0001);
+      el.setAttribute("transform", transform.replace("$S", s.toFixed(4)));
+      el.setAttribute("opacity", clamp(pop * 1.4, 0, 1).toFixed(3));
+    };
 
     let raf = 0;
     let last = performance.now();
@@ -232,6 +264,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const t = a.t;
       const st = stateRef.current;
       const thinking = st === "thinking";
+      const reading = st === "reading";
+      const alerting = st === "alert";
+      const syncing = st === "syncing";
 
       // --- Mirada ---------------------------------------------------------
       let tx: number;
@@ -239,6 +274,14 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       if (thinking) {
         tx = 0.4 + 0.18 * Math.sin(t * 2.3);
         ty = -0.6 + 0.12 * Math.sin(t * 3.1);
+      } else if (reading) {
+        // Sigue la lupa mientras escanea
+        tx = Math.sin(t * 1.6) * 0.9;
+        ty = 0.45;
+      } else if (alerting) {
+        // Inquieto: mira nervioso de un lado a otro
+        tx = 0.85 * Math.sin(t * 5.3) * Math.cos(t * 1.7);
+        ty = 0.3 * Math.sin(t * 3.9);
       } else if (now - a.mouseTime < 3500) {
         tx = a.lookTX;
         ty = a.lookTY;
@@ -271,8 +314,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         a.jumpKick = 0;
       }
       const windup = a.windupUntil ? -26 : 0;
-      const sway = (thinking ? 6 * Math.sin(t * 2.2) : 4 * Math.sin(t * 0.9)) * A;
-      step(rot, a.spinTarget + windup + sway + lookX.x * 8 * A, 70, 12, dt);
+      const sway =
+        (thinking ? 6 * Math.sin(t * 2.2) : 4 * Math.sin(t * 0.9) + (alerting ? 3.2 * Math.sin(t * 23) : 0)) * A;
+      step(rot, a.spinTarget + windup + sway + lookX.x * 8 * A, alerting ? 160 : 70, alerting ? 9 : 12, dt);
 
       // --- Salto + squash & stretch ---------------------------------------
       const prevJump = jump.x;
@@ -285,12 +329,13 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const stretch = Math.min(Math.abs(jump.v) * 0.00055, 0.14);
       const sy = (1 - squash.x * 0.5) * (1 + stretch) * (1 + breath);
       const sx = (1 + squash.x * 0.45) * (1 - stretch * 0.6) * (1 - breath);
-      const bob = (thinking ? 5 * Math.sin(t * 2.6) : 4 * Math.sin(t * 1.3)) * A;
+      const bob = (thinking ? 5 * Math.sin(t * 2.6) : alerting ? 2 * Math.sin(t * 9) : 4 * Math.sin(t * 1.3)) * A;
       const y = C + bob + jump.x;
+      const shakeX = alerting ? 1.8 * Math.sin(t * 37) * A : 0;
 
       bodyRef.current?.setAttribute(
         "transform",
-        `translate(${C} ${y.toFixed(2)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)}) rotate(${rot.x.toFixed(2)}) translate(${-C} ${-C})`
+        `translate(${(C + shakeX).toFixed(2)} ${y.toFixed(2)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)}) rotate(${rot.x.toFixed(2)}) translate(${-C} ${-C})`
       );
 
       // Falso 3D: el cuerpo se comprime al girar la cara hacia los lados
@@ -306,8 +351,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         "d",
         buildStar({
           t,
-          amp: (thinking ? 1.6 : 1) * A,
-          speed: thinking ? 1.8 : 1,
+          amp: (thinking ? 1.6 : alerting ? 2.1 : 1) * A,
+          speed: thinking ? 1.8 : alerting ? 3.2 : 1,
           lag,
           reach: hover.x * 0.03,
           wave: t - a.waveStart,
@@ -317,13 +362,23 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       // --- Núcleo y aura --------------------------------------------------
       coreRef.current?.setAttribute(
         "r",
-        (thinking ? 19 + 3 * Math.sin(t * 6) : 14 + 1.2 * Math.sin(t * 2)).toFixed(2)
+        (thinking
+          ? 19 + 3 * Math.sin(t * 6)
+          : alerting
+          ? 16 + 3 * Math.sin(t * 9)
+          : 14 + 1.2 * Math.sin(t * 2)
+        ).toFixed(2)
       );
       if (glowRef.current) {
         glowRef.current.setAttribute("transform", `translate(0 ${(bob + jump.x).toFixed(2)})`);
         glowRef.current.setAttribute(
           "opacity",
-          (thinking ? 0.85 + 0.15 * Math.sin(t * 5) : 0.55 + 0.3 * hover.x).toFixed(3)
+          (thinking
+            ? 0.85 + 0.15 * Math.sin(t * 5)
+            : alerting
+            ? 0.75 + 0.25 * Math.sin(t * 8)
+            : 0.55 + 0.3 * hover.x
+          ).toFixed(3)
         );
       }
       if (ringRef.current) {
@@ -333,6 +388,48 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         );
         ringRef.current.setAttribute("stroke-dashoffset", (-t * 40).toFixed(1));
       }
+
+      // --- Accesorios por estado (aparecen con pop elástico) ---------------
+      step(popLens, reading ? 1 : 0, 170, 13, dt);
+      step(popBubble, thinking ? 1 : 0, 170, 13, dt);
+      step(popBang, alerting ? 1 : 0, 220, 12, dt);
+      step(popSync, syncing ? 1 : 0, 120, 14, dt);
+
+      // Lupa: barrido horizontal sobre el cuerpo con leve cabeceo
+      setProp(
+        lensRef.current,
+        popLens.x,
+        `translate(${(C + 56 * Math.sin(t * 1.6)).toFixed(2)} ${(y + 38 + 3 * Math.sin(t * 3.2)).toFixed(2)}) rotate(${(-12 + 6 * Math.sin(t * 1.6)).toFixed(1)}) scale($S)`
+      );
+
+      // Burbuja de pensamiento con tres puntos que rebotan en secuencia
+      setProp(
+        bubbleRef.current,
+        popBubble.x,
+        `translate(150 ${(58 + bob * 0.6).toFixed(2)}) scale($S)`
+      );
+      dotRefs.current.forEach((el, i) => {
+        if (!el) return;
+        const k = Math.max(0, Math.sin(t * 6 - i * 0.9));
+        el.setAttribute("cy", (-21 - 4.5 * k).toFixed(2));
+        el.setAttribute("opacity", (0.45 + 0.55 * k).toFixed(3));
+      });
+
+      // Signo de alerta que late
+      setProp(
+        bangRef.current,
+        popBang.x,
+        `translate(172 ${(52 + bob).toFixed(2)}) rotate(${(8 * Math.sin(t * 14)).toFixed(1)}) scale(${(
+          1 + 0.12 * Math.sin(t * 9)
+        ).toFixed(3)}) scale($S)`
+      );
+
+      // Aro de sincronización: dos flechas circulares girando
+      setProp(
+        syncRef.current,
+        popSync.x,
+        `translate(${C} ${y.toFixed(2)}) rotate(${(t * 140).toFixed(1)}) scale($S)`
+      );
 
       // --- Rostro: mirada, parpadeo, perspectiva --------------------------
       if (t > nextBlink) {
@@ -481,8 +578,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             <path
               ref={starRef}
               d={initialPath}
-              fill={`url(#${ids.body})`}
-              stroke={`url(#${ids.rim})`}
+              fill={state === "alert" ? "rgba(239,68,68,0.20)" : `url(#${ids.body})`}
+              stroke={state === "alert" ? "#F87171" : `url(#${ids.rim})`}
               strokeWidth="1.6"
               strokeLinejoin="round"
             />
@@ -539,6 +636,49 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             <circle cx={C - 15} cy={C + 5} r="3" fill="#38BDF8" opacity="0.25" />
             <circle cx={C + 15} cy={C + 5} r="3" fill="#38BDF8" opacity="0.25" />
           </g>
+        </g>
+
+        {/* Aro de sincronización (dos flechas circulares) */}
+        <g ref={syncRef} opacity="0" transform={`translate(${C} ${C}) scale(0.0001)`}>
+          {[0, 180].map((deg) => (
+            <g key={deg} transform={`rotate(${deg})`}>
+              <path d="M 82 0 A 82 82 0 0 1 0 82" fill="none" stroke="#2DD4BF" strokeWidth="2" strokeLinecap="round" opacity="0.85" />
+              <polygon points="-7,82 2,77 2,87" fill="#2DD4BF" opacity="0.95" />
+            </g>
+          ))}
+        </g>
+
+        {/* Lupa (leyendo) */}
+        <g ref={lensRef} opacity="0" transform={`translate(${C} ${C + 38}) scale(0.0001)`}>
+          <line x1="9.5" y1="9.5" x2="22" y2="22" stroke="#BAE6FD" strokeWidth="4.5" strokeLinecap="round" />
+          <circle cx="0" cy="0" r="14" fill="rgba(125,211,252,0.14)" stroke="#E0F2FE" strokeWidth="2.6" />
+          <path d="M -8 -4 A 9 9 0 0 1 -2 -9" fill="none" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" opacity="0.8" />
+        </g>
+
+        {/* Burbuja de pensamiento "..." */}
+        <g ref={bubbleRef} opacity="0" transform="translate(150 58) scale(0.0001)">
+          <circle cx="2" cy="-2" r="2.2" fill="rgba(255,255,255,0.22)" />
+          <circle cx="8" cy="-8" r="3.4" fill="rgba(255,255,255,0.28)" />
+          <rect x="12" y="-36" width="46" height="26" rx="13" fill="rgba(24,30,38,0.92)" stroke="rgba(255,255,255,0.35)" strokeWidth="1.2" />
+          {[0, 1, 2].map((i) => (
+            <circle
+              key={i}
+              ref={(el) => {
+                dotRefs.current[i] = el;
+              }}
+              cx={25 + i * 10}
+              cy="-21"
+              r="2.6"
+              fill="#E5E7EB"
+            />
+          ))}
+        </g>
+
+        {/* Signo de alerta */}
+        <g ref={bangRef} opacity="0" transform="translate(172 52) scale(0.0001)">
+          <circle cx="0" cy="0" r="10" fill="#DC2626" stroke="#FCA5A5" strokeWidth="1.2" />
+          <line x1="0" y1="-5" x2="0" y2="1.5" stroke="#FFFFFF" strokeWidth="2.2" strokeLinecap="round" />
+          <circle cx="0" cy="5" r="1.3" fill="#FFFFFF" />
         </g>
       </svg>
     </div>
