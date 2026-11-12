@@ -108,6 +108,33 @@ export default function App() {
   const [selectedContext, setSelectedContext] = useState<ContextItem | null>(null);
   const [showStatePreview, setShowStatePreview] = useState<boolean>(false);
 
+  // Límites y anchos redimensionables para paneles laterales (Estilo Antigravity / IDE)
+  const MIN_LEFT_WIDTH = 220;
+  const MAX_LEFT_WIDTH = 480;
+  const MIN_RIGHT_WIDTH = 280;
+  const MAX_RIGHT_WIDTH = 540;
+
+  const [leftWidth, setLeftWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("xook_left_width");
+      return saved ? Math.min(Math.max(Number(saved), MIN_LEFT_WIDTH), MAX_LEFT_WIDTH) : 280;
+    } catch {
+      return 280;
+    }
+  });
+
+  const [rightWidth, setRightWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("xook_right_width");
+      return saved ? Math.min(Math.max(Number(saved), MIN_RIGHT_WIDTH), MAX_RIGHT_WIDTH) : 340;
+    } catch {
+      return 340;
+    }
+  });
+
+  const [isResizingLeft, setIsResizingLeft] = useState<boolean>(false);
+  const [isResizingRight, setIsResizingRight] = useState<boolean>(false);
+
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Lista de elementos en la Ventana de Contexto
@@ -233,6 +260,48 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
+
+  // Manejador global de arrastre para redimensionar paneles (60fps sin pérdida de foco)
+  useEffect(() => {
+    if (!isResizingLeft && !isResizingRight) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isResizingLeft) {
+        const newWidth = Math.min(Math.max(e.clientX, MIN_LEFT_WIDTH), MAX_LEFT_WIDTH);
+        setLeftWidth(newWidth);
+        try {
+          localStorage.setItem("xook_left_width", String(newWidth));
+        } catch {
+          // Ignore
+        }
+      } else if (isResizingRight) {
+        const newWidth = Math.min(Math.max(window.innerWidth - e.clientX, MIN_RIGHT_WIDTH), MAX_RIGHT_WIDTH);
+        setRightWidth(newWidth);
+        try {
+          localStorage.setItem("xook_right_width", String(newWidth));
+        } catch {
+          // Ignore
+        }
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeft(false);
+      setIsResizingRight(false);
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [isResizingLeft, isResizingRight]);
 
   const handleApprove = async (card: ActionCard) => {
     try {
@@ -413,123 +482,146 @@ export default function App() {
         {/* COLUMNA 1: CONTEXTO DEL LADO IZQUIERDO                                    */}
         {/* ========================================================================= */}
         {showLeftSidebar && (
-          <aside className="w-64 xl:w-72 border-r border-white/[0.06] bg-[#08090d] flex flex-col shrink-0 drawer-in">
-            
-            {/* Cabecera del Panel */}
-            <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between bg-[#0a0b10]">
-              <div className="flex items-center space-x-2">
-                <FolderOpen className="w-4 h-4 text-zinc-400" />
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-200">
-                  Contexto & Reglas
-                </h3>
-              </div>
-              <span className="text-[10px] text-zinc-400 font-mono bg-white/[0.04] border border-white/[0.06] px-2 py-0.5 rounded">
-                5.05k / 128k
-              </span>
-            </div>
-
-            {/* Medidor de Consumo de Contexto */}
-            <div className="px-3.5 py-2.5 bg-black/40 border-b border-white/[0.04]">
-              <div className="flex justify-between text-[11px] text-zinc-400 mb-1.5">
-                <span>Capacidad del Modelo</span>
-                <span className="text-zinc-200 font-mono font-medium">4% Usado</span>
-              </div>
-              <div className="w-full bg-white/[0.06] h-1 rounded-full overflow-hidden">
-                <div className="bg-zinc-300 h-full w-[4%] rounded-full"></div>
-              </div>
-            </div>
-
-            {/* Lista de Fuentes de Contexto */}
-            <div className="p-3 border-b border-white/[0.06] space-y-1.5">
-              <div className="flex items-center justify-between text-[10px] text-zinc-500 font-semibold uppercase tracking-wider px-1 pb-1">
-                <span>Fuentes Activas</span>
-                <button 
-                  onClick={() => {
-                    const newItem: ContextItem = {
-                      id: `ctx_${Date.now()}`,
-                      name: "catalogo-nuevo.json",
-                      type: "catalog",
-                      path: "context/business-profiles/catalogo.json",
-                      tokens: "620 tokens",
-                      pinned: true,
-                      content: JSON.stringify({ "nota": "Nuevo catálogo de productos adjuntado." }, null, 2)
-                    };
-                    setContextItems(prev => [...prev, newItem]);
-                    setSelectedContext(newItem);
-                  }}
-                  className="text-zinc-400 hover:text-white flex items-center gap-1 text-[10px] cursor-pointer"
-                >
-                  <Plus className="w-3 h-3" />
-                  Agregar
-                </button>
+          <>
+            <aside 
+              style={{ width: `${leftWidth}px` }} 
+              className="bg-[#08090d] flex flex-col shrink-0 overflow-hidden select-none"
+            >
+              
+              {/* Cabecera del Panel */}
+              <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between bg-[#0a0b10]">
+                <div className="flex items-center space-x-2">
+                  <FolderOpen className="w-4 h-4 text-zinc-400" />
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-200">
+                    Contexto & Reglas
+                  </h3>
+                </div>
+                <span className="text-[10px] text-zinc-400 font-mono bg-white/[0.04] border border-white/[0.06] px-2 py-0.5 rounded">
+                  5.05k / 128k
+                </span>
               </div>
 
-              {contextItems.map((item) => {
-                const isSelected = selectedContext?.id === item.id;
-                const friendlyLabel = CONTEXT_LABEL[item.type] || item.name;
-                return (
-                  <div
-                    key={item.id}
-                    onClick={() => setSelectedContext(item)}
-                    className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all flex items-center justify-between ${
-                      isSelected
-                        ? "bg-white/[0.08] border-white/20 text-white shadow-sm"
-                        : "bg-white/[0.02] border-white/[0.05] text-zinc-400 hover:border-white/10 hover:text-zinc-200"
-                    }`}
+              {/* Medidor de Consumo de Contexto */}
+              <div className="px-3.5 py-2.5 bg-black/40 border-b border-white/[0.04]">
+                <div className="flex justify-between text-[11px] text-zinc-400 mb-1.5">
+                  <span>Capacidad del Modelo</span>
+                  <span className="text-zinc-200 font-mono font-medium">4% Usado</span>
+                </div>
+                <div className="w-full bg-white/[0.06] h-1 rounded-full overflow-hidden">
+                  <div className="bg-zinc-300 h-full w-[4%] rounded-full"></div>
+                </div>
+              </div>
+
+              {/* Lista de Fuentes de Contexto */}
+              <div className="p-3 border-b border-white/[0.06] space-y-1.5">
+                <div className="flex items-center justify-between text-[10px] text-zinc-500 font-semibold uppercase tracking-wider px-1 pb-1">
+                  <span>Fuentes Activas</span>
+                  <button 
+                    onClick={() => {
+                      const newItem: ContextItem = {
+                        id: `ctx_${Date.now()}`,
+                        name: "catalogo-nuevo.json",
+                        type: "catalog",
+                        path: "context/business-profiles/catalogo.json",
+                        tokens: "620 tokens",
+                        pinned: true,
+                        content: JSON.stringify({ "nota": "Nuevo catálogo de productos adjuntado." }, null, 2)
+                      };
+                      setContextItems(prev => [...prev, newItem]);
+                      setSelectedContext(newItem);
+                    }}
+                    className="text-zinc-400 hover:text-white flex items-center gap-1 text-[10px] cursor-pointer"
                   >
-                    <div className="flex items-center space-x-2.5 truncate">
-                      {item.type === "profile" && <Store className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
-                      {item.type === "memory" && <Brain className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
-                      {item.type === "skill" && <Zap className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
-                      {item.type === "catalog" && <FileText className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
-                      <div className="truncate">
-                        <div className="font-medium text-zinc-200 truncate">{friendlyLabel}</div>
-                        <div className="text-[10px] text-zinc-500 truncate font-mono">{item.name}</div>
+                    <Plus className="w-3 h-3" />
+                    Agregar
+                  </button>
+                </div>
+
+                {contextItems.map((item) => {
+                  const isSelected = selectedContext?.id === item.id;
+                  const friendlyLabel = CONTEXT_LABEL[item.type] || item.name;
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => setSelectedContext(item)}
+                      className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all flex items-center justify-between ${
+                        isSelected
+                          ? "bg-white/[0.08] border-white/20 text-white shadow-sm"
+                          : "bg-white/[0.02] border-white/[0.05] text-zinc-400 hover:border-white/10 hover:text-zinc-200"
+                      }`}
+                    >
+                      <div className="flex items-center space-x-2.5 truncate">
+                        {item.type === "profile" && <Store className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+                        {item.type === "memory" && <Brain className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+                        {item.type === "skill" && <Zap className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+                        {item.type === "catalog" && <FileText className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+                        <div className="truncate">
+                          <div className="font-medium text-zinc-200 truncate">{friendlyLabel}</div>
+                          <div className="text-[10px] text-zinc-500 truncate font-mono">{item.name}</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-1.5 shrink-0 ml-2">
+                        <span className="text-[10px] text-zinc-500 font-mono">{item.tokens}</span>
+                        <Pin className="w-3 h-3 text-zinc-400" />
                       </div>
                     </div>
-                    <div className="flex items-center space-x-1.5 shrink-0 ml-2">
-                      <span className="text-[10px] text-zinc-500 font-mono">{item.tokens}</span>
-                      <Pin className="w-3 h-3 text-zinc-400" />
+                  );
+                })}
+              </div>
+
+              {/* Inspector de Archivo Seleccionado */}
+              <div className="flex-1 flex flex-col overflow-hidden bg-black/30">
+                {selectedContext ? (
+                  <>
+                    <div className="px-3.5 py-2 border-b border-white/[0.05] bg-[#0a0b10] flex items-center justify-between text-xs">
+                      <span className="font-medium text-zinc-300 flex items-center gap-1.5 truncate">
+                        <Eye className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                        <span className="truncate">{CONTEXT_LABEL[selectedContext.type] || selectedContext.name}</span>
+                      </span>
+                      <span className="text-[10px] font-mono text-zinc-500 uppercase shrink-0">
+                        {selectedContext.type}
+                      </span>
                     </div>
+                    <div className="flex-1 p-3 overflow-y-auto">
+                      <pre className="text-[11px] font-mono text-zinc-300 bg-black/60 p-3 rounded-xl border border-white/[0.05] overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                        {selectedContext.content}
+                      </pre>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-xs text-zinc-500 p-6 text-center">
+                    Selecciona una fuente de contexto para inspeccionar su configuración.
                   </div>
-                );
-              })}
-            </div>
+                )}
+              </div>
 
-            {/* Inspector de Archivo Seleccionado */}
-            <div className="flex-1 flex flex-col overflow-hidden bg-black/30">
-              {selectedContext ? (
-                <>
-                  <div className="px-3.5 py-2 border-b border-white/[0.05] bg-[#0a0b10] flex items-center justify-between text-xs">
-                    <span className="font-medium text-zinc-300 flex items-center gap-1.5 truncate">
-                      <Eye className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-                      <span className="truncate">{CONTEXT_LABEL[selectedContext.type] || selectedContext.name}</span>
-                    </span>
-                    <span className="text-[10px] font-mono text-zinc-500 uppercase shrink-0">
-                      {selectedContext.type}
-                    </span>
-                  </div>
-                  <div className="flex-1 p-3 overflow-y-auto">
-                    <pre className="text-[11px] font-mono text-zinc-300 bg-black/60 p-3 rounded-xl border border-white/[0.05] overflow-x-auto whitespace-pre-wrap leading-relaxed">
-                      {selectedContext.content}
-                    </pre>
-                  </div>
-                </>
-              ) : (
-                <div className="flex-1 flex items-center justify-center text-xs text-zinc-500 p-6 text-center">
-                  Selecciona una fuente de contexto para inspeccionar su configuración.
-                </div>
-              )}
-            </div>
+              {/* Pie del Panel de Contexto */}
+              <div className="p-3 border-t border-white/[0.06] bg-[#0a0b10] text-[11px] text-zinc-400 flex items-center justify-between">
+                <span>Almacenamiento Local</span>
+                <span className="text-zinc-300 font-medium flex items-center gap-1">
+                  <Check className="w-3 h-3 text-emerald-400" /> Sincronizado
+                </span>
+              </div>
+            </aside>
 
-            {/* Pie del Panel de Contexto */}
-            <div className="p-3 border-t border-white/[0.06] bg-[#0a0b10] text-[11px] text-zinc-400 flex items-center justify-between">
-              <span>Almacenamiento Local</span>
-              <span className="text-zinc-300 font-medium flex items-center gap-1">
-                <Check className="w-3 h-3 text-emerald-400" /> Sincronizado
-              </span>
+            {/* Separador redimensionable izquierdo (Splitter estilo Antigravity) */}
+            <div
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setIsResizingLeft(true);
+              }}
+              onDoubleClick={() => setLeftWidth(280)}
+              title="Arrastra para redimensionar (Doble clic para reiniciar a 280px)"
+              className={`w-1 cursor-col-resize hover:w-1.5 transition-all duration-150 relative z-30 shrink-0 select-none ${
+                isResizingLeft 
+                  ? "bg-cyan-400 w-1.5 shadow-[0_0_10px_rgba(34,211,238,0.7)]" 
+                  : "bg-white/[0.06] hover:bg-cyan-400/50"
+              }`}
+            >
+              {/* Zona de captura ampliada invisible para fácil arrastre */}
+              <div className="absolute inset-y-0 -left-1.5 -right-1.5 cursor-col-resize" />
             </div>
-          </aside>
+          </>
         )}
 
         {/* COLUMNA CENTRAL: Xox + Conversación + Input Pinned al fondo */}
@@ -785,7 +877,29 @@ export default function App() {
         {/* COLUMNA 3: TAREAS Y DECISIONES DEL LADO DERECHO (POR ACEPTAR Y HECHAS)    */}
         {/* ========================================================================= */}
         {showRightSidebar && (
-          <aside className="w-80 xl:w-96 border-l border-white/[0.06] bg-[#08090d] flex flex-col shrink-0 drawer-in">
+          <>
+            {/* Separador redimensionable derecho (Splitter estilo Antigravity) */}
+            <div
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setIsResizingRight(true);
+              }}
+              onDoubleClick={() => setRightWidth(340)}
+              title="Arrastra para redimensionar (Doble clic para reiniciar a 340px)"
+              className={`w-1 cursor-col-resize hover:w-1.5 transition-all duration-150 relative z-30 shrink-0 select-none ${
+                isResizingRight 
+                  ? "bg-cyan-400 w-1.5 shadow-[0_0_10px_rgba(34,211,238,0.7)]" 
+                  : "bg-white/[0.06] hover:bg-cyan-400/50"
+              }`}
+            >
+              {/* Zona de captura ampliada invisible */}
+              <div className="absolute inset-y-0 -left-1.5 -right-1.5 cursor-col-resize" />
+            </div>
+
+            <aside 
+              style={{ width: `${rightWidth}px` }} 
+              className="bg-[#08090d] flex flex-col shrink-0 overflow-hidden select-none"
+            >
             
             {/* Cabecera del Panel */}
             <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between bg-[#0a0b10]">
@@ -977,7 +1091,8 @@ export default function App() {
               <span className="text-[10px] font-mono text-zinc-500">Zero-Trust</span>
             </div>
           </aside>
-        )}
+        </>
+      )}
 
       </div>
     </div>
