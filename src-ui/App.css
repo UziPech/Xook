@@ -268,6 +268,171 @@
     inset 0 0 1px 0.5px rgba(255, 255, 255, 0.55);
 }
 
+/* ==========================================================================
+   BURBUJA DE SALUDO DE XOX — LIQUID GLASS
+   (estela de burbujitas como la de "pensando" + cuerpo de vidrio líquido)
+   ========================================================================== */
+.xox-bubble {
+  padding: 0 0 14px 14px; /* deja espacio a la estela hacia Xox */
+  animation: xox-bubble-float 4.2s ease-in-out 0.7s infinite;
+}
+
+.xox-bubble.is-leaving {
+  animation: xox-bubble-out 0.34s cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+
+/* Cuerpo de vidrio líquido */
+.xox-bubble-body {
+  position: relative;
+  isolation: isolate;
+  transform-origin: 0% 100%;
+  background:
+    /* tinte estelar de Xox */
+    radial-gradient(120% 140% at 0% 100%, rgba(94, 234, 212, 0.16) 0%, transparent 55%),
+    radial-gradient(120% 140% at 100% 0%, rgba(186, 230, 253, 0.12) 0%, transparent 60%),
+    /* vidrio base */
+    linear-gradient(160deg, rgba(255, 255, 255, 0.13) 0%, rgba(255, 255, 255, 0.04) 48%, rgba(255, 255, 255, 0.07) 100%);
+  backdrop-filter: blur(22px) saturate(190%);
+  -webkit-backdrop-filter: blur(22px) saturate(190%);
+  box-shadow:
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.38),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.25),
+    inset 0 0 22px -6px rgba(186, 230, 253, 0.18),
+    0 14px 34px -12px rgba(0, 0, 0, 0.75),
+    0 0 36px -10px rgba(94, 234, 212, 0.28);
+  animation: xox-bubble-pop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) 0.16s both;
+}
+
+/* Brillo especular superior (reflejo curvo del vidrio) */
+.xox-bubble-body::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 2px;
+  height: 45%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0) 100%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Borde degradado tipo refracción */
+.xox-bubble-body::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.6) 0%,
+    rgba(255, 255, 255, 0.1) 35%,
+    rgba(255, 255, 255, 0.04) 60%,
+    rgba(125, 211, 252, 0.35) 100%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.xox-bubble-text {
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
+  animation: xox-bubble-text 0.45s ease-out 0.34s both;
+}
+
+/* Estela de burbujitas de vidrio hacia Xox */
+.xox-bubble-trail {
+  position: absolute;
+  border-radius: 999px;
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.06));
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.4),
+    0 0 12px -2px rgba(94, 234, 212, 0.3);
+  animation: xox-trail-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.xox-bubble-trail-sm {
+  width: 6px;
+  height: 6px;
+  left: -4px;
+  bottom: -4px;
+}
+.xox-bubble-trail-md {
+  width: 10px;
+  height: 10px;
+  left: 4px;
+  bottom: 4px;
+  animation-delay: 0.08s;
+}
+
+@keyframes xox-trail-pop {
+  0% { opacity: 0; transform: scale(0); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes xox-bubble-pop {
+  0% { opacity: 0; transform: translate(-8px, 10px) scale(0.35); filter: blur(4px); }
+  55% { opacity: 1; filter: blur(0); }
+  100% { opacity: 1; transform: none; filter: blur(0); }
+}
+
+@keyframes xox-bubble-text {
+  from { opacity: 0; transform: translateY(3px); filter: blur(3px); }
+  to { opacity: 1; transform: none; filter: blur(0); }
+}
+
+@keyframes xox-bubble-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes xox-bubble-out {
+  from { opacity: 1; transform: none; filter: blur(0); }
+  to { opacity: 0; transform: translate(-6px, 6px) scale(0.85); filter: blur(4px); }
+}
+
+/* ==========================================================================
+   INPUT QUE CRECE COMO BURBUJA
+   ========================================================================== */
+.input-bubble {
+  transition: height 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  max-height: 200px;
+}
+
+.input-console {
+  transition:
+    border-radius 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    border-color 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.input-console.is-expanded {
+  border-radius: 1.5rem;
+  transform: translateY(-2px) scale(1.005);
+}
+
+/* Menú desplegable de modelos */
+@keyframes menu-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.menu-in {
+  transform-origin: 100% 100%;
+  animation: menu-in 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xox-bubble, .xox-bubble-body, .xox-bubble-text, .xox-bubble-trail, .menu-in { animation: none; }
+  .xox-bubble.is-leaving { opacity: 0; }
+  .input-bubble, .input-console { transition: none; }
+  .input-console.is-expanded { transform: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .xox-shimmer { animation: none; color: #a1a1aa; background-image: none; }
   .toast-in, .drawer-in { animation: none; }

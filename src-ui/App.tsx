@@ -18,7 +18,10 @@ import {
   ListTodo,
   CheckCheck,
   Clock,
-  PanelLeft
+  PanelLeft,
+  ChevronDown,
+  Paperclip,
+  Cpu
 } from "lucide-react";
 import { XoxStar, XoxState } from "./components/XoxStar";
 
@@ -59,6 +62,13 @@ const CONTEXT_LABEL: Record<ContextItem["type"], string> = {
   skill: "Asesor de stock",
   catalog: "Catálogo",
 };
+
+// Modelos disponibles para Xox (selector desplegable del input)
+const MODELS = [
+  { id: "xox-fast", name: "Xox Rápido", hint: "Respuestas ágiles" },
+  { id: "xox-pro", name: "Xox Pro", hint: "Razonamiento profundo" },
+  { id: "xox-local", name: "Xox Local", hint: "100% en tu equipo" },
+] as const;
 
 // Emblema geométrico vectorial Xook (sin emojis, estética stealth y titanio)
 function XookGlyph({ className = "w-4 h-4" }: { className?: string }) {
@@ -135,7 +145,23 @@ export default function App() {
   const [isResizingLeft, setIsResizingLeft] = useState<boolean>(false);
   const [isResizingRight, setIsResizingRight] = useState<boolean>(false);
 
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+
+  // Archivos adjuntos, modelo activo y notificación de aprendizaje
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [modelId, setModelId] = useState<string>(MODELS[0].id);
+  const [showModelMenu, setShowModelMenu] = useState<boolean>(false);
+  const [learningToast, setLearningToast] = useState<MemoryPattern | null>(null);
+  const [inputExpanded, setInputExpanded] = useState<boolean>(false);
+
+  // Burbuja de saludo de Xox (solo al hacer clic sobre la mascota)
+  const [greeting, setGreeting] = useState<string | null>(null);
+  const [greetingLeaving, setGreetingLeaving] = useState<boolean>(false);
+  const greetingTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => () => greetingTimers.current.forEach(clearTimeout), []);
+  const activeModel = MODELS.find((m) => m.id === modelId) ?? MODELS[0];
 
   // Lista de elementos en la Ventana de Contexto
   const [contextItems, setContextItems] = useState<ContextItem[]>([
@@ -249,6 +275,46 @@ export default function App() {
     setSelectedContext(contextItems[0]);
   }, []);
 
+  // Notificación discreta del aprendizaje más reciente (aparece y se oculta sola)
+  useEffect(() => {
+    if (patterns.length === 0) return;
+    const latest = [...patterns].sort((a, b) => b.confidence - a.confidence)[0];
+    const showT = setTimeout(() => setLearningToast(latest), 1200);
+    const hideT = setTimeout(() => setLearningToast(null), 9000);
+    return () => {
+      clearTimeout(showT);
+      clearTimeout(hideT);
+    };
+  }, [patterns]);
+
+  // El input crece como una burbuja conforme se escribe (altura animada)
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const prev = el.style.height;
+    el.style.transition = "none";
+    el.style.height = "auto";
+    const target = Math.min(el.scrollHeight, 200);
+    el.style.height = prev || `${target}px`;
+    void el.offsetHeight; // forzar reflow para que la transición parta de la altura previa
+    el.style.transition = "";
+    el.style.height = `${target}px`;
+    el.style.overflowY = el.scrollHeight > 200 ? "auto" : "hidden";
+    setInputExpanded(target > 44);
+  }, [inputPrompt]);
+
+  // Cerrar el menú de modelos al hacer clic fuera
+  useEffect(() => {
+    if (!showModelMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+        setShowModelMenu(false);
+      }
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [showModelMenu]);
+
   // Atajo de teclado ⌘K para enfocar el input
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -334,12 +400,13 @@ export default function App() {
     }
   };
 
-  const handlePromptSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handlePromptSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (!inputPrompt.trim() || xoxState === "thinking") return;
     
     const query = inputPrompt;
     setInputPrompt("");
+    setAttachments([]);
     
     // Activar estado de pensamiento de Xox
     setXoxState("thinking");
@@ -386,14 +453,21 @@ export default function App() {
     setXoxMessage(messages[s]);
   };
 
+  // Saludo al hacer clic: única situación en la que aparece la burbuja de diálogo
   const handleXoxClick = () => {
-    if (xoxState !== "idle") return;
+    if (xoxState !== "idle" || greeting) return;
     setXoxState("success");
-    setXoxMessage("✨ ¡Hola! Soy Xox, tu copiloto de inventario.");
-    setTimeout(() => {
-      setXoxState("idle");
-      setXoxMessage("¿En qué puedo ayudarte?");
-    }, 3000);
+    setGreetingLeaving(false);
+    setGreeting("¡Hola! Soy Xox, tu copiloto de inventario.");
+    greetingTimers.current.forEach(clearTimeout);
+    greetingTimers.current = [
+      setTimeout(() => setGreetingLeaving(true), 3400),
+      setTimeout(() => {
+        setGreeting(null);
+        setGreetingLeaving(false);
+        setXoxState((s) => (s === "success" ? "idle" : s));
+      }, 3750),
+    ];
   };
 
   // Añade o quita una fuente de contexto del mensaje (comportamiento de chip)
@@ -654,17 +728,37 @@ export default function App() {
               {/* ========================================================================= */}
               <div className="flex flex-col items-center justify-center pt-2 pb-1 text-center">
                 
-                {/* Estrella Xox: Tamaño armónico, sin contenedor rígido, animación intacta */}
+                {/* Estrella Xox: más grande, con burbuja de diálogo flotante */}
                 <div 
-                  className="relative flex flex-col items-center justify-center cursor-pointer select-none -mb-3"
-                  onClick={handleXoxClick}
+                  className="relative flex flex-col items-center justify-center cursor-pointer select-none -mb-4"
                   title="Haz clic para saludar a Xox"
                 >
                   <XoxStar 
                     state={xoxState} 
-                    size={210} 
+                    size={280} 
                     onClick={handleXoxClick}
                   />
+
+                  {/* Burbuja de saludo Liquid Glass (solo al hacer clic en Xox) */}
+                  {greeting && (
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      className={`xox-bubble absolute left-[61%] bottom-[73%] z-10 pointer-events-none ${
+                        greetingLeaving ? "is-leaving" : ""
+                      }`}
+                    >
+                      {/* Estela de burbujitas hacia Xox, como la de "pensando" */}
+                      <span aria-hidden="true" className="xox-bubble-trail xox-bubble-trail-sm" />
+                      <span aria-hidden="true" className="xox-bubble-trail xox-bubble-trail-md" />
+
+                      <div className="xox-bubble-body w-max max-w-[260px] px-4 py-2.5 rounded-[22px] text-left">
+                        <p className="xox-bubble-text relative text-[13px] leading-snug text-white/95 font-medium">
+                          {greeting}
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Saludo Humano Simplificado */}
@@ -673,18 +767,18 @@ export default function App() {
                     ¿En qué puedo ayudarte?
                   </h1>
 
-                  {/* Estado activo de Xox (solo visible cuando está pensando, sincronizando o alertando) */}
-                  {xoxState !== "idle" && (
-                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] backdrop-blur-md">
+                  {/* Estado activo de Xox durante los procesos (pensando, leyendo, alertas...) */}
+                  {xoxState !== "idle" && !greeting && (
+                    <div className="toast-in inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] backdrop-blur-md">
                       <span className={`w-1.5 h-1.5 rounded-full ${
                         xoxState === "thinking" || xoxState === "reading"
-                          ? "bg-cyan-400 animate-ping" 
-                          : xoxState === "success" 
-                          ? "bg-emerald-400" 
+                          ? "bg-cyan-400 animate-ping"
+                          : xoxState === "success"
+                          ? "bg-emerald-400"
                           : xoxState === "syncing"
                           ? "bg-teal-400 animate-pulse"
-                          : xoxState === "alert" 
-                          ? "bg-red-500 animate-pulse" 
+                          : xoxState === "alert"
+                          ? "bg-red-500 animate-pulse"
                           : "bg-cyan-400"
                       }`} />
                       <p className={`text-xs ${
@@ -729,74 +823,175 @@ export default function App() {
 
               </div>
 
-              {/* ========================================================================= */}
-              {/* MEMORIA Y APRENDIZAJE RECIENTE DE LA TIENDA                              */}
-              {/* ========================================================================= */}
-              <div className="liquid-glass-card rounded-2xl p-5 space-y-3.5">
-                <div className="flex items-center gap-2">
-                  <Brain className="w-4 h-4 text-zinc-400" />
-                  <h3 className="text-xs font-semibold text-zinc-300 uppercase tracking-wider">
-                    Aprendizaje Reciente del Asistente
-                  </h3>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {patterns.map((p) => (
-                    <div key={p.pattern_id} className="p-3.5 liquid-glass-inset rounded-xl space-y-2">
-                      <p className="text-xs text-zinc-300 leading-relaxed">{p.description}</p>
-                      <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-1 font-mono border-t border-white/[0.04]">
-                        <span>Nivel de Confianza</span>
-                        <div className="flex items-center gap-2">
-                          <div className="w-16 bg-white/[0.08] h-1 rounded-full overflow-hidden">
-                            <div 
-                              className="bg-zinc-300 h-full rounded-full" 
-                              style={{ width: `${Math.round(p.confidence * 100)}%` }} 
-                            />
-                          </div>
-                          <span className="text-zinc-200 font-semibold">{Math.round(p.confidence * 100)}%</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
               {/* Espaciador inferior para que el último elemento pueda scrollear sobre el input fijo */}
               <div className="h-44 sm:h-48 shrink-0" />
 
             </div>
           </div>
 
+          {/* Notificación compacta de aprendizaje reciente (esquina superior derecha) */}
+          {learningToast && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="toast-in absolute top-4 right-4 z-20 w-[280px] liquid-glass-card rounded-xl p-3 flex items-start gap-2.5"
+            >
+              <div className="w-7 h-7 rounded-lg bg-white/[0.05] border border-white/[0.08] flex items-center justify-center shrink-0">
+                <Brain className="w-3.5 h-3.5 text-zinc-300" />
+              </div>
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                    Xox aprendió algo
+                  </span>
+                  <span className="text-[10px] font-mono text-zinc-500">
+                    {Math.round(learningToast.confidence * 100)}%
+                  </span>
+                </div>
+                <p className="text-[11.5px] text-zinc-200 leading-snug line-clamp-2">
+                  {learningToast.description}
+                </p>
+              </div>
+              <button
+                onClick={() => setLearningToast(null)}
+                aria-label="Cerrar notificación"
+                className="text-zinc-500 hover:text-zinc-300 p-0.5 -mr-1 -mt-1 cursor-pointer shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {/* ========================================================================= */}
           {/* 4. INPUT / CHAT FIJO EN LA PARTE INFERIOR (PINNED DOCK)                    */}
           {/* ========================================================================= */}
           <div className="absolute inset-x-0 bottom-0 p-4 sm:p-6 bg-gradient-to-t from-[#060709] via-[#060709]/95 to-transparent pointer-events-none z-10">
             <div className="max-w-4xl mx-auto pointer-events-auto">
-              <div className="liquid-glass-hero rounded-2xl p-3 sm:p-4 relative overflow-hidden group shadow-2xl">
-                {/* Reflejo especular superior tenue */}
-                <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/25 to-transparent pointer-events-none" />
-                {/* Barrido de luz de encendido */}
-                <span aria-hidden="true" className="console-sweep" />
+              <div className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-4 relative group shadow-2xl ${inputExpanded ? "is-expanded" : ""}`}>
+                {/* Capa de recorte para los efectos de luz (el menú de modelos puede sobresalir) */}
+                <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
+                  {/* Reflejo especular superior tenue */}
+                  <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/25 to-transparent" />
+                  {/* Barrido de luz de encendido */}
+                  <span aria-hidden="true" className="console-sweep" />
+                </div>
 
                 {/* Formulario Principal de Entrada */}
                 <form onSubmit={handlePromptSubmit} className="space-y-2.5">
-                  <div className="relative flex items-center">
+                  {/* Archivos adjuntos */}
+                  {attachments.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 px-1">
+                      {attachments.map((f, i) => (
+                        <span
+                          key={`${f.name}-${i}`}
+                          className="toast-in inline-flex items-center gap-1.5 text-[11px] pl-2 pr-1 py-1 rounded-lg bg-white/[0.06] border border-white/[0.1] text-zinc-200 max-w-[200px]"
+                        >
+                          <Paperclip className="w-3 h-3 text-zinc-400 shrink-0" />
+                          <span className="truncate">{f.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                            aria-label={`Quitar ${f.name}`}
+                            className="text-zinc-500 hover:text-zinc-200 p-0.5 cursor-pointer"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="relative flex items-end gap-2">
+                    {/* Botón + para subir archivos */}
                     <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                        const files = Array.from(e.target.files ?? []);
+                        if (files.length) setAttachments((prev) => [...prev, ...files]);
+                        e.target.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      title="Adjuntar archivos"
+                      aria-label="Adjuntar archivos"
+                      className="shrink-0 mb-0.5 w-8 h-8 rounded-full flex items-center justify-center bg-white/[0.05] border border-white/[0.08] text-zinc-300 hover:text-white hover:bg-white/[0.1] transition-all active:scale-95 cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+
+                    <textarea
                       ref={inputRef}
-                      type="text"
+                      rows={1}
                       value={inputPrompt}
                       onChange={(e) => setInputPrompt(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                          e.preventDefault();
+                          handlePromptSubmit();
+                        }
+                      }}
                       disabled={xoxState === "thinking"}
                       placeholder={
                         xoxState === "thinking" 
                           ? "Xox está procesando tu consulta..." 
                           : "Escribe a Xox o haz una consulta sobre inventario..."
                       }
-                      className="w-full bg-transparent text-sm sm:text-base text-zinc-100 placeholder:text-zinc-500 focus:outline-none py-1.5 pl-2 pr-12 font-normal disabled:opacity-50"
+                      className="input-bubble flex-1 resize-none bg-transparent text-sm sm:text-base text-zinc-100 placeholder:text-zinc-500 focus:outline-none py-1.5 px-1 font-normal leading-relaxed disabled:opacity-50 select-text"
                     />
+
+                    {/* Desplegable de modelos */}
+                    <div ref={modelMenuRef} className="relative shrink-0 mb-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setShowModelMenu((v) => !v)}
+                        aria-haspopup="listbox"
+                        aria-expanded={showModelMenu}
+                        className="h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2 rounded-full text-[11px] text-zinc-300 hover:text-white bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.06] transition-colors cursor-pointer"
+                      >
+                        <Cpu className="w-3 h-3 text-zinc-400" />
+                        <span className="hidden sm:inline">{activeModel.name}</span>
+                        <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${showModelMenu ? "rotate-180" : ""}`} />
+                      </button>
+                      {showModelMenu && (
+                        <div
+                          role="listbox"
+                          className="menu-in absolute right-0 bottom-full mb-2 w-52 p-1 rounded-xl bg-zinc-900/95 border border-white/10 shadow-2xl backdrop-blur-xl z-30"
+                        >
+                          {MODELS.map((m) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              role="option"
+                              aria-selected={m.id === modelId}
+                              onClick={() => {
+                                setModelId(m.id);
+                                setShowModelMenu(false);
+                                inputRef.current?.focus();
+                              }}
+                              className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-left transition-colors cursor-pointer ${
+                                m.id === modelId ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"
+                              }`}
+                            >
+                              <span>
+                                <span className="block text-xs text-zinc-100">{m.name}</span>
+                                <span className="block text-[10px] text-zinc-500">{m.hint}</span>
+                              </span>
+                              {m.id === modelId && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
                     <button
                       type="submit"
                       disabled={!inputPrompt.trim() || xoxState === "thinking"}
-                      className="absolute right-1 bg-white hover:bg-zinc-200 disabled:opacity-30 disabled:hover:bg-white text-zinc-950 p-2 rounded-xl transition-all active:scale-95 cursor-pointer shadow-md disabled:cursor-not-allowed"
+                      className="shrink-0 mb-0.5 bg-white hover:bg-zinc-200 disabled:opacity-30 disabled:hover:bg-white text-zinc-950 p-2 rounded-xl transition-all active:scale-95 cursor-pointer shadow-md disabled:cursor-not-allowed"
                       title="Enviar instrucción (Enter)"
                     >
                       <Send className="w-3.5 h-3.5" />
