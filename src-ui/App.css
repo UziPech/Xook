@@ -220,48 +220,52 @@
 }
 
 /* ==========================================================================
-   SPLITTER DE VIDRIO CON AURORA BOREAL SUTIL (AZUL-MORADO ETÉREO)
+   SPLITTER DE VIDRIO LÍQUIDO CON LOS MATICES DE XOX (STARLIGHT GLASS)
    ========================================================================== */
 .splitter-aurora-glass {
   position: relative;
   width: 2px;
   cursor: col-resize;
-  background: rgba(255, 255, 255, 0.05);
-  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  background: rgba(255, 255, 255, 0.04);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   z-index: 30;
   user-select: none;
   flex-shrink: 0;
 }
 
-/* Efecto hover: aurora boreal de baja saturación (vidrio con destellos azules y púrpuras tenues) */
+/* Efecto hover: matices etéreos de Xox (vidrio translúcido, hielo celeste y reflejo estelar) */
 .splitter-aurora-glass:hover {
   width: 3px;
   background: linear-gradient(
     180deg,
-    rgba(147, 197, 253, 0.18) 0%,
-    rgba(167, 139, 250, 0.28) 35%,
-    rgba(192, 132, 252, 0.32) 65%,
-    rgba(129, 140, 248, 0.2) 100%
+    rgba(255, 255, 255, 0.4) 0%,
+    rgba(224, 242, 254, 0.25) 20%,
+    rgba(125, 211, 252, 0.18) 45%,
+    rgba(167, 139, 250, 0.14) 70%,
+    rgba(255, 255, 255, 0.3) 100%
   );
   box-shadow:
-    0 0 14px 1.5px rgba(167, 139, 250, 0.22),
-    inset 0 0 1px 0.5px rgba(255, 255, 255, 0.25);
+    0 0 14px 1.5px rgba(125, 211, 252, 0.18),
+    0 0 24px 3px rgba(167, 139, 250, 0.08),
+    inset 0 0 1px 0.5px rgba(255, 255, 255, 0.35);
 }
 
-/* Efecto mientras se arrastra: aurora líquida translúcida suave, sin neones agresivos */
+/* Efecto mientras se arrastra: resplandor armónico del núcleo de Xox */
 .splitter-aurora-glass.is-resizing {
   width: 3px;
   background: linear-gradient(
     180deg,
-    rgba(147, 197, 253, 0.35) 0%,
-    rgba(167, 139, 250, 0.5) 30%,
-    rgba(192, 132, 252, 0.55) 60%,
-    rgba(129, 140, 248, 0.38) 100%
+    rgba(255, 255, 255, 0.75) 0%,
+    rgba(186, 230, 253, 0.45) 25%,
+    rgba(125, 211, 252, 0.35) 50%,
+    rgba(167, 139, 250, 0.25) 75%,
+    rgba(255, 255, 255, 0.6) 100%
   );
   box-shadow:
-    0 0 18px 3px rgba(167, 139, 250, 0.32),
-    0 0 28px 6px rgba(147, 197, 253, 0.15),
-    inset 0 0 1px 0.5px rgba(255, 255, 255, 0.45);
+    0 0 16px 2.5px rgba(125, 211, 252, 0.28),
+    0 0 30px 4px rgba(56, 189, 248, 0.14),
+    0 0 36px 6px rgba(167, 139, 250, 0.1),
+    inset 0 0 1px 0.5px rgba(255, 255, 255, 0.55);
 }
 
 @media (prefers-reduced-motion: reduce) {
