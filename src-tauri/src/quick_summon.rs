@@ -983,8 +983,104 @@ pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) 
     }
 }
 
+/// Selects the translucent Liquid Glass Dock icon variant in `tauri dev` when
+/// macOS is using a Clear or Tinted icon appearance theme.
+#[cfg(all(dev, target_os = "macos"))]
+fn select_macos_dev_dock_icon_bytes(
+    icon_theme: Option<&str>,
+    interface_style: Option<&str>,
+) -> Option<&'static [u8]> {
+    let theme = icon_theme?.trim().to_ascii_lowercase();
+    if !(theme.starts_with("clear") || theme.starts_with("tinted")) {
+        return None;
+    }
+
+    let use_dark = if theme.ends_with("dark") {
+        true
+    } else if theme.ends_with("light") {
+        false
+    } else {
+        interface_style
+            .map(|style| style.trim().eq_ignore_ascii_case("Dark"))
+            .unwrap_or(false)
+    };
+
+    if use_dark {
+        Some(include_bytes!("../icons/dock-clear-dark.png"))
+    } else {
+        Some(include_bytes!("../icons/dock-clear-light.png"))
+    }
+}
+
+/// Applies the frosted glass Dock icon in unbundled macOS `tauri dev` runs so
+/// ClearLight/ClearDark Dock themes match the native Liquid Glass environment
+/// (Tauri's `setApplicationIconImage` bypasses `IconServices` icon styling).
+#[cfg(all(dev, target_os = "macos"))]
+fn apply_macos_dev_dock_icon() {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::{NSData, NSString, NSUserDefaults};
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let theme_key = NSString::from_str("AppleIconAppearanceTheme");
+    let style_key = NSString::from_str("AppleInterfaceStyle");
+    let icon_theme = defaults.stringForKey(&theme_key).map(|s| s.to_string());
+    let interface_style = defaults.stringForKey(&style_key).map(|s| s.to_string());
+
+    let Some(bytes) = select_macos_dev_dock_icon_bytes(
+        icon_theme.as_deref(),
+        interface_style.as_deref(),
+    ) else {
+        return;
+    };
+
+    let data = NSData::with_bytes(bytes);
+    if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
+        let app = NSApplication::sharedApplication(mtm);
+        unsafe { app.setApplicationIconImage(Some(&app_icon)) };
+    }
+}
+
+#[cfg(all(test, dev, target_os = "macos"))]
+mod dev_dock_icon_tests {
+    use super::select_macos_dev_dock_icon_bytes;
+
+    #[test]
+    fn selects_clear_variants_by_macos_icon_theme() {
+        let light = include_bytes!("../icons/dock-clear-light.png");
+        let dark = include_bytes!("../icons/dock-clear-dark.png");
+
+        assert_eq!(
+            select_macos_dev_dock_icon_bytes(Some("ClearLight"), Some("Dark")),
+            Some(light.as_slice())
+        );
+        assert_eq!(
+            select_macos_dev_dock_icon_bytes(Some("ClearDark"), None),
+            Some(dark.as_slice())
+        );
+        assert_eq!(
+            select_macos_dev_dock_icon_bytes(Some("ClearAutomatic"), Some("Dark")),
+            Some(dark.as_slice())
+        );
+        assert_eq!(
+            select_macos_dev_dock_icon_bytes(Some("ClearAutomatic"), None),
+            Some(light.as_slice())
+        );
+        assert_eq!(select_macos_dev_dock_icon_bytes(Some("RegularDark"), Some("Dark")), None);
+        assert_eq!(select_macos_dev_dock_icon_bytes(None, Some("Dark")), None);
+    }
+}
+
 pub fn handle_run_event<R: Runtime>(app_handle: &AppHandle<R>, event: RunEvent) {
     match event {
+        #[cfg(all(dev, target_os = "macos"))]
+        RunEvent::Ready => {
+            apply_macos_dev_dock_icon();
+        }
         RunEvent::ExitRequested { code, .. } => {
             if code.is_none() {
                 app_handle

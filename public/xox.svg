@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <defs>
+    <linearGradient id="xox-bg" x1="40" y1="25" x2="215" y2="231" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1C2638" />
+      <stop offset="54%" stop-color="#0D121C" />
+      <stop offset="100%" stop-color="#06080E" />
+    </linearGradient>
+    <radialGradient id="xox-sheen" cx="72" cy="58" r="140" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.18" />
+      <stop offset="44%" stop-color="#E0F2FE" stop-opacity="0.045" />
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="xox-aura" cx="128" cy="130" r="98" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#7DD3FC" stop-opacity="0.34" />
+      <stop offset="50%" stop-color="#38BDF8" stop-opacity="0.12" />
+      <stop offset="100%" stop-color="#38BDF8" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="xox-star-fill" x1="70" y1="55" x2="185" y2="205" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="54%" stop-color="#E6F5FF" />
+      <stop offset="100%" stop-color="#BDE3FC" />
+    </linearGradient>
+    <linearGradient id="xox-rim" x1="25" y1="25" x2="231" y2="231" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.48" />
+      <stop offset="48%" stop-color="#BAE6FD" stop-opacity="0.14" />
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.34" />
+    </linearGradient>
+    <clipPath id="xox-squircle">
+      <rect x="25" y="25" width="206" height="206" rx="47" />
+    </clipPath>
+    <clipPath id="xox-star-clip">
+      <path d="M 124.88 66.29 Q 136.90 49.31 144.72 68.60 L 152.27 87.22 Q 159.04 103.94 176.26 109.33 L 193.12 114.61 Q 212.98 120.83 197.06 134.24 L 183.10 146.00 Q 169.30 157.62 168.74 175.65 L 168.36 187.89 Q 167.71 208.69 148.88 199.82 L 142.05 196.61 Q 125.73 188.92 109.03 195.73 L 100.97 199.01 Q 81.70 206.87 82.67 186.08 L 83.34 171.92 Q 84.18 153.91 71.61 140.97 L 57.53 126.48 Q 43.02 111.56 63.43 107.46 L 83.41 103.44 Q 101.10 99.89 111.52 85.17 Z" />
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#xox-squircle)">
+    <rect x="25" y="25" width="206" height="206" rx="47" fill="url(#xox-bg)" />
+    <rect x="25" y="25" width="206" height="206" fill="url(#xox-sheen)" />
+    <circle cx="128" cy="130" r="98" fill="url(#xox-aura)" />
+
+    <path
+      d="M 124.88 66.29 Q 136.90 49.31 144.72 68.60 L 152.27 87.22 Q 159.04 103.94 176.26 109.33 L 193.12 114.61 Q 212.98 120.83 197.06 134.24 L 183.10 146.00 Q 169.30 157.62 168.74 175.65 L 168.36 187.89 Q 167.71 208.69 148.88 199.82 L 142.05 196.61 Q 125.73 188.92 109.03 195.73 L 100.97 199.01 Q 81.70 206.87 82.67 186.08 L 83.34 171.92 Q 84.18 153.91 71.61 140.97 L 57.53 126.48 Q 43.02 111.56 63.43 107.46 L 83.41 103.44 Q 101.10 99.89 111.52 85.17 Z"
+      fill="url(#xox-star-fill)"
+      stroke="#FFFFFF"
+      stroke-opacity="0.96"
+      stroke-width="1.75"
+      stroke-linejoin="round"
+    />
+
+    <g clip-path="url(#xox-star-clip)">
+      <ellipse
+        cx="0"
+        cy="0"
+        rx="14.5"
+        ry="4.75"
+        transform="translate(108.06 104.31) rotate(-32)"
+        fill="#FFFFFF"
+        fill-opacity="0.58"
+      />
+    </g>
+
+    <g>
+      <ellipse cx="114.98" cy="136" rx="5.75" ry="8.75" fill="#0F1729" fill-opacity="0.95" />
+      <ellipse cx="114.98" cy="139.75" rx="3" ry="2.5" fill="#38BDF8" fill-opacity="0.4" />
+      <circle cx="117.36" cy="133" r="1.75" fill="#FFFFFF" fill-opacity="0.98" />
+
+      <ellipse cx="139.98" cy="136" rx="5.75" ry="8.75" fill="#0F1729" fill-opacity="0.95" />
+      <ellipse cx="139.98" cy="139.75" rx="3" ry="2.5" fill="#38BDF8" fill-opacity="0.4" />
+      <circle cx="142.36" cy="133" r="1.75" fill="#FFFFFF" fill-opacity="0.98" />
+    </g>
+  </g>
+
+  <rect x="25.8" y="25.8" width="204.4" height="204.4" rx="46.2" stroke="url(#xox-rim)" stroke-width="1.6" />
+</svg>
+
