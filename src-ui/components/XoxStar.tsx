@@ -15,6 +15,8 @@ interface XoxStarProps {
   size?: number;
   className?: string;
   onClick?: () => void;
+  /** Incrementar para disparar el salto y destello estelar de aparición. */
+  summonTrigger?: number;
 }
 
 /**
@@ -135,6 +137,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   size = 150,
   className = "",
   onClick,
+  summonTrigger,
 }) => {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const ids = {
@@ -148,6 +151,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   // Refs a nodos SVG animados por rAF
   const wrapRef = useRef<HTMLDivElement>(null);
   const glowRef = useRef<SVGCircleElement>(null);
+  const summonRingRef = useRef<SVGCircleElement>(null);
   const ringRef = useRef<SVGEllipseElement>(null);
   const bodyRef = useRef<SVGGElement>(null);
   const yawRef = useRef<SVGGElement>(null);
@@ -178,6 +182,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     squashKick: 0,
     jumpKick: 0,
     waveStart: -10,
+    summonAt: -10,
     lookTX: 0,
     lookTY: 0,
     mouseTime: -1e9,
@@ -210,6 +215,20 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       return () => window.clearInterval(id);
     }
   }, [state]);
+
+  // Coreografía de entrada al invocar con ⌘⇧X (micro-salto, saludo y pulso estelar)
+  useEffect(() => {
+    if (!summonTrigger) return;
+    const a = anim.current;
+    a.summonAt = a.t;
+    a.waveStart = a.t;
+    if (a.reduce) {
+      a.jumpKick = -60;
+      return;
+    }
+    a.squashKick = 4.2;
+    a.jumpKick = -195;
+  }, [summonTrigger]);
 
   // Seguimiento global del cursor: Xox mira hacia donde esté el puntero
   useEffect(() => {
@@ -369,17 +388,35 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           : 14 + 1.2 * Math.sin(t * 2)
         ).toFixed(2)
       );
+      const summonPhase = (t - a.summonAt) / 0.65;
+      const summonActive = summonPhase >= 0 && summonPhase <= 1 && !a.reduce;
+
       if (glowRef.current) {
+        const summonBoost = summonActive ? 0.4 * (1 - summonPhase) : 0;
         glowRef.current.setAttribute("transform", `translate(0 ${(bob + jump.x).toFixed(2)})`);
         glowRef.current.setAttribute(
           "opacity",
-          (thinking
-            ? 0.85 + 0.15 * Math.sin(t * 5)
-            : alerting
-            ? 0.75 + 0.25 * Math.sin(t * 8)
-            : 0.55 + 0.3 * hover.x
+          clamp(
+            (thinking
+              ? 0.85 + 0.15 * Math.sin(t * 5)
+              : alerting
+              ? 0.75 + 0.25 * Math.sin(t * 8)
+              : 0.55 + 0.3 * hover.x) + summonBoost,
+            0,
+            1
           ).toFixed(3)
         );
+      }
+      if (summonRingRef.current) {
+        if (summonActive) {
+          const ease = 1 - Math.pow(1 - summonPhase, 3);
+          summonRingRef.current.setAttribute("cy", y.toFixed(2));
+          summonRingRef.current.setAttribute("r", (34 + 70 * ease).toFixed(2));
+          summonRingRef.current.setAttribute("stroke-width", (2.4 - 1.9 * ease).toFixed(2));
+          summonRingRef.current.setAttribute("opacity", (0.72 * Math.pow(1 - summonPhase, 1.5)).toFixed(3));
+        } else {
+          summonRingRef.current.setAttribute("opacity", "0");
+        }
       }
       if (ringRef.current) {
         ringRef.current.setAttribute(
@@ -539,6 +576,18 @@ export const XoxStar: React.FC<XoxStarProps> = ({
 
         {/* Aura */}
         <circle ref={glowRef} cx={C} cy={C} r="105" fill={`url(#${ids.glow})`} opacity="0.55" />
+
+        {/* Destello estelar al aparecer */}
+        <circle
+          ref={summonRingRef}
+          cx={C}
+          cy={C}
+          r="34"
+          fill="none"
+          stroke={palette.glow}
+          strokeWidth="2"
+          opacity="0"
+        />
 
         {/* Chispas en órbita */}
         {[0, 1, 2].map((i) => (

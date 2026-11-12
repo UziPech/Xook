@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+mod quick_summon;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ActionCard {
     pub card_id: String,
@@ -147,13 +149,24 @@ fn get_learned_patterns() -> Vec<MemoryPattern> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(quick_summon::SummonState::default())
+        .setup(|app| {
+            quick_summon::setup_quick_summon(app.handle())?;
+            Ok(())
+        })
+        .on_window_event(quick_summon::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             get_mock_action_cards,
             approve_action,
-            get_learned_patterns
+            get_learned_patterns,
+            quick_summon::hide_quick_bar,
+            quick_summon::toggle_quick_bar_cmd,
+            quick_summon::open_main_workspace
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(quick_summon::handle_run_event);
 }

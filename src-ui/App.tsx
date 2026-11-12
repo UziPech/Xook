@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useId } from "react";
 import { 
   ShieldCheck, 
   CheckCircle2, 
@@ -21,23 +21,11 @@ import {
   PanelLeft,
   ChevronDown,
   Paperclip,
-  Cpu
+  Cpu,
+  AtSign
 } from "lucide-react";
 import { XoxStar, XoxState } from "./components/XoxStar";
-
-interface ActionCard {
-  card_id: string;
-  title: string;
-  description: string;
-  urgency: "alta" | "media" | "baja";
-  product_name: string;
-  current_stock: number;
-  recommended_order: number;
-  estimated_cost: number;
-  currency: string;
-  supplier_name: string;
-  reasoning: string;
-}
+import { ActionCard, FALLBACK_ACTION_CARDS, MODELS, XookWordmark } from "./components/XookBrand";
 
 interface MemoryPattern {
   pattern_id: string;
@@ -63,40 +51,170 @@ const CONTEXT_LABEL: Record<ContextItem["type"], string> = {
   catalog: "Catálogo",
 };
 
-// Modelos disponibles para Xox (selector desplegable del input)
-const MODELS = [
-  { id: "xox-fast", name: "Xox Rápido", hint: "Respuestas ágiles" },
-  { id: "xox-pro", name: "Xox Pro", hint: "Razonamiento profundo" },
-  { id: "xox-local", name: "Xox Local", hint: "100% en tu equipo" },
-] as const;
+function ContextIcon({ type, className = "w-3.5 h-3.5 text-zinc-400 shrink-0" }: { type: ContextItem["type"]; className?: string }) {
+  switch (type) {
+    case "profile":
+      return <Store className={className} />;
+    case "memory":
+      return <Brain className={className} />;
+    case "skill":
+      return <Zap className={className} />;
+    case "catalog":
+      return <FileText className={className} />;
+  }
+}
 
-// Emblema geométrico vectorial Xook (sin emojis, estética stealth y titanio)
-function XookGlyph({ className = "w-4 h-4" }: { className?: string }) {
+// Miniatura del rostro de Xox para el header (silueta fiel al cuerpo estelar y expresión)
+const XOX_MINI_STAR_PATH =
+  "M118.1 67.6Q126.8 55.4 132.4 69.3L137.9 82.7Q142.8 94.7 155.2 98.6L167.3 102.4Q181.6 106.9 170.2 116.6L160.1 125.0Q150.1 133.4 149.7 146.4L149.5 155.2Q149.0 170.2 135.4 163.8L130.5 161.5Q118.7 156.0 106.7 160.9L100.9 163.3Q87.0 168.9 87.7 153.9L88.2 143.7Q88.8 130.7 79.7 121.4L69.6 111.0Q59.1 100.2 73.8 97.3L88.2 94.4Q101.0 91.8 108.5 81.2Z";
+
+function XoxHeaderFace({
+  state,
+  onClick,
+}: {
+  state: XoxState;
+  onClick?: () => void;
+}) {
+  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const ids = {
+    body: `xox-mini-body-${uid}`,
+    rim: `xox-mini-rim-${uid}`,
+    core: `xox-mini-core-${uid}`,
+  };
+  const isAlert = state === "alert";
+  const isSuccess = state === "success";
+  const isSyncing = state === "syncing";
+  const isThinking = state === "thinking";
+  const coreColor = isAlert
+    ? "#EF4444"
+    : isSuccess
+    ? "#34D399"
+    : isSyncing
+    ? "#2DD4BF"
+    : "#38BDF8";
+
   return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label="Xox, mascota de XOOK"
+      title="Xox · Haz clic para saludar"
+      className="w-[26px] h-[26px] flex items-center justify-center cursor-pointer transition-transform hover:scale-110 active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/50 rounded-full"
     >
-      <path
-        d="M4 19C7 19 11.5 17 14 13.5C16.5 10 18.5 4 18.5 4C18.5 4 14.5 7.5 11 11C8.2 13.8 5.5 16.5 4 19Z"
-        fill="url(#xook-grad-fin)"
-      />
-      <path
-        d="M7 19C10 19 13.5 17.5 15.5 14.5C13.5 15.5 10.5 16.5 7 19Z"
-        fill="#FFFFFF"
-        opacity="0.3"
-      />
-      <defs>
-        <linearGradient id="xook-grad-fin" x1="4" y1="4" x2="18.5" y2="19" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#FFFFFF" />
-          <stop offset="0.6" stopColor="#A1A1AA" />
-          <stop offset="1" stopColor="#52525B" />
-        </linearGradient>
-      </defs>
-    </svg>
+      <svg viewBox="55 52 130 126" className="w-full h-full" aria-hidden="true">
+        <defs>
+          <linearGradient id={ids.body} x1="65" y1="60" x2="175" y2="170" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.34" />
+            <stop offset="45%" stopColor="#BAE6FD" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="#38BDF8" stopOpacity="0.24" />
+          </linearGradient>
+          <linearGradient id={ids.rim} x1="62" y1="58" x2="176" y2="172" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.92" />
+            <stop offset="50%" stopColor="#BAE6FD" stopOpacity="0.6" />
+            <stop offset="100%" stopColor="#38BDF8" stopOpacity="0.38" />
+          </linearGradient>
+          <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor={isThinking || isAlert || isSuccess || isSyncing ? coreColor : "#FFFFFF"} stopOpacity="0.55" />
+            <stop offset="55%" stopColor={coreColor} stopOpacity="0.22" />
+            <stop offset="100%" stopColor={coreColor} stopOpacity="0" />
+          </radialGradient>
+        </defs>
+
+        <path
+          d={XOX_MINI_STAR_PATH}
+          fill={isAlert ? "rgba(239,68,68,0.24)" : `url(#${ids.body})`}
+          stroke={isAlert ? "#F87171" : `url(#${ids.rim})`}
+          strokeWidth="4.2"
+          strokeLinejoin="round"
+        />
+
+        <circle cx="120" cy="117" r="30" fill={`url(#${ids.core})`} />
+
+        {/* Reflejo especular sutil */}
+        <ellipse
+          cx="104"
+          cy="94"
+          rx="12"
+          ry="4.2"
+          transform="rotate(-30 104 94)"
+          fill="#FFFFFF"
+          opacity="0.24"
+        />
+
+        {/* Mejillas */}
+        <circle cx="99.5" cy="127.5" r="4.6" fill={isAlert ? "#F87171" : "#38BDF8"} opacity="0.38" />
+        <circle cx="140.5" cy="127.5" r="4.6" fill={isAlert ? "#F87171" : "#38BDF8"} opacity="0.38" />
+
+        {/* Ojos */}
+        {isSuccess ? (
+          <>
+            <path d="M104 117Q110.5 107.5 117 117" stroke="#FFFFFF" strokeWidth="4.4" strokeLinecap="round" fill="none" />
+            <path d="M123 117Q129.5 107.5 136 117" stroke="#FFFFFF" strokeWidth="4.4" strokeLinecap="round" fill="none" />
+            <path d="M113 128.5Q120 135.5 127 128.5" stroke="#FFFFFF" strokeWidth="3.6" strokeLinecap="round" fill="none" opacity="0.92" />
+          </>
+        ) : (
+          <>
+            <g transform="translate(110.5 115)">
+              <g className="xox-mini-eye">
+                <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
+                <circle cx="1.9" cy="-2.5" r="1.9" fill={isAlert ? "#FCA5A5" : "#38BDF8"} />
+              </g>
+            </g>
+            <g transform="translate(129.5 115)">
+              <g className="xox-mini-eye">
+                <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
+                <circle cx="1.9" cy="-2.5" r="1.9" fill={isAlert ? "#FCA5A5" : "#38BDF8"} />
+              </g>
+            </g>
+          </>
+        )}
+      </svg>
+    </button>
   );
+}
+
+/**
+ * Mantiene montados los paneles y ventanas durante su animación de salida.
+ */
+function useAnimatedPresence(isOpen: boolean, durationMs: number) {
+  const [mounted, setMounted] = useState(isOpen);
+  const [visible, setVisible] = useState(isOpen);
+  const prevOpenRef = useRef(isOpen);
+
+  useEffect(() => {
+    if (prevOpenRef.current === isOpen) return;
+    prevOpenRef.current = isOpen;
+
+    const reducedMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+
+    if (isOpen) {
+      setMounted(true);
+      if (reducedMotion) {
+        setVisible(true);
+        return;
+      }
+      let raf2 = 0;
+      const raf1 = requestAnimationFrame(() => {
+        raf2 = requestAnimationFrame(() => setVisible(true));
+      });
+      return () => {
+        cancelAnimationFrame(raf1);
+        cancelAnimationFrame(raf2);
+      };
+    }
+
+    setVisible(false);
+    if (reducedMotion) {
+      setMounted(false);
+      return;
+    }
+    const timer = setTimeout(() => setMounted(false), durationMs);
+    return () => clearTimeout(timer);
+  }, [isOpen, durationMs]);
+
+  return { mounted, visible };
 }
 
 export default function App() {
@@ -148,17 +266,20 @@ export default function App() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
 
   // Archivos adjuntos, modelo activo y notificación de aprendizaje
   const [attachments, setAttachments] = useState<File[]>([]);
   const [modelId, setModelId] = useState<string>(MODELS[0].id);
   const [showModelMenu, setShowModelMenu] = useState<boolean>(false);
+  const [showContextMenu, setShowContextMenu] = useState<boolean>(false);
   const [learningToast, setLearningToast] = useState<MemoryPattern | null>(null);
   const [inputExpanded, setInputExpanded] = useState<boolean>(false);
 
   // Burbuja de saludo de Xox (solo al hacer clic sobre la mascota)
   const [greeting, setGreeting] = useState<string | null>(null);
   const [greetingLeaving, setGreetingLeaving] = useState<boolean>(false);
+  const [summonSeq, setSummonSeq] = useState<number>(0);
   const greetingTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => () => greetingTimers.current.forEach(clearTimeout), []);
   const activeModel = MODELS.find((m) => m.id === modelId) ?? MODELS[0];
@@ -229,34 +350,7 @@ export default function App() {
       } catch {
         // Fallback local
         setIsTauriEnv(false);
-        setCards([
-          {
-            card_id: "card_cafe_01",
-            title: "Reponer Café Chiapas 500g",
-            description: "El stock actual (4 bolsas) se agotará en aproximadamente 2 días.",
-            urgency: "alta",
-            product_name: "Café de Grano Chiapas 500g",
-            current_stock: 4,
-            recommended_order: 20,
-            estimated_cost: 1400.0,
-            currency: "MXN",
-            supplier_name: "Distribuidora del Sur",
-            reasoning: "Venta promedio de 2 un./día. Se sugiere reponer 15 días de stock para evitar desabasto."
-          },
-          {
-            card_id: "card_te_02",
-            title: "Reabastecer Té Matcha 100g",
-            description: "Quedan 6 unidades en bodega. El proveedor tarda 5 días hábiles en entregar.",
-            urgency: "media",
-            product_name: "Té Matcha Premium 100g",
-            current_stock: 6,
-            recommended_order: 15,
-            estimated_cost: 2250.0,
-            currency: "MXN",
-            supplier_name: "Comercializadora Bajío",
-            reasoning: "Plazo de entrega de 5 días. Si se espera al viernes habrá quiebre de stock."
-          }
-        ]);
+        setCards(FALLBACK_ACTION_CARDS);
         setPatterns([
           {
             pattern_id: "pat_01",
@@ -287,33 +381,64 @@ export default function App() {
     };
   }, [patterns]);
 
-  // El input crece como una burbuja conforme se escribe (altura animada)
+  // El input crece como una burbuja solo cuando hay texto escrito (vacío siempre queda en 1 línea)
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    const prev = el.style.height;
-    el.style.transition = "none";
-    el.style.height = "auto";
-    const target = Math.min(el.scrollHeight, 200);
-    el.style.height = prev || `${target}px`;
-    void el.offsetHeight; // forzar reflow para que la transición parta de la altura previa
-    el.style.transition = "";
-    el.style.height = `${target}px`;
-    el.style.overflowY = el.scrollHeight > 200 ? "auto" : "hidden";
-    setInputExpanded(target > 44);
+
+    const syncHeight = () => {
+      if (!inputPrompt) {
+        el.style.height = "";
+        el.style.overflowY = "hidden";
+        setInputExpanded(false);
+        return;
+      }
+
+      const prev = el.style.height || `${el.offsetHeight}px`;
+      el.style.transition = "none";
+      el.style.height = "auto";
+      const target = Math.min(el.scrollHeight, 200);
+      el.style.height = prev;
+      void el.offsetHeight; // forzar reflow para que la transición parta de la altura previa
+      el.style.transition = "";
+      el.style.height = `${target}px`;
+      el.style.overflowY = el.scrollHeight > 200 ? "auto" : "hidden";
+      setInputExpanded(target > 46);
+    };
+
+    syncHeight();
+
+    if (!inputPrompt || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(syncHeight);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, [inputPrompt]);
 
-  // Cerrar el menú de modelos al hacer clic fuera
+  // Cerrar menús desplegables (modelos y contexto) al hacer clic fuera o presionar Escape
   useEffect(() => {
-    if (!showModelMenu) return;
+    if (!showModelMenu && !showContextMenu) return;
     const onDown = (e: MouseEvent) => {
-      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (showModelMenu && modelMenuRef.current && !modelMenuRef.current.contains(target)) {
         setShowModelMenu(false);
+      }
+      if (showContextMenu && contextMenuRef.current && !contextMenuRef.current.contains(target)) {
+        setShowContextMenu(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setShowModelMenu(false);
+        setShowContextMenu(false);
       }
     };
     window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [showModelMenu]);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [showModelMenu, showContextMenu]);
 
   // Atajo de teclado ⌘K para enfocar el input
   useEffect(() => {
@@ -400,14 +525,13 @@ export default function App() {
     }
   };
 
-  const handlePromptSubmit = (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (!inputPrompt.trim() || xoxState === "thinking") return;
-    
-    const query = inputPrompt;
+  const runPromptQuery = (rawQuery: string) => {
+    const query = rawQuery.trim();
+    if (!query || xoxState === "thinking") return;
+
     setInputPrompt("");
     setAttachments([]);
-    
+
     // Activar estado de pensamiento de Xox
     setXoxState("thinking");
     setXoxMessage(`Analizando: "${query}"...`);
@@ -434,6 +558,67 @@ export default function App() {
       setTimeout(() => setStatusMessage(null), 4500);
     }, 3000);
   };
+
+  const handlePromptSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    runPromptQuery(inputPrompt);
+  };
+
+  type MainSummonEventPayload = {
+    seq: number;
+    prompt?: string | null;
+    autoRun?: boolean;
+    responseText?: string | null;
+  };
+
+  const mainSummonHandlerRef = useRef<(payload: MainSummonEventPayload) => void>(() => {});
+  mainSummonHandlerRef.current = (payload) => {
+    const { seq, prompt, autoRun, responseText } = payload ?? {};
+    setSummonSeq(seq ?? Date.now());
+    requestAnimationFrame(() => inputRef.current?.focus());
+
+    if (responseText) {
+      setXoxState("success");
+      setXoxMessage(responseText);
+      if (prompt) setStatusMessage(`Continuando desde Quick Bar: "${prompt}"`);
+      setTimeout(() => {
+        setXoxState((s) => (s === "success" ? "idle" : s));
+        setXoxMessage("¿En qué puedo ayudarte?");
+      }, 4500);
+      setTimeout(() => setStatusMessage(null), 4500);
+    } else if (prompt && autoRun) {
+      runPromptQuery(prompt);
+    } else if (prompt) {
+      setInputPrompt(prompt);
+    }
+  };
+
+  // Escuchar invocaciones desde la Quick Bar (⌘⇧X -> Abrir XOOK / ⌘↩) o desde la Barra de Menú
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const fn = await listen<MainSummonEventPayload>("main:summon", (event) => {
+          mainSummonHandlerRef.current(event.payload);
+        });
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      } catch {
+        // Ignorar fuera de Tauri
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Estados "ocupados": el texto muestra el efecto shimmer gris con brillo blanco
   const xoxBusy = xoxState === "thinking" || xoxState === "reading" || xoxState === "syncing";
@@ -486,6 +671,35 @@ export default function App() {
   const completedCards = cards.filter(c => approvedCards.includes(c.card_id));
   const pendingCount = pendingCards.length;
 
+  // Estados de presencia animada para ventanas laterales y emergentes (entrada y salida)
+  const leftPresence = useAnimatedPresence(showLeftSidebar, 270);
+  const rightPresence = useAnimatedPresence(showRightSidebar, 270);
+
+  const statusToastPresence = useAnimatedPresence(Boolean(statusMessage), 190);
+  const lastStatusRef = useRef<string | null>(statusMessage);
+  if (statusMessage) lastStatusRef.current = statusMessage;
+  const displayStatusMessage = statusMessage ?? lastStatusRef.current;
+
+  const learningToastPresence = useAnimatedPresence(Boolean(learningToast), 190);
+  const lastLearningToastRef = useRef<MemoryPattern | null>(learningToast);
+  if (learningToast) lastLearningToastRef.current = learningToast;
+  const displayLearningToast = learningToast ?? lastLearningToastRef.current;
+
+  const isXoxStatusOpen = xoxState !== "idle" && !greeting;
+  const xoxStatusPresence = useAnimatedPresence(isXoxStatusOpen, 190);
+  const lastXoxStatusRef = useRef({ state: xoxState, message: xoxMessage, busy: xoxBusy });
+  if (isXoxStatusOpen) {
+    lastXoxStatusRef.current = { state: xoxState, message: xoxMessage, busy: xoxBusy };
+  }
+  const displayXoxStatus = isXoxStatusOpen
+    ? { state: xoxState, message: xoxMessage, busy: xoxBusy }
+    : lastXoxStatusRef.current;
+
+  const modelMenuPresence = useAnimatedPresence(showModelMenu, 150);
+  const contextMenuPresence = useAnimatedPresence(showContextMenu, 150);
+  const statePreviewPresence = useAnimatedPresence(showStatePreview, 150);
+  const activeContextCount = contextItems.filter((item) => inputPrompt.includes(`@${item.name}`)).length;
+
   return (
     <div className="h-screen w-screen bg-[#060709] text-zinc-100 flex flex-col font-sans select-none overflow-hidden antialiased">
       
@@ -500,8 +714,8 @@ export default function App() {
             title={showLeftSidebar ? "Ocultar panel de contexto" : "Mostrar panel de contexto"}
             className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
               showLeftSidebar
-                ? "bg-white/[0.1] text-white border-white/20 shadow-sm"
-                : "bg-white/[0.03] text-zinc-400 border-white/[0.06] hover:text-zinc-200 hover:border-white/10"
+                ? "bg-white/[0.08] text-white border-white/[0.1]"
+                : "bg-transparent text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]"
             }`}
           >
             <PanelLeft className="w-4 h-4" />
@@ -509,17 +723,10 @@ export default function App() {
 
           <div className="h-4 w-px bg-white/[0.08] mx-0.5" />
 
-          <div className="w-7 h-7 rounded-lg bg-white/[0.04] border border-white/[0.08] flex items-center justify-center shadow-inner">
-            <XookGlyph className="w-3.5 h-3.5" />
+          <div className="flex items-center gap-2">
+            <XoxHeaderFace state={xoxState} onClick={handleXoxClick} />
+            <XookWordmark className="h-3.5 w-auto text-zinc-100" />
           </div>
-          <span className="font-semibold text-xs tracking-wider text-white">XOOK</span>
-          <span
-            role="img"
-            aria-label="Modo seguro: toda mutación requiere tu aprobación"
-            className="hidden sm:flex items-center pl-2.5 ml-0.5 border-l border-white/[0.08]"
-          >
-            <ShieldCheck className="w-3 h-3 text-emerald-400/80" />
-          </span>
         </div>
 
         {/* Lado Derecho: Toggle de Tareas y Decisiones */}
@@ -528,20 +735,21 @@ export default function App() {
             onClick={() => setShowRightSidebar(!showRightSidebar)}
             aria-pressed={showRightSidebar}
             title={showRightSidebar ? "Ocultar panel de tareas" : "Mostrar panel de tareas"}
-            className={`text-xs pl-2.5 pr-2 py-1 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
+            className={`px-2 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
               showRightSidebar
-                ? "bg-white/[0.1] text-white border-white/20 shadow-sm"
-                : "bg-white/[0.03] text-zinc-400 border-white/[0.06] hover:text-zinc-200 hover:border-white/10"
+                ? "bg-white/[0.08] text-white border-white/[0.1]"
+                : "bg-transparent text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]"
             }`}
           >
             <ListTodo className="w-3.5 h-3.5" />
             <span className="text-[11px] font-medium hidden sm:inline">Tareas</span>
             {pendingCount > 0 ? (
-              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 tabular-nums">
+              <span className="inline-flex items-center gap-1.5 pl-1.5 ml-0.5 border-l border-white/[0.08] text-[11px] font-mono tabular-nums text-zinc-200">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
                 {pendingCount}
               </span>
             ) : (
-              <span className="text-[10px] font-mono text-zinc-500 tabular-nums">
+              <span className="pl-1.5 ml-0.5 border-l border-white/[0.08] text-[11px] font-mono tabular-nums text-zinc-500">
                 0
               </span>
             )}
@@ -555,12 +763,20 @@ export default function App() {
         {/* ========================================================================= */}
         {/* COLUMNA 1: CONTEXTO DEL LADO IZQUIERDO                                    */}
         {/* ========================================================================= */}
-        {showLeftSidebar && (
+        {leftPresence.mounted && (
           <>
-            <aside 
-              style={{ width: `${leftWidth}px` }} 
-              className="bg-[#08090d] flex flex-col shrink-0 overflow-hidden select-none"
+            <div
+              aria-hidden={!showLeftSidebar}
+              inert={!showLeftSidebar}
+              style={{ width: leftPresence.visible ? `${leftWidth}px` : "0px" }}
+              className={`sidebar-slot flex justify-end shrink-0 overflow-hidden ${
+                isResizingLeft ? "is-resizing" : ""
+              } ${leftPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
             >
+              <aside
+                style={{ width: `${leftWidth}px` }}
+                className="h-full bg-[#08090d] flex flex-col shrink-0 overflow-hidden select-none"
+              >
               
               {/* Cabecera del Panel */}
               <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between bg-[#0a0b10]">
@@ -625,10 +841,7 @@ export default function App() {
                       }`}
                     >
                       <div className="flex items-center space-x-2.5 truncate">
-                        {item.type === "profile" && <Store className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
-                        {item.type === "memory" && <Brain className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
-                        {item.type === "skill" && <Zap className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
-                        {item.type === "catalog" && <FileText className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+                        <ContextIcon type={item.type} />
                         <div className="truncate">
                           <div className="font-medium text-zinc-200 truncate">{friendlyLabel}</div>
                           <div className="text-[10px] text-zinc-500 truncate font-mono">{item.name}</div>
@@ -676,7 +889,8 @@ export default function App() {
                   <Check className="w-3 h-3 text-emerald-400" /> Sincronizado
                 </span>
               </div>
-            </aside>
+              </aside>
+            </div>
 
             {/* Separador redimensionable izquierdo (Splitter Aurora de Vidrio) */}
             <div
@@ -685,7 +899,9 @@ export default function App() {
                 setIsResizingLeft(true);
               }}
               onDoubleClick={() => setLeftWidth(280)}
-              className={`splitter-aurora-glass ${isResizingLeft ? "is-resizing" : ""}`}
+              className={`splitter-aurora-glass ${isResizingLeft ? "is-resizing" : ""} ${
+                leftPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+              }`}
             >
               {/* Zona de captura ampliada invisible para fácil arrastre */}
               <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
@@ -697,16 +913,20 @@ export default function App() {
         <section className="flex-1 flex flex-col bg-[#060709] overflow-hidden relative">
           
           {/* Notificación de Sistema: flota sobre el contenido, no lo desplaza */}
-          {statusMessage && (
+          {statusToastPresence.mounted && displayStatusMessage && (
             <div
               role="status"
               aria-live="polite"
               className="pointer-events-none fixed inset-x-0 top-14 z-30 flex justify-center px-4"
             >
-              <div className="toast-in pointer-events-auto bg-zinc-900/95 border border-white/10 rounded-xl px-3.5 py-2.5 text-zinc-200 text-xs flex items-center gap-3 shadow-2xl backdrop-blur-xl max-w-lg">
+              <div
+                className={`${
+                  statusMessage ? "toast-in pointer-events-auto" : "toast-out pointer-events-none"
+                } bg-zinc-900/95 border border-white/10 rounded-xl px-3.5 py-2.5 text-zinc-200 text-xs flex items-center gap-3 shadow-2xl backdrop-blur-xl max-w-lg`}
+              >
                 <div className="flex items-center gap-2.5 min-w-0">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span className="truncate">{statusMessage}</span>
+                  <span className="truncate">{displayStatusMessage}</span>
                 </div>
                 <button
                   onClick={() => setStatusMessage(null)}
@@ -736,6 +956,7 @@ export default function App() {
                   <XoxStar 
                     state={xoxState} 
                     size={280} 
+                    summonTrigger={summonSeq}
                     onClick={handleXoxClick}
                   />
 
@@ -768,23 +989,27 @@ export default function App() {
                   </h1>
 
                   {/* Estado activo de Xox durante los procesos (pensando, leyendo, alertas...) */}
-                  {xoxState !== "idle" && !greeting && (
-                    <div className="toast-in inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] backdrop-blur-md">
+                  {xoxStatusPresence.mounted && (
+                    <div
+                      className={`${
+                        isXoxStatusOpen ? "toast-in" : "toast-out pointer-events-none"
+                      } inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] backdrop-blur-md`}
+                    >
                       <span className={`w-1.5 h-1.5 rounded-full ${
-                        xoxState === "thinking" || xoxState === "reading"
+                        displayXoxStatus.state === "thinking" || displayXoxStatus.state === "reading"
                           ? "bg-cyan-400 animate-ping"
-                          : xoxState === "success"
+                          : displayXoxStatus.state === "success"
                           ? "bg-emerald-400"
-                          : xoxState === "syncing"
+                          : displayXoxStatus.state === "syncing"
                           ? "bg-teal-400 animate-pulse"
-                          : xoxState === "alert"
+                          : displayXoxStatus.state === "alert"
                           ? "bg-red-500 animate-pulse"
                           : "bg-cyan-400"
                       }`} />
                       <p className={`text-xs ${
-                        xoxBusy ? "xox-shimmer font-medium" : xoxState === "alert" ? "text-red-300" : "text-zinc-300"
+                        displayXoxStatus.busy ? "xox-shimmer font-medium" : displayXoxStatus.state === "alert" ? "text-red-300" : "text-zinc-300"
                       }`}>
-                        {xoxMessage}
+                        {displayXoxStatus.message}
                       </p>
                     </div>
                   )}
@@ -799,8 +1024,12 @@ export default function App() {
                       >
                         {showStatePreview ? "ocultar estados de prueba" : "• probar estados de Xox"}
                       </button>
-                      {showStatePreview && (
-                        <div className="flex flex-wrap items-center justify-center gap-1 pt-1.5">
+                      {statePreviewPresence.mounted && (
+                        <div
+                          className={`${
+                            showStatePreview ? "panel-fade-in" : "panel-fade-out pointer-events-none"
+                          } flex flex-wrap items-center justify-center gap-1 pt-1.5`}
+                        >
                           {(["idle", "reading", "thinking", "syncing", "alert", "success"] as XoxState[]).map((s) => (
                             <button
                               key={s}
@@ -830,11 +1059,13 @@ export default function App() {
           </div>
 
           {/* Notificación compacta de aprendizaje reciente (esquina superior derecha) */}
-          {learningToast && (
+          {learningToastPresence.mounted && displayLearningToast && (
             <div
               role="status"
               aria-live="polite"
-              className="toast-in absolute top-4 right-4 z-20 w-[280px] liquid-glass-card rounded-xl p-3 flex items-start gap-2.5"
+              className={`${
+                learningToast ? "toast-in" : "toast-out pointer-events-none"
+              } absolute top-4 right-4 z-20 w-[280px] liquid-glass-card rounded-xl p-3 flex items-start gap-2.5`}
             >
               <div className="w-7 h-7 rounded-lg bg-white/[0.05] border border-white/[0.08] flex items-center justify-center shrink-0">
                 <Brain className="w-3.5 h-3.5 text-zinc-300" />
@@ -845,11 +1076,11 @@ export default function App() {
                     Xox aprendió algo
                   </span>
                   <span className="text-[10px] font-mono text-zinc-500">
-                    {Math.round(learningToast.confidence * 100)}%
+                    {Math.round(displayLearningToast.confidence * 100)}%
                   </span>
                 </div>
                 <p className="text-[11.5px] text-zinc-200 leading-snug line-clamp-2">
-                  {learningToast.description}
+                  {displayLearningToast.description}
                 </p>
               </div>
               <button
@@ -866,14 +1097,14 @@ export default function App() {
           {/* 4. INPUT / CHAT FIJO EN LA PARTE INFERIOR (PINNED DOCK)                    */}
           {/* ========================================================================= */}
           <div className="absolute inset-x-0 bottom-0 p-4 sm:p-6 bg-gradient-to-t from-[#060709] via-[#060709]/95 to-transparent pointer-events-none z-10">
-            <div className="max-w-4xl mx-auto pointer-events-auto">
+            <div className="@container max-w-4xl mx-auto pointer-events-auto">
               <div className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-4 relative group shadow-2xl ${inputExpanded ? "is-expanded" : ""}`}>
-                {/* Capa de recorte para los efectos de luz (el menú de modelos puede sobresalir) */}
+                {/* Capa de recorte para los efectos de luz (los menús desplegables pueden sobresalir) */}
                 <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
                   {/* Reflejo especular superior tenue */}
                   <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/25 to-transparent" />
                   {/* Barrido de luz de encendido */}
-                  <span aria-hidden="true" className="console-sweep" />
+                  <span key={summonSeq} aria-hidden="true" className="console-sweep" />
                 </div>
 
                 {/* Formulario Principal de Entrada */}
@@ -937,30 +1168,35 @@ export default function App() {
                       }}
                       disabled={xoxState === "thinking"}
                       placeholder={
-                        xoxState === "thinking" 
-                          ? "Xox está procesando tu consulta..." 
-                          : "Escribe a Xox o haz una consulta sobre inventario..."
+                        xoxState === "thinking"
+                          ? "Procesando..."
+                          : "Escribe a Xox..."
                       }
-                      className="input-bubble flex-1 resize-none bg-transparent text-sm sm:text-base text-zinc-100 placeholder:text-zinc-500 focus:outline-none py-1.5 px-1 font-normal leading-relaxed disabled:opacity-50 select-text"
+                      className="input-bubble flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-sm sm:text-base text-zinc-100 placeholder:text-zinc-500 focus:outline-none py-1.5 px-1 font-normal leading-relaxed disabled:opacity-50 select-text"
                     />
 
                     {/* Desplegable de modelos */}
                     <div ref={modelMenuRef} className="relative shrink-0 mb-0.5">
                       <button
                         type="button"
-                        onClick={() => setShowModelMenu((v) => !v)}
+                        onClick={() => {
+                          setShowContextMenu(false);
+                          setShowModelMenu((v) => !v);
+                        }}
                         aria-haspopup="listbox"
                         aria-expanded={showModelMenu}
                         className="h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2 rounded-full text-[11px] text-zinc-300 hover:text-white bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.06] transition-colors cursor-pointer"
                       >
                         <Cpu className="w-3 h-3 text-zinc-400" />
-                        <span className="hidden sm:inline">{activeModel.name}</span>
+                        <span className="hidden @sm:inline">{activeModel.name}</span>
                         <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${showModelMenu ? "rotate-180" : ""}`} />
                       </button>
-                      {showModelMenu && (
+                      {modelMenuPresence.mounted && (
                         <div
                           role="listbox"
-                          className="menu-in absolute right-0 bottom-full mb-2 w-52 p-1 rounded-xl bg-zinc-900/95 border border-white/10 shadow-2xl backdrop-blur-xl z-30"
+                          className={`${
+                            showModelMenu ? "menu-in" : "menu-out pointer-events-none"
+                          } absolute right-0 bottom-full mb-2 w-52 p-1 rounded-xl bg-zinc-900/95 border border-white/10 shadow-2xl backdrop-blur-xl z-30`}
                         >
                           {MODELS.map((m) => (
                             <button
@@ -998,60 +1234,91 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* Fila de utilidades: Contextos con etiquetas humanas + sugerencias rápidas + ⌘K */}
-                  <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.05]">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-mono pr-0.5">
-                        Contexto:
-                      </span>
-                      {contextItems.map((item) => {
-                        const friendlyLabel = CONTEXT_LABEL[item.type] || item.name;
-                        const isInPrompt = inputPrompt.includes(`@${item.name}`);
-                        return (
-                          <button
-                            key={item.id}
-                            type="button"
-                            aria-pressed={isInPrompt}
-                            onClick={() => toggleContextInPrompt(item.name)}
-                            title={`${isInPrompt ? "Quitar" : "Añadir"} ${friendlyLabel}`}
-                            className={`inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border transition-all cursor-pointer ${
-                              isInPrompt
-                                ? "bg-white/[0.12] border-white/25 text-white"
-                                : "bg-white/[0.03] border-white/[0.06] text-zinc-400 hover:text-white hover:bg-white/[0.08]"
-                            }`}
-                          >
-                            {isInPrompt ? (
-                              <Check className="w-3 h-3 text-emerald-400 shrink-0" />
-                            ) : (
-                              <>
-                                {item.type === "profile" && <Store className="w-3 h-3 text-zinc-400 shrink-0" />}
-                                {item.type === "memory" && <Brain className="w-3 h-3 text-zinc-400 shrink-0" />}
-                                {item.type === "skill" && <Zap className="w-3 h-3 text-zinc-400 shrink-0" />}
-                                {item.type === "catalog" && <FileText className="w-3 h-3 text-zinc-400 shrink-0" />}
-                              </>
-                            )}
-                            <span>{friendlyLabel}</span>
-                          </button>
-                        );
-                      })}
+                  {/* Barra inferior compacta: selector de contexto desplegable + atajo ⌘K */}
+                  <div className="pt-2 flex items-center justify-between gap-2 border-t border-white/[0.05]">
+                    <div ref={contextMenuRef} className="relative">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowModelMenu(false);
+                          setShowContextMenu((v) => !v);
+                        }}
+                        aria-haspopup="listbox"
+                        aria-expanded={showContextMenu}
+                        aria-label="Seleccionar contexto"
+                        title="Adjuntar contexto al mensaje"
+                        className={`h-7 inline-flex items-center gap-1.5 pl-2.5 pr-2 rounded-full text-[11px] border transition-colors cursor-pointer ${
+                          activeContextCount > 0 || showContextMenu
+                            ? "bg-white/[0.08] border-white/15 text-white"
+                            : "bg-white/[0.03] hover:bg-white/[0.08] border-white/[0.06] text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        <AtSign className="w-3 h-3 text-zinc-400 shrink-0" />
+                        <span className="hidden @xs:inline">Contexto</span>
+                        {activeContextCount > 0 && (
+                          <span className="text-[10px] font-mono text-emerald-400 tabular-nums">
+                            {activeContextCount}
+                          </span>
+                        )}
+                        <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${showContextMenu ? "rotate-180" : ""}`} />
+                      </button>
+
+                      {contextMenuPresence.mounted && (
+                        <div
+                          role="listbox"
+                          aria-multiselectable="true"
+                          className={`${
+                            showContextMenu ? "menu-in" : "menu-out pointer-events-none"
+                          } menu-origin-left absolute left-0 bottom-full mb-2 w-60 p-1 rounded-xl bg-zinc-900/95 border border-white/10 shadow-2xl backdrop-blur-xl z-30`}
+                        >
+                          {contextItems.map((item) => {
+                            const friendlyLabel = CONTEXT_LABEL[item.type] || item.name;
+                            const isInPrompt = inputPrompt.includes(`@${item.name}`);
+                            return (
+                              <button
+                                key={item.id}
+                                type="button"
+                                role="option"
+                                aria-selected={isInPrompt}
+                                onClick={() => toggleContextInPrompt(item.name)}
+                                className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-left transition-colors cursor-pointer ${
+                                  isInPrompt ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"
+                                }`}
+                              >
+                                <span className="flex items-center gap-2 min-w-0">
+                                  <ContextIcon type={item.type} className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                                  <span className="min-w-0">
+                                    <span className="block text-xs text-zinc-100 truncate">{friendlyLabel}</span>
+                                    <span className="block text-[10px] text-zinc-500 font-mono truncate">{item.name}</span>
+                                  </span>
+                                </span>
+                                {isInPrompt && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
 
-                    <div className="flex items-center gap-1.5 text-[11px]">
-                      <button
-                        type="button"
-                        onClick={() => setInputPrompt("¿Cuál es el proveedor más rápido para reponer café?")}
-                        className="px-2.5 py-1 rounded-full bg-white/[0.02] hover:bg-white/[0.06] text-zinc-400 hover:text-zinc-200 border border-white/[0.05] transition-colors cursor-pointer"
-                      >
-                        ¿Proveedor más rápido?
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setInputPrompt("Auditar si alguna orden supera los $50,000 MXN")}
-                        className="px-2.5 py-1 rounded-full bg-white/[0.02] hover:bg-white/[0.06] text-zinc-400 hover:text-zinc-200 border border-white/[0.05] transition-colors cursor-pointer"
-                      >
-                        Auditar presupuesto
-                      </button>
-                      <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono text-zinc-500 bg-white/[0.03] border border-white/[0.06] rounded ml-1">
+                    <div className="hidden @sm:flex items-center gap-1.5">
+                      {isTauriEnv && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const { invoke } = await import("@tauri-apps/api/core");
+                              await invoke("toggle_quick_bar_cmd");
+                            } catch {
+                              // Ignore
+                            }
+                          }}
+                          title="Abrir Xox Quick Bar flotante (⌘⇧X)"
+                          className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 hover:text-zinc-200 bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] rounded transition-colors cursor-pointer"
+                        >
+                          ⌘⇧X
+                        </button>
+                      )}
+                      <kbd className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-500 bg-white/[0.03] border border-white/[0.06] rounded">
                         ⌘K
                       </kbd>
                     </div>
@@ -1066,7 +1333,7 @@ export default function App() {
         {/* ========================================================================= */}
         {/* COLUMNA 3: TAREAS Y DECISIONES DEL LADO DERECHO (POR ACEPTAR Y HECHAS)    */}
         {/* ========================================================================= */}
-        {showRightSidebar && (
+        {rightPresence.mounted && (
           <>
             {/* Separador redimensionable derecho (Splitter Aurora de Vidrio) */}
             <div
@@ -1075,16 +1342,26 @@ export default function App() {
                 setIsResizingRight(true);
               }}
               onDoubleClick={() => setRightWidth(340)}
-              className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""}`}
+              className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""} ${
+                rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+              }`}
             >
               {/* Zona de captura ampliada invisible para fácil arrastre */}
               <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
             </div>
 
-            <aside 
-              style={{ width: `${rightWidth}px` }} 
-              className="bg-[#08090d] flex flex-col shrink-0 overflow-hidden select-none"
+            <div
+              aria-hidden={!showRightSidebar}
+              inert={!showRightSidebar}
+              style={{ width: rightPresence.visible ? `${rightWidth}px` : "0px" }}
+              className={`sidebar-slot flex justify-start shrink-0 overflow-hidden ${
+                isResizingRight ? "is-resizing" : ""
+              } ${rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
             >
+              <aside
+                style={{ width: `${rightWidth}px` }}
+                className="h-full bg-[#08090d] flex flex-col shrink-0 overflow-hidden select-none"
+              >
             
             {/* Cabecera del Panel */}
             <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between bg-[#0a0b10]">
@@ -1275,9 +1552,10 @@ export default function App() {
               </span>
               <span className="text-[10px] font-mono text-zinc-500">Zero-Trust</span>
             </div>
-          </aside>
-        </>
-      )}
+              </aside>
+            </div>
+          </>
+        )}
 
       </div>
     </div>

@@ -210,13 +210,39 @@
   animation: toast-in 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-/* Entrada del panel lateral de contexto */
-@keyframes drawer-in {
-  from { opacity: 0; transform: translateX(14px); }
+@keyframes toast-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(-6px) scale(0.98); }
+}
+.toast-out {
+  animation: toast-out 0.18s cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+/* Transiciones suaves de entrada y salida para ventanas laterales */
+.sidebar-slot {
+  transition:
+    width 0.26s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.22s ease;
+}
+
+.sidebar-slot.is-resizing {
+  transition: none;
+}
+
+@keyframes panel-fade-in {
+  from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: none; }
 }
-.drawer-in {
-  animation: drawer-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+.panel-fade-in {
+  animation: panel-fade-in 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes panel-fade-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(-4px); }
+}
+.panel-fade-out {
+  animation: panel-fade-out 0.14s cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 /* ==========================================================================
@@ -426,16 +452,161 @@
   animation: menu-in 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .xox-bubble, .xox-bubble-body, .xox-bubble-text, .xox-bubble-trail, .menu-in { animation: none; }
-  .xox-bubble.is-leaving { opacity: 0; }
-  .input-bubble, .input-console { transition: none; }
-  .input-console.is-expanded { transform: none; }
+@keyframes menu-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(4px) scale(0.97); }
+}
+.menu-out {
+  transform-origin: 100% 100%;
+  animation: menu-out 0.14s cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.menu-origin-left {
+  transform-origin: 0% 100%;
+}
+
+.menu-origin-top-right {
+  transform-origin: 100% 0%;
+}
+
+/* ==========================================================================
+   XOX QUICK BAR (VENTANA FLOTANTE TRANSPARENTE + DESTELLO ESTELAR LIQUID GLASS)
+   Nota: Sin backdrop-filter ni filter CSS para evitar capas negras en WKWebView
+   ========================================================================== */
+html[data-window-mode="quick"],
+html[data-window-mode="quick"] body {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.quick-capsule-shell {
+  background: linear-gradient(
+    145deg,
+    rgba(18, 21, 30, 0.94) 0%,
+    rgba(10, 12, 18, 0.96) 55%,
+    rgba(8, 10, 15, 0.98) 100%
+  );
+  border: 1px solid rgba(186, 230, 253, 0.16);
+  box-shadow:
+    inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 24px 52px -12px rgba(0, 0, 0, 0.85),
+    0 0 38px -12px rgba(56, 189, 248, 0.28);
+  transform-origin: 50% 24%;
+}
+
+.quick-capsule-shell:focus-within {
+  border-color: rgba(186, 230, 253, 0.28);
+  box-shadow:
+    inset 0 1px 2px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(125, 211, 252, 0.14),
+    0 28px 60px -12px rgba(0, 0, 0, 0.9),
+    0 0 46px -10px rgba(125, 211, 252, 0.34);
+}
+
+@keyframes quick-capsule-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.92);
+  }
+  62% {
+    opacity: 1;
+    transform: translateY(2px) scale(1.015);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.quick-capsule-in {
+  animation: quick-capsule-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes quick-capsule-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.95);
+  }
+}
+
+.quick-capsule-out {
+  animation: quick-capsule-out 0.14s cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.quick-starlight-sweep {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 1.5px;
+  width: 44%;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(224, 242, 254, 0.85),
+    rgba(125, 211, 252, 0.6),
+    transparent
+  );
+  animation: console-sweep 0.85s cubic-bezier(0.16, 1, 0.3, 1) 0.06s both;
+}
+
+@keyframes quick-glint-twinkle {
+  0% {
+    opacity: 0;
+    transform: scale(0.2) rotate(-25deg);
+  }
+  40% {
+    opacity: 0.95;
+    transform: scale(1.15) rotate(8deg);
+  }
+  75% {
+    opacity: 0.55;
+    transform: scale(0.95) rotate(0deg);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.4) rotate(18deg);
+  }
+}
+
+.quick-glint {
+  opacity: 0;
+  animation: quick-glint-twinkle 0.95s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.quick-glint-1 {
+  animation-delay: 0.1s;
+}
+
+.quick-glint-2 {
+  animation-delay: 0.22s;
+}
+
+/* Parpadeo sutil del rostro miniatura de Xox en el header */
+@keyframes xox-mini-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.12); }
+}
+.xox-mini-eye {
+  animation: xox-mini-blink 5.2s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .xox-bubble, .xox-bubble-body, .xox-bubble-text, .xox-bubble-trail, .menu-in, .menu-out, .xox-mini-eye { animation: none; }
+  .xox-bubble.is-leaving { opacity: 0; }
+  .input-bubble, .input-console, .sidebar-slot, .splitter-aurora-glass { transition: none; }
+  .input-console.is-expanded { transform: none; }
   .xox-shimmer { animation: none; color: #a1a1aa; background-image: none; }
-  .toast-in, .drawer-in { animation: none; }
-  .console-sweep { animation: none; opacity: 0; }
+  .toast-in, .toast-out, .panel-fade-in, .panel-fade-out { animation: none; }
+  .console-sweep, .quick-starlight-sweep, .quick-glint, .quick-capsule-in, .quick-capsule-out { animation: none; }
+  .quick-starlight-sweep, .quick-glint { opacity: 0; }
   .liquid-glass-hero:focus-within::after { animation: none; opacity: 1; }
 }
