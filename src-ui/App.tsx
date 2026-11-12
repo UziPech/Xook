@@ -604,22 +604,17 @@ export default function App() {
               </div>
             </aside>
 
-            {/* Separador redimensionable izquierdo (Splitter estilo Antigravity) */}
+            {/* Separador redimensionable izquierdo (Splitter Aurora de Vidrio) */}
             <div
               onMouseDown={(e) => {
                 e.preventDefault();
                 setIsResizingLeft(true);
               }}
               onDoubleClick={() => setLeftWidth(280)}
-              title="Arrastra para redimensionar (Doble clic para reiniciar a 280px)"
-              className={`w-1 cursor-col-resize hover:w-1.5 transition-all duration-150 relative z-30 shrink-0 select-none ${
-                isResizingLeft 
-                  ? "bg-cyan-400 w-1.5 shadow-[0_0_10px_rgba(34,211,238,0.7)]" 
-                  : "bg-white/[0.06] hover:bg-cyan-400/50"
-              }`}
+              className={`splitter-aurora-glass ${isResizingLeft ? "is-resizing" : ""}`}
             >
               {/* Zona de captura ampliada invisible para fácil arrastre */}
-              <div className="absolute inset-y-0 -left-1.5 -right-1.5 cursor-col-resize" />
+              <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
             </div>
           </>
         )}
@@ -878,22 +873,17 @@ export default function App() {
         {/* ========================================================================= */}
         {showRightSidebar && (
           <>
-            {/* Separador redimensionable derecho (Splitter estilo Antigravity) */}
+            {/* Separador redimensionable derecho (Splitter Aurora de Vidrio) */}
             <div
               onMouseDown={(e) => {
                 e.preventDefault();
                 setIsResizingRight(true);
               }}
               onDoubleClick={() => setRightWidth(340)}
-              title="Arrastra para redimensionar (Doble clic para reiniciar a 340px)"
-              className={`w-1 cursor-col-resize hover:w-1.5 transition-all duration-150 relative z-30 shrink-0 select-none ${
-                isResizingRight 
-                  ? "bg-cyan-400 w-1.5 shadow-[0_0_10px_rgba(34,211,238,0.7)]" 
-                  : "bg-white/[0.06] hover:bg-cyan-400/50"
-              }`}
+              className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""}`}
             >
-              {/* Zona de captura ampliada invisible */}
-              <div className="absolute inset-y-0 -left-1.5 -right-1.5 cursor-col-resize" />
+              {/* Zona de captura ampliada invisible para fácil arrastre */}
+              <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
             </div>
 
             <aside 

@@ -219,6 +219,51 @@
   animation: drawer-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* ==========================================================================
+   SPLITTER DE VIDRIO CON AURORA BOREAL SUTIL (AZUL-MORADO ETÉREO)
+   ========================================================================== */
+.splitter-aurora-glass {
+  position: relative;
+  width: 2px;
+  cursor: col-resize;
+  background: rgba(255, 255, 255, 0.05);
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 30;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+/* Efecto hover: aurora boreal de baja saturación (vidrio con destellos azules y púrpuras tenues) */
+.splitter-aurora-glass:hover {
+  width: 3px;
+  background: linear-gradient(
+    180deg,
+    rgba(147, 197, 253, 0.18) 0%,
+    rgba(167, 139, 250, 0.28) 35%,
+    rgba(192, 132, 252, 0.32) 65%,
+    rgba(129, 140, 248, 0.2) 100%
+  );
+  box-shadow:
+    0 0 14px 1.5px rgba(167, 139, 250, 0.22),
+    inset 0 0 1px 0.5px rgba(255, 255, 255, 0.25);
+}
+
+/* Efecto mientras se arrastra: aurora líquida translúcida suave, sin neones agresivos */
+.splitter-aurora-glass.is-resizing {
+  width: 3px;
+  background: linear-gradient(
+    180deg,
+    rgba(147, 197, 253, 0.35) 0%,
+    rgba(167, 139, 250, 0.5) 30%,
+    rgba(192, 132, 252, 0.55) 60%,
+    rgba(129, 140, 248, 0.38) 100%
+  );
+  box-shadow:
+    0 0 18px 3px rgba(167, 139, 250, 0.32),
+    0 0 28px 6px rgba(147, 197, 253, 0.15),
+    inset 0 0 1px 0.5px rgba(255, 255, 255, 0.45);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .xox-shimmer { animation: none; color: #a1a1aa; background-image: none; }
   .toast-in, .drawer-in { animation: none; }
