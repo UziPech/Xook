@@ -9,6 +9,14 @@ export type XoxState =
   | "reading"
   | "syncing";
 
+export interface XoxDragMotion {
+  active: boolean;
+  vx: number;
+  vy: number;
+  releaseVx: number;
+  releaseVy: number;
+}
+
 interface XoxStarProps {
   state?: XoxState;
   /** Tamaño total del lienzo (incluye el aura). La estrella ocupa ~55%. */
@@ -17,6 +25,10 @@ interface XoxStarProps {
   onClick?: () => void;
   /** Incrementar para disparar el salto y destello estelar de aparición. */
   summonTrigger?: number;
+  /** Telemetría opcional de arrastre para que Xox reaccione físicamente al mover la barra. */
+  dragMotionRef?: React.RefObject<XoxDragMotion | null>;
+  /** Refuerza silueta y cuerpo sobre fondos líquidos o transparentes (ej. Quick Bar). */
+  glassContrast?: boolean;
 }
 
 /**
@@ -138,6 +150,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   className = "",
   onClick,
   summonTrigger,
+  dragMotionRef,
+  glassContrast = false,
 }) => {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const ids = {
@@ -145,16 +159,19 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     rim: `xox-rim-${uid}`,
     core: `xox-core-${uid}`,
     glow: `xox-glow-${uid}`,
+    cradle: `xox-cradle-${uid}`,
   };
   const palette = PALETTE[state];
 
   // Refs a nodos SVG animados por rAF
   const wrapRef = useRef<HTMLDivElement>(null);
+  const cradleRef = useRef<SVGCircleElement>(null);
   const glowRef = useRef<SVGCircleElement>(null);
   const summonRingRef = useRef<SVGCircleElement>(null);
   const ringRef = useRef<SVGEllipseElement>(null);
   const bodyRef = useRef<SVGGElement>(null);
   const yawRef = useRef<SVGGElement>(null);
+  const starUnderlayRef = useRef<SVGPathElement>(null);
   const starRef = useRef<SVGPathElement>(null);
   const coreRef = useRef<SVGCircleElement>(null);
   const faceRef = useRef<SVGGElement>(null);
@@ -171,6 +188,11 @@ export const XoxStar: React.FC<XoxStarProps> = ({
 
   const stateRef = useRef<XoxState>(state);
   const hoverRef = useRef(false);
+  const dragMotionPropRef = useRef(dragMotionRef);
+
+  useEffect(() => {
+    dragMotionPropRef.current = dragMotionRef;
+  }, [dragMotionRef]);
 
   // Estado mutable compartido entre handlers y el loop de animación
   const anim = useRef({
@@ -275,6 +297,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     let blinkStart = -1;
     let nextGlance = 2;
     let glance = { x: 0, y: 0 };
+    let prevDragActive = false;
 
     const frame = (now: number) => {
       const dt = Math.min((now - last) / 1000, 1 / 30);
@@ -287,10 +310,39 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const alerting = st === "alert";
       const syncing = st === "syncing";
 
+      const dm = dragMotionPropRef.current?.current ?? null;
+      const dragging = Boolean(dm?.active);
+      if (dragging && !prevDragActive) {
+        // Anticipación/despegue suave al agarrar la Quick Bar
+        if (!a.reduce) {
+          a.squashKick += 1.6;
+          a.jumpKick -= 70;
+        }
+      } else if (!dragging && prevDragActive) {
+        // Asentamiento con compresión proporcional al impulso de suelta
+        const impact = clamp(
+          Math.hypot(dm?.releaseVx ?? 0, dm?.releaseVy ?? 0) / 900,
+          0.3,
+          1.35
+        );
+        if (!a.reduce) {
+          a.squashKick += 2.4 * impact;
+          a.jumpKick += 55 * impact;
+        }
+      }
+      prevDragActive = dragging;
+
+      const dragNx = dragging && dm ? clamp(dm.vx / 900, -1, 1) : 0;
+      const dragNy = dragging && dm ? clamp(dm.vy / 900, -1, 1) : 0;
+      const dragSpeed = dragging ? Math.min(1.5, Math.hypot(dragNx, dragNy)) : 0;
+
       // --- Mirada ---------------------------------------------------------
       let tx: number;
       let ty: number;
-      if (thinking) {
+      if (dragging) {
+        tx = clamp(dragNx * 1.15, -1, 1);
+        ty = clamp(dragNy * 0.95, -1, 1);
+      } else if (thinking) {
         tx = 0.4 + 0.18 * Math.sin(t * 2.3);
         ty = -0.6 + 0.12 * Math.sin(t * 3.1);
       } else if (reading) {
@@ -335,7 +387,14 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const windup = a.windupUntil ? -26 : 0;
       const sway =
         (thinking ? 6 * Math.sin(t * 2.2) : 4 * Math.sin(t * 0.9) + (alerting ? 3.2 * Math.sin(t * 23) : 0)) * A;
-      step(rot, a.spinTarget + windup + sway + lookX.x * 8 * A, alerting ? 160 : 70, alerting ? 9 : 12, dt);
+      const dragTilt = dragging ? -dragNx * 14 * A : 0;
+      step(
+        rot,
+        a.spinTarget + windup + sway + lookX.x * 8 * A + dragTilt,
+        alerting ? 160 : dragging ? 110 : 70,
+        alerting ? 9 : dragging ? 13 : 12,
+        dt
+      );
 
       // --- Salto + squash & stretch ---------------------------------------
       const prevJump = jump.x;
@@ -366,17 +425,16 @@ export const XoxStar: React.FC<XoxStarProps> = ({
 
       // --- Cuerpo gelatinoso (follow-through en las puntas) ---------------
       const lag = clamp(-rot.v * 0.014, -14, 14);
-      starRef.current?.setAttribute(
-        "d",
-        buildStar({
-          t,
-          amp: (thinking ? 1.6 : alerting ? 2.1 : 1) * A,
-          speed: thinking ? 1.8 : alerting ? 3.2 : 1,
-          lag,
-          reach: hover.x * 0.03,
-          wave: t - a.waveStart,
-        })
-      );
+      const starPath = buildStar({
+        t,
+        amp: (thinking ? 1.6 : alerting ? 2.1 : 1) * A,
+        speed: thinking ? 1.8 : alerting ? 3.2 : 1,
+        lag,
+        reach: hover.x * 0.03,
+        wave: t - a.waveStart,
+      });
+      starRef.current?.setAttribute("d", starPath);
+      starUnderlayRef.current?.setAttribute("d", starPath);
 
       // --- Núcleo y aura --------------------------------------------------
       coreRef.current?.setAttribute(
@@ -390,6 +448,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       );
       const summonPhase = (t - a.summonAt) / 0.65;
       const summonActive = summonPhase >= 0 && summonPhase <= 1 && !a.reduce;
+
+      if (cradleRef.current) {
+        cradleRef.current.setAttribute("transform", `translate(0 ${(bob + jump.x).toFixed(2)})`);
+      }
 
       if (glowRef.current) {
         const summonBoost = summonActive ? 0.4 * (1 - summonPhase) : 0;
@@ -498,9 +560,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       );
 
       // --- Chispas en órbita elíptica (profundidad por opacidad) ----------
+      const orbitBoost = thinking ? 2.2 : dragging ? 1 + dragSpeed * 1.4 : 1;
       sparkRefs.current.forEach((el, i) => {
         if (!el) return;
-        const ang = t * (0.35 + i * 0.12) * (thinking ? 2.2 : 1) + i * 2.094;
+        const ang = t * (0.35 + i * 0.12) * orbitBoost + i * 2.094;
         const radius = 92 + 5 * Math.sin(t * 1.3 + i);
         const depth = 0.5 + 0.5 * Math.sin(ang); // 0 = atrás, 1 = adelante
         const twinkle = 0.5 + 0.5 * Math.sin(t * 3 + i * 1.7);
@@ -550,20 +613,20 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       <svg viewBox="0 0 240 240" width={size} height={size} aria-hidden="true">
         <defs>
           <linearGradient id={ids.body} x1="60" y1="50" x2="180" y2="190" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.30" />
-            <stop offset="35%" stopColor="#E0F2FE" stopOpacity="0.14" />
-            <stop offset="70%" stopColor="#38BDF8" stopOpacity="0.08" />
-            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.18" />
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.44" : "0.30"} />
+            <stop offset="35%" stopColor="#E0F2FE" stopOpacity={glassContrast ? "0.26" : "0.14"} />
+            <stop offset="70%" stopColor="#38BDF8" stopOpacity={glassContrast ? "0.18" : "0.08"} />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.30" : "0.18"} />
           </linearGradient>
           <linearGradient id={ids.rim} x1="55" y1="45" x2="185" y2="195" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.9" />
-            <stop offset="40%" stopColor="#BAE6FD" stopOpacity="0.5" />
-            <stop offset="75%" stopColor="#38BDF8" stopOpacity="0.2" />
-            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.7" />
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.98" />
+            <stop offset="40%" stopColor="#BAE6FD" stopOpacity={glassContrast ? "0.86" : "0.5"} />
+            <stop offset="75%" stopColor="#7DD3FC" stopOpacity={glassContrast ? "0.72" : "0.2"} />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.94" : "0.7"} />
           </linearGradient>
           <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor={palette.core} stopOpacity="0.9" />
-            <stop offset="50%" stopColor={palette.mid} stopOpacity="0.3" />
+            <stop offset="0%" stopColor={palette.core} stopOpacity={glassContrast ? "0.98" : "0.9"} />
+            <stop offset="50%" stopColor={palette.mid} stopOpacity={glassContrast ? "0.42" : "0.3"} />
             <stop offset="100%" stopColor={palette.mid} stopOpacity="0" />
           </radialGradient>
           {/* Aura dibujada dentro del SVG: se desvanece a 0 antes del borde */}
@@ -572,7 +635,19 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             <stop offset="45%" stopColor={palette.glow} stopOpacity="0.10" />
             <stop offset="100%" stopColor={palette.glow} stopOpacity="0" />
           </radialGradient>
+          {glassContrast && (
+            <radialGradient id={ids.cradle} cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#050914" stopOpacity="0.56" />
+              <stop offset="58%" stopColor="#070C1A" stopOpacity="0.28" />
+              <stop offset="100%" stopColor="#070C1A" stopOpacity="0" />
+            </radialGradient>
+          )}
         </defs>
+
+        {/* Cojín sutil oscuro en Quick Bar para separar a Xox de fondos claros u olas brillantes */}
+        {glassContrast && (
+          <circle ref={cradleRef} cx={C} cy={C} r="84" fill={`url(#${ids.cradle})`} />
+        )}
 
         {/* Aura */}
         <circle ref={glowRef} cx={C} cy={C} r="105" fill={`url(#${ids.glow})`} opacity="0.55" />
@@ -624,12 +699,22 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         {/* Cuerpo */}
         <g ref={bodyRef}>
           <g ref={yawRef}>
+            {glassContrast && (
+              <path
+                ref={starUnderlayRef}
+                d={initialPath}
+                fill="rgba(5, 10, 22, 0.28)"
+                stroke="rgba(4, 8, 18, 0.62)"
+                strokeWidth="4.2"
+                strokeLinejoin="round"
+              />
+            )}
             <path
               ref={starRef}
               d={initialPath}
               fill={state === "alert" ? "rgba(239,68,68,0.20)" : `url(#${ids.body})`}
               stroke={state === "alert" ? "#F87171" : `url(#${ids.rim})`}
-              strokeWidth="1.6"
+              strokeWidth={glassContrast ? "2.05" : "1.6"}
               strokeLinejoin="round"
             />
             {/* Reflejo especular interno */}

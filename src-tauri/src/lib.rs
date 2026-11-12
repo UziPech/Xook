@@ -163,7 +163,11 @@ pub fn run() {
             get_learned_patterns,
             quick_summon::hide_quick_bar,
             quick_summon::toggle_quick_bar_cmd,
-            quick_summon::open_main_workspace
+            quick_summon::open_main_workspace,
+            quick_summon::begin_quick_drag,
+            quick_summon::step_quick_drag,
+            quick_summon::end_quick_drag,
+            quick_summon::reset_quick_position
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

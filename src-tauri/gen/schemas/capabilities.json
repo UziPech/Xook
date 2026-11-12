@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Capability for the main and quick bar windows","local":true,"windows":["main","quick"],"permissions":["core:default","opener:default"]}}
+{"default":{"identifier":"default","description":"Capability for the main and quick bar windows","local":true,"windows":["main","quick"],"permissions":["core:default","core:window:allow-start-dragging","core:window:allow-set-position","opener:default"]}}
