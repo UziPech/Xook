@@ -141,6 +141,7 @@ def _classify_task_intent_base(
         r"recordatorios|calculadora|safari|finder|"
         r"datos/|empresa/|agente/|habilidades/|comando|consola|terminal|script|"
         r"agenda|agendar|agendame|ag[ée]ndame|programa|programar|automatiza\w*|temporizador|reloj|alarma|recordatorio|"
+        r"pantalla|ventana\s+activa|captura|ves\s+en|dice\s+en|qu[eé]\s+ves|mira\s+esto|"
         r"pdf|documento|informe|reporte|portada|factura|cotizaci[oó]n|contrato|cat[aá]logo|resumir|resume|extraer|imagen|foto|logo|generar?|exportar?|"
         r"orden\s+de\s+compra|reponer|csv|json)\b"
     )

@@ -52,6 +52,31 @@
       "decision": "approved",
       "notes": "Autorizado por el administrador",
       "timestamp": "2026-11-12T03:28:28.899299+00:00"
+    },
+    {
+      "card_id": "card_CF-01_1",
+      "decision": "approved",
+      "notes": "Aprobado por el administrador"
+    },
+    {
+      "card_id": "card_CF-01_1",
+      "decision": "approved",
+      "notes": "Aprobado por el administrador"
+    },
+    {
+      "card_id": "card_CF-01_1",
+      "decision": "approved",
+      "notes": "Aprobado por el administrador"
+    },
+    {
+      "card_id": "card_CF-01_1",
+      "decision": "approved",
+      "notes": "Aprobado por el administrador"
+    },
+    {
+      "card_id": "card_CF-01_1",
+      "decision": "approved",
+      "notes": "Aprobado por el administrador"
     }
   ],
   "inferred_patterns": [

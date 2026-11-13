@@ -1,5 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, ExternalLink, HelpCircle, Send, Sparkles, Star, Table2, X } from "lucide-react";
+import {
+  AppWindow,
+  Check,
+  ChevronDown,
+  ExternalLink,
+  Eye,
+  HelpCircle,
+  Monitor,
+  Send,
+  Settings,
+  Shield,
+  Sparkles,
+  Star,
+  Table2,
+  Trash2,
+  X,
+} from "lucide-react";
 import { XoxDragMotion, XoxStar, XoxState } from "./XoxStar";
 import { QuickLiquidLayer } from "./QuickLiquidLayer";
 import { useAnimatedPresence } from "../hooks/useAnimatedPresence";
@@ -16,6 +32,8 @@ import { LocalUserProfile, getLocalUserProfile } from "../features/workspace-sto
 import {
   AiConfigStatus,
   AiConnectionTestResult,
+  AttachedContextItem,
+  ChatTurnMessage,
   ClarificationSpec,
   OPENROUTER_PRESET_MODELS,
   OpenRouterModelOption,
@@ -38,8 +56,17 @@ import {
 } from "../features/task-decisions/ledgerApi";
 import { ClarificationForm } from "../features/ai-service/ClarificationModal";
 import {
+  type LiveScreenCapturePayload,
+  type ScreenReaderStatus,
+  captureScreenContextNow,
+  clearScreenMemory,
+  getScreenReaderStatus,
+  openScreenPermissionSettings,
+  requestScreenPermission,
   resolveCommandPermission,
+  setScreenReaderConfig,
   subscribePermissionEvents,
+  subscribeScreenContext,
 } from "../features/workspace-store/workspaceApi";
 import {
   CommandPermissionCard,
@@ -92,6 +119,14 @@ function resolveQuickPreviewCanvas(
   return null;
 }
 
+function isExplicitScreenReadIntent(raw: string): boolean {
+  const text = raw.trim().toLowerCase();
+  if (!text) return false;
+  return /\b(lee(r)?(\s+(la|mi|esta))?\s+pantalla|qu[eé]\s+(ves|hay|dice|aparece|tengo)(\s+en\s+(la|mi)?\s*pantalla|\s+aqu[ií]|\s+abierto)?|mira(\s+(la|mi))?\s*(pantalla|esto|aqu[ií])|analiza(\s+(la|mi))?\s*(pantalla|ventana)|explica(me)?\s+(esto|lo\s+de\s+mi\s+pantalla|la\s+pantalla)|revisa(\s+(la|mi))?\s*(pantalla|ventana)|captura\s+de\s+pantalla|ay[úu]dame\s+con\s+(esto|esta\s+ventana|lo\s+que\s+tengo\s+abierto)|what(?:'s| is)\s+on\s+(?:my\s+)?screen|read\s+(?:my\s+)?screen)\b/i.test(
+    text
+  );
+}
+
 export const QuickBar: React.FC = () => {
   const [summonSeq, setSummonSeq] = useState<number>(1);
   const [isQuickVisible, setIsQuickVisible] = useState<boolean>(
@@ -123,10 +158,17 @@ export const QuickBar: React.FC = () => {
   const [liveCatalog, setLiveCatalog] = useState<OpenRouterModelOption[]>([]);
   const [unavailableModelIds, setUnavailableModelIds] = useState<Set<string>>(() => new Set());
   const [showModels, setShowModels] = useState<boolean>(false);
+  const [screenStatus, setScreenStatus] = useState<ScreenReaderStatus | null>(null);
+  const [attachLiveScreen, setAttachLiveScreen] = useState<boolean>(false);
+  const [showScreenMenu, setShowScreenMenu] = useState<boolean>(false);
+  const [liveScreenBadge, setLiveScreenBadge] = useState<string | null>(null);
+  const [screenPermissionNeeded, setScreenPermissionNeeded] = useState<boolean>(false);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const screenMenuRef = useRef<HTMLDivElement>(null);
   const capsuleRef = useRef<HTMLDivElement>(null);
+  const quickHistoryRef = useRef<ChatTurnMessage[]>([]);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const suppressNextXoxClickRef = useRef<boolean>(false);
   const isStreamingRef = useRef<boolean>(false);
@@ -212,6 +254,7 @@ export const QuickBar: React.FC = () => {
 
   const dismissGracefully = useCallback(() => {
     setShowModels(false);
+    setShowScreenMenu(false);
     setIsLeaving(true);
     const t = setTimeout(() => {
       void hideNow();
@@ -434,12 +477,14 @@ export const QuickBar: React.FC = () => {
 
   const refreshQuickSession = useCallback(async () => {
     try {
-      const [cfg, savedUser] = await Promise.all([
+      const [cfg, savedUser, scrStatus] = await Promise.all([
         getAiConfigStatus(),
         getLocalUserProfile().catch(() => null),
+        getScreenReaderStatus().catch(() => null),
       ]);
       setLocalUser(savedUser);
       setAiConfig(cfg);
+      if (scrStatus) setScreenStatus(scrStatus);
       if (cfg.modelId) setModelId(cfg.modelId);
       if (cfg.hasApiKey) {
         if (!accountUsageRef.current) {
@@ -503,6 +548,7 @@ export const QuickBar: React.FC = () => {
           setIsLeaving(false);
           setIsQuickVisible(true);
           setShowModels(false);
+          setShowScreenMenu(false);
           setSummonSeq(event.payload?.seq ?? Date.now());
           void refreshQuickSession();
           focusInput();
@@ -518,6 +564,7 @@ export const QuickBar: React.FC = () => {
           setIsDragging(false);
           xoxDragMotionRef.current.active = false;
           setShowModels(false);
+          setShowScreenMenu(false);
           setIsLeaving(true);
         });
         if (cancelled) {
@@ -541,6 +588,7 @@ export const QuickBar: React.FC = () => {
             capsuleRef.current.style.transform = "";
           }
           setShowModels(false);
+          setShowScreenMenu(false);
           setIsLeaving(false);
           setIsQuickVisible(false);
           setLiveCatalog([]);
@@ -602,6 +650,12 @@ export const QuickBar: React.FC = () => {
     refreshQuickSession,
     triggerSettleImpulse,
   ]);
+
+  useEffect(() => {
+    return subscribeScreenContext((st) => {
+      setScreenStatus(st);
+    });
+  }, []);
 
   useEffect(() => {
     return subscribePermissionEvents({
@@ -702,7 +756,9 @@ export const QuickBar: React.FC = () => {
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        if (showModels) {
+        if (showScreenMenu) {
+          setShowScreenMenu(false);
+        } else if (showModels) {
           setShowModels(false);
         } else {
           dismissGracefully();
@@ -711,19 +767,22 @@ export const QuickBar: React.FC = () => {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismissGracefully, openInMainWorkspace, showModels]);
+  }, [dismissGracefully, openInMainWorkspace, showModels, showScreenMenu]);
 
-  // Cerrar selector de modelo al hacer clic fuera
+  // Cerrar selector de modelo / menú de pantalla al hacer clic fuera
   useEffect(() => {
-    if (!showModels) return;
+    if (!showModels && !showScreenMenu) return;
     const onDown = (e: MouseEvent) => {
-      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+      if (showModels && modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
         setShowModels(false);
+      }
+      if (showScreenMenu && screenMenuRef.current && !screenMenuRef.current.contains(e.target as Node)) {
+        setShowScreenMenu(false);
       }
     };
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
-  }, [showModels]);
+  }, [showModels, showScreenMenu]);
 
   const runQuickPrompt = async (overridePrompt?: string) => {
     const text = (
@@ -733,6 +792,9 @@ export const QuickBar: React.FC = () => {
 
     clearActionTimers();
     setShowModels(false);
+    setShowScreenMenu(false);
+    setLiveScreenBadge(null);
+    setScreenPermissionNeeded(false);
     if (typeof overridePrompt !== "string") {
       setInputPrompt("");
     }
@@ -784,11 +846,71 @@ export const QuickBar: React.FC = () => {
       }
 
       incrementLocalDailyRequestCount(latestCfg.maskedKey);
+      const wantsLiveScreen = attachLiveScreen || isExplicitScreenReadIntent(text);
       const [workspaceSources, currentTasks, agendaItems] = await Promise.all([
         loadWorkspaceContext().catch(() => []),
         listTasks("pending").catch(() => []),
         listAgendaItems().catch(() => []),
       ]);
+      const extraAttached: AttachedContextItem[] = workspaceSources.slice(0, 3).map((src) => ({
+        name: src.name,
+        type: src.type,
+        content: src.content.slice(0, 1500),
+      }));
+
+      if (wantsLiveScreen) {
+        setXoxState("reading");
+        setStatusNote("Capturando pantalla...");
+        const liveCap: LiveScreenCapturePayload | null = await captureScreenContextNow({
+          includeImage: true,
+          saveObservation: true,
+        }).catch(() => null);
+
+        if (liveCap && !liveCap.permissionGranted) {
+          setScreenPermissionNeeded(true);
+          setIsStreaming(false);
+          setXoxState("alert");
+          setStatusNote("Permiso de pantalla requerido");
+          setReply(
+            "Necesito tu autorización en Ajustes del Sistema > Grabación de Pantalla para leer lo que ves en tiempo real."
+          );
+          return;
+        }
+        if (liveCap?.blockedSensitive) {
+          setIsStreaming(false);
+          setXoxState("alert");
+          setStatusNote("Lectura pausada por seguridad");
+          setReply(
+            `Pausé la lectura automáticamente porque hay contenido protegido en pantalla (${liveCap.sensitiveReason || "contraseña o sesión privada"}).`
+          );
+          return;
+        }
+        if (liveCap?.ok) {
+          const surfaceTitle = liveCap.appName
+            ? `${liveCap.appName}${liveCap.windowTitle ? ` · ${liveCap.windowTitle.slice(0, 32)}` : ""}`
+            : "Pantalla actual";
+          setLiveScreenBadge(surfaceTitle);
+          setXoxState("thinking");
+          setStatusNote(
+            liveCap.appName
+              ? `Vista lista (${liveCap.appName.slice(0, 18)})...`
+              : "Vista lista · Analizando..."
+          );
+          extraAttached.unshift({
+            name: `Pantalla actual (${surfaceTitle})`,
+            type: liveCap.imageDataUrl ? "image" : "text",
+            kind: liveCap.imageDataUrl ? "image" : "text",
+            content: liveCap.text || liveCap.ocrText || liveCap.axText || "Vista capturada.",
+            ...(liveCap.imageDataUrl
+              ? { imageDataUrl: liveCap.imageDataUrl, mimeType: "image/jpeg" }
+              : {}),
+          });
+        } else {
+          setXoxState("thinking");
+          setStatusNote(`Consultando ${activeModel.name}...`);
+        }
+      }
+
       const businessContextSnapshot = workspaceSources
         .map((src) => `- ${src.path} (${src.type}): ${src.content.slice(0, 600)}`)
         .join("\n")
@@ -797,14 +919,10 @@ export const QuickBar: React.FC = () => {
       const res = await runXoxAiChatStream(
         {
           message: text,
-          history: [],
+          history: quickHistoryRef.current.slice(-10),
           currentTasks,
           agendaItems,
-          attachedContext: workspaceSources.slice(0, 3).map((src) => ({
-            name: src.name,
-            type: src.type,
-            content: src.content.slice(0, 1500),
-          })),
+          attachedContext: extraAttached,
           modelOverride: modelId,
           userProfile: localUser
             ? {
@@ -857,6 +975,20 @@ export const QuickBar: React.FC = () => {
                     : `Consultando ${activeModel.name}...`)
             );
           },
+          onSteps: (steps) => {
+            if (hasEnteredTalking || !Array.isArray(steps) || steps.length === 0) return;
+            const activeStep = [...steps].reverse().find((step) => step.status === "running");
+            if (activeStep?.label) {
+              setStatusNote(activeStep.label);
+            }
+          },
+          onReasoningDelta: () => {
+            if (!hasEnteredTalking && latestPhase !== "thinking") {
+              latestPhase = "thinking";
+              setXoxState("thinking");
+              setStatusNote(`Pensando (${activeModel.name})...`);
+            }
+          },
           onReplyDelta: (delta) => {
             if (!hasEnteredTalking) {
               hasEnteredTalking = true;
@@ -885,6 +1017,13 @@ export const QuickBar: React.FC = () => {
       if (res.clarification) {
         lastClarificationDisplayRef.current = res.clarification;
         setPendingClarification(res.clarification);
+      }
+      if (res.reply?.trim()) {
+        quickHistoryRef.current = [
+          ...quickHistoryRef.current.slice(-14),
+          { role: "user", content: text },
+          { role: "assistant", content: res.reply },
+        ];
       }
       setReply(res.reply);
       setIsStreaming(false);
@@ -939,6 +1078,7 @@ export const QuickBar: React.FC = () => {
     if (isInteractiveTarget(e.target)) return;
 
     setShowModels(false);
+    setShowScreenMenu(false);
     const now = performance.now();
     dragSessionRef.current = {
       pointerId: e.pointerId,
@@ -1061,6 +1201,7 @@ export const QuickBar: React.FC = () => {
   const canSubmit = Boolean(inputPrompt.trim()) && !isStreaming;
 
   const modelsPresence = useAnimatedPresence(showModels, 145);
+  const screenMenuPresence = useAnimatedPresence(showScreenMenu, 145);
   const statusPresence = useAnimatedPresence(Boolean(statusNote), 190);
   const hasQuickResult = Boolean(
     reply || quickCanvas || pendingClarification || permissionItems.length > 0
@@ -1275,20 +1416,245 @@ export const QuickBar: React.FC = () => {
                 />
               </div>
 
-              {/* Selector limpio de modelo + Enviar (estilo Liquid Glass) */}
-              <div className="flex items-center gap-2 shrink-0">
+              {/* Lectura de pantalla + Selector de modelo + Enviar (estilo Liquid Glass) */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                <div ref={screenMenuRef} className="relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowModels(false);
+                      setShowScreenMenu((v) => !v);
+                    }}
+                    aria-label="Opciones de lectura de pantalla"
+                    aria-haspopup="menu"
+                    aria-expanded={showScreenMenu}
+                    title={
+                      screenStatus?.permissionGranted === false
+                        ? "Autorizar lectura de pantalla"
+                        : attachLiveScreen
+                          ? "Vista en vivo activa para el próximo mensaje"
+                          : screenStatus?.rollingEnabled
+                            ? `Memoria de pantalla activa (${screenStatus.retentionMinutes} min)`
+                            : "Opciones de lectura de pantalla"
+                    }
+                    className={`relative w-8 h-8 inline-flex items-center justify-center rounded-full text-white cursor-pointer transition-all ${
+                      attachLiveScreen
+                        ? "quick-liquid-chip-active"
+                        : "quick-liquid-btn opacity-75 hover:opacity-100"
+                    }`}
+                  >
+                    <Eye
+                      className={`w-3.5 h-3.5 shrink-0 ${
+                        attachLiveScreen
+                          ? "text-sky-200"
+                          : screenStatus?.permissionGranted === false || screenStatus?.pausedSensitive
+                            ? "text-amber-300/90"
+                            : "text-white/75"
+                      }`}
+                    />
+                    {(attachLiveScreen ||
+                      screenStatus?.permissionGranted === false ||
+                      screenStatus?.pausedSensitive ||
+                      screenStatus?.rollingEnabled) && (
+                      <span
+                        className={`absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full pointer-events-none ${
+                          screenStatus?.permissionGranted === false || screenStatus?.pausedSensitive
+                            ? "bg-amber-300"
+                            : attachLiveScreen
+                              ? "bg-sky-300"
+                              : "bg-emerald-300/75"
+                        }`}
+                      />
+                    )}
+                  </button>
+
+                  {screenMenuPresence.mounted && (
+                    <div
+                      role="menu"
+                      className={`quick-liquid-menu ${
+                        screenMenuPresence.visible ? "menu-in" : "menu-out pointer-events-none"
+                      } menu-origin-top-right absolute right-0 top-full mt-2 w-72 p-2 rounded-2xl z-30`}
+                    >
+                      <div className="relative z-[1] space-y-1.5">
+                        <div className="px-2 py-1 flex items-center justify-between text-[10.5px] text-zinc-200/80 border-b border-white/[0.08]">
+                          <span className="inline-flex items-center gap-1.5 font-medium text-white">
+                            <Monitor className="w-3 h-3 text-sky-200" />
+                            <span>Lectura de pantalla</span>
+                          </span>
+                          <span className="text-[10px] text-zinc-200/70">
+                            {screenStatus?.observationCount
+                              ? `${screenStatus.observationCount} rec.`
+                              : "En RAM"}
+                          </span>
+                        </div>
+
+                        {screenStatus?.permissionGranted === false && (
+                          <div className="quick-liquid-subcard rounded-xl p-2 space-y-1.5 text-[11px] text-amber-100">
+                            <div className="flex items-center gap-1.5 font-medium">
+                              <Shield className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                              <span>Permiso de pantalla pendiente</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void requestScreenPermission().then((st) => {
+                                    if (st) setScreenStatus(st);
+                                  });
+                                }}
+                                className="quick-liquid-chip-active flex-1 px-2.5 py-1 rounded-lg text-[10.5px] font-medium text-white cursor-pointer"
+                              >
+                                Autorizar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void openScreenPermissionSettings()}
+                                className="quick-liquid-chip inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10.5px] text-zinc-100 cursor-pointer"
+                              >
+                                <Settings className="w-3 h-3" />
+                                <span>Ajustes</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAttachLiveScreen((v) => !v);
+                            setShowScreenMenu(false);
+                            inputRef.current?.focus();
+                          }}
+                          className={`quick-liquid-option w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl text-left cursor-pointer ${
+                            attachLiveScreen ? "is-selected" : ""
+                          }`}
+                        >
+                          <span className="min-w-0">
+                            <span className="block text-[11.5px] font-medium text-white">
+                              Incluir vista al enviar
+                            </span>
+                            <span className="block text-[10px] text-zinc-200/75">
+                              También funciona diciendo &quot;lee la pantalla&quot;
+                            </span>
+                          </span>
+                          <span
+                            className={`quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0 ${
+                              attachLiveScreen ? "text-sky-200" : "text-white/40"
+                            }`}
+                          >
+                            {attachLiveScreen ? (
+                              <Check className="w-2.5 h-2.5" />
+                            ) : (
+                              <Eye className="w-2.5 h-2.5" />
+                            )}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextRolling = !(screenStatus?.rollingEnabled ?? true);
+                            void setScreenReaderConfig({ rollingEnabled: nextRolling }).then((st) => {
+                              if (st) setScreenStatus(st);
+                            });
+                          }}
+                          className={`quick-liquid-option w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl text-left cursor-pointer ${
+                            screenStatus?.rollingEnabled ? "is-selected" : ""
+                          }`}
+                        >
+                          <span className="min-w-0">
+                            <span className="block text-[11.5px] font-medium text-white">
+                              Memoria continua ({screenStatus?.retentionMinutes ?? 10} min)
+                            </span>
+                            <span className="block text-[10px] text-zinc-200/75">
+                              Solo texto reciente, cero imágenes en disco
+                            </span>
+                          </span>
+                          <span
+                            className={`w-2 h-2 rounded-full shrink-0 ${
+                              screenStatus?.rollingEnabled ? "bg-emerald-300" : "bg-white/30"
+                            }`}
+                          />
+                        </button>
+
+                        <div className="px-1 pt-0.5 flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void setScreenReaderConfig({ captureMode: "display" }).then((st) => {
+                                if (st) setScreenStatus(st);
+                              });
+                            }}
+                            className={`flex-1 inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded-xl text-[10.5px] font-medium text-white cursor-pointer ${
+                              (screenStatus?.captureMode || "display") === "display"
+                                ? "quick-liquid-chip-active"
+                                : "quick-liquid-chip"
+                            }`}
+                          >
+                            <Monitor className="w-3 h-3" />
+                            <span>Pantalla</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void setScreenReaderConfig({ captureMode: "window" }).then((st) => {
+                                if (st) setScreenStatus(st);
+                              });
+                            }}
+                            className={`flex-1 inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded-xl text-[10.5px] font-medium text-white cursor-pointer ${
+                              screenStatus?.captureMode === "window"
+                                ? "quick-liquid-chip-active"
+                                : "quick-liquid-chip"
+                            }`}
+                          >
+                            <AppWindow className="w-3 h-3" />
+                            <span>Ventana</span>
+                          </button>
+                        </div>
+
+                        {screenStatus?.activeAppName && (
+                          <div className="px-2 pt-0.5 flex items-center justify-between gap-2 text-[10px] text-zinc-200/75">
+                            <span className="truncate">
+                              Detrás: {screenStatus.activeAppName}
+                              {screenStatus.activeWindowTitle
+                                ? ` · ${screenStatus.activeWindowTitle}`
+                                : ""}
+                            </span>
+                            {(screenStatus.observationCount ?? 0) > 0 && (
+                              <button
+                                type="button"
+                                title="Borrar memoria reciente de pantalla"
+                                onClick={() => {
+                                  void clearScreenMemory().then((st) => {
+                                    if (st) setScreenStatus(st);
+                                  });
+                                }}
+                                className="quick-liquid-chip inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] text-white/85 cursor-pointer shrink-0"
+                              >
+                                <Trash2 className="w-2.5 h-2.5" />
+                                <span>Limpiar</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div ref={modelMenuRef} className="relative">
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      setShowScreenMenu(false);
                       setShowModels((v) => {
                         const next = !v;
                         if (next && liveCatalog.length === 0) {
                           void loadModelCatalog();
                         }
                         return next;
-                      })
-                    }
+                      });
+                    }}
                     aria-haspopup="listbox"
                     aria-expanded={showModels}
                     className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 px-3.5 rounded-full text-[11.5px] font-medium text-white [text-shadow:0_1px_4px_rgba(4,8,18,0.65)] cursor-pointer"
@@ -1463,6 +1829,9 @@ export const QuickBar: React.FC = () => {
                       setQuickCanvas(null);
                       setPendingClarification(null);
                       setPermissionItems([]);
+                      setLiveScreenBadge(null);
+                      setScreenPermissionNeeded(false);
+                      quickHistoryRef.current = [];
                       lastCanvasRef.current = null;
                       lastReplyRef.current = null;
                       lastCanvasDisplayRef.current = null;
@@ -1476,6 +1845,49 @@ export const QuickBar: React.FC = () => {
                   </button>
                 </div>
 
+                {(liveScreenBadge || screenPermissionNeeded) && !isStreaming && (
+                  <div
+                    data-no-drag="true"
+                    className="ml-7 quick-liquid-subcard rounded-xl px-2.5 py-2 flex items-center justify-between gap-2 text-[11px] text-white/95 [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]"
+                  >
+                    {screenPermissionNeeded ? (
+                      <>
+                        <span className="inline-flex items-center gap-1.5 text-amber-100 min-w-0 truncate">
+                          <Shield className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                          <span className="truncate">Autoriza Grabación de Pantalla para leer tu vista</span>
+                        </span>
+                        <span className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void requestScreenPermission().then((st) => {
+                                if (st) setScreenStatus(st);
+                                if (st?.permissionGranted) setScreenPermissionNeeded(false);
+                              });
+                            }}
+                            className="quick-liquid-chip-active px-2.5 py-1 rounded-lg text-[10.5px] font-medium cursor-pointer"
+                          >
+                            Autorizar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void openScreenPermissionSettings()}
+                            className="quick-liquid-chip inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10.5px] cursor-pointer"
+                          >
+                            <Settings className="w-3 h-3" />
+                            <span>Abrir Ajustes</span>
+                          </button>
+                        </span>
+                      </>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 text-sky-100 min-w-0 truncate">
+                        <Eye className="w-3.5 h-3.5 text-sky-300 shrink-0" />
+                        <span className="truncate">Leído desde pantalla: {liveScreenBadge}</span>
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 {permissionItems.length > 0 && (
                   <div data-no-drag="true" className="ml-7 space-y-2 select-text">
                     {permissionItems.map((perm) => (
@@ -1483,6 +1895,7 @@ export const QuickBar: React.FC = () => {
                         key={perm.requestId}
                         item={perm}
                         compact
+                        surfaceVariant="liquid"
                         onResolve={(reqId, decision) =>
                           void handleResolveQuickPermission(reqId, decision)
                         }
@@ -1571,7 +1984,7 @@ export const QuickBar: React.FC = () => {
                 {displayClarification && !isStreaming && (
                   <div
                     data-no-drag="true"
-                    className="ml-7 max-h-[215px] overflow-y-auto xook-scroll rounded-xl border border-sky-400/20 bg-black/35 p-2.5 select-text"
+                    className="ml-7 max-h-[215px] overflow-y-auto xook-scroll rounded-xl quick-liquid-subcard quick-liquid-clarify p-2.5 select-text [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]"
                   >
                     <div className="flex items-center gap-1.5 text-[11px] font-medium text-sky-200 mb-2">
                       <HelpCircle className="w-3.5 h-3.5 text-sky-300 shrink-0" />

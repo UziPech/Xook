@@ -483,3 +483,129 @@ export function subscribePermissionEvents(handlers: {
     for (const fn of unlisteners) fn();
   };
 }
+
+export interface ScreenReaderStatus {
+  rollingEnabled: boolean;
+  retentionMinutes: number;
+  captureMode: "display" | "window" | string;
+  permissionGranted: boolean;
+  accessibilityGranted: boolean;
+  pausedSensitive: boolean;
+  sensitiveReason?: string | null;
+  activeAppName: string;
+  activeWindowTitle: string;
+  lastCapturedAt?: string | null;
+  observationCount: number;
+  lastPreview?: string | null;
+  lastError?: string | null;
+}
+
+export interface LiveScreenCapturePayload {
+  ok: boolean;
+  permissionGranted: boolean;
+  accessibilityGranted: boolean;
+  blockedSensitive: boolean;
+  sensitiveReason?: string | null;
+  appName: string;
+  bundleId: string;
+  windowTitle: string;
+  captureMode: string;
+  text: string;
+  ocrText: string;
+  axText: string;
+  imageDataUrl?: string | null;
+  capturedAt: string;
+  error?: string | null;
+}
+
+export interface ScreenObservationRecord {
+  id: string;
+  appName: string;
+  bundleId: string;
+  windowTitle: string;
+  contentText: string;
+  captureMode: string;
+  capturedAt: string;
+  expiresAt: string;
+}
+
+export async function getScreenReaderStatus(): Promise<ScreenReaderStatus | null> {
+  if (!isWorkspaceTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ScreenReaderStatus>("get_screen_reader_status");
+}
+
+export async function setScreenReaderConfig(payload: {
+  rollingEnabled?: boolean;
+  retentionMinutes?: number;
+  captureMode?: "display" | "window";
+}): Promise<ScreenReaderStatus | null> {
+  if (!isWorkspaceTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ScreenReaderStatus>("set_screen_reader_config", { payload });
+}
+
+export async function requestScreenPermission(): Promise<ScreenReaderStatus | null> {
+  if (!isWorkspaceTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ScreenReaderStatus>("request_screen_permission_cmd");
+}
+
+export async function openScreenPermissionSettings(): Promise<void> {
+  if (!isWorkspaceTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("open_screen_permission_settings");
+}
+
+export async function captureScreenContextNow(options?: {
+  mode?: "display" | "window";
+  includeImage?: boolean;
+  saveObservation?: boolean;
+}): Promise<LiveScreenCapturePayload | null> {
+  if (!isWorkspaceTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<LiveScreenCapturePayload>("capture_screen_context_now", {
+    mode: options?.mode ?? null,
+    includeImage: options?.includeImage ?? true,
+    saveObservation: options?.saveObservation ?? true,
+  });
+}
+
+export async function queryScreenMemory(
+  query?: string,
+  limit = 6
+): Promise<ScreenObservationRecord[]> {
+  if (!isWorkspaceTauriRuntime()) return [];
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ScreenObservationRecord[]>("query_screen_memory_cmd", {
+    query: query ?? null,
+    limit,
+  });
+}
+
+export async function clearScreenMemory(): Promise<ScreenReaderStatus | null> {
+  if (!isWorkspaceTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ScreenReaderStatus>("clear_screen_memory_cmd");
+}
+
+export function subscribeScreenContext(
+  onStatus: (status: ScreenReaderStatus) => void
+): () => void {
+  if (!isWorkspaceTauriRuntime()) return () => {};
+  let active = true;
+  let unlisten: (() => void) | null = null;
+  void import("@tauri-apps/api/event").then(({ listen }) => {
+    if (!active) return;
+    void listen<ScreenReaderStatus>("screen:context-updated", (ev) => {
+      if (active && ev.payload) onStatus(ev.payload);
+    }).then((fn) => {
+      if (active) unlisten = fn;
+      else fn();
+    });
+  });
+  return () => {
+    active = false;
+    unlisten?.();
+  };
+}

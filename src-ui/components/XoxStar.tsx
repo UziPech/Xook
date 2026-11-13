@@ -33,6 +33,8 @@ interface XoxStarProps {
   glassContrast?: boolean;
   /** Pausa el bucle de animación y listeners cuando la ventana está oculta para ahorrar RAM/CPU. */
   active?: boolean;
+  /** "star" limita hover/clic estrictamente al cuerpo de la estrella sin capturar márgenes transparentes. */
+  hitArea?: "full" | "star";
 }
 
 /**
@@ -164,6 +166,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   dragMotionRef,
   glassContrast = false,
   active = true,
+  hitArea = "full",
 }) => {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const ids = {
@@ -234,11 +237,11 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     if (a.t - a.lastSpin < 0.9) return;
     a.lastSpin = a.t;
     if (a.reduce) {
-      a.jumpKick = -110;
+      a.jumpKick = -75;
       return;
     }
-    a.windupUntil = a.t + 0.16; // anticipación
-    a.squashKick = 3.5;
+    a.windupUntil = a.t + 0.12; // anticipación compacta
+    a.squashKick = 2.2;
   };
 
   useEffect(() => {
@@ -310,7 +313,6 @@ export const XoxStar: React.FC<XoxStarProps> = ({
 
     let raf = 0;
     let last = performance.now();
-    let lastDraw = 0;
     let nextBlink = a.t + 1.6;
     let blinkStart = -1;
     let nextGlance = a.t + 2;
@@ -324,30 +326,6 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
 
       const st = stateRef.current;
-      const dmNow = dragMotionPropRef.current?.current ?? null;
-      const draggingNow = Boolean(dmNow?.active);
-      const isCalmIdle =
-        st === "idle" &&
-        !draggingNow &&
-        !hoverRef.current &&
-        Math.abs(jump.x) < 0.25 &&
-        Math.abs(jump.v) < 2 &&
-        Math.abs(squash.v) < 0.05 &&
-        Math.abs(rot.v) < 4 &&
-        a.t - a.waveStart > 1.6 &&
-        a.t - a.summonAt > 0.8 &&
-        popLens.x < 0.01 &&
-        popBubble.x < 0.01 &&
-        popBang.x < 0.01 &&
-        popSync.x < 0.01 &&
-        popTalk.x < 0.01;
-
-      if (isCalmIdle && lastDraw > 0 && now - lastDraw < 32) {
-        raf = requestAnimationFrame(frame);
-        return;
-      }
-      lastDraw = now;
-
       const dt = Math.min((now - last) / 1000, 1 / 20);
       last = now;
       a.t += dt;
@@ -422,7 +400,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       if (a.windupUntil && t >= a.windupUntil) {
         a.windupUntil = 0;
         a.spinTarget += 360;
-        jump.v = -260 * A;
+        jump.v = -185 * A;
       }
       if (a.squashKick) {
         squash.v += a.squashKick;
@@ -432,41 +410,44 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         jump.v += a.jumpKick;
         a.jumpKick = 0;
       }
-      const windup = a.windupUntil ? -26 : 0;
+      const windup = a.windupUntil ? -18 : 0;
       const sway =
         (thinking
-          ? 6 * Math.sin(t * 2.2)
+          ? 5.5 * Math.sin(t * 2.2)
           : talking
-          ? 4.8 * Math.sin(t * 3.1)
-          : 4 * Math.sin(t * 0.9) + (alerting ? 3.2 * Math.sin(t * 23) : 0)) * A;
+          ? 4.4 * Math.sin(t * 3.1)
+          : 3.4 * Math.sin(t * 0.85) + (alerting ? 3.2 * Math.sin(t * 23) : 0)) * A;
       const dragTilt = dragging ? -dragNx * 14 * A : 0;
-      step(
-        rot,
-        a.spinTarget + windup + sway + lookX.x * 8 * A + dragTilt,
-        alerting ? 160 : dragging ? 110 : 70,
-        alerting ? 9 : dragging ? 13 : 12,
-        dt
-      );
+      const subSteps = dt > 0.018 ? 2 : 1;
+      const h = dt / subSteps;
+      for (let sIdx = 0; sIdx < subSteps; sIdx += 1) {
+        step(
+          rot,
+          a.spinTarget + windup + sway + lookX.x * 8 * A + dragTilt,
+          alerting ? 160 : dragging ? 110 : 78,
+          alerting ? 11 : dragging ? 14 : 14,
+          h
+        );
 
-      // --- Salto + squash & stretch ---------------------------------------
-      const prevJump = jump.x;
-      step(jump, 0, 55, 6.5, dt);
-      if (prevJump < 0 && jump.x >= 0 && jump.v > 80) squash.v += jump.v * 0.012; // aterrizaje
-      step(squash, 0, 260, 11, dt);
-      step(hover, hoverRef.current ? 1 : 0, 120, 16, dt);
+        // --- Salto + squash & stretch (solo en despegue y aterrizaje) -------
+        const prevJump = jump.x;
+        step(jump, 0, 88, 13.8, h);
+        if (prevJump < 0 && jump.x >= 0 && jump.v > 65) squash.v += jump.v * 0.008;
+        step(squash, 0, 220, 18, h);
+        step(hover, hoverRef.current ? 1 : 0, 140, 18, h);
+      }
 
-      const breath = 0.018 * A * Math.sin(t * 2.4);
-      const stretch = Math.min(Math.abs(jump.v) * 0.00055, 0.14);
-      const sy = (1 - squash.x * 0.5) * (1 + stretch) * (1 + breath);
-      const sx = (1 + squash.x * 0.45) * (1 - stretch * 0.6) * (1 - breath);
+      const stretch = Math.min(Math.abs(jump.v) * 0.0005, 0.12);
+      const sy = (1 - squash.x * 0.45) * (1 + stretch);
+      const sx = (1 + squash.x * 0.4) * (1 - stretch * 0.55);
       const bob = (
         thinking
-          ? 5 * Math.sin(t * 2.6)
+          ? 4.5 * Math.sin(t * 2.4)
           : talking
-          ? 3.2 * Math.sin(t * 6.8) + 2.2 * Math.sin(t * 2.1)
+          ? 2.8 * Math.sin(t * 6.4) + 1.8 * Math.sin(t * 2.0)
           : alerting
           ? 2 * Math.sin(t * 9)
-          : 4 * Math.sin(t * 1.3)
+          : 3.2 * Math.sin(t * 1.15)
       ) * A;
       const y = C + bob + jump.x;
       const shakeX = alerting ? 1.8 * Math.sin(t * 37) * A : 0;
@@ -681,31 +662,59 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     onClick?.();
   };
 
+  const triggerWave = () => {
+    hoverRef.current = true;
+    const a = anim.current;
+    if (a.t - a.waveStart > 4) a.waveStart = a.t; // saluda con el brazo
+  };
+
+  const starOnlyHit = hitArea === "star";
+
   return (
     <div
       ref={wrapRef}
-      role="button"
-      tabIndex={0}
-      aria-label="Xox, copiloto estelar. Haz clic para saludar."
-      title="Xox · Copiloto Estelar"
-      onClick={handleActivate}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          handleActivate();
-        }
-      }}
-      onPointerEnter={() => {
-        hoverRef.current = true;
-        const a = anim.current;
-        if (a.t - a.waveStart > 4) a.waveStart = a.t; // saluda con el brazo
-      }}
-      onPointerLeave={() => {
-        hoverRef.current = false;
-      }}
-      className={`relative inline-block cursor-pointer select-none outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/40 rounded-full ${className}`}
+      role={starOnlyHit ? undefined : "button"}
+      tabIndex={starOnlyHit ? undefined : 0}
+      aria-label={starOnlyHit ? undefined : "Xox, copiloto estelar. Haz clic para saludar."}
+      title={starOnlyHit ? undefined : "Xox · Copiloto Estelar"}
+      onClick={starOnlyHit ? undefined : handleActivate}
+      onKeyDown={
+        starOnlyHit
+          ? undefined
+          : (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                handleActivate();
+              }
+            }
+      }
+      onPointerEnter={starOnlyHit ? undefined : triggerWave}
+      onPointerLeave={
+        starOnlyHit
+          ? undefined
+          : () => {
+              hoverRef.current = false;
+            }
+      }
+      className={`relative inline-block select-none rounded-full ${
+        starOnlyHit
+          ? "pointer-events-none"
+          : "cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/40"
+      } ${className}`}
       style={responsive ? undefined : { width: size, height: size }}
     >
+      {starOnlyHit && (
+        <button
+          type="button"
+          aria-label="Xox, copiloto estelar. Haz clic para saludar."
+          onClick={handleActivate}
+          onPointerEnter={triggerWave}
+          onPointerLeave={() => {
+            hoverRef.current = false;
+          }}
+          className="pointer-events-auto absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[56%] h-[56%] rounded-full cursor-pointer bg-transparent border-0 p-0 outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/45 z-10"
+        />
+      )}
       <svg
         viewBox="0 0 240 240"
         width={responsive ? undefined : size}

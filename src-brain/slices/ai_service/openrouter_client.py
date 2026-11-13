@@ -111,6 +111,13 @@ def _tool_step_meta(fn_name: str, args: Dict[str, Any]) -> Tuple[str, str]:
     if fn_name == "pdf_generate":
         doc_title = str(args.get("title") or args.get("output_path") or "documento").strip()
         return f"Generando PDF: {doc_title[:42]}", str(args.get("output_path") or "agente/reportes/")
+    if fn_name == "read_screen_now":
+        mode_lbl = "ventana activa" if str(args.get("mode") or "") == "window" else "pantalla actual"
+        return f"Leyendo {mode_lbl}", str(args.get("reason") or "")
+    if fn_name == "query_screen_memory":
+        return "Consultando memoria reciente de pantalla", str(args.get("query") or "últimos minutos")
+    if fn_name == "memory_search":
+        return "Buscando en memoria del negocio", str(args.get("query") or "")
     return f"Herramienta: {fn_name}", target
 
 
@@ -768,8 +775,16 @@ def _build_system_prompt(
     user_profile: Optional[Dict[str, Any]] = None,
     active_canvas: Optional[Dict[str, Any]] = None,
     workspace_root: Optional[Path] = None,
+    unified_memory: Optional[Dict[str, Any]] = None,
 ) -> str:
     ws_active = workspace_root is not None and workspace_root.is_dir()
+    unified_facts = unified_memory.get("facts") if isinstance(unified_memory, dict) else None
+    unified_screen_summary = (
+        str(unified_memory.get("screen_summary") or "").strip()
+        if isinstance(unified_memory, dict)
+        else ""
+    )
+
     if ws_active and workspace_root is not None:
         profile = _load_json_safe(workspace_root / "empresa" / "perfil.json") or _load_json_safe(
             context_dir / "business-profiles" / "store-profile.json"
@@ -778,7 +793,15 @@ def _build_system_prompt(
             context_dir / "memory" / "memory_store.json"
         )
         hechos_path = workspace_root / "memoria" / "hechos.md"
-        facts_text = hechos_path.read_text(encoding="utf-8", errors="replace")[:1500] if hechos_path.is_file() else ""
+        if isinstance(unified_facts, list) and unified_facts:
+            facts_lines = [
+                f"- [{str(item.get('category') or 'negocio')}] {str(item.get('content') or '').strip()}"
+                for item in unified_facts
+                if isinstance(item, dict) and str(item.get("content") or "").strip()
+            ]
+            facts_text = "\n".join(facts_lines)[:6000]
+        else:
+            facts_text = hechos_path.read_text(encoding="utf-8", errors="replace")[:5500] if hechos_path.is_file() else ""
         ws_tree = _summarize_workspace_tree(workspace_root)
     else:
         profile = _load_json_safe(context_dir / "business-profiles" / "store-profile.json")
@@ -942,7 +965,10 @@ HECHOS REGISTRADOS EN memoria/hechos.md:
 
 HERRAMIENTAS DEL ESPACIO DE TRABAJO (OBLIGATORIO CUANDO OPERES SOBRE ARCHIVOS O REVISIONES):
 - Puedes usar `workspace_list`, `workspace_read` y `workspace_search` para consultar archivos reales en `empresa/`, `datos/`, `memoria/`, `habilidades/` o `agente/`.
-- Puedes organizar autónomamente carpetas y notas/reportes en `agente/` o `memoria/` con `workspace_mkdir`, `workspace_write_file` y `memory_record_fact`.
+- Puedes organizar autónomamente carpetas y notas/reportes en `agente/` o `memoria/` con `workspace_mkdir`, `workspace_write_file` y `memory_record_fact` (y buscar hechos completos sin truncado usando `memory_search`).
+- LECTURA DE PANTALLA EN TIEMPO REAL (`read_screen_now` y `query_screen_memory`):
+  * Cuando el usuario pida leer, ver, describir o analizar su pantalla o ventana actual (ej. "lee la pantalla", "qué ves", "mira esto", "qué dice aquí", "ayúdame con lo que tengo abierto"), invoca DE INMEDIATO `read_screen_now` (y usa `query_screen_memory` si pregunta por algo visto hace unos minutos).
+  * PROHIBIDO usar `run_workspace_command` (`identify`, `screencapture`, `open`, etc.) para intentar leer la pantalla.
 - Cuando el usuario pida analizar stock, inventario o buscar alertas reales, ejecuta `run_business_review` en lugar de inventar números o productos ficticios.
 - NUNCA respondas diciendo "reviso qué hay en el workspace" o "voy a consultar primero" sin emitir en ese mismo turno la llamada real a herramienta (`tool_calls`). Si necesitas consultar archivos, llama a `workspace_list`/`workspace_read` de inmediato; si ya tienes los datos o es análisis estratégico, entrega la respuesta completa de una vez.
 - Para proponer cambios en `empresa/`, `datos/` o `habilidades/`, usa SIEMPRE `propose_company_file_edit` (prepara borrador y tarjeta HITL).
@@ -956,6 +982,13 @@ HERRAMIENTAS DEL ESPACIO DE TRABAJO (OBLIGATORIO CUANDO OPERES SOBRE ARCHIVOS O 
   - Si el usuario adjunta imágenes o las menciona desde el workspace e indica cómo integrarlas (por ejemplo como portada, logo, fondo visual o figuras dentro de secciones), interpreta libremente su intención:
     - Cuando la imagen adjunta YA sea una portada o carátula diseñada (ej. hoja institucional/académica o imagen con su propio texto/título/escudo), usa `cover: {{"enabled": true, "image_path": "...", "layout": "full_page"}}` para insertarla íntegra y nítida en la página 1 sin oscurecerla ni encimar texto blanco encima (y desarrolla el tema completo desde la página 2 en `blocks`).
     - Cuando sea una foto limpia, ilustración o logotipo donde sí corresponda diseñar portada tipográfica encima o al lado, usa `layout` entre `auto`, `hero_top`, `split`, `centered`, `full_bleed` o `minimal`."""
+
+    screen_ctx_block = ""
+    if unified_screen_summary:
+        screen_ctx_block = (
+            "\n\nCONTEXTO RECIENTE EN PANTALLA (memoria temporal continua de los últimos minutos, solo texto):\n"
+            + unified_screen_summary
+        )
 
     return f"""Eres Xox, el asistente inteligente y copiloto operativo de XOOK (Enterprise Agentic Orchestrator).
 Hablas SIEMPRE en español claro, humano, directo y útil.
@@ -978,7 +1011,7 @@ TAREAS PENDIENTES EN PANEL DERECHO:
 {json.dumps(compact_tasks, ensure_ascii=False)}
 
 AGENDA Y RELOJES ACTIVOS:
-{json.dumps(compact_agenda, ensure_ascii=False)}{operator_ctx}{canvas_ctx}{extra_ctx}
+{json.dumps(compact_agenda, ensure_ascii=False)}{operator_ctx}{canvas_ctx}{extra_ctx}{screen_ctx_block}
 
 {output_rules}
 
@@ -1843,6 +1876,34 @@ def _parse_agent_json(raw_content: str) -> Dict[str, Any]:
     }
 
 
+def _append_transient_tool_images(
+    executor: Optional[WorkspaceToolExecutor],
+    loop_messages: List[Dict[str, Any]],
+    vision_supported: bool,
+) -> None:
+    if executor is None or not getattr(executor, "transient_tool_images", None):
+        return
+    imgs = list(executor.transient_tool_images)
+    executor.transient_tool_images.clear()
+    if not vision_supported:
+        return
+    parts: List[Dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                "[Vista visual momentánea en memoria RAM capturada por `read_screen_now`; "
+                "combínala con el texto OCR/AX de la herramienta para responder con máxima precisión.]"
+            ),
+        }
+    ]
+    for item in imgs[:2]:
+        url = str(item.get("imageDataUrl") or "").strip()
+        if url.startswith("data:image/"):
+            parts.append({"type": "image_url", "image_url": {"url": url}})
+    if len(parts) > 1:
+        loop_messages.append({"role": "user", "content": parts})
+
+
 def _validate_and_build_messages(
     api_key: str,
     model_id: str,
@@ -1857,6 +1918,7 @@ def _validate_and_build_messages(
     user_profile: Optional[Dict[str, Any]] = None,
     active_canvas: Optional[Dict[str, Any]] = None,
     workspace_root: Optional[Path] = None,
+    unified_memory: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str, List[Dict[str, Any]]]:
     key = _normalize_api_key(api_key)
     if not key:
@@ -1877,6 +1939,7 @@ def _validate_and_build_messages(
         user_profile=user_profile,
         active_canvas=active_canvas,
         workspace_root=workspace_root,
+        unified_memory=unified_memory,
     )
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
@@ -2163,6 +2226,7 @@ def run_agent_completion(
     active_canvas: Optional[Dict[str, Any]] = None,
     workspace_root: Optional[str] = None,
     command_bridge: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    unified_memory: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     ws_path = Path(workspace_root).resolve() if workspace_root and Path(workspace_root).is_dir() else None
     key, chosen_model, messages = _validate_and_build_messages(
@@ -2179,6 +2243,7 @@ def run_agent_completion(
         user_profile=user_profile,
         active_canvas=active_canvas,
         workspace_root=ws_path,
+        unified_memory=unified_memory,
     )
 
     executor = (
@@ -2268,6 +2333,8 @@ def run_agent_completion(
         tools_supported = True
         vision_supported = True
         continuations_used = 0
+        if executor is not None:
+            executor.transient_tool_images.clear()
         target_max_tokens = (
             8192
             if (
@@ -2400,6 +2467,7 @@ def run_agent_completion(
                             "tool_call_id": tc_id,
                             "content": json.dumps(tool_out, ensure_ascii=False),
                         })
+                    _append_transient_tool_images(executor, loop_messages, vision_supported)
 
             has_staged = bool(executor is not None and executor.staged_tasks)
             if not raw_content.strip() and not all_ui_tool_calls and not has_staged and has_next_candidate:
@@ -2538,6 +2606,7 @@ def stream_agent_completion(
     active_canvas: Optional[Dict[str, Any]] = None,
     workspace_root: Optional[str] = None,
     command_bridge: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    unified_memory: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     ws_path = Path(workspace_root).resolve() if workspace_root and Path(workspace_root).is_dir() else None
     if ws_path is not None:
@@ -2577,6 +2646,7 @@ def stream_agent_completion(
         user_profile=user_profile,
         active_canvas=active_canvas,
         workspace_root=ws_path,
+        unified_memory=unified_memory,
     )
 
     executor = (
@@ -2965,6 +3035,8 @@ def stream_agent_completion(
         all_ui_tool_calls = []
         combined_canvas_buf = ""
         combined_actions_buf = ""
+        if executor is not None:
+            executor.transient_tool_images.clear()
 
         if cand_idx > 0:
             _upsert_step("route_model", "Reenrutando IA por disponibilidad", "done", detail=cand_model)
@@ -3089,7 +3161,23 @@ def stream_agent_completion(
                         else:
                             label, detail = _tool_step_meta(fn_name, args)
                             _upsert_step(step_id, label, "running", detail=detail or None)
-                            phase_state = "reading" if fn_name in ("workspace_list", "workspace_read", "workspace_search", "pdf_read", "list_desktop_apps", "os_list_notes", "os_list_calendar_events") else "syncing"
+                            phase_state = (
+                                "reading"
+                                if fn_name
+                                in (
+                                    "workspace_list",
+                                    "workspace_read",
+                                    "workspace_search",
+                                    "pdf_read",
+                                    "list_desktop_apps",
+                                    "os_list_notes",
+                                    "os_list_calendar_events",
+                                    "read_screen_now",
+                                    "query_screen_memory",
+                                    "memory_search",
+                                )
+                                else "syncing"
+                            )
                             emit_event({"type": "phase", "xox_state": phase_state, "label": f"{label}..."})
                             emit_event({"type": "steps", "steps": steps})
 
@@ -3129,6 +3217,7 @@ def stream_agent_completion(
                             "tool_call_id": tc_id,
                             "content": json.dumps(tool_res, ensure_ascii=False),
                         })
+                    _append_transient_tool_images(executor, loop_messages, vision_supported)
 
             has_staged = bool(executor is not None and executor.staged_tasks)
             if (

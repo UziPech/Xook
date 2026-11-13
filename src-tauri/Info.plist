@@ -4,6 +4,8 @@
 <dict>
   <key>NSAppleEventsUsageDescription</key>
   <string>XOOK necesita permiso para interactuar con Notas y Calendario cuando le pidas crear notas o agendar eventos.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>XOOK necesita permiso de Grabación de Pantalla para leer lo que ves en pantalla cuando se lo pidas o mantener tu contexto reciente sin guardar capturas en disco.</string>
 </dict>
 </plist>
 

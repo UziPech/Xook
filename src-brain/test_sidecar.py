@@ -1962,6 +1962,96 @@ def test_free_form_response_and_stray_tag_cleanup() -> None:
     print("✅ Respuesta libre Markdown y limpieza de etiquetas residuales (<posta>) verificadas.")
 
 
+def test_screen_reading_tools_and_unified_memory():
+    import tempfile
+    from pathlib import Path
+    from slices.agent_tools.toolkit import WorkspaceToolExecutor
+    from slices.ai_service.model_router import classify_task_intent
+    from slices.ai_service.openrouter_client import _append_transient_tool_images, _build_system_prompt
+
+    prof = classify_task_intent("lee la pantalla por favor", has_workspace=True, tools_available=True)
+    assert prof.needs_tools is True, f"Se esperaba needs_tools=True para lectura de pantalla: {prof}"
+    assert prof.task_kind == "agent_execution", prof
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "memoria").mkdir(parents=True, exist_ok=True)
+        long_hechos = ("- [general] Relleno histórico operativo.\n" * 60) + "- [precios] Envío Monterrey cuesta $190.\n"
+        (ws / "memoria" / "hechos.md").write_text(long_hechos, encoding="utf-8")
+
+        rpc_calls = []
+
+        def fake_bridge(payload):
+            rpc_calls.append(payload)
+            cb = payload.get("rpc_callback")
+            if cb == "read_screen_now":
+                return {
+                    "ok": True,
+                    "permissionGranted": True,
+                    "blockedSensitive": False,
+                    "appName": "Google Chrome",
+                    "windowTitle": "Factura #108",
+                    "captureMode": "display",
+                    "text": "App activa: Google Chrome — Factura #108\nTotal: $1,250 MXN",
+                    "ocrText": "Total: $1,250 MXN",
+                    "axText": "",
+                    "imageDataUrl": "data:image/jpeg;base64,/9j/4AAQSkZJRg==",
+                }
+            if cb == "query_screen_memory":
+                return {
+                    "ok": True,
+                    "count": 1,
+                    "observations": [{"appName": "Safari", "contentText": "Catálogo proveedores"}],
+                }
+            if cb == "memory_search":
+                return {
+                    "ok": True,
+                    "factsCount": 1,
+                    "facts": [{"category": "precios", "content": "Envío Monterrey cuesta $190."}],
+                    "screenSummary": "[hace 1 min · Safari] Catálogo proveedores",
+                }
+            return {"ok": False}
+
+        executor = WorkspaceToolExecutor(ws, command_bridge=fake_bridge)
+        scr_res = executor.execute("read_screen_now", {"mode": "display", "include_image": True})
+        assert scr_res.get("ok") is True
+        assert scr_res.get("has_visual_image") is True
+        assert "imageDataUrl" not in scr_res, "No debe quedar base64 dentro del payload JSON textual del tool"
+        assert len(executor.transient_tool_images) == 1
+
+        msgs = [{"role": "tool", "tool_call_id": "tc_1", "content": "{}"}]
+        _append_transient_tool_images(executor, msgs, vision_supported=True)
+        assert len(msgs) == 2 and msgs[1]["role"] == "user"
+        assert any(p.get("type") == "image_url" for p in msgs[1]["content"])
+        assert executor.transient_tool_images == []
+
+        mem_res = executor.execute("query_screen_memory", {"query": "proveedores", "limit": 3})
+        assert mem_res.get("ok") is True and mem_res.get("count") == 1
+
+        search_res = executor.execute("memory_search", {"query": "Monterrey"})
+        assert search_res.get("ok") is True and search_res.get("factsCount") == 1
+
+        prompt = _build_system_prompt(
+            context_dir=ws,
+            skills_dir=ws,
+            current_tasks=[],
+            agenda_items=[],
+            attached_context=[],
+            stream_mode=True,
+            workspace_root=ws,
+            unified_memory={
+                "facts": [{"category": "precios", "content": "Envío Monterrey cuesta $190 MXN."}],
+                "screen_summary": "[hace 1 min · Google Chrome] Factura #108 Total $1,250 MXN",
+            },
+        )
+        assert "Envío Monterrey cuesta $190 MXN." in prompt
+        assert "CONTEXTO RECIENTE EN PANTALLA" in prompt
+        assert "read_screen_now" in prompt
+        assert "Factura #108" in prompt
+
+    print("✅ Lectura de pantalla en tiempo real, FTS5 unificado y manejo seguro de imágenes en RAM verificados.")
+
+
 if __name__ == "__main__":
     test_sidecar_ping_and_inventory()
     test_canvas_schema_and_stream_router()
@@ -1973,4 +2063,5 @@ if __name__ == "__main__":
     test_spaced_xml_tags_and_live_pdf_preview()
     test_ready_cover_full_page_and_content_enforcement()
     test_free_form_response_and_stray_tag_cleanup()
+    test_screen_reading_tools_and_unified_memory()
 

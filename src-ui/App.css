@@ -427,11 +427,13 @@
    ========================================================================== */
 .xox-bubble {
   padding: 0 0 14px 14px; /* deja espacio a la estela hacia Xox */
-  animation: xox-bubble-float 4.2s ease-in-out 0.7s infinite;
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition: opacity 0.12s ease;
 }
 
 .xox-bubble.is-leaving {
-  animation: xox-bubble-out 0.34s cubic-bezier(0.4, 0, 1, 1) forwards;
+  opacity: 0;
 }
 
 /* Cuerpo de vidrio líquido */
@@ -453,7 +455,6 @@
     inset 0 0 22px -6px rgba(186, 230, 253, 0.18),
     0 14px 34px -12px rgba(0, 0, 0, 0.75),
     0 0 36px -10px rgba(94, 234, 212, 0.28);
-  animation: xox-bubble-pop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) 0.16s both;
 }
 
 /* Brillo especular superior (reflejo curvo del vidrio) */
@@ -492,7 +493,6 @@
 
 .xox-bubble-text {
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
-  animation: xox-bubble-text 0.45s ease-out 0.34s both;
 }
 
 /* Estela de burbujitas de vidrio hacia Xox */
@@ -506,7 +506,6 @@
   box-shadow:
     inset 0 1px 1px rgba(255, 255, 255, 0.4),
     0 0 12px -2px rgba(94, 234, 212, 0.3);
-  animation: xox-trail-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
 .xox-bubble-trail-sm {
   width: 6px;
@@ -519,33 +518,49 @@
   height: 10px;
   left: 4px;
   bottom: 4px;
-  animation-delay: 0.08s;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .xox-bubble.is-leaving {
+    opacity: 1;
+    animation: xox-bubble-out 0.22s cubic-bezier(0.4, 0, 1, 1) forwards;
+  }
+
+  .xox-bubble-body {
+    animation: xox-bubble-pop 0.28s cubic-bezier(0.22, 1, 0.36, 1) 0.06s both;
+  }
+
+  .xox-bubble-text {
+    animation: xox-bubble-text 0.24s ease-out 0.12s both;
+  }
+
+  .xox-bubble-trail {
+    animation: xox-trail-pop 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .xox-bubble-trail-md {
+    animation-delay: 0.05s;
+  }
 }
 
 @keyframes xox-trail-pop {
-  0% { opacity: 0; transform: scale(0); }
+  0% { opacity: 0; transform: scale(0.4); }
   100% { opacity: 1; transform: scale(1); }
 }
 
 @keyframes xox-bubble-pop {
-  0% { opacity: 0; transform: translate(-8px, 10px) scale(0.35); filter: blur(4px); }
-  55% { opacity: 1; filter: blur(0); }
-  100% { opacity: 1; transform: none; filter: blur(0); }
+  0% { opacity: 0; transform: translate3d(-6px, 6px, 0) scale(0.86); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes xox-bubble-text {
-  from { opacity: 0; transform: translateY(3px); filter: blur(3px); }
-  to { opacity: 1; transform: none; filter: blur(0); }
-}
-
-@keyframes xox-bubble-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-4px); }
+  from { opacity: 0; transform: translate3d(0, 2px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
 }
 
 @keyframes xox-bubble-out {
-  from { opacity: 1; transform: none; filter: blur(0); }
-  to { opacity: 0; transform: translate(-6px, 6px) scale(0.85); filter: blur(4px); }
+  from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  to { opacity: 0; transform: translate3d(-4px, 4px, 0) scale(0.95); }
 }
 
 /* ==========================================================================
@@ -848,6 +863,45 @@ html[data-window-mode="quick"] body {
   z-index: 2;
 }
 
+/* Menús desplegables Liquid Glass en ventana principal (vidrio esmerilado óptico estilo QuickBar) */
+.xook-liquid-menu {
+  background: linear-gradient(
+    170deg,
+    rgba(20, 29, 48, 0.56) 0%,
+    rgba(10, 15, 26, 0.68) 54%,
+    rgba(14, 21, 36, 0.62) 100%
+  );
+  backdrop-filter: blur(32px) saturate(190%);
+  -webkit-backdrop-filter: blur(32px) saturate(190%);
+  box-shadow:
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 1px 0 rgba(186, 230, 253, 0.10),
+    inset 0 10px 18px -12px rgba(255, 255, 255, 0.12),
+    0 18px 40px -10px rgba(0, 0, 0, 0.65),
+    0 2px 8px -2px rgba(0, 0, 0, 0.35);
+}
+
+.xook-liquid-menu::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.28) 0%,
+    rgba(224, 242, 254, 0.13) 28%,
+    rgba(196, 181, 253, 0.09) 56%,
+    rgba(244, 114, 182, 0.08) 76%,
+    rgba(255, 255, 255, 0.17) 100%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 2;
+}
+
 .quick-liquid-option {
   position: relative;
   border: 1px solid transparent;
@@ -865,6 +919,14 @@ html[data-window-mode="quick"] body {
   );
   border-color: rgba(255, 255, 255, 0.10);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.quick-liquid-option:focus-visible,
+.quick-liquid-btn:focus-visible,
+.quick-liquid-chip:focus-visible,
+.quick-liquid-chip-active:focus-visible {
+  outline: 2px solid rgba(224, 242, 254, 0.85);
+  outline-offset: 1px;
 }
 
 .quick-liquid-option.is-selected {
@@ -1238,12 +1300,285 @@ html[data-window-mode="quick"] body {
   transform: rotate(90deg);
 }
 
+/* === QuickBar Liquid Glass Cards, Chips, Inputs, Permissions & Clarification === */
+/* Sin backdrop-filter para evitar bloques negros en WKWebView transparente */
+.quick-liquid-card {
+  position: relative;
+  background: linear-gradient(
+    158deg,
+    rgba(255, 255, 255, 0.088) 0%,
+    rgba(224, 240, 255, 0.042) 48%,
+    rgba(10, 17, 32, 0.24) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.145);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(125, 211, 252, 0.06),
+    0 10px 26px -12px rgba(2, 6, 23, 0.52);
+}
+
+.quick-liquid-subcard {
+  position: relative;
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.075) 0%,
+    rgba(203, 213, 225, 0.038) 52%,
+    rgba(8, 13, 28, 0.22) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.035),
+    0 8px 20px -12px rgba(2, 6, 23, 0.45);
+}
+
+.quick-liquid-chip {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.105) 0%,
+    rgba(255, 255, 255, 0.045) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.20),
+    0 4px 12px -8px rgba(2, 6, 23, 0.45);
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.15s ease;
+}
+
+.quick-liquid-chip:hover {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.15) 0%,
+    rgba(191, 219, 254, 0.08) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.quick-liquid-chip-active {
+  background: linear-gradient(
+    135deg,
+    rgba(125, 211, 252, 0.22) 0%,
+    rgba(56, 189, 248, 0.10) 55%,
+    rgba(14, 165, 233, 0.14) 100%
+  );
+  border: 1px solid rgba(125, 211, 252, 0.36);
+  box-shadow:
+    inset 0 1px 0 rgba(224, 242, 254, 0.32),
+    0 6px 16px -8px rgba(56, 189, 248, 0.35);
+}
+
+.quick-liquid-input {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.075) 0%,
+    rgba(255, 255, 255, 0.035) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.quick-liquid-input:focus {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.105) 0%,
+    rgba(186, 230, 253, 0.05) 100%
+  );
+  border-color: rgba(125, 211, 252, 0.42);
+}
+
+/* Escoped Liquid Glass para CommandPermissionCard y ClarificationForm en QuickBar */
+.quick-capsule-shell .quick-liquid-permission {
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.078) 0%,
+    rgba(203, 213, 225, 0.035) 50%,
+    rgba(8, 13, 28, 0.22) 100%
+  ) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.20),
+    0 8px 20px -12px rgba(2, 6, 23, 0.48) !important;
+}
+
+.quick-capsule-shell .quick-liquid-permission pre,
+.quick-capsule-shell .quick-liquid-permission code,
+.quick-capsule-shell .quick-liquid-permission .bg-black\/55,
+.quick-capsule-shell .quick-liquid-permission .bg-white\/\[0\.035\] {
+  background: rgba(255, 255, 255, 0.055) !important;
+  border-color: rgba(255, 255, 255, 0.13) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.quick-capsule-shell .quick-liquid-permission button {
+  backdrop-filter: none !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.quick-capsule-shell .quick-liquid-clarify {
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.078) 0%,
+    rgba(203, 213, 225, 0.035) 50%,
+    rgba(8, 13, 28, 0.20) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.19),
+    0 8px 20px -12px rgba(2, 6, 23, 0.46);
+}
+
+.quick-capsule-shell .quick-liquid-clarify input {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.quick-capsule-shell .quick-liquid-clarify button {
+  backdrop-filter: none !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+/* ==========================================================================
+   MODALES NATIVOS (<dialog>) CON MATERIAL LIQUID GLASS Y TOP-LAYER TRANSITIONS
+   ========================================================================== */
+dialog.xook-liquid-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  padding: 0;
+  width: min(42rem, calc(100vw - 2rem));
+  max-width: calc(100vw - 2rem);
+  max-height: 88vh;
+  border: none;
+  border-radius: 1.25rem;
+  color: #f4f4f5;
+  overflow: hidden;
+  background: linear-gradient(
+    168deg,
+    rgba(20, 29, 48, 0.70) 0%,
+    rgba(10, 15, 26, 0.80) 54%,
+    rgba(14, 21, 36, 0.74) 100%
+  );
+  backdrop-filter: blur(32px) saturate(185%);
+  -webkit-backdrop-filter: blur(32px) saturate(185%);
+  box-shadow:
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 1px 0 rgba(186, 230, 253, 0.10),
+    inset 0 12px 24px -14px rgba(255, 255, 255, 0.12),
+    0 28px 64px -16px rgba(0, 0, 0, 0.78);
+  opacity: 0;
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: 0.2s;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  transition-behavior: allow-discrete;
+}
+
+dialog.xook-liquid-dialog::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.28) 0%,
+    rgba(224, 242, 254, 0.13) 28%,
+    rgba(196, 181, 253, 0.09) 56%,
+    rgba(244, 114, 182, 0.08) 76%,
+    rgba(255, 255, 255, 0.17) 100%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 2;
+}
+
+dialog.xook-liquid-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+dialog.xook-liquid-dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog.xook-liquid-dialog[open]:where(:not([data-closing])) {
+  opacity: 1;
+}
+
+dialog.xook-liquid-dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background-color: rgba(4, 6, 10, 0);
+  backdrop-filter: blur(0px);
+  -webkit-backdrop-filter: blur(0px);
+  transition-property: background-color, backdrop-filter, -webkit-backdrop-filter, display, overlay;
+  transition-duration: 0.2s;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  transition-behavior: allow-discrete;
+}
+
+dialog.xook-liquid-dialog[open]:where(:not([data-closing]))::backdrop {
+  background-color: rgba(4, 6, 10, 0.62);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+@starting-style {
+  dialog.xook-liquid-dialog[open]:where(:not([data-closing])) {
+    opacity: 0;
+  }
+
+  dialog.xook-liquid-dialog[open]:where(:not([data-closing]))::backdrop {
+    background-color: rgba(4, 6, 10, 0);
+    backdrop-filter: blur(0px);
+    -webkit-backdrop-filter: blur(0px);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  dialog.xook-liquid-dialog {
+    transform: translateY(6px) scale(0.97);
+  }
+
+  dialog.xook-liquid-dialog[open]:where(:not([data-closing])) {
+    transform: none;
+  }
+
+  @starting-style {
+    dialog.xook-liquid-dialog[open]:where(:not([data-closing])) {
+      transform: translateY(6px) scale(0.97);
+    }
+  }
+}
+
+@media (forced-colors: active) {
+  .xook-liquid-menu,
+  dialog.xook-liquid-dialog {
+    border: 1px solid CanvasText;
+  }
+
+  .quick-liquid-option.is-selected {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .xox-bubble, .xox-bubble-body, .xox-bubble-text, .xox-bubble-trail, .menu-in, .menu-out, .xox-mini-eye { animation: none; }
+  .menu-in, .menu-out, .xox-mini-eye { animation: none; }
   .xook-tree-item, .xook-node-highlight, .xook-save-flash, .xook-empty-float, .xook-task-card { animation: none; }
   .xook-chevron { transition: none; }
   .xox-bubble.is-leaving { opacity: 0; }
   .input-bubble, .input-console, .sidebar-slot, .splitter-aurora-glass, .quick-capsule-shell, .quick-liquid-btn, .quick-liquid-btn-ready, .quick-liquid-option, .xook-liquid-row td, .xook-task-card, .xook-approve-btn, .xook-stepper-btn { transition: none; }
+  dialog.xook-liquid-dialog,
+  dialog.xook-liquid-dialog::backdrop { transition-duration: 0.1s; }
   .input-console.is-expanded { transform: none; }
   .xox-shimmer, .quick-shimmer { animation: none; color: #cbd5e1; background-image: none; }
   .toast-in, .toast-out, .panel-fade-in, .panel-fade-out { animation: none; }

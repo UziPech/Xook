@@ -9,15 +9,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(quick_summon::SummonState::default())
         .manage(slices::command_runner::runner::CommandPermissionBroker::default())
+        .manage(slices::screen_context::watcher::ScreenContextState::default())
         .setup(|app| {
             if let Ok((_, active)) =
                 slices::workspace_manager::registry::ensure_active_workspace(app.handle())
             {
                 let root = std::path::PathBuf::from(&active.root_path);
-                let _ = slices::task_ledger::migrations::open_workspace_db(&root);
+                if let Ok(mut conn) = slices::task_ledger::migrations::open_workspace_db(&root) {
+                    let _ = slices::screen_context::store::sync_business_facts_from_workspace(
+                        &mut conn, &root,
+                    );
+                }
             }
             quick_summon::setup_quick_summon(app.handle())?;
             slices::scheduler::start_background_automation(app.handle().clone());
+            slices::screen_context::watcher::start_screen_watcher(app.handle().clone());
             Ok(())
         })
         .on_window_event(quick_summon::handle_window_event)
@@ -82,7 +88,15 @@ pub fn run() {
             quick_summon::begin_quick_drag,
             quick_summon::step_quick_drag,
             quick_summon::end_quick_drag,
-            quick_summon::reset_quick_position
+            quick_summon::reset_quick_position,
+            slices::screen_context::commands::get_screen_reader_status,
+            slices::screen_context::commands::set_screen_reader_config,
+            slices::screen_context::commands::request_screen_permission_cmd,
+            slices::screen_context::commands::open_screen_permission_settings,
+            slices::screen_context::commands::capture_screen_context_now,
+            slices::screen_context::commands::query_screen_memory_cmd,
+            slices::screen_context::commands::clear_screen_memory_cmd,
+            slices::screen_context::commands::get_unified_memory_context_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

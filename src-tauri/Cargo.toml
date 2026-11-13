@@ -9,7 +9,8 @@ edition = "2024"
 
 [lib]
 name = "xook_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop-only target: omit staticlib/cdylib to avoid multi-hundred-MB debug artifacts.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -24,6 +25,14 @@ chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.42.0", features = ["bundled"] }
 notify = "8"
 
+
+# Dev profile tuned to prevent multi-GB DWARF debug symbol bloat in target/debug.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = 0
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

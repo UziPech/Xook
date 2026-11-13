@@ -137,6 +137,60 @@ CREATE INDEX IF NOT EXISTS idx_command_executions_status_created
     ON command_executions (status, created_at DESC);
 "#;
 
+const MIGRATION_V2_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS screen_observations (
+    id TEXT PRIMARY KEY,
+    app_name TEXT NOT NULL DEFAULT '',
+    bundle_id TEXT NOT NULL DEFAULT '',
+    window_title TEXT NOT NULL DEFAULT '',
+    content_text TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL,
+    capture_mode TEXT NOT NULL DEFAULT 'display',
+    captured_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_screen_observations_captured_at
+    ON screen_observations (captured_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_screen_observations_expires_at
+    ON screen_observations (expires_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_screen_observations_hash
+    ON screen_observations (content_hash);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS screen_observations_fts USING fts5(
+    observation_id UNINDEXED,
+    app_name,
+    window_title,
+    content_text,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+
+CREATE TABLE IF NOT EXISTS agent_memory_items (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    source_ref TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_memory_kind_updated
+    ON agent_memory_items (kind, updated_at DESC);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts USING fts5(
+    memory_id UNINDEXED,
+    kind UNINDEXED,
+    category,
+    title,
+    content,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+"#;
+
 pub fn db_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(".xook").join("xook.db")
 }
@@ -189,6 +243,21 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<(), String> {
             .map_err(|e| format!("Error confirmando migración v1: {e}"))?;
     }
 
+    if current_version < 2 {
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Error iniciando transacción de migración v2: {e}"))?;
+        tx.execute_batch(MIGRATION_V2_SQL)
+            .map_err(|e| format!("Error aplicando migración v2: {e}"))?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![2i64, Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| format!("Error registrando migración v2: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("Error confirmando migración v2: {e}"))?;
+    }
+
     Ok(())
 }
 
@@ -213,7 +282,11 @@ mod tests {
         let conn1 = open_workspace_db(&dir).expect("first open succeeds");
         let mut names: Vec<String> = conn1
             .prepare(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name NOT LIKE 'sqlite_%'
+                   AND name NOT LIKE '%_fts_%'
+                 ORDER BY name",
             )
             .unwrap()
             .query_map([], |row| row.get(0))
@@ -226,11 +299,15 @@ mod tests {
             names,
             vec![
                 "agenda_items",
+                "agent_memory_fts",
+                "agent_memory_items",
                 "command_executions",
                 "decision_history",
                 "inventory_items",
                 "review_runs",
                 "schema_migrations",
+                "screen_observations",
+                "screen_observations_fts",
                 "tasks",
                 "workspace_audit_log",
             ]
@@ -241,7 +318,7 @@ mod tests {
         let count: i64 = conn2
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
 
         let fk: i64 = conn2
             .query_row("PRAGMA foreign_keys;", [], |r| r.get(0))

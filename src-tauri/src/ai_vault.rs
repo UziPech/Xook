@@ -387,8 +387,15 @@ pub async fn run_xox_chat<R: Runtime>(
     };
 
     let script = find_sidecar_script(&app)?;
-    let workspace_root = crate::slices::workspace_manager::registry::resolve_active_workspace_root(&app)
+    let workspace_root_path = crate::slices::workspace_manager::registry::resolve_active_workspace_root(&app);
+    let workspace_root = workspace_root_path
+        .as_ref()
         .map(|p| p.to_string_lossy().to_string());
+    let (facts, screen_summary) =
+        crate::slices::screen_context::store::build_unified_memory_for_workspace(
+            workspace_root_path.as_deref(),
+            &payload.message,
+        );
     let model_id = payload
         .model_override
         .map(|s| s.trim().to_string())
@@ -410,6 +417,10 @@ pub async fn run_xox_chat<R: Runtime>(
                 "attached_context": payload.attached_context,
                 "user_profile": payload.user_profile,
                 "active_canvas": payload.active_canvas,
+                "unified_memory": {
+                    "facts": facts,
+                    "screen_summary": screen_summary,
+                },
             }),
         )
     })
@@ -2038,6 +2049,102 @@ fn handle_calendar_create_rpc_callback<R: Runtime>(
     })
 }
 
+fn handle_read_screen_rpc_callback<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+) -> serde_json::Value {
+    let mode = parsed.get("mode").and_then(|v| v.as_str());
+    let include_image = parsed
+        .get("include_image")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let save_observation = parsed
+        .get("save_observation")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    match crate::slices::screen_context::commands::capture_live_for_agent(
+        app,
+        mode,
+        include_image,
+        save_observation,
+    ) {
+        Ok(res) => serde_json::to_value(&res).unwrap_or_else(|e| {
+            serde_json::json!({ "ok": false, "error": e.to_string() })
+        }),
+        Err(err) => serde_json::json!({ "ok": false, "error": err }),
+    }
+}
+
+fn handle_query_screen_memory_rpc_callback<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::screen_context::store;
+    use crate::slices::task_ledger::migrations::open_workspace_db;
+    use crate::slices::workspace_manager::registry::resolve_active_workspace_root;
+
+    let root = fallback_workspace_root
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| resolve_active_workspace_root(app));
+
+    let Some(ws_root) = root else {
+        return serde_json::json!({ "ok": true, "count": 0, "observations": [] });
+    };
+    let Ok(conn) = open_workspace_db(&ws_root) else {
+        return serde_json::json!({ "ok": false, "error": "No se pudo abrir la base de datos local." });
+    };
+    let query = parsed
+        .get("query")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let limit = parsed
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .unwrap_or(5);
+    let now = chrono::Utc::now();
+    let items = if query.trim().is_empty() {
+        store::list_recent_screen_observations(&conn, limit, now).unwrap_or_default()
+    } else {
+        store::query_screen_observations_fts(&conn, query, limit, now).unwrap_or_default()
+    };
+    serde_json::json!({
+        "ok": true,
+        "count": items.len(),
+        "observations": items,
+    })
+}
+
+fn handle_memory_search_rpc_callback<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::screen_context::store;
+    use crate::slices::workspace_manager::registry::resolve_active_workspace_root;
+
+    let root = fallback_workspace_root
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| resolve_active_workspace_root(app));
+    let query = parsed
+        .get("query")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let (facts, screen_summary) =
+        store::build_unified_memory_for_workspace(root.as_deref(), query);
+    serde_json::json!({
+        "ok": true,
+        "factsCount": facts.len(),
+        "facts": facts,
+        "screenSummary": screen_summary,
+    })
+}
+
 fn call_python_sidecar_streaming<R: Runtime>(
     app: &AppHandle<R>,
     script_path: &PathBuf,
@@ -2102,6 +2209,11 @@ fn call_python_sidecar_streaming<R: Runtime>(
                 "os_calendar_create_event" => {
                     Some(handle_calendar_create_rpc_callback(app, &parsed, ws_ref))
                 }
+                "read_screen_now" => Some(handle_read_screen_rpc_callback(app, &parsed)),
+                "query_screen_memory" => {
+                    Some(handle_query_screen_memory_rpc_callback(app, &parsed, ws_ref))
+                }
+                "memory_search" => Some(handle_memory_search_rpc_callback(app, &parsed, ws_ref)),
                 _ => None,
             };
             if let Some(cb_result) = cb_result_opt {
@@ -2190,8 +2302,15 @@ pub async fn run_xox_chat_stream<R: Runtime>(
     };
 
     let script = find_sidecar_script(&app)?;
-    let workspace_root = crate::slices::workspace_manager::registry::resolve_active_workspace_root(&app)
+    let workspace_root_path = crate::slices::workspace_manager::registry::resolve_active_workspace_root(&app);
+    let workspace_root = workspace_root_path
+        .as_ref()
         .map(|p| p.to_string_lossy().to_string());
+    let (facts, screen_summary) =
+        crate::slices::screen_context::store::build_unified_memory_for_workspace(
+            workspace_root_path.as_deref(),
+            &payload.message,
+        );
     let model_id = payload
         .model_override
         .map(|s| s.trim().to_string())
@@ -2218,6 +2337,10 @@ pub async fn run_xox_chat_stream<R: Runtime>(
                 "attached_context": payload.attached_context,
                 "user_profile": payload.user_profile,
                 "active_canvas": payload.active_canvas,
+                "unified_memory": {
+                    "facts": facts,
+                    "screen_summary": screen_summary,
+                },
             }),
         )
     })

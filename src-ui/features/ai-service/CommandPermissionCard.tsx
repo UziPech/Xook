@@ -50,6 +50,7 @@ export interface CommandPermissionUiItem {
 interface CommandPermissionCardProps {
   item: CommandPermissionUiItem;
   compact?: boolean;
+  surfaceVariant?: "default" | "liquid";
   onResolve: (requestId: string, decision: CommandPermissionDecisionKind) => void;
 }
 
@@ -235,6 +236,7 @@ function resolveActionCopy(item: CommandPermissionUiItem): ActionCopySpec {
 export const CommandPermissionCard: React.FC<CommandPermissionCardProps> = ({
   item,
   compact = false,
+  surfaceVariant = "default",
   onResolve,
 }) => {
   const [showTechnical, setShowTechnical] = useState(false);
@@ -269,11 +271,15 @@ export const CommandPermissionCard: React.FC<CommandPermissionCardProps> = ({
     Boolean(outputText) ||
     Boolean(item.error);
 
+  const isLiquid = surfaceVariant === "liquid";
+
   return (
     <div
-      className={`panel-fade-in rounded-xl border ${risk.borderClass} bg-[#0d111a]/90 backdrop-blur-md transition-colors ${
-        compact ? "p-2.5 text-[11.5px]" : "p-3 text-[12px]"
-      }`}
+      className={`panel-fade-in rounded-xl border ${risk.borderClass} ${
+        isLiquid
+          ? "quick-liquid-subcard quick-liquid-permission [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]"
+          : "bg-[#0d111a]/90 backdrop-blur-md"
+      } transition-colors ${compact ? "p-2.5 text-[11.5px]" : "p-3 text-[12px]"}`}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-start gap-2 min-w-0">

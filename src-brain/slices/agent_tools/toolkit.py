@@ -667,6 +667,69 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_screen_now",
+            "description": (
+                "Lee en tiempo real lo que el usuario está viendo ahora mismo en su pantalla o ventana activa "
+                "(combina texto exacto OCR/accesibilidad e inspección visual en RAM sin guardar capturas en disco). "
+                "Úsala SIEMPRE que el usuario diga 'lee la pantalla', 'qué ves', 'mira esto', 'qué dice aquí', "
+                "'revisa esta ventana' o pregunte sobre contenido visible en su pantalla. NUNCA uses comandos de terminal para esto."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["display", "window"],
+                        "description": "'display' para toda la pantalla detrás de QuickBar (default), o 'window' para la ventana frontal específica.",
+                    },
+                    "include_image": {
+                        "type": "boolean",
+                        "description": "Si incluir vista visual momentánea en RAM además del texto leído (default true).",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Motivo breve de lectura en lenguaje natural.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_screen_memory",
+            "description": (
+                "Consulta observaciones de texto recientes (últimos minutos) de pantallas y ventanas que el usuario estuvo viendo."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Palabras clave opcionales para buscar en lo visto recientemente."},
+                    "limit": {"type": "integer", "description": "Máximo de observaciones recientes a traer (default 5)."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_search",
+            "description": (
+                "Busca hechos guardados del negocio en memoria/hechos.md y contexto reciente indexado por SQLite FTS5 sin límite de caracteres."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Tema o palabras clave a recordar."},
+                    "limit": {"type": "integer", "description": "Máximo de elementos relevantes."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -684,6 +747,7 @@ class WorkspaceToolExecutor:
         self.command_bridge = command_bridge
         self.staged_tasks: List[Dict[str, Any]] = []
         self.generated_pdfs: List[Dict[str, Any]] = []
+        self.transient_tool_images: List[Dict[str, Any]] = []
         self.workspace_mutated = False
 
     def _emit_workspace_changed(self, path: str, action: str) -> None:
@@ -717,6 +781,9 @@ class WorkspaceToolExecutor:
             "os_create_calendar_event": self._tool_os_create_calendar_event,
             "pdf_read": self._tool_pdf_read,
             "pdf_generate": self._tool_pdf_generate,
+            "read_screen_now": self._tool_read_screen_now,
+            "query_screen_memory": self._tool_query_screen_memory,
+            "memory_search": self._tool_memory_search,
         }.get(name)
         if not handler:
             return {"ok": False, "error": f"Herramienta desconocida: {name}"}
@@ -1485,5 +1552,78 @@ class WorkspaceToolExecutor:
             },
             "Crear eventos en el Calendario requiere la sesión de escritorio con Guardián activo.",
         )
+
+    def _tool_read_screen_now(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        mode = str(args.get("mode") or "display").strip().lower()
+        if mode not in ("display", "window"):
+            mode = "display"
+        include_image = bool(args.get("include_image", True))
+        raw = self._require_bridge(
+            "read_screen_now",
+            "scr",
+            {
+                "mode": mode,
+                "include_image": include_image,
+                "save_observation": True,
+            },
+            "La lectura de pantalla en tiempo real requiere la aplicación de escritorio activa.",
+        )
+        if not isinstance(raw, dict):
+            return {"ok": False, "error": "Respuesta inválida del lector de pantalla."}
+
+        result = dict(raw)
+        img_url = result.pop("imageDataUrl", None)
+        if isinstance(img_url, str) and img_url.startswith("data:image/"):
+            self.transient_tool_images.append({
+                "appName": result.get("appName") or "Pantalla",
+                "windowTitle": result.get("windowTitle") or "",
+                "imageDataUrl": img_url,
+            })
+            result["has_visual_image"] = True
+        else:
+            result["has_visual_image"] = False
+
+        if result.get("blockedSensitive"):
+            return {
+                "ok": True,
+                "blocked_sensitive": True,
+                "sensitive_reason": result.get("sensitiveReason") or "Ventana protegida o campo de contraseña",
+                "note": "Por privacidad se omitió la lectura porque hay una app o campo sensible activo.",
+            }
+        if not result.get("permissionGranted", True):
+            return {
+                "ok": False,
+                "permission_required": True,
+                "error": (
+                    result.get("error")
+                    or "XOOK aún no tiene permiso de Grabación de Pantalla en Ajustes del Sistema > Privacidad y Seguridad."
+                ),
+            }
+        return result
+
+    def _tool_query_screen_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        query = str(args.get("query") or "").strip()
+        try:
+            limit = max(1, min(12, int(args.get("limit") or 5)))
+        except (TypeError, ValueError):
+            limit = 5
+        return self._require_bridge(
+            "query_screen_memory",
+            "scrmem",
+            {"query": query, "limit": limit},
+            "Consultar memoria reciente de pantalla requiere la app de escritorio activa.",
+        )
+
+    def _tool_memory_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return {"ok": False, "error": "Falta el parámetro 'query' para buscar en memoria."}
+        return self._require_bridge(
+            "memory_search",
+            "mem",
+            {"query": query},
+            "La búsqueda unificada de memoria requiere la app de escritorio activa.",
+        )
+
 
 

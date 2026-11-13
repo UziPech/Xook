@@ -17,7 +17,6 @@ import {
   Cpu,
   AtSign,
   KeyRound,
-  Sparkles,
   Activity,
   RefreshCw,
   Trash2,
@@ -29,6 +28,7 @@ import {
 } from "lucide-react";
 import { XoxStar, XoxState } from "./components/XoxStar";
 import { XookWordmark } from "./components/XookBrand";
+import { LiquidGlassBackdrop } from "./components/LiquidGlassBackdrop";
 import { useAnimatedPresence } from "./hooks/useAnimatedPresence";
 import {
   CanvasArtifact,
@@ -471,7 +471,6 @@ export default function App() {
   const [pdfPanelState, setPdfPanelState] = useState<PdfWorkspaceState | null>(null);
   const [taskTab, setTaskTab] = useState<TaskPanelTab>("pending");
   const [selectedContext, setSelectedContext] = useState<ContextItem | null>(null);
-  const [showStatePreview, setShowStatePreview] = useState<boolean>(false);
 
   const pdfPreviewReqRef = useRef<number>(0);
   const rightPanelAutoOpenedTurnRef = useRef<string | null>(null);
@@ -508,6 +507,8 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement>(null);
+  const contextTriggerRef = useRef<HTMLButtonElement>(null);
 
   // Archivos adjuntos, modelo activo, bóveda IA y chat real
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -623,7 +624,6 @@ export default function App() {
   const usageSummary = (() => {
     if (!aiConfig.hasApiKey) {
       return {
-        primary: "Conectar IA",
         tierLabel: "OpenRouter",
         headline: "Sin conectar",
         detail: "Conecta tu clave para consultar límites y modelos",
@@ -634,7 +634,6 @@ export default function App() {
 
     if (!accountUsage) {
       return {
-        primary: activeModel.name,
         tierLabel: "Límite OpenRouter",
         headline: "Consultando…",
         detail: `${requestsToday} consultas hoy en este equipo`,
@@ -645,7 +644,6 @@ export default function App() {
 
     if (!accountUsage.ok) {
       return {
-        primary: "OpenRouter · Revisar clave",
         tierLabel: "Límite OpenRouter",
         headline: "Error de acceso",
         detail: accountUsage.message || "Verifica tu clave en OpenRouter",
@@ -659,7 +657,6 @@ export default function App() {
         const usedUsd = Math.max(0, accountUsage.limit - accountUsage.limit_remaining);
         const pct = Math.min(100, Math.round((usedUsd / accountUsage.limit) * 100));
         return {
-          primary: `OpenRouter · $${accountUsage.limit_remaining.toFixed(2)} disp.`,
           tierLabel: "Límite OpenRouter",
           headline: `$${accountUsage.limit_remaining.toFixed(2)} / $${accountUsage.limit.toFixed(2)}`,
           detail: `Uso hoy: $${(accountUsage.usage_daily ?? 0).toFixed(4)} USD · ${requestsToday} consultas`,
@@ -675,7 +672,6 @@ export default function App() {
         const usedUsd = Math.max(0, accountUsage.credits_total - accountUsage.credits_remaining);
         const pct = Math.min(100, Math.round((usedUsd / accountUsage.credits_total) * 100));
         return {
-          primary: `OpenRouter · $${accountUsage.credits_remaining.toFixed(2)} disp.`,
           tierLabel: "Saldo OpenRouter",
           headline: `$${accountUsage.credits_remaining.toFixed(2)} USD`,
           detail: `Gastado hoy: $${(accountUsage.usage_daily ?? 0).toFixed(4)} USD · ${requestsToday} consultas`,
@@ -684,7 +680,6 @@ export default function App() {
         };
       }
       return {
-        primary: "OpenRouter · Con saldo",
         tierLabel: "Límite OpenRouter",
         headline: "Plan activo",
         detail: `Gasto hoy: $${(accountUsage.usage_daily ?? 0).toFixed(4)} USD · ${requestsToday} consultas`,
@@ -697,7 +692,6 @@ export default function App() {
     const rpmLimit = accountUsage.rpm_free_limit || 20;
     const pct = Math.min(100, Math.round((requestsToday / dailyLimit) * 100));
     return {
-      primary: `OpenRouter · ${requestsToday}/${dailyLimit} hoy`,
       tierLabel: "Límite OpenRouter (Gratis)",
       headline: `${requestsToday} / ${dailyLimit} hoy`,
       detail: `${rpmLimit}/min máx. · ${
@@ -1157,8 +1151,14 @@ export default function App() {
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setShowModelMenu(false);
-        setShowContextMenu(false);
+        if (showModelMenu) {
+          setShowModelMenu(false);
+          modelTriggerRef.current?.focus();
+        }
+        if (showContextMenu) {
+          setShowContextMenu(false);
+          contextTriggerRef.current?.focus();
+        }
       }
     };
     window.addEventListener("mousedown", onDown);
@@ -1168,6 +1168,36 @@ export default function App() {
       window.removeEventListener("keydown", onKey);
     };
   }, [showModelMenu, showContextMenu]);
+
+  const handleListboxKeyDown = (
+    e: React.KeyboardEvent<HTMLDivElement>,
+    closeMenu: () => void,
+    triggerEl: HTMLButtonElement | null
+  ) => {
+    const items = Array.from(
+      e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)')
+    );
+    if (items.length === 0) return;
+    const currentIndex = items.findIndex((el) => el === document.activeElement);
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      items[(currentIndex + 1) % items.length]?.focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      items[(currentIndex - 1 + items.length) % items.length]?.focus();
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      items[0]?.focus();
+    } else if (e.key === "End") {
+      e.preventDefault();
+      items[items.length - 1]?.focus();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu();
+      triggerEl?.focus();
+    }
+  };
 
   // Atajo de teclado ⌘K para enfocar el input y respaldo local ⌘⇧X para Quick Bar
   useEffect(() => {
@@ -2981,21 +3011,6 @@ export default function App() {
     xoxState === "talking" ||
     xoxState === "syncing";
 
-  // Vista previa manual de un estado de Xox (selector de desarrollo)
-  const previewXoxState = (s: XoxState) => {
-    const messages: Record<XoxState, string> = {
-      idle: "¿En qué puedo ayudarte?",
-      talking: "Te explico lo que encontré en el inventario.",
-      thinking: "Analizando reglas activas y niveles de stock...",
-      reading: "Leyendo archivos de contexto y reglas de la tienda...",
-      syncing: "Sincronizando memoria y contexto...",
-      success: "¡Listo! Acción completada.",
-      alert: "Atención: stock crítico detectado en varios productos.",
-    };
-    setXoxState(s);
-    setXoxMessage(messages[s]);
-  };
-
   // Saludo al hacer clic: única situación en la que aparece la burbuja de diálogo
   const handleXoxClick = () => {
     if (xoxState !== "idle" || greeting) return;
@@ -3009,7 +3024,7 @@ export default function App() {
         setGreeting(null);
         setGreetingLeaving(false);
         setXoxState((s) => (s === "success" ? "idle" : s));
-      }, 3750),
+      }, 3640),
     ];
   };
 
@@ -3334,7 +3349,6 @@ export default function App() {
 
   const modelMenuPresence = useAnimatedPresence(showModelMenu, 150);
   const contextMenuPresence = useAnimatedPresence(showContextMenu, 150);
-  const statePreviewPresence = useAnimatedPresence(showStatePreview, 150);
   const activeContextCount = contextItems.filter((item) => inputPrompt.includes(`@${item.name}`)).length;
 
   return (
@@ -3366,53 +3380,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* Lado Derecho: Registro Local + Estado OpenRouter + Toggle de Tareas y Decisiones */}
+        {/* Lado Derecho: Toggle de Canvas + Tareas y Decisiones */}
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowLocalAuth(true)}
-            title={
-              localUser
-                ? `${localUser.name} · ${localUser.role} (${localUser.storeName}) — Perfil local`
-                : "Crear perfil de operador local"
-            }
-            className="quick-liquid-btn px-2.5 py-1.5 rounded-lg text-zinc-200 hover:text-white flex items-center gap-1.5 cursor-pointer"
-          >
-            <UserCircle2
-              className={`w-3.5 h-3.5 ${
-                localUser ? "text-emerald-400" : "text-zinc-400"
-              }`}
-            />
-            <span className="text-[11px] font-medium max-w-[110px] truncate hidden sm:inline">
-              {localUser ? localUser.name : "Registro local"}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowAiSettings(true)}
-            title={
-              aiConfig.hasApiKey
-                ? `${usageSummary.primary} · Modelo: ${activeModel.name}`
-                : "Configurar clave de OpenRouter"
-            }
-            className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer ${
-              aiConfig.hasApiKey
-                ? "quick-liquid-btn text-zinc-200 hover:text-white"
-                : "border bg-amber-500/10 hover:bg-amber-500/15 text-amber-200 border-amber-400/25 transition-all"
-            }`}
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                aiConfig.hasApiKey ? "bg-emerald-400" : "bg-amber-400 animate-pulse"
-              }`}
-            />
-            <KeyRound className="w-3 h-3 opacity-80" />
-            <span className="text-[11px] font-medium max-w-[190px] truncate hidden sm:inline">
-              {usageSummary.primary}
-            </span>
-          </button>
-
           {activeCanvas && (
             <button
               type="button"
@@ -3887,25 +3856,23 @@ export default function App() {
               {/* ========================================================================= */}
               {chatMessages.length === 0 ? (
                 <div className="min-h-[calc(100vh-18rem)] flex flex-col items-center justify-center py-2 text-center">
-                  {/* Estrella Xox: protagonista en el Home, con burbuja de diálogo flotante */}
-                  <div
-                    className="relative flex flex-col items-center justify-center cursor-pointer select-none -mb-6 sm:-mb-8"
-                    title="Haz clic para saludar a Xox"
-                  >
+                  {/* Estrella Xox: protagonista en el Home (~20% más grande); hit-target solo sobre la estrella */}
+                  <div className="relative flex flex-col items-center justify-center select-none pointer-events-none -mt-8 -mb-10 sm:-mt-10 sm:-mb-14 lg:-mb-16">
                     <XoxStar
                       state={xoxState}
                       responsive
-                      className="w-64 h-64 sm:w-80 sm:h-80 lg:w-[340px] lg:h-[340px] xl:w-[380px] xl:h-[380px]"
+                      hitArea="star"
+                      className="w-[308px] h-[308px] sm:w-[384px] sm:h-[384px] lg:w-[408px] lg:h-[408px] xl:w-[456px] xl:h-[456px]"
                       summonTrigger={summonSeq}
                       onClick={handleXoxClick}
                     />
 
-                    {/* Burbuja de saludo Liquid Glass (solo al hacer clic en Xox) */}
+                    {/* Burbuja de saludo Liquid Glass (solo al hacer clic sobre la estrella Xox) */}
                     {greeting && (
                       <div
                         role="status"
                         aria-live="polite"
-                        className={`xox-bubble absolute left-[61%] bottom-[73%] z-10 pointer-events-none ${
+                        className={`xox-bubble absolute left-[60%] bottom-[69%] z-20 pointer-events-none ${
                           greetingLeaving ? "is-leaving" : ""
                         }`}
                       >
@@ -3921,157 +3888,69 @@ export default function App() {
                     )}
                   </div>
 
-                  {/* Saludo Humano Amplio y Protagonista */}
-                  <div className="space-y-3.5 max-w-2xl px-4 flex flex-col items-center">
-                    <h1 className="text-2xl sm:text-3xl lg:text-[34px] font-semibold leading-tight text-white tracking-tight">
+                  {/* Saludo Humano Amplio y Protagonista (espacio reservado fijo para evitar saltos verticales) */}
+                  <div className="relative z-10 space-y-2.5 max-w-2xl px-4 flex flex-col items-center">
+                    <h1 className="text-2xl sm:text-3xl lg:text-[34px] font-semibold leading-tight text-white tracking-tight select-text">
                       {localUser
                         ? `Hola ${localUser.name.split(" ")[0]}, ¿en qué puedo ayudarte?`
                         : "¿En qué puedo ayudarte?"}
                     </h1>
-                    {conversations.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => handleSelectConversation(conversations[0])}
-                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-[11px] text-zinc-300 hover:text-white transition-colors cursor-pointer"
-                        title="Retomar tu última conversación guardada"
-                      >
-                        <MessageSquare className="w-3 h-3 text-zinc-400" />
-                        <span className="truncate max-w-[260px]">
-                          Retomar: {conversations[0].title}
-                        </span>
-                      </button>
-                    )}
 
-                    {/* Estado activo de Xox durante los procesos */}
-                    {xoxStatusPresence.mounted && (
-                      <div
-                        className={`${
-                          isXoxStatusOpen ? "toast-in" : "toast-out pointer-events-none"
-                        } inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] backdrop-blur-md`}
-                      >
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            displayXoxStatus.state === "thinking" || displayXoxStatus.state === "reading"
-                              ? "bg-cyan-400 animate-ping"
-                              : displayXoxStatus.state === "success"
-                              ? "bg-emerald-400"
-                              : displayXoxStatus.state === "syncing"
-                              ? "bg-teal-400 animate-pulse"
-                              : displayXoxStatus.state === "alert"
-                              ? "bg-red-500 animate-pulse"
-                              : "bg-cyan-400"
-                          }`}
-                        />
-                        <p
-                          className={`text-xs ${
-                            displayXoxStatus.busy
-                              ? "xox-shimmer font-medium"
-                              : displayXoxStatus.state === "alert"
-                              ? "text-red-300"
-                              : "text-zinc-300"
-                          }`}
+                    <div className="min-h-[28px] flex items-center justify-center">
+                      {xoxStatusPresence.mounted ? (
+                        <div
+                          className={`${
+                            isXoxStatusOpen ? "toast-in" : "toast-out pointer-events-none"
+                          } inline-flex items-center gap-2 text-xs`}
                         >
-                          {displayXoxStatus.message}
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Acciones rápidas iniciales */}
-                    <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runPromptQuery("Evalúa el stock urgente del almacén y propón qué hacer")
-                        }
-                        className="quick-liquid-btn group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs text-zinc-200 hover:text-white cursor-pointer"
-                      >
-                        <Sparkles className="w-3 h-3 text-sky-100/70 group-hover:text-sky-100 transition-colors" />
-                        <span>Evaluar stock urgente</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runPromptQuery(
-                            "Crea un temporizador de 15 minutos para confirmar recepción de mercancía"
-                          )
-                        }
-                        className="quick-liquid-btn group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs text-zinc-200 hover:text-white cursor-pointer"
-                      >
-                        <Sparkles className="w-3 h-3 text-sky-100/70 group-hover:text-sky-100 transition-colors" />
-                        <span>Crear timer de 15 min</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runPromptQuery(
-                            "Genera una tabla comparativa en Canvas de nuestros proveedores de café considerando costo, tiempo de entrega y margen"
-                          )
-                        }
-                        className="quick-liquid-btn group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs text-zinc-200 hover:text-white cursor-pointer"
-                      >
-                        <Table2 className="w-3 h-3 text-sky-200/85 group-hover:text-sky-100 transition-colors" />
-                        <span>Tabla comparativa</span>
-                      </button>
-
-                      {!aiConfig.hasApiKey ? (
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              displayXoxStatus.state === "thinking" || displayXoxStatus.state === "reading"
+                                ? "bg-cyan-400 animate-ping"
+                                : displayXoxStatus.state === "success"
+                                ? "bg-emerald-400"
+                                : displayXoxStatus.state === "syncing"
+                                ? "bg-teal-400 animate-pulse"
+                                : displayXoxStatus.state === "alert"
+                                ? "bg-red-500 animate-pulse"
+                                : "bg-cyan-400"
+                            }`}
+                          />
+                          <p
+                            className={
+                              displayXoxStatus.busy
+                                ? "xox-shimmer font-medium"
+                                : displayXoxStatus.state === "alert"
+                                ? "text-red-300"
+                                : "text-zinc-300"
+                            }
+                          >
+                            {displayXoxStatus.message}
+                          </p>
+                        </div>
+                      ) : !aiConfig.hasApiKey ? (
                         <button
                           type="button"
                           onClick={() => setShowAiSettings(true)}
-                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-500/10 hover:bg-amber-500/15 border border-amber-400/25 text-xs text-amber-200 transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-100 underline-offset-4 hover:underline transition-colors cursor-pointer"
                         >
                           <KeyRound className="w-3 h-3" />
                           <span>Conectar clave OpenRouter</span>
                         </button>
-                      ) : (
+                      ) : conversations.length > 0 ? (
                         <button
                           type="button"
-                          onClick={() =>
-                            runPromptQuery("Organiza y resume mis tareas pendientes en tarjetas")
-                          }
-                          className="quick-liquid-btn group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs text-zinc-200 hover:text-white cursor-pointer"
+                          onClick={() => handleSelectConversation(conversations[0])}
+                          className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-100 transition-colors cursor-pointer"
+                          title="Retomar tu última conversación guardada"
                         >
-                          <Sparkles className="w-3 h-3 text-sky-100/70 group-hover:text-sky-100 transition-colors" />
-                          <span>Consolidar tareas</span>
+                          <MessageSquare className="w-3 h-3 text-zinc-500" />
+                          <span className="truncate max-w-[280px]">
+                            Retomar: {conversations[0].title}
+                          </span>
                         </button>
-                      )}
+                      ) : null}
                     </div>
-
-                    {/* Selector de estados para desarrollo (plegado y discreto por defecto) */}
-                    {import.meta.env.DEV && (
-                      <div className="pt-0.5 flex flex-col items-center">
-                        <button
-                          type="button"
-                          onClick={() => setShowStatePreview((v) => !v)}
-                          className="text-[10px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors cursor-pointer"
-                        >
-                          {showStatePreview ? "ocultar estados de prueba" : "• probar estados de Xox"}
-                        </button>
-                        {statePreviewPresence.mounted && (
-                          <div
-                            className={`${
-                              showStatePreview ? "panel-fade-in" : "panel-fade-out pointer-events-none"
-                            } flex flex-wrap items-center justify-center gap-1 pt-1.5`}
-                          >
-                            {(["idle", "reading", "thinking", "talking", "syncing", "alert", "success"] as XoxState[]).map((s) => (
-                              <button
-                                key={s}
-                                type="button"
-                                onClick={() => previewXoxState(s)}
-                                className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border cursor-pointer transition-colors ${
-                                  xoxState === s
-                                    ? "bg-white/10 border-white/25 text-white"
-                                    : "bg-white/[0.02] border-white/[0.06] text-zinc-500 hover:text-zinc-300"
-                                }`}
-                              >
-                                {s}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                 </div>
               ) : (
@@ -4293,6 +4172,7 @@ export default function App() {
                     {/* Desplegable de modelos */}
                     <div ref={modelMenuRef} className="relative shrink-0 mb-0.5">
                       <button
+                        ref={modelTriggerRef}
                         type="button"
                         onClick={() => {
                           setShowContextMenu(false);
@@ -4302,98 +4182,115 @@ export default function App() {
                         aria-expanded={showModelMenu}
                         className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] text-zinc-200 hover:text-white cursor-pointer"
                       >
-                        <Cpu className="w-3 h-3 text-sky-100/75" />
+                        <Cpu className="w-3 h-3 text-white/80" />
                         <span className="hidden @sm:inline">{activeModel.name}</span>
                         <ChevronDown className={`w-3 h-3 text-white/65 transition-transform ${showModelMenu ? "rotate-180" : ""}`} />
                       </button>
                       {modelMenuPresence.mounted && (
                         <div
                           role="listbox"
-                          className={`${
+                          aria-label="Modelos disponibles"
+                          onKeyDown={(e) =>
+                            handleListboxKeyDown(
+                              e,
+                              () => setShowModelMenu(false),
+                              modelTriggerRef.current
+                            )
+                          }
+                          className={`xook-liquid-menu ${
                             showModelMenu ? "menu-in" : "menu-out pointer-events-none"
-                          } absolute right-0 bottom-full mb-2 w-72 p-1.5 rounded-xl bg-zinc-900/95 border border-white/10 shadow-2xl backdrop-blur-xl z-30`}
+                          } absolute right-0 bottom-full mb-2 w-72 p-1.5 rounded-2xl z-30`}
                         >
-                          <div className="px-2 py-1.5 flex items-center justify-between border-b border-white/[0.06] mb-1">
-                            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-                              Modelos disponibles ({availableQuickModels.length})
-                            </span>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void refreshModelsAndUsage(true);
-                              }}
-                              title="Actualizar catálogo y límites de OpenRouter"
-                              className="p-1 rounded text-zinc-400 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
-                            >
-                              <RefreshCw className={`w-3 h-3 ${loadingModels ? "animate-spin" : ""}`} />
-                            </button>
-                          </div>
+                          <LiquidGlassBackdrop variant="menu" />
 
-                          {!canUsePaidModels && (
-                            <div className="mx-1 mb-1.5 px-2 py-1.5 rounded-lg bg-emerald-500/5 border border-emerald-500/15 text-[10px] text-zinc-400 leading-snug">
-                              {aiConfig.hasApiKey
-                                ? "Mostrando solo modelos que funcionan sin saldo en tu cuenta."
-                                : "Vista previa de modelos gratuitos disponibles en OpenRouter."}
-                            </div>
-                          )}
-
-                          {unavailableModelIds.size > 0 && (
-                            <div className="mx-1 mb-1.5 px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-200/90 leading-snug">
-                              Se ocultaron {unavailableModelIds.size} modelo(s) que devolvieron error o límite.
-                            </div>
-                          )}
-
-                          <div className="max-h-56 overflow-y-auto space-y-0.5">
-                            {availableQuickModels.map((m) => (
+                          <div className="relative z-[1]">
+                            <div className="px-2.5 py-1.5 flex items-center justify-between border-b border-white/[0.08] mb-1.5">
+                              <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-300/80">
+                                Modelos disponibles ({availableQuickModels.length})
+                              </span>
                               <button
-                                key={m.id}
                                 type="button"
-                                role="option"
-                                aria-selected={m.id === modelId}
-                                onClick={() => void handleSelectModel(m.id)}
-                                className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-left transition-colors cursor-pointer ${
-                                  m.id === modelId ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"
-                                }`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void refreshModelsAndUsage(true);
+                                }}
+                                aria-label="Actualizar catálogo y límites de OpenRouter"
+                                title="Actualizar catálogo y límites de OpenRouter"
+                                className="w-6 h-6 rounded-full flex items-center justify-center text-zinc-300/80 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
                               >
-                                <span className="min-w-0">
-                                  <span className="flex items-center gap-1.5 text-xs text-zinc-100 truncate">
-                                    <span className="truncate">{m.name}</span>
-                                    {canUsePaidModels && m.is_free && (
-                                      <span className="px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-300 text-[9px] font-medium shrink-0">
-                                        gratis
-                                      </span>
-                                    )}
-                                  </span>
-                                  <span className="block text-[10px] text-zinc-500 truncate">
-                                    {m.hint}
-                                  </span>
-                                </span>
-                                {m.id === modelId && (
-                                  <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                                )}
+                                <RefreshCw className={`w-3 h-3 ${loadingModels ? "animate-spin" : ""}`} />
                               </button>
-                            ))}
-                          </div>
+                            </div>
 
-                          <div className="mt-1 pt-1.5 border-t border-white/[0.08] space-y-1">
-                            {aiConfig.hasApiKey && (
-                              <div className="px-2.5 py-1 flex items-center justify-between text-[10px] text-zinc-400">
-                                <span className="truncate">{usageSummary.tierLabel}</span>
-                                <span className="font-mono text-zinc-200 shrink-0">{usageSummary.headline}</span>
+                            {!canUsePaidModels && (
+                              <div className="quick-liquid-subcard mx-1 mb-1.5 px-2.5 py-1.5 rounded-xl text-[10.5px] text-zinc-300/85 leading-snug">
+                                {aiConfig.hasApiKey
+                                  ? "Mostrando solo modelos que funcionan sin saldo en tu cuenta."
+                                  : "Vista previa de modelos gratuitos disponibles en OpenRouter."}
                               </div>
                             )}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setShowModelMenu(false);
-                                setShowAiSettings(true);
-                              }}
-                              className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left text-[11px] text-sky-300 hover:bg-white/[0.06] transition-colors cursor-pointer"
-                            >
-                              <KeyRound className="w-3.5 h-3.5 shrink-0" />
-                              <span>Ver límites, clave y catálogo completo…</span>
-                            </button>
+
+                            {unavailableModelIds.size > 0 && (
+                              <div className="quick-liquid-subcard mx-1 mb-1.5 px-2.5 py-1.5 rounded-xl text-[10.5px] text-zinc-200/90 leading-snug">
+                                Se ocultaron {unavailableModelIds.size} modelo(s) que devolvieron error o límite.
+                              </div>
+                            )}
+
+                            <div className="max-h-56 overflow-y-auto space-y-0.5 pr-0.5">
+                              {availableQuickModels.map((m) => (
+                                <button
+                                  key={m.id}
+                                  type="button"
+                                  role="option"
+                                  aria-selected={m.id === modelId}
+                                  onClick={() => void handleSelectModel(m.id)}
+                                  className={`quick-liquid-option w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-left cursor-pointer ${
+                                    m.id === modelId ? "is-selected" : ""
+                                  }`}
+                                >
+                                  <span className="min-w-0">
+                                    <span className="flex items-center gap-1.5 text-xs font-medium text-white truncate [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]">
+                                      <span className="truncate">{m.name}</span>
+                                      {canUsePaidModels && m.is_free && (
+                                        <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[9px] font-medium text-zinc-200/90 shrink-0">
+                                          gratis
+                                        </span>
+                                      )}
+                                    </span>
+                                    <span className="block text-[10.5px] text-zinc-300/75 truncate [text-shadow:0_1px_3px_rgba(4,8,18,0.6)]">
+                                      {m.hint}
+                                    </span>
+                                  </span>
+                                  {m.id === modelId && (
+                                    <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
+                                      <Check className="w-2.5 h-2.5 text-white" />
+                                    </span>
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+
+                            <div className="mt-1.5 pt-1.5 border-t border-white/[0.08] space-y-1">
+                              {aiConfig.hasApiKey && (
+                                <div className="px-2.5 py-1 flex items-center justify-between text-[10.5px] text-zinc-300/80">
+                                  <span className="truncate">{usageSummary.tierLabel}</span>
+                                  <span className="font-mono text-zinc-100 shrink-0">{usageSummary.headline}</span>
+                                </div>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowModelMenu(false);
+                                  setShowAiSettings(true);
+                                }}
+                                className="quick-liquid-option w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-left text-[11px] font-medium text-zinc-100/90 hover:text-white cursor-pointer"
+                              >
+                                <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
+                                  <KeyRound className="w-2.5 h-2.5 text-white/85" />
+                                </span>
+                                <span>Ver límites, clave y catálogo completo…</span>
+                              </button>
+                            </div>
                           </div>
                         </div>
                       )}
@@ -4417,6 +4314,7 @@ export default function App() {
                   <div className="pt-2 flex items-center justify-between gap-2 border-t border-white/[0.05]">
                     <div ref={contextMenuRef} className="relative">
                       <button
+                        ref={contextTriggerRef}
                         type="button"
                         onClick={() => {
                           setShowModelMenu(false);
@@ -4432,49 +4330,67 @@ export default function App() {
                             : "text-zinc-300 hover:text-white"
                         }`}
                       >
-                        <AtSign className="w-3 h-3 text-zinc-400 shrink-0" />
+                        <AtSign className="w-3 h-3 text-white/75 shrink-0" />
                         <span className="hidden @xs:inline">Contexto</span>
                         {activeContextCount > 0 && (
-                          <span className="text-[10px] font-mono text-emerald-400 tabular-nums">
+                          <span className="text-[10px] font-mono text-zinc-100 tabular-nums">
                             {activeContextCount}
                           </span>
                         )}
-                        <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${showContextMenu ? "rotate-180" : ""}`} />
+                        <ChevronDown className={`w-3 h-3 text-white/65 transition-transform ${showContextMenu ? "rotate-180" : ""}`} />
                       </button>
 
                       {contextMenuPresence.mounted && (
                         <div
                           role="listbox"
+                          aria-label="Contexto disponible"
                           aria-multiselectable="true"
-                          className={`${
+                          onKeyDown={(e) =>
+                            handleListboxKeyDown(
+                              e,
+                              () => setShowContextMenu(false),
+                              contextTriggerRef.current
+                            )
+                          }
+                          className={`xook-liquid-menu menu-origin-left ${
                             showContextMenu ? "menu-in" : "menu-out pointer-events-none"
-                          } menu-origin-left absolute left-0 bottom-full mb-2 w-60 p-1 rounded-xl bg-zinc-900/95 border border-white/10 shadow-2xl backdrop-blur-xl z-30`}
+                          } absolute left-0 bottom-full mb-2 w-60 p-1.5 rounded-2xl z-30`}
                         >
-                          {contextItems.map((item) => {
-                            const friendlyLabel = CONTEXT_LABEL[item.type] || item.name;
-                            const isInPrompt = inputPrompt.includes(`@${item.name}`);
-                            return (
-                              <button
-                                key={item.id}
-                                type="button"
-                                role="option"
-                                aria-selected={isInPrompt}
-                                onClick={() => toggleContextInPrompt(item.name)}
-                                className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-left transition-colors cursor-pointer ${
-                                  isInPrompt ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"
-                                }`}
-                              >
-                                <span className="flex items-center gap-2 min-w-0">
-                                  <ContextIcon type={item.type} className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-                                  <span className="min-w-0">
-                                    <span className="block text-xs text-zinc-100 truncate">{friendlyLabel}</span>
-                                    <span className="block text-[10px] text-zinc-500 font-mono truncate">{item.name}</span>
+                          <LiquidGlassBackdrop variant="menu" />
+
+                          <div className="relative z-[1] space-y-0.5">
+                            {contextItems.map((item) => {
+                              const friendlyLabel = CONTEXT_LABEL[item.type] || item.name;
+                              const isInPrompt = inputPrompt.includes(`@${item.name}`);
+                              return (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  role="option"
+                                  aria-selected={isInPrompt}
+                                  onClick={() => toggleContextInPrompt(item.name)}
+                                  className={`quick-liquid-option w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl text-left cursor-pointer ${
+                                    isInPrompt ? "is-selected" : ""
+                                  }`}
+                                >
+                                  <span className="flex items-center gap-2 min-w-0">
+                                    <span className="quick-liquid-icon w-6 h-6 rounded-full inline-flex items-center justify-center shrink-0">
+                                      <ContextIcon type={item.type} className="w-3 h-3 text-white/85" />
+                                    </span>
+                                    <span className="min-w-0">
+                                      <span className="block text-xs font-medium text-white truncate">{friendlyLabel}</span>
+                                      <span className="block text-[10px] text-zinc-300/75 font-mono truncate">{item.name}</span>
+                                    </span>
                                   </span>
-                                </span>
-                                {isInPrompt && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
-                              </button>
-                            );
-                          })}
+                                  {isInPrompt && (
+                                    <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
+                                      <Check className="w-2.5 h-2.5 text-white" />
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
                       )}
                     </div>

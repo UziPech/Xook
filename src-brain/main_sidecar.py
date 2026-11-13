@@ -231,6 +231,7 @@ def handle_rpc_request(request_line):
                 user_profile=params.get("user_profile"),
                 active_canvas=params.get("active_canvas"),
                 workspace_root=ws_root,
+                unified_memory=params.get("unified_memory"),
                 command_bridge=_make_sync_bridge() if params.get("enable_command_bridge") else None,
             )
         elif method == "ai_chat_stream":
@@ -266,6 +267,7 @@ def handle_rpc_request(request_line):
                 user_profile=params.get("user_profile"),
                 active_canvas=params.get("active_canvas"),
                 workspace_root=ws_root,
+                unified_memory=params.get("unified_memory"),
                 command_bridge=_stream_command_bridge if params.get("enable_command_bridge", True) else None,
             )
         elif method == "test_ai_key":

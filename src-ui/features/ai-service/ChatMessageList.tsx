@@ -450,13 +450,11 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
             {/* Mascota Xox: carril izquierdo responsive y prominente, siempre visible */}
             <div className="shrink-0 self-start sticky top-3 w-[72px] @sm:w-[88px] @md:w-[104px] @lg:w-[120px] @2xl:w-[136px] flex justify-center">
               {isActiveGuideTurn ? (
-                <div
-                  className="relative -my-3 @md:-my-4 -mx-2 cursor-pointer select-none"
-                  title="Haz clic para saludar a Xox"
-                >
+                <div className="relative -my-3 @md:-my-4 -mx-2 select-none pointer-events-none">
                   <XoxStar
                     state={xoxState}
                     responsive
+                    hitArea="star"
                     className="w-[84px] h-[84px] @sm:w-[100px] @sm:h-[100px] @md:w-[116px] @md:h-[116px] @lg:w-[134px] @lg:h-[134px] @2xl:w-[152px] @2xl:h-[152px]"
                     summonTrigger={summonTrigger}
                     onClick={onXoxClick}
