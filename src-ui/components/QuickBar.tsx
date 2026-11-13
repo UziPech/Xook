@@ -2,7 +2,23 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Send, Sparkles, X } from "lucide-react";
 import { XoxDragMotion, XoxStar, XoxState } from "./XoxStar";
 import { QuickLiquidLayer } from "./QuickLiquidLayer";
-import { ActionCard, FALLBACK_ACTION_CARDS, MODELS } from "./XookBrand";
+import { ActionCard, FALLBACK_ACTION_CARDS } from "./XookBrand";
+import { actionCardToTaskProposal } from "../features/task-decisions/taskSchema";
+import {
+  AiConfigStatus,
+  AiConnectionTestResult,
+  OPENROUTER_PRESET_MODELS,
+  OpenRouterModelOption,
+  detectApiKeyInText,
+  fetchOpenRouterModels,
+  formatModelDisplay,
+  getAiConfigStatus,
+  getAvailableQuickModels,
+  incrementLocalDailyRequestCount,
+  runXoxAiChat,
+  saveAiConfig,
+  testAiConnection,
+} from "../features/ai-service/aiClient";
 
 const DRAG_THRESHOLD_PX = 4;
 
@@ -34,7 +50,18 @@ export const QuickBar: React.FC = () => {
   const [statusNote, setStatusNote] = useState<string>("");
   const [reply, setReply] = useState<string | null>(null);
   const [pendingCards, setPendingCards] = useState<ActionCard[]>(FALLBACK_ACTION_CARDS);
-  const [modelId, setModelId] = useState<string>(MODELS[0].id);
+  const [modelId, setModelId] = useState<string>(OPENROUTER_PRESET_MODELS[0].id);
+  const [aiConfig, setAiConfig] = useState<AiConfigStatus>({
+    provider: "openrouter",
+    modelId: OPENROUTER_PRESET_MODELS[0].id,
+    hasApiKey: false,
+    maskedKey: null,
+    keySource: "none",
+    customModels: [],
+  });
+  const [accountUsage, setAccountUsage] = useState<AiConnectionTestResult | null>(null);
+  const [liveCatalog, setLiveCatalog] = useState<OpenRouterModelOption[]>([]);
+  const [unavailableModelIds, setUnavailableModelIds] = useState<Set<string>>(() => new Set());
   const [showModels, setShowModels] = useState<boolean>(false);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -335,6 +362,23 @@ export const QuickBar: React.FC = () => {
     } catch {
       // Mantiene fallback local fuera de Tauri
     }
+    try {
+      const cfg = await getAiConfigStatus();
+      setAiConfig(cfg);
+      if (cfg.modelId) setModelId(cfg.modelId);
+      if (cfg.hasApiKey) {
+        void testAiConnection().then((res) => {
+          if (res.ok) setAccountUsage(res);
+        });
+      } else {
+        setAccountUsage(null);
+      }
+    } catch {
+      // Ignora error de carga inicial de bóveda
+    }
+    void fetchOpenRouterModels(false).then((res) => {
+      if (res.models.length > 0) setLiveCatalog(res.models);
+    });
   }, []);
 
   useEffect(() => {
@@ -464,7 +508,7 @@ export const QuickBar: React.FC = () => {
     return () => window.removeEventListener("mousedown", onDown);
   }, [showModels]);
 
-  const runQuickPrompt = () => {
+  const runQuickPrompt = async () => {
     const text = inputPrompt.trim();
     if (!text || xoxState === "thinking") return;
 
@@ -472,30 +516,66 @@ export const QuickBar: React.FC = () => {
     setShowModels(false);
     setInputPrompt("");
     setReply(null);
-    setXoxState("thinking");
-    setStatusNote("Consultando contexto y niveles de stock...");
 
-    const t1 = setTimeout(() => {
-      setStatusNote("Verificando reglas de presupuesto y proveedores...");
-    }, 650);
-
-    const t2 = setTimeout(() => {
-      const topCard = pendingCards[0];
-      const summary = topCard
-        ? `Detecté ${pendingCards.length} órdenes pendientes. La más urgente es "${topCard.title}" (${topCard.current_stock} un. en bodega, sugerido +${topCard.recommended_order} un. por $${topCard.estimated_cost.toLocaleString()} ${topCard.currency}).`
-        : `Evalué "${text}" con las reglas activas de tu tienda. Todo el inventario se encuentra en niveles estables.`;
-
-      setXoxState("success");
+    // Zero-Trust: bloquear envío de claves API pegadas desde Quick Bar
+    const { detectedKey, maskedKey } = detectApiKeyInText(text);
+    if (detectedKey && maskedKey) {
+      setXoxState("alert");
       setStatusNote("");
-      setReply(summary);
+      setReply(
+        `Detecté una clave API (${maskedKey}) y la retuve localmente sin enviarla a internet. Abre XOOK (⌘↩) para guardarla en la bóveda con tu aprobación.`
+      );
+      const t = setTimeout(() => setXoxState("idle"), 2600);
+      timersRef.current.push(t);
+      return;
+    }
 
-      const t3 = setTimeout(() => {
+    setXoxState("thinking");
+    setStatusNote(`Consultando ${activeModel.name}...`);
+
+    try {
+      const latestCfg = await getAiConfigStatus();
+      setAiConfig(latestCfg);
+      if (!latestCfg.hasApiKey) {
         setXoxState("idle");
-      }, 2200);
-      timersRef.current.push(t3);
-    }, 1350);
+        setStatusNote("");
+        setReply(
+          "Aún no hay una clave de OpenRouter conectada. Abre XOOK (⌘↩) para conectar tu cuenta."
+        );
+        return;
+      }
 
-    timersRef.current.push(t1, t2);
+      incrementLocalDailyRequestCount(latestCfg.maskedKey);
+      const currentTasks = pendingCards.map((c, idx) => actionCardToTaskProposal(c, idx));
+      const res = await runXoxAiChat({
+        message: text,
+        history: [],
+        currentTasks,
+        agendaItems: [],
+        attachedContext: [],
+        modelOverride: modelId,
+        businessContextSnapshot: currentTasks
+          .map((t) => `- ${t.title}: ${t.subtitle}`)
+          .join("\n"),
+      });
+
+      setXoxState(res.xoxMood === "alert" ? "alert" : "success");
+      setStatusNote("");
+      setReply(res.reply);
+
+      const t = setTimeout(() => setXoxState("idle"), 2400);
+      timersRef.current.push(t);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : "No se pudo obtener respuesta.";
+      if (/saldo suficiente|402|no longer available/i.test(errMsg)) {
+        setUnavailableModelIds((prev) => new Set(prev).add(modelId));
+      }
+      setXoxState("alert");
+      setStatusNote("");
+      setReply(`Error OpenRouter: ${errMsg}`);
+      const t = setTimeout(() => setXoxState("idle"), 2800);
+      timersRef.current.push(t);
+    }
   };
 
   const handleCapsulePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -601,7 +681,18 @@ export const QuickBar: React.FC = () => {
     finishDragSession(e.currentTarget, e.pointerId);
   };
 
-  const activeModel = MODELS.find((m) => m.id === modelId) ?? MODELS[0];
+  const canUsePaidModels = accountUsage?.can_use_paid_models ?? false;
+  const modelOptions: OpenRouterModelOption[] = getAvailableQuickModels(
+    liveCatalog,
+    aiConfig.customModels,
+    canUsePaidModels,
+    unavailableModelIds
+  );
+
+  const activeModel: OpenRouterModelOption = formatModelDisplay(modelId, [
+    ...liveCatalog,
+    ...modelOptions,
+  ]);
   const isBusy = xoxState === "thinking" || xoxState === "reading" || xoxState === "syncing";
   const canSubmit = Boolean(inputPrompt.trim()) && xoxState !== "thinking";
 
@@ -764,7 +855,7 @@ export const QuickBar: React.FC = () => {
                     aria-expanded={showModels}
                     className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 px-3.5 rounded-full text-[11.5px] font-medium text-white [text-shadow:0_1px_4px_rgba(4,8,18,0.65)] cursor-pointer"
                   >
-                    <span>{activeModel.name}</span>
+                    <span className="max-w-[140px] truncate">{activeModel.name}</span>
                     <ChevronDown
                       className={`w-3 h-3 text-sky-100/80 transition-transform ${
                         showModels ? "rotate-180" : ""
@@ -775,7 +866,7 @@ export const QuickBar: React.FC = () => {
                   {showModels && (
                     <div
                       role="listbox"
-                      className="quick-liquid-menu menu-in menu-origin-top-right absolute right-0 top-full mt-2 w-52 p-1.5 rounded-2xl z-30"
+                      className="quick-liquid-menu menu-in menu-origin-top-right absolute right-0 top-full mt-2 w-64 p-1.5 rounded-2xl z-30"
                     >
                       <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
                         <svg
@@ -801,8 +892,15 @@ export const QuickBar: React.FC = () => {
                         <div className="absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-white/50 to-transparent" />
                       </div>
 
-                      <div className="relative z-[1] space-y-0.5">
-                        {MODELS.map((m) => (
+                      <div className="relative z-[1] px-2.5 py-1 mb-1 flex items-center justify-between text-[10px] text-zinc-200/75 border-b border-white/10">
+                        <span>Disponibles ({modelOptions.length})</span>
+                        <span className="font-mono">
+                          {canUsePaidModels ? "Con saldo" : "Plan gratuito"}
+                        </span>
+                      </div>
+
+                      <div className="relative z-[1] max-h-60 overflow-y-auto space-y-0.5">
+                        {modelOptions.map((m) => (
                           <button
                             key={m.id}
                             type="button"
@@ -812,16 +910,19 @@ export const QuickBar: React.FC = () => {
                               setModelId(m.id);
                               setShowModels(false);
                               inputRef.current?.focus();
+                              void saveAiConfig({ modelId: m.id })
+                                .then(setAiConfig)
+                                .catch(() => {});
                             }}
                             className={`quick-liquid-option w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-left cursor-pointer ${
                               m.id === modelId ? "is-selected" : ""
                             }`}
                           >
-                            <span>
-                              <span className="block text-xs font-medium text-white [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]">
+                            <span className="min-w-0">
+                              <span className="block text-xs font-medium text-white truncate [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]">
                                 {m.name}
                               </span>
-                              <span className="block text-[10.5px] text-zinc-200/75 [text-shadow:0_1px_3px_rgba(4,8,18,0.6)]">
+                              <span className="block text-[10.5px] text-zinc-200/75 truncate [text-shadow:0_1px_3px_rgba(4,8,18,0.6)]">
                                 {m.hint}
                               </span>
                             </span>

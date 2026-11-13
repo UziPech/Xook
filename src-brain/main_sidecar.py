@@ -7,10 +7,18 @@ consultar la memoria local y generar tarjetas de acción sin tecnicismos.
 import sys
 import json
 from pathlib import Path
+from slices.task_ui.schemas import sanitize_task_proposal
+from slices.ai_service.openrouter_client import (
+    list_openrouter_models,
+    run_agent_completion,
+    stream_agent_completion,
+    test_openrouter_key,
+)
 
 # Paths al contexto de negocio y memoria local
 BASE_DIR = Path(__file__).resolve().parent.parent
 CONTEXT_DIR = BASE_DIR / "context"
+SKILLS_DIR = BASE_DIR / "skills"
 PROFILES_FILE = CONTEXT_DIR / "business-profiles" / "store-profile.json"
 MEMORY_FILE = CONTEXT_DIR / "memory" / "memory_store.json"
 
@@ -93,6 +101,97 @@ def register_user_feedback(feedback):
     save_memory(memory)
     return {"status": "success", "message": "Aprendizaje registrado en memoria local"}
 
+def build_generative_task_ui(inventory_items):
+    """
+    Construye propuestas declarativas (TaskProposal) usando bloques visuales seguros
+    para que la UI pueda renderizarlas sin exponer JSON ni código al usuario final.
+    """
+    legacy = analyze_inventory_slice(inventory_items)
+    profile = load_business_profile()
+    suppliers = {s.get("name"): s for s in profile.get("preferred_suppliers", [])}
+    max_budget = profile.get("max_budget_per_order", 50000.0)
+
+    proposals = []
+    for idx, card in enumerate(legacy.get("action_cards", [])):
+        rec_qty = max(1, int(card.get("recommended_order", 1)))
+        total_cost = float(card.get("estimated_cost", 0.0))
+        unit_price = round(total_cost / rec_qty, 2) if rec_qty else 0.0
+        supplier_name = card.get("supplier_name", "Proveedor")
+        sup_meta = suppliers.get(supplier_name, {})
+        lead_days = sup_meta.get("delivery_lead_time_days", 3)
+        rating = sup_meta.get("rating", 4.5)
+        stock = int(card.get("current_stock", 0))
+        days_left = max(1, int(stock / 2))
+
+        proposal = sanitize_task_proposal({
+            "cardId": card.get("card_id"),
+            "title": card.get("title"),
+            "subtitle": card.get("description"),
+            "category": "abastecimiento",
+            "urgency": card.get("urgency", "media"),
+            "statusChip": f"{days_left}d de stock",
+            "defaultExpanded": idx == 0 and card.get("urgency") == "alta",
+            "generatedBy": "Asesor de stock",
+            "paramValues": {"order_qty": rec_qty},
+            "intent": {
+                "type": "stock_reorder",
+                "targetLabel": card.get("product_name"),
+                "primaryLabel": "Aprobar orden",
+                "quantityParamKey": "order_qty",
+                "unitPrice": unit_price,
+                "currency": card.get("currency", "MXN"),
+                "supplierName": supplier_name,
+                "maxBudgetLimit": max_budget,
+            },
+            "blocks": [
+                {
+                    "type": "metrics_strip",
+                    "items": [
+                        {"label": "Stock actual", "value": f"{stock} un.", "tone": "critical" if card.get("urgency") == "alta" else "warning"},
+                        {"label": "Sugerido", "value": f"+{rec_qty} un.", "tone": "neutral"},
+                        {"label": "Total", "value": f"${total_cost:,.0f}", "sub": card.get("currency", "MXN"), "tone": "positive", "bindTotalFromParam": "order_qty"},
+                    ],
+                },
+                {
+                    "type": "coverage_bar",
+                    "currentLabel": f"Cobertura: ~{days_left} días",
+                    "targetLabel": f"Entrega proveedor: {lead_days}d",
+                    "ratio": min(100, max(12, int((days_left / 10) * 100))),
+                    "markerRatio": min(92, int((lead_days / 10) * 100)),
+                    "tone": "critical" if days_left <= lead_days else "warning",
+                },
+                {
+                    "type": "param_control",
+                    "key": "order_qty",
+                    "label": "Cantidad a pedir",
+                    "kind": "stepper",
+                    "value": rec_qty,
+                    "min": 1,
+                    "max": 500,
+                    "step": 5,
+                    "unit": "un.",
+                    "unitPrice": unit_price,
+                    "currency": card.get("currency", "MXN"),
+                },
+                {
+                    "type": "kv_list",
+                    "rows": [
+                        {"label": "Proveedor", "value": supplier_name, "subtle": f"{rating}★ · {lead_days}d entrega"},
+                        {"label": "Producto", "value": card.get("product_name", "")},
+                    ],
+                },
+                {
+                    "type": "insight",
+                    "text": card.get("reasoning", ""),
+                    "source": "Asesor de stock",
+                },
+            ],
+        })
+        proposals.append(proposal)
+
+    return {"status": "ok", "task_proposals": proposals}
+
+
 def handle_rpc_request(request_line):
     try:
         req = json.loads(request_line.strip())
@@ -102,6 +201,48 @@ def handle_rpc_request(request_line):
         
         if method == "analyze_inventory":
             result = analyze_inventory_slice(params.get("items", []))
+        elif method == "generate_task_ui":
+            result = build_generative_task_ui(params.get("items", []))
+        elif method == "ai_chat":
+            result = run_agent_completion(
+                api_key=params.get("api_key", ""),
+                model_id=params.get("model_id", "openrouter/free"),
+                user_message=params.get("message", ""),
+                history=params.get("history", []),
+                context_dir=CONTEXT_DIR,
+                skills_dir=SKILLS_DIR,
+                current_tasks=params.get("current_tasks", []),
+                agenda_items=params.get("agenda_items", []),
+                attached_context=params.get("attached_context", []),
+            )
+        elif method == "ai_chat_stream":
+            stream_id = params.get("stream_id")
+
+            def _emit_stream(ev):
+                payload = {"stream": True, "stream_id": stream_id, "event": ev}
+                sys.stdout.write(json.dumps(payload) + "\n")
+                sys.stdout.flush()
+
+            result = stream_agent_completion(
+                api_key=params.get("api_key", ""),
+                model_id=params.get("model_id", "openrouter/free"),
+                user_message=params.get("message", ""),
+                history=params.get("history", []),
+                context_dir=CONTEXT_DIR,
+                skills_dir=SKILLS_DIR,
+                emit_event=_emit_stream,
+                current_tasks=params.get("current_tasks", []),
+                agenda_items=params.get("agenda_items", []),
+                attached_context=params.get("attached_context", []),
+                user_profile=params.get("user_profile"),
+            )
+        elif method == "test_ai_key":
+            result = test_openrouter_key(params.get("api_key", ""))
+        elif method == "list_ai_models":
+            result = list_openrouter_models(
+                api_key=params.get("api_key"),
+                free_only=bool(params.get("free_only", False)),
+            )
         elif method == "record_feedback":
             result = register_user_feedback(params.get("feedback", {}))
         elif method == "ping":

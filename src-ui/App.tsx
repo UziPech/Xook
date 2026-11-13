@@ -1,11 +1,8 @@
 import React, { useState, useEffect, useRef, useId } from "react";
 import { 
-  ShieldCheck, 
   CheckCircle2, 
   Brain, 
   Store, 
-  Sparkles,
-  ArrowRight,
   FolderOpen,
   Pin,
   Plus,
@@ -16,16 +13,74 @@ import {
   X,
   FileText,
   ListTodo,
-  CheckCheck,
-  Clock,
   PanelLeft,
   ChevronDown,
   Paperclip,
   Cpu,
-  AtSign
+  AtSign,
+  KeyRound,
+  Sparkles,
+  Activity,
+  RefreshCw,
+  Trash2,
+  MessageSquare,
+  SquarePen,
+  UserCircle2
 } from "lucide-react";
 import { XoxStar, XoxState } from "./components/XoxStar";
-import { ActionCard, FALLBACK_ACTION_CARDS, MODELS, XookWordmark } from "./components/XookBrand";
+import { ActionCard, FALLBACK_ACTION_CARDS, XookWordmark } from "./components/XookBrand";
+import {
+  AgendaItem,
+  TaskHistoryItem,
+  TaskProposal,
+  actionCardToTaskProposal,
+  computeVerifiedDecision,
+} from "./features/task-decisions/taskSchema";
+import {
+  INITIAL_AGENDA_ITEMS,
+  INITIAL_GENERATIVE_PROPOSALS,
+} from "./features/task-decisions/mockGeneratedTasks";
+import {
+  TaskDecisionsPanel,
+  TaskPanelTab,
+} from "./features/task-decisions/TaskDecisionsPanel";
+import {
+  ChatMessageList,
+  UiChatMessage,
+} from "./features/ai-service/ChatMessageList";
+import { OpenRouterSettingsModal } from "./features/ai-service/OpenRouterSettingsModal";
+import { LocalAuthModal } from "./features/workspace-store/LocalAuthModal";
+import {
+  ConversationThread,
+  LocalUserProfile,
+  deleteLocalConversation,
+  deriveConversationTitle,
+  getLocalUserProfile,
+  listLocalConversations,
+  saveLocalConversation,
+} from "./features/workspace-store/localStore";
+import {
+  AiConfigStatus,
+  AiConnectionTestResult,
+  OPENROUTER_PRESET_MODELS,
+  OpenRouterModelOption,
+  ThinkingStep,
+  detectApiKeyInText,
+  estimateTokens,
+  fetchOpenRouterModels,
+  formatContextLength,
+  formatModelDisplay,
+  formatTokenCount,
+  getAiConfigStatus,
+  getAvailableQuickModels,
+  getLocalDailyRequestCount,
+  incrementLocalDailyRequestCount,
+  isKeySetupIntent,
+  loadWorkspaceContext,
+  runXoxAiChatStream,
+  saveAiConfig,
+  testAiConnection,
+} from "./features/ai-service/aiClient";
 
 interface MemoryPattern {
   pattern_id: string;
@@ -38,9 +93,9 @@ interface ContextItem {
   name: string;
   type: "profile" | "memory" | "skill" | "catalog";
   path: string;
-  tokens: string;
   pinned: boolean;
   content: string;
+  isCustom?: boolean;
 }
 
 // Etiquetas legibles por tipo de fuente de contexto (sin jerga técnica)
@@ -218,9 +273,10 @@ function useAnimatedPresence(isOpen: boolean, durationMs: number) {
 }
 
 export default function App() {
-  const [cards, setCards] = useState<ActionCard[]>([]);
+  const [tasks, setTasks] = useState<TaskProposal[]>([]);
+  const [agendaItems, setAgendaItems] = useState<AgendaItem[]>(INITIAL_AGENDA_ITEMS);
+  const [historyItems, setHistoryItems] = useState<TaskHistoryItem[]>([]);
   const [patterns, setPatterns] = useState<MemoryPattern[]>([]);
-  const [approvedCards, setApprovedCards] = useState<string[]>([]);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isTauriEnv, setIsTauriEnv] = useState<boolean>(false);
   const [inputPrompt, setInputPrompt] = useState<string>("");
@@ -232,7 +288,7 @@ export default function App() {
   // Estados para paneles laterales y tareas
   const [showLeftSidebar, setShowLeftSidebar] = useState<boolean>(true);
   const [showRightSidebar, setShowRightSidebar] = useState<boolean>(true);
-  const [taskTab, setTaskTab] = useState<"pending" | "completed">("pending");
+  const [taskTab, setTaskTab] = useState<TaskPanelTab>("pending");
   const [selectedContext, setSelectedContext] = useState<ContextItem | null>(null);
   const [showStatePreview, setShowStatePreview] = useState<boolean>(false);
 
@@ -265,78 +321,245 @@ export default function App() {
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const contextFileInputRef = useRef<HTMLInputElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
-  // Archivos adjuntos, modelo activo y notificación de aprendizaje
+  // Archivos adjuntos, modelo activo, bóveda IA y chat real
   const [attachments, setAttachments] = useState<File[]>([]);
-  const [modelId, setModelId] = useState<string>(MODELS[0].id);
+  const [modelId, setModelId] = useState<string>(OPENROUTER_PRESET_MODELS[0].id);
+  const [aiConfig, setAiConfig] = useState<AiConfigStatus>({
+    provider: "openrouter",
+    modelId: OPENROUTER_PRESET_MODELS[0].id,
+    hasApiKey: false,
+    maskedKey: null,
+    keySource: "none",
+    customModels: [],
+  });
+  const [showAiSettings, setShowAiSettings] = useState<boolean>(false);
+  const [accountUsage, setAccountUsage] = useState<AiConnectionTestResult | null>(null);
+  const [catalogModels, setCatalogModels] = useState<OpenRouterModelOption[]>([]);
+  const [loadingModels, setLoadingModels] = useState<boolean>(false);
+  const [unavailableModelIds, setUnavailableModelIds] = useState<Set<string>>(() => new Set());
+  const [requestsToday, setRequestsToday] = useState<number>(() => getLocalDailyRequestCount(null));
+  const [chatMessages, setChatMessages] = useState<UiChatMessage[]>([]);
+  const [isChatStreaming, setIsChatStreaming] = useState<boolean>(false);
+  const [localUser, setLocalUser] = useState<LocalUserProfile | null>(null);
+  const [showLocalAuth, setShowLocalAuth] = useState<boolean>(false);
+  const [conversations, setConversations] = useState<ConversationThread[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string>(() => `conv_${Date.now()}`);
+  const [leftTab, setLeftTab] = useState<"context" | "chats">("context");
+  const [thinkingLabel, setThinkingLabel] = useState<string>("Consultando a Xox...");
   const [showModelMenu, setShowModelMenu] = useState<boolean>(false);
   const [showContextMenu, setShowContextMenu] = useState<boolean>(false);
   const [learningToast, setLearningToast] = useState<MemoryPattern | null>(null);
   const [inputExpanded, setInputExpanded] = useState<boolean>(false);
+
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const pendingSecretKeysRef = useRef<Map<string, string>>(new Map());
+  const chatMessagesRef = useRef<UiChatMessage[]>(chatMessages);
+  chatMessagesRef.current = chatMessages;
+  const activeConvIdRef = useRef<string>(activeConversationId);
+  activeConvIdRef.current = activeConversationId;
+  const activeConvCreatedAtRef = useRef<string>(new Date().toISOString());
 
   // Burbuja de saludo de Xox (solo al hacer clic sobre la mascota)
   const [greeting, setGreeting] = useState<string | null>(null);
   const [greetingLeaving, setGreetingLeaving] = useState<boolean>(false);
   const [summonSeq, setSummonSeq] = useState<number>(0);
   const greetingTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  useEffect(() => () => greetingTimers.current.forEach(clearTimeout), []);
-  const activeModel = MODELS.find((m) => m.id === modelId) ?? MODELS[0];
+  const xoxPhaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const isChatStreamingRef = useRef<boolean>(false);
+  isChatStreamingRef.current = isChatStreaming;
 
-  // Lista de elementos en la Ventana de Contexto
-  const [contextItems, setContextItems] = useState<ContextItem[]>([
-    {
-      id: "ctx_profile",
-      name: "store-profile.json",
-      type: "profile",
-      path: "context/business-profiles/store-profile.json",
-      tokens: "1.4k tokens",
-      pinned: true,
-      content: JSON.stringify({
-        "company_name": "Tienda Xook Demo",
-        "currency": "MXN",
-        "stock_threshold_days": 7,
-        "max_budget_per_order": 50000.0,
-        "preferred_suppliers": ["Distribuidora del Sur", "Comercializadora Bajío"],
-        "rules": [
-          "Presupuesto máximo por orden: $50,000 MXN",
-          "Solo proveedores calificados con 4+ estrellas",
-          "Requerir autorización obligatoria para toda mutación"
-        ]
-      }, null, 2)
+  const clearXoxPhaseTimers = () => {
+    xoxPhaseTimersRef.current.forEach(clearTimeout);
+    xoxPhaseTimersRef.current = [];
+  };
+
+  const triggerReadingPulse = (label: string, durationMs = 1150) => {
+    if (isChatStreamingRef.current) return;
+    clearXoxPhaseTimers();
+    setXoxState("reading");
+    setXoxMessage(label);
+    xoxPhaseTimersRef.current.push(
+      setTimeout(() => {
+        if (isChatStreamingRef.current) return;
+        setXoxState((s) => (s === "reading" ? "idle" : s));
+        setXoxMessage("¿En qué puedo ayudarte?");
+      }, durationMs)
+    );
+  };
+
+  useEffect(
+    () => () => {
+      greetingTimers.current.forEach(clearTimeout);
+      clearXoxPhaseTimers();
     },
-    {
-      id: "ctx_memory",
-      name: "memory_store.json",
-      type: "memory",
-      path: "context/memory/memory_store.json",
-      tokens: "2.8k tokens",
-      pinned: true,
-      content: JSON.stringify({
-        "user_preferences": {
-          "budget_safety_limit": 50000.0,
-          "preferred_notification_style": "action_cards_only"
-        },
-        "learned_patterns": [
-          "El usuario autoriza compras de Café Chiapas sin objeción.",
-          "Preferencia por reordenar los días martes y miércoles."
-        ]
-      }, null, 2)
-    },
-    {
-      id: "ctx_skill",
-      name: "inventory-advisor",
-      type: "skill",
-      path: "skills/inventory-advisor/SKILL.md",
-      tokens: "850 tokens",
-      pinned: true,
-      content: `# Asesor de Inventario y Abastecimiento
-- Monitorea niveles de stock contra venta diaria promedio.
-- Formula tarjetas de compra para productos con menos de 7 días de stock.
-- Exige aprobación visual explícita antes de contactar proveedores.`
+    []
+  );
+  const lastMsg = chatMessages[chatMessages.length - 1];
+  const lastMsgStreamLen = (lastMsg?.content?.length ?? 0) + (lastMsg?.reasoning?.length ?? 0);
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: isChatStreaming ? "auto" : "smooth", block: "end" });
+  }, [chatMessages.length, lastMsgStreamLen, xoxState, isChatStreaming]);
+
+  const canUsePaidModels = Boolean(accountUsage?.can_use_paid_models);
+  const availableQuickModels = getAvailableQuickModels(
+    catalogModels,
+    aiConfig.customModels,
+    canUsePaidModels,
+    unavailableModelIds
+  );
+
+  const activeModel: OpenRouterModelOption = formatModelDisplay(modelId, catalogModels);
+
+  // Lista de elementos reales en la Ventana de Contexto
+  const [contextItems, setContextItems] = useState<ContextItem[]>([]);
+
+  const activeContextItems = contextItems.filter(
+    (c) => c.pinned || selectedContext?.id === c.id
+  );
+  const totalActiveTokens = activeContextItems.reduce(
+    (sum, item) => sum + estimateTokens(item.content),
+    0
+  );
+  const modelContextWindow = activeModel.context_length ?? 128000;
+  const contextUsagePct =
+    modelContextWindow > 0
+      ? Math.min(100, Math.round((totalActiveTokens / modelContextWindow) * 1000) / 10)
+      : 0;
+
+  const freeCatalogCount = catalogModels.filter((m) => m.is_free).length;
+
+  const usageSummary = (() => {
+    if (!aiConfig.hasApiKey) {
+      return {
+        primary: "Conectar IA",
+        tierLabel: "OpenRouter",
+        headline: "Sin conectar",
+        detail: "Conecta tu clave para consultar límites y modelos",
+        pct: 0,
+        connected: false,
+      };
     }
-  ]);
+
+    if (!accountUsage) {
+      return {
+        primary: activeModel.name,
+        tierLabel: "Límite OpenRouter",
+        headline: "Consultando…",
+        detail: `${requestsToday} consultas hoy en este equipo`,
+        pct: 0,
+        connected: true,
+      };
+    }
+
+    if (!accountUsage.ok) {
+      return {
+        primary: "OpenRouter · Revisar clave",
+        tierLabel: "Límite OpenRouter",
+        headline: "Error de acceso",
+        detail: accountUsage.message || "Verifica tu clave en OpenRouter",
+        pct: 100,
+        connected: true,
+      };
+    }
+
+    if (accountUsage.can_use_paid_models) {
+      if (accountUsage.limit != null && accountUsage.limit > 0 && accountUsage.limit_remaining != null) {
+        const usedUsd = Math.max(0, accountUsage.limit - accountUsage.limit_remaining);
+        const pct = Math.min(100, Math.round((usedUsd / accountUsage.limit) * 100));
+        return {
+          primary: `OpenRouter · $${accountUsage.limit_remaining.toFixed(2)} disp.`,
+          tierLabel: "Límite OpenRouter",
+          headline: `$${accountUsage.limit_remaining.toFixed(2)} / $${accountUsage.limit.toFixed(2)}`,
+          detail: `Uso hoy: $${(accountUsage.usage_daily ?? 0).toFixed(4)} USD · ${requestsToday} consultas`,
+          pct,
+          connected: true,
+        };
+      }
+      if (
+        accountUsage.credits_remaining != null &&
+        accountUsage.credits_total != null &&
+        accountUsage.credits_total > 0
+      ) {
+        const usedUsd = Math.max(0, accountUsage.credits_total - accountUsage.credits_remaining);
+        const pct = Math.min(100, Math.round((usedUsd / accountUsage.credits_total) * 100));
+        return {
+          primary: `OpenRouter · $${accountUsage.credits_remaining.toFixed(2)} disp.`,
+          tierLabel: "Saldo OpenRouter",
+          headline: `$${accountUsage.credits_remaining.toFixed(2)} USD`,
+          detail: `Gastado hoy: $${(accountUsage.usage_daily ?? 0).toFixed(4)} USD · ${requestsToday} consultas`,
+          pct,
+          connected: true,
+        };
+      }
+      return {
+        primary: "OpenRouter · Con saldo",
+        tierLabel: "Límite OpenRouter",
+        headline: "Plan activo",
+        detail: `Gasto hoy: $${(accountUsage.usage_daily ?? 0).toFixed(4)} USD · ${requestsToday} consultas`,
+        pct: 0,
+        connected: true,
+      };
+    }
+
+    const dailyLimit = accountUsage.daily_free_limit || 50;
+    const rpmLimit = accountUsage.rpm_free_limit || 20;
+    const pct = Math.min(100, Math.round((requestsToday / dailyLimit) * 100));
+    return {
+      primary: `OpenRouter · ${requestsToday}/${dailyLimit} hoy`,
+      tierLabel: "Límite OpenRouter (Gratis)",
+      headline: `${requestsToday} / ${dailyLimit} hoy`,
+      detail: `${rpmLimit}/min máx. · ${
+        freeCatalogCount > 0 ? `${freeCatalogCount} modelos gratis activos` : "Solo modelos gratuitos"
+      }`,
+      pct,
+      connected: true,
+    };
+  })();
+
+  async function refreshModelsAndUsage(
+    forceRefresh = false,
+    hasKeyOverride?: boolean,
+    maskedKeyOverride?: string | null
+  ) {
+    setLoadingModels(true);
+    let latestCatalog: OpenRouterModelOption[] = catalogModels;
+    try {
+      const res = await fetchOpenRouterModels(false, forceRefresh);
+      if (res.models.length > 0) {
+        latestCatalog = res.models;
+        setCatalogModels(res.models);
+      }
+    } catch {
+      // Mantiene catálogo previo o respaldos
+    } finally {
+      setLoadingModels(false);
+    }
+
+    const hasKey = hasKeyOverride ?? aiConfig.hasApiKey;
+    const keyScope = maskedKeyOverride !== undefined ? maskedKeyOverride : aiConfig.maskedKey;
+    setRequestsToday(getLocalDailyRequestCount(keyScope));
+
+    if (hasKey) {
+      try {
+        const usageRes = await testAiConnection();
+        setAccountUsage(usageRes);
+        if (usageRes.ok && !usageRes.can_use_paid_models) {
+          setModelId((curr) => {
+            const info = formatModelDisplay(curr, latestCatalog);
+            return info.is_free ? curr : "openrouter/free";
+          });
+        }
+      } catch {
+        // Conserva estado anterior si falla la red
+      }
+    } else {
+      setAccountUsage(null);
+    }
+  }
 
   useEffect(() => {
     async function loadData() {
@@ -345,12 +568,16 @@ export default function App() {
         setIsTauriEnv(true);
         const fetchedCards = await invoke<ActionCard[]>("get_mock_action_cards");
         const fetchedPatterns = await invoke<MemoryPattern[]>("get_learned_patterns");
-        setCards(fetchedCards);
+        const mappedTasks = fetchedCards.map((c, idx) => actionCardToTaskProposal(c, idx));
+        setTasks([...mappedTasks, ...INITIAL_GENERATIVE_PROPOSALS]);
         setPatterns(fetchedPatterns);
       } catch {
         // Fallback local
         setIsTauriEnv(false);
-        setCards(FALLBACK_ACTION_CARDS);
+        const mappedTasks = FALLBACK_ACTION_CARDS.map((c, idx) =>
+          actionCardToTaskProposal(c, idx)
+        );
+        setTasks([...mappedTasks, ...INITIAL_GENERATIVE_PROPOSALS]);
         setPatterns([
           {
             pattern_id: "pat_01",
@@ -363,11 +590,114 @@ export default function App() {
             confidence: 0.88
           }
         ]);
+        // Carga configuración actual de OpenRouter / bóveda local
+      }
+      try {
+        const workspaceSources = await loadWorkspaceContext();
+        const mappedContext: ContextItem[] = workspaceSources.map((src) => ({
+          id: src.id,
+          name: src.name,
+          type: (["profile", "memory", "skill", "catalog"].includes(src.type)
+            ? src.type
+            : "catalog") as ContextItem["type"],
+          path: src.path,
+          pinned: true,
+          content: src.content,
+          isCustom: src.isCustom,
+        }));
+        setContextItems(mappedContext);
+        setSelectedContext((prev) => prev ?? mappedContext[0] ?? null);
+      } catch {
+        // Sin archivos cargados aún
+      }
+
+      try {
+        const [savedUser, savedConvs] = await Promise.all([
+          getLocalUserProfile(),
+          listLocalConversations(),
+        ]);
+        setLocalUser(savedUser);
+        setConversations(savedConvs);
+      } catch {
+        // Sin datos previos locales
+      }
+
+      try {
+        const cfg = await getAiConfigStatus();
+        setAiConfig(cfg);
+        if (cfg.modelId) {
+          setModelId(cfg.modelId);
+        }
+        await refreshModelsAndUsage(false, cfg.hasApiKey, cfg.maskedKey);
+      } catch {
+        // Mantiene valores iniciales si aún no hay bóveda
+        await refreshModelsAndUsage(false, false, null);
       }
     }
     loadData();
-    setSelectedContext(contextItems[0]);
   }, []);
+
+  const persistConversation = async (
+    nextMessages: UiChatMessage[],
+    convId = activeConvIdRef.current
+  ) => {
+    if (nextMessages.length === 0) return;
+    const now = new Date().toISOString();
+    const thread: ConversationThread = {
+      id: convId,
+      title: deriveConversationTitle(nextMessages),
+      createdAt: activeConvCreatedAtRef.current,
+      updatedAt: now,
+      userId: localUser?.id ?? null,
+      messages: nextMessages,
+    };
+    try {
+      const updatedList = await saveLocalConversation(thread);
+      setConversations(updatedList);
+    } catch {
+      // Mantiene historial en memoria aunque falle escritura
+    }
+  };
+
+  const handleStartNewChat = () => {
+    if (isChatStreaming) return;
+    const nextId = `conv_${Date.now()}`;
+    activeConvCreatedAtRef.current = new Date().toISOString();
+    setActiveConversationId(nextId);
+    setChatMessages([]);
+    setXoxState("idle");
+    setXoxMessage("¿En qué puedo ayudarte?");
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const handleSelectConversation = (thread: ConversationThread) => {
+    if (isChatStreaming) return;
+    activeConvCreatedAtRef.current = thread.createdAt;
+    setActiveConversationId(thread.id);
+    setChatMessages(thread.messages ?? []);
+    setXoxState("idle");
+    setXoxMessage("¿En qué puedo ayudarte?");
+  };
+
+  const handleDeleteConversation = async (id: string) => {
+    try {
+      const updated = await deleteLocalConversation(id);
+      setConversations(updated);
+      if (id === activeConvIdRef.current) {
+        handleStartNewChat();
+      }
+    } catch {
+      // Ignorar
+    }
+  };
+
+  const handleRateMessage = (msgId: string, rating: "up" | "down") => {
+    const nextMessages = chatMessagesRef.current.map((m) =>
+      m.id === msgId ? { ...m, feedback: m.feedback === rating ? null : rating } : m
+    );
+    setChatMessages(nextMessages);
+    void persistConversation(nextMessages);
+  };
 
   // Notificación discreta del aprendizaje más reciente (aparece y se oculta sola)
   useEffect(() => {
@@ -494,30 +824,305 @@ export default function App() {
     };
   }, [isResizingLeft, isResizingRight]);
 
-  const handleApprove = async (card: ActionCard) => {
+  const tasksRef = useRef<TaskProposal[]>(tasks);
+  tasksRef.current = tasks;
+
+  // Reloj en vivo para temporizadores activos en la pestaña Agenda
+  const hasRunningTimers = agendaItems.some(
+    (item) => item.kind === "timer" && item.isRunning && (item.remainingSeconds ?? 0) > 0
+  );
+
+  useEffect(() => {
+    if (!hasRunningTimers) return;
+    const interval = setInterval(() => {
+      setAgendaItems((prev) =>
+        prev.map((item) => {
+          if (item.kind !== "timer" || !item.isRunning) return item;
+          const current = item.remainingSeconds ?? 0;
+          if (current <= 1) {
+            setXoxState("alert");
+            setXoxMessage(`¡Tiempo cumplido: ${item.title}!`);
+            setStatusMessage(`Reloj finalizado: "${item.title}"`);
+            return { ...item, remainingSeconds: 0, isRunning: false };
+          }
+          return { ...item, remainingSeconds: current - 1 };
+        })
+      );
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [hasRunningTimers]);
+
+  const nowTimeLabel = () =>
+    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  const handleUpdateTaskParam = (
+    cardId: string,
+    key: string,
+    value: number | string | boolean
+  ) => {
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.cardId === cardId
+          ? { ...t, paramValues: { ...t.paramValues, [key]: value } }
+          : t
+      )
+    );
+  };
+
+  const handleToggleTaskChecklist = (cardId: string, itemId: string) => {
+    setTasks((prev) =>
+      prev.map((t) => {
+        if (t.cardId !== cardId) return t;
+        return {
+          ...t,
+          blocks: t.blocks.map((blk) =>
+            blk.type === "checklist"
+              ? {
+                  ...blk,
+                  items: blk.items.map((it) =>
+                    it.id === itemId ? { ...it, done: !it.done } : it
+                  ),
+                }
+              : blk
+          ),
+        };
+      })
+    );
+  };
+
+  const handleSelectModel = async (nextModelId: string) => {
+    setModelId(nextModelId);
+    setShowModelMenu(false);
+    inputRef.current?.focus();
+    try {
+      const updated = await saveAiConfig({ modelId: nextModelId });
+      setAiConfig(updated);
+    } catch {
+      // Mantiene selección local en caso de error temporal
+    }
+  };
+
+  const executeSavePendingKey = async (cardId: string, cardRef?: TaskProposal) => {
+    const secret = pendingSecretKeysRef.current.get(cardId);
+    if (!secret) {
+      setChatMessages((prev) =>
+        prev.map((m) =>
+          m.actionButton?.cardId === cardId ? { ...m, actionButton: undefined } : m
+        )
+      );
+      setStatusMessage("La clave ya fue procesada o expiró en memoria. Pégala de nuevo o usa Ajustes.");
+      setTimeout(() => setStatusMessage(null), 4000);
+      return;
+    }
+
+    setXoxState("syncing");
+    setXoxMessage("Guardando clave en bóveda segura y probando conexión...");
+    try {
+      const updated = await saveAiConfig({
+        provider: "openrouter",
+        apiKey: secret,
+        modelId,
+      });
+      pendingSecretKeysRef.current.delete(cardId);
+      setAiConfig(updated);
+
+      const testRes = await testAiConnection();
+      setAccountUsage(testRes);
+      setRequestsToday(getLocalDailyRequestCount(updated.maskedKey));
+      if (testRes.ok && !testRes.can_use_paid_models) {
+        setModelId((curr) =>
+          formatModelDisplay(curr, catalogModels).is_free ? curr : "openrouter/free"
+        );
+      }
+      const maskedLabel = updated.maskedKey ?? "cifrada";
+
+      setTasks((prev) => prev.filter((t) => t.cardId !== cardId));
+      setHistoryItems((prev) => [
+        {
+          id: `hist_${cardId}_${Date.now()}`,
+          title: cardRef?.title ?? "Guardar clave API de OpenRouter",
+          category: "boveda",
+          decision: "approved",
+          summary: `OpenRouter (${maskedLabel})`,
+          timestampLabel: nowTimeLabel(),
+        },
+        ...prev,
+      ]);
+
+      const nextMessages: UiChatMessage[] = [
+        ...chatMessagesRef.current.map((m) =>
+          m.actionButton?.cardId === cardId ? { ...m, actionButton: undefined } : m
+        ),
+        {
+          id: `msg_a_${Date.now()}`,
+          role: "assistant",
+          content: testRes.ok
+            ? `Clave guardada en bóveda segura (**${maskedLabel}**) y conexión verificada con OpenRouter.\n\n${testRes.message} Ya puedes conversar conmigo usando **${formatModelDisplay(modelId, catalogModels).name}**.`
+            : `Clave guardada en bóveda segura (**${maskedLabel}**), pero la verificación devolvió un aviso:\n${testRes.message}`,
+          isError: !testRes.ok,
+          actionButton: testRes.ok
+            ? undefined
+            : { label: "Revisar Ajustes OpenRouter", kind: "open_settings" },
+        },
+      ];
+      setChatMessages(nextMessages);
+      void persistConversation(nextMessages);
+
+      setStatusMessage(
+        testRes.ok
+          ? `OpenRouter conectado (${maskedLabel}).`
+          : `Clave guardada (${maskedLabel}); revisa la conexión.`
+      );
+      setXoxState(testRes.ok ? "success" : "alert");
+      setXoxMessage(
+        testRes.ok
+          ? "¡OpenRouter conectado y listo para trabajar!"
+          : testRes.message
+      );
+      setTimeout(() => {
+        setXoxState((s) => (s === "success" || s === "alert" ? "idle" : s));
+        setXoxMessage("¿En qué puedo ayudarte?");
+      }, 4000);
+      setTimeout(() => setStatusMessage(null), 4500);
+    } catch (err) {
+      pendingSecretKeysRef.current.delete(cardId);
+      console.error(err);
+      setXoxState("alert");
+      setXoxMessage("No se pudo guardar la clave en la bóveda.");
+      setStatusMessage("Error al guardar la clave en la bóveda local.");
+      setTimeout(() => setStatusMessage(null), 4500);
+    }
+  };
+
+  const handleChatAction = async (
+    action: NonNullable<UiChatMessage["actionButton"]>
+  ) => {
+    if (action.kind === "open_settings") {
+      setShowAiSettings(true);
+      return;
+    }
+    if (action.kind === "save_pending_key" && action.cardId) {
+      const matchingCard = tasksRef.current.find((t) => t.cardId === action.cardId);
+      await executeSavePendingKey(action.cardId, matchingCard);
+    }
+  };
+
+  const handleApproveTask = async (task: TaskProposal) => {
+    if (task.intent.type === "save_api_key") {
+      await executeSavePendingKey(task.cardId, task);
+      return;
+    }
+
+    const decision = computeVerifiedDecision(task);
     try {
       if (isTauriEnv) {
         const { invoke } = await import("@tauri-apps/api/core");
         await invoke("approve_action", {
           payload: {
-            card_id: card.card_id,
-            decision: "approved",
-            adjusted_qty: null,
-            notes: "Autorizado por el administrador"
-          }
+            card_id: task.cardId,
+            decision: decision.wasAdjusted ? "adjusted" : "approved",
+            adjusted_qty: decision.wasAdjusted ? decision.quantity : null,
+            notes: decision.wasAdjusted
+              ? "Cantidad o parámetros ajustados por el administrador"
+              : "Autorizado por el administrador",
+          },
         });
       }
-      setApprovedCards((prev) => [...prev, card.card_id]);
-      setStatusMessage(`Orden para "${card.product_name}" autorizada y registrada.`);
-      
-      // Xox reacciona con alegría a la aprobación HITL
+
+      // Promover relojes, agendas o notas aprobadas a la pestaña Agenda
+      if (
+        task.intent.type === "start_timer" ||
+        task.intent.type === "schedule_event" ||
+        task.intent.type === "save_note"
+      ) {
+        const schedBlock = task.blocks.find((b) => b.type === "schedule");
+        const noteBlock = task.blocks.find((b) => b.type === "note");
+        const chkBlock = task.blocks.find((b) => b.type === "checklist");
+        const mins =
+          typeof task.paramValues.duration_min === "number"
+            ? task.paramValues.duration_min
+            : schedBlock?.type === "schedule" && schedBlock.durationSeconds
+            ? Math.round(schedBlock.durationSeconds / 60)
+            : 15;
+        const autoOn =
+          typeof task.paramValues.auto_schedule === "boolean"
+            ? task.paramValues.auto_schedule
+            : schedBlock?.type === "schedule"
+            ? Boolean(schedBlock.autoSchedule)
+            : false;
+
+        const newAgenda: AgendaItem =
+          task.intent.type === "start_timer"
+            ? {
+                id: `ag_${Date.now()}`,
+                kind: "timer",
+                title: task.title,
+                subtitle: task.subtitle,
+                timeLabel: `${String(mins).padStart(2, "0")}:00`,
+                durationSeconds: mins * 60,
+                remainingSeconds: mins * 60,
+                isRunning: true,
+                autoScheduled: autoOn,
+                createdAtLabel: `Hoy · ${nowTimeLabel()}`,
+              }
+            : task.intent.type === "save_note"
+            ? {
+                id: `ag_${Date.now()}`,
+                kind: "note",
+                title: task.title,
+                timeLabel: "Fijada",
+                noteContent: noteBlock?.type === "note" ? noteBlock.content : task.subtitle,
+                checklist: chkBlock?.type === "checklist" ? chkBlock.items : undefined,
+                tags: noteBlock?.type === "note" ? noteBlock.tags : undefined,
+                createdAtLabel: `Hoy · ${nowTimeLabel()}`,
+              }
+            : {
+                id: `ag_${Date.now()}`,
+                kind: autoOn ? "recurring" : "alarm",
+                title: task.title,
+                subtitle: task.subtitle,
+                timeLabel:
+                  typeof task.paramValues.window_slot === "string"
+                    ? `${task.paramValues.window_slot} hrs`
+                    : schedBlock?.type === "schedule"
+                    ? schedBlock.timeLabel
+                    : "09:00 hrs",
+                recurrence:
+                  schedBlock?.type === "schedule" ? schedBlock.recurrence : undefined,
+                autoScheduled: autoOn,
+                checklist: chkBlock?.type === "checklist" ? chkBlock.items : undefined,
+                createdAtLabel: `Hoy · ${nowTimeLabel()}`,
+              };
+
+        setAgendaItems((prev) => [newAgenda, ...prev]);
+      }
+
+      const historyEntry: TaskHistoryItem = {
+        id: `hist_${task.cardId}_${Date.now()}`,
+        title: task.title,
+        category: task.category,
+        decision: decision.wasAdjusted ? "adjusted" : "approved",
+        summary:
+          decision.quantity !== null && task.intent.supplierName
+            ? `+${decision.quantity} un. con ${task.intent.supplierName}`
+            : task.intent.targetLabel,
+        amountLabel:
+          decision.verifiedCost !== null
+            ? `$${decision.verifiedCost.toLocaleString()} ${decision.currency}`
+            : undefined,
+        timestampLabel: nowTimeLabel(),
+      };
+
+      setHistoryItems((prev) => [historyEntry, ...prev]);
+      setTasks((prev) => prev.filter((t) => t.cardId !== task.cardId));
+
+      setStatusMessage(`"${task.title}" autorizado y registrado.`);
       setXoxState("success");
-      setXoxMessage(`¡Orden de ${card.product_name} autorizada y firmada!`);
+      setXoxMessage(`¡Listo! "${task.title}" confirmado.`);
       setTimeout(() => {
-        setXoxState("idle");
+        setXoxState((s) => (s === "success" ? "idle" : s));
         setXoxMessage("¿En qué puedo ayudarte?");
       }, 3500);
-
       setTimeout(() => setStatusMessage(null), 4000);
     } catch (err) {
       console.error(err);
@@ -525,38 +1130,631 @@ export default function App() {
     }
   };
 
-  const runPromptQuery = (rawQuery: string) => {
-    const query = rawQuery.trim();
-    if (!query || xoxState === "thinking") return;
+  const handleDiscardTask = async (task: TaskProposal) => {
+    if (pendingSecretKeysRef.current.has(task.cardId)) {
+      pendingSecretKeysRef.current.delete(task.cardId);
+    }
+    if (task.intent.type === "save_api_key") {
+      setChatMessages((prev) =>
+        prev.map((m) =>
+          m.actionButton?.cardId === task.cardId ? { ...m, actionButton: undefined } : m
+        )
+      );
+    }
 
+    try {
+      if (isTauriEnv && task.intent.type !== "save_api_key") {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("approve_action", {
+          payload: {
+            card_id: task.cardId,
+            decision: "rejected",
+            adjusted_qty: null,
+            notes: "Descartado desde el panel de tareas",
+          },
+        });
+      }
+    } catch {
+      // Continuar actualización local si falla RPC mock
+    }
+
+    const historyEntry: TaskHistoryItem = {
+      id: `hist_rej_${task.cardId}_${Date.now()}`,
+      title: task.title,
+      category: task.category,
+      decision: "rejected",
+      summary: `Descartada · ${task.intent.targetLabel}`,
+      timestampLabel: nowTimeLabel(),
+    };
+
+    setHistoryItems((prev) => [historyEntry, ...prev]);
+    setTasks((prev) => prev.filter((t) => t.cardId !== task.cardId));
+    setStatusMessage(`"${task.title}" descartada y registrada en memoria.`);
+    setTimeout(() => setStatusMessage(null), 3500);
+  };
+
+  const handleAskXoxAboutTask = (task: TaskProposal) => {
+    setInputPrompt(`Sobre "${task.title}": `);
+    inputRef.current?.focus();
+  };
+
+  const handleToggleTimer = (id: string) => {
+    setAgendaItems((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, isRunning: !item.isRunning } : item
+      )
+    );
+  };
+
+  const handleResetTimer = (id: string) => {
+    setAgendaItems((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              isRunning: false,
+              remainingSeconds: item.durationSeconds ?? 900,
+            }
+          : item
+      )
+    );
+  };
+
+  const handleCompleteAgendaItem = (item: AgendaItem) => {
+    setAgendaItems((prev) => prev.filter((a) => a.id !== item.id));
+    setHistoryItems((prev) => [
+      {
+        id: `hist_ag_${item.id}_${Date.now()}`,
+        title: item.title,
+        category: item.kind === "note" ? "nota" : "agenda",
+        decision: "completed",
+        summary: item.noteContent ?? item.subtitle ?? item.timeLabel,
+        timestampLabel: nowTimeLabel(),
+      },
+      ...prev,
+    ]);
+    setStatusMessage(`"${item.title}" completado.`);
+    setTimeout(() => setStatusMessage(null), 3000);
+  };
+
+  const handleRemoveAgendaItem = (id: string) => {
+    setAgendaItems((prev) => prev.filter((a) => a.id !== id));
+  };
+
+  const handleToggleAgendaChecklist = (agendaId: string, itemId: string) => {
+    setAgendaItems((prev) =>
+      prev.map((item) =>
+        item.id === agendaId && item.checklist
+          ? {
+              ...item,
+              checklist: item.checklist.map((c) =>
+                c.id === itemId ? { ...c, done: !c.done } : c
+              ),
+            }
+          : item
+      )
+    );
+  };
+
+  const handleToggleAgendaAuto = (id: string) => {
+    setAgendaItems((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, autoScheduled: !item.autoScheduled } : item
+      )
+    );
+  };
+
+  const handleCreateQuickTimer = (title: string, minutes: number) => {
+    const secs = Math.max(1, minutes) * 60;
+    const item: AgendaItem = {
+      id: `ag_timer_${Date.now()}`,
+      kind: "timer",
+      title,
+      subtitle: `Reloj rápido (${minutes} min)`,
+      timeLabel: `${String(minutes).padStart(2, "0")}:00`,
+      durationSeconds: secs,
+      remainingSeconds: secs,
+      isRunning: true,
+      createdAtLabel: `Hoy · ${nowTimeLabel()}`,
+    };
+    setAgendaItems((prev) => [item, ...prev]);
+    setStatusMessage(`Reloj "${title}" iniciado (${minutes} min).`);
+    setTimeout(() => setStatusMessage(null), 3500);
+  };
+
+  const handleCreateQuickNote = (title: string, content: string) => {
+    const item: AgendaItem = {
+      id: `ag_note_${Date.now()}`,
+      kind: "note",
+      title,
+      timeLabel: "Fijada",
+      noteContent: content,
+      tags: ["Manual"],
+      createdAtLabel: `Hoy · ${nowTimeLabel()}`,
+    };
+    setAgendaItems((prev) => [item, ...prev]);
+    setStatusMessage(`Nota "${title}" guardada en Agenda.`);
+    setTimeout(() => setStatusMessage(null), 3500);
+  };
+
+  const runPromptQuery = async (
+    rawQuery: string,
+    overrideMessages?: UiChatMessage[]
+  ) => {
+    const query = rawQuery.trim();
+    if (!query || isChatStreaming) return;
+
+    const baseMessages = overrideMessages ?? chatMessagesRef.current;
+    const currentAttachments = attachments;
     setInputPrompt("");
     setAttachments([]);
 
-    // Activar estado de pensamiento de Xox
-    setXoxState("thinking");
-    setXoxMessage(`Analizando: "${query}"...`);
+    // 1) Zero-Trust: interceptar claves API localmente antes de cualquier llamada o historial
+    const { detectedKey, maskedKey, sanitizedText } = detectApiKeyInText(query);
+    if (detectedKey && maskedKey) {
+      const cardId = `vault_key_${Date.now()}`;
+      pendingSecretKeysRef.current.set(cardId, detectedKey);
 
-    // Fases de pensamiento de Xox
-    setTimeout(() => {
-      setXoxMessage("Consultando reglas activas y niveles de stock...");
-    }, 900);
+      const vaultProposal: TaskProposal = {
+        cardId,
+        title: "Guardar clave API de OpenRouter",
+        subtitle: `Se detectó una clave (${maskedKey}) en tu mensaje. Aprueba para guardarla en la bóveda local sin enviarla al modelo.`,
+        urgency: "media",
+        category: "boveda",
+        generatedBy: "Bóveda Zero-Trust",
+        statusChip: "Requiere aprobación",
+        defaultExpanded: true,
+        blocks: [
+          {
+            type: "kv_list",
+            rows: [
+              { label: "Proveedor", value: "OpenRouter" },
+              {
+                label: "Clave detectada",
+                value: maskedKey,
+                subtle: "Aislada localmente",
+              },
+              {
+                label: "Destino",
+                value: isTauriEnv
+                  ? "Bóveda local Tauri (0600)"
+                  : "Almacenamiento local de sesión",
+              },
+              { label: "Modelo activo", value: modelId },
+            ],
+          },
+          {
+            type: "insight",
+            text: "Tu clave se mantiene aislada en memoria temporal hasta que confirmes; nunca viaja dentro del prompt.",
+            confidence: 1,
+            source: "Protección Zero-Trust",
+          },
+        ],
+        intent: {
+          type: "save_api_key",
+          targetLabel: `OpenRouter (${maskedKey})`,
+          primaryLabel: "Guardar en bóveda segura",
+        },
+        paramValues: {},
+      };
 
-    setTimeout(() => {
-      setXoxMessage("Verificando límites de presupuesto y proveedores...");
-    }, 1900);
-
-    setTimeout(() => {
-      setXoxState("success");
-      setXoxMessage("¡Análisis completado! He evaluado las directivas.");
-      setStatusMessage(`Instrucción procesada con éxito por Xox.`);
-
+      setTasks((prev) => [vaultProposal, ...prev]);
+      setShowRightSidebar(true);
+      setTaskTab("pending");
+      const nextMessages: UiChatMessage[] = [
+        ...chatMessagesRef.current,
+        { id: `msg_u_${Date.now()}`, role: "user", content: sanitizedText },
+        {
+          id: `msg_a_${Date.now() + 1}`,
+          role: "assistant",
+          content: `Detecté una clave API (**${maskedKey}**) y la intercepté localmente antes de enviarla a internet.\n\nPor seguridad Zero-Trust, confírmame si quieres guardarla en la bóveda segura y probar la conexión con OpenRouter.`,
+          actionButton: {
+            label: "Guardar clave en bóveda segura",
+            kind: "save_pending_key",
+            cardId,
+          },
+        },
+      ];
+      setChatMessages(nextMessages);
+      void persistConversation(nextMessages);
+      setXoxState("alert");
+      setXoxMessage(`Clave ${maskedKey} retenida en memoria segura.`);
       setTimeout(() => {
-        setXoxState("idle");
+        setXoxState((s) => (s === "alert" ? "idle" : s));
         setXoxMessage("¿En qué puedo ayudarte?");
-      }, 4000);
+      }, 4500);
+      return;
+    }
 
-      setTimeout(() => setStatusMessage(null), 4500);
-    }, 3000);
+    const userMsg: UiChatMessage = {
+      id: `msg_u_${Date.now()}`,
+      role: "user",
+      content: query,
+    };
+
+    // 2) Sin clave configurada: informar con honestidad y abrir flujo guiado (cero respuestas mock)
+    if (!aiConfig.hasApiKey) {
+      const wantsSetup = isKeySetupIntent(query);
+      if (wantsSetup) {
+        setShowAiSettings(true);
+      }
+      const nextMessages: UiChatMessage[] = [
+        ...chatMessagesRef.current,
+        userMsg,
+        {
+          id: `msg_a_${Date.now() + 1}`,
+          role: "assistant",
+          content: wantsSetup
+            ? "Abrí los ajustes de OpenRouter para configurar tu acceso.\n\nTambién puedes pegar aquí tu clave `sk-or-v1-...` cuando quieras: la detecto localmente sin exponerla al modelo."
+            : "Aún no tengo una clave de OpenRouter conectada.\n\nConecta tu clave en los ajustes de OpenRouter o pégala en este chat para activarme (incluye modelos gratuitos).",
+          actionButton: {
+            label: "Configurar OpenRouter",
+            kind: "open_settings",
+          },
+        },
+      ];
+      setChatMessages(nextMessages);
+      void persistConversation(nextMessages);
+      setXoxState("idle");
+      setXoxMessage("Conecta OpenRouter para iniciar.");
+      return;
+    }
+
+    // 3) Inferencia real en streaming contra OpenRouter
+    const convId = activeConvIdRef.current;
+    const assistantMsgId = `msg_a_${Date.now() + 1}`;
+    const priorHistory = baseMessages
+      .filter((m) => !m.isError && m.content.trim().length > 0)
+      .slice(-10)
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    const initialStep: ThinkingStep = {
+      id: "read_context",
+      label: "Leyendo contexto y reglas del negocio",
+      status: "running",
+    };
+
+    const assistantPlaceholder: UiChatMessage = {
+      id: assistantMsgId,
+      role: "assistant",
+      content: "",
+      reasoning: "",
+      thinkingSteps: [initialStep],
+      isStreaming: true,
+      isReasoningStreaming: true,
+    };
+
+    const startedMessages = [...baseMessages, userMsg, assistantPlaceholder];
+    clearXoxPhaseTimers();
+    const readingStartedAt = performance.now();
+    const READING_MIN_MS = 750;
+    let latestPhase: XoxState = "reading";
+    let hasEnteredTalking = false;
+    let talkingStartedAt = 0;
+
+    setChatMessages(startedMessages);
+    setIsChatStreaming(true);
+    setXoxState("reading");
+    setThinkingLabel("Leyendo contexto…");
+    setXoxMessage("Leyendo contexto y reglas...");
+
+    try {
+      const fileSnippets = await Promise.all(
+        currentAttachments.map(async (file) => {
+          const isReadableText =
+            file.size <= 131072 &&
+            (/^(text\/|application\/(json|csv|xml|javascript))/.test(file.type) ||
+              /\.(txt|md|json|csv|tsv|log|yaml|yml|xml)$/i.test(file.name));
+          if (!isReadableText) {
+            return {
+              name: file.name,
+              type: file.type || "archivo",
+              content: `(Archivo adjunto de ${Math.round(file.size / 1024)} KB)`,
+            };
+          }
+          try {
+            const raw = await file.text();
+            return {
+              name: file.name,
+              type: file.type || "text/plain",
+              content: raw.slice(0, 4000),
+            };
+          } catch {
+            return {
+              name: file.name,
+              type: file.type || "archivo",
+              content: "(No se pudo leer el contenido del archivo)",
+            };
+          }
+        })
+      );
+
+      const activeContextSnippets = contextItems
+        .filter((c) => c.pinned || selectedContext?.id === c.id)
+        .map((c) => ({
+          name: c.name,
+          type: c.type,
+          content: c.content.slice(0, 2500),
+        }));
+
+      const businessContextSnapshot = [
+        ...contextItems.map((c) => `- ${c.name} (${c.type}): ${c.content.slice(0, 700)}`),
+        ...patterns.map(
+          (p) => `- Patrón aprendido (${Math.round(p.confidence * 100)}%): ${p.description}`
+        ),
+      ]
+        .join("\n")
+        .slice(0, 4500);
+
+      const res = await runXoxAiChatStream(
+        {
+          message: query,
+          history: priorHistory,
+          currentTasks: tasksRef.current,
+          agendaItems,
+          attachedContext: [...fileSnippets, ...activeContextSnippets],
+          modelOverride: modelId,
+          userProfile: localUser
+            ? {
+                name: localUser.name,
+                storeName: localUser.storeName,
+                role: localUser.role,
+              }
+            : null,
+          businessContextSnapshot,
+        },
+        {
+          onPhase: (state, label) => {
+            if (hasEnteredTalking && (state === "reading" || state === "thinking")) {
+              return;
+            }
+            if (state === "talking") {
+              clearXoxPhaseTimers();
+              hasEnteredTalking = true;
+              if (!talkingStartedAt) talkingStartedAt = performance.now();
+              latestPhase = "talking";
+              setXoxState("talking");
+              if (label) {
+                setThinkingLabel(label);
+                setXoxMessage(label);
+              }
+              return;
+            }
+            if (state === "thinking" && latestPhase === "reading") {
+              const elapsed = performance.now() - readingStartedAt;
+              const remaining = READING_MIN_MS - elapsed;
+              if (remaining > 40) {
+                xoxPhaseTimersRef.current.push(
+                  setTimeout(() => {
+                    if (hasEnteredTalking) return;
+                    latestPhase = "thinking";
+                    setXoxState("thinking");
+                    setThinkingLabel(label || "Thinking");
+                    setXoxMessage(label || "Thinking");
+                  }, remaining)
+                );
+                return;
+              }
+            }
+            latestPhase = state;
+            setXoxState(state);
+            if (label) {
+              setThinkingLabel(label);
+              setXoxMessage(label);
+            }
+          },
+          onSteps: (steps) => {
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId ? { ...m, thinkingSteps: steps } : m
+              )
+            );
+          },
+          onReasoningDelta: (delta) => {
+            if (!hasEnteredTalking && latestPhase === "reading") {
+              const elapsed = performance.now() - readingStartedAt;
+              if (elapsed >= READING_MIN_MS) {
+                latestPhase = "thinking";
+                setXoxState("thinking");
+              }
+            }
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? {
+                      ...m,
+                      reasoning: (m.reasoning ?? "") + delta,
+                      isReasoningStreaming: true,
+                    }
+                  : m
+              )
+            );
+          },
+          onReplyDelta: (delta) => {
+            if (!hasEnteredTalking) {
+              clearXoxPhaseTimers();
+              hasEnteredTalking = true;
+              talkingStartedAt = performance.now();
+              latestPhase = "talking";
+              setXoxState("talking");
+            }
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? {
+                      ...m,
+                      content: m.content + delta,
+                      isReasoningStreaming: false,
+                    }
+                  : m
+              )
+            );
+          },
+        }
+      );
+
+      clearXoxPhaseTimers();
+      const generatedCount = res.tasks.length;
+      if (generatedCount > 0) {
+        if (res.operation === "replace_tasks") {
+          setTasks((prev) => [
+            ...res.tasks,
+            ...prev.filter((t) => t.intent.type === "save_api_key"),
+          ]);
+        } else {
+          setTasks((prev) => [...res.tasks, ...prev]);
+        }
+        setShowRightSidebar(true);
+        setTaskTab("pending");
+      }
+
+      setRequestsToday(incrementLocalDailyRequestCount(aiConfig.maskedKey));
+      testAiConnection()
+        .then((u) => setAccountUsage(u))
+        .catch(() => {});
+
+      const finalMessages = chatMessagesRef.current.map((m) =>
+        m.id === assistantMsgId
+          ? {
+              ...m,
+              content: res.reply,
+              reasoning: res.reasoning || m.reasoning,
+              reasoningDurationMs: res.reasoningDurationMs,
+              thinkingSteps: res.steps ?? m.thinkingSteps,
+              isStreaming: false,
+              isReasoningStreaming: false,
+              modelUsed: res.modelUsed,
+              latencyMs: res.latencyMs,
+              tokensUsed: res.usage?.totalTokens,
+              generatedTaskCount: generatedCount,
+            }
+          : m
+      );
+      setChatMessages(finalMessages);
+      void persistConversation(finalMessages, convId);
+
+      setIsChatStreaming(false);
+
+      const finalMood: XoxState = res.xoxMood === "alert" ? "alert" : "success";
+      const summaryStatus =
+        generatedCount > 0
+          ? `Xox generó ${generatedCount} ${generatedCount === 1 ? "tarjeta" : "tarjetas"} en Tareas & Decisiones.`
+          : "¿En qué más te ayudo?";
+      setStatusMessage(generatedCount > 0 ? summaryStatus : null);
+
+      const finishMood = (successDelayMs: number) => {
+        setXoxState(finalMood);
+        setXoxMessage(summaryStatus);
+        xoxPhaseTimersRef.current.push(
+          setTimeout(() => {
+            setXoxState((s) => (s === "success" || s === "alert" ? "idle" : s));
+            setXoxMessage("¿En qué puedo ayudarte?");
+          }, successDelayMs)
+        );
+      };
+
+      if (generatedCount > 0) {
+        setXoxState("syncing");
+        setXoxMessage("Organizando tarjetas en Tareas...");
+        xoxPhaseTimersRef.current.push(
+          setTimeout(() => finishMood(2800), 850)
+        );
+      } else {
+        const TALKING_MIN_MS = 1100;
+        const talkElapsed = talkingStartedAt ? performance.now() - talkingStartedAt : 0;
+        const talkWait = talkingStartedAt
+          ? Math.max(0, TALKING_MIN_MS - talkElapsed)
+          : res.reply.trim().length > 0
+            ? TALKING_MIN_MS
+            : 0;
+        if (talkWait > 40) {
+          setXoxState("talking");
+          setXoxMessage("Respondiendo...");
+          xoxPhaseTimersRef.current.push(
+            setTimeout(() => finishMood(1800), talkWait)
+          );
+        } else {
+          finishMood(1800);
+        }
+      }
+
+      if (generatedCount > 0) {
+        xoxPhaseTimersRef.current.push(
+          setTimeout(() => setStatusMessage(null), 4500)
+        );
+      }
+    } catch (err) {
+      clearXoxPhaseTimers();
+      const message =
+        err instanceof Error
+          ? err.message
+          : "No se pudo completar la consulta con OpenRouter.";
+      const lowerMsg = message.toLowerCase();
+      if (
+        lowerMsg.includes("402") ||
+        lowerMsg.includes("saldo") ||
+        lowerMsg.includes("créditos") ||
+        lowerMsg.includes("no está disponible") ||
+        lowerMsg.includes("404")
+      ) {
+        setUnavailableModelIds((prev) => {
+          const next = new Set(prev);
+          next.add(modelId);
+          return next;
+        });
+      }
+      if (aiConfig.hasApiKey) {
+        testAiConnection()
+          .then((u) => setAccountUsage(u))
+          .catch(() => {});
+      }
+      const errMessages = chatMessagesRef.current.map((m) =>
+        m.id === assistantMsgId
+          ? {
+              ...m,
+              content: `Error al consultar OpenRouter: ${message}`,
+              thinkingSteps: undefined,
+              reasoning: undefined,
+              isStreaming: false,
+              isReasoningStreaming: false,
+              isError: true,
+              actionButton: {
+                label: "Revisar clave y modelo",
+                kind: "open_settings" as const,
+              },
+            }
+          : m
+      );
+      setChatMessages(errMessages);
+      void persistConversation(errMessages, convId);
+      setIsChatStreaming(false);
+      setXoxState("alert");
+      setXoxMessage("Error al conectar con OpenRouter.");
+      setStatusMessage(message);
+      setTimeout(() => {
+        setXoxState((s) => (s === "alert" ? "idle" : s));
+        setXoxMessage("¿En qué puedo ayudarte?");
+      }, 4500);
+      setTimeout(() => setStatusMessage(null), 5000);
+    }
+  };
+
+  const handleRegenerateMessage = (targetMsg: UiChatMessage) => {
+    if (isChatStreaming) return;
+    const msgs = chatMessagesRef.current;
+    const targetIdx = msgs.findIndex((m) => m.id === targetMsg.id);
+    if (targetIdx <= 0) return;
+    let userIdx = -1;
+    for (let i = targetIdx - 1; i >= 0; i -= 1) {
+      if (msgs[i].role === "user") {
+        userIdx = i;
+        break;
+      }
+    }
+    if (userIdx === -1) return;
+    const userPrompt = msgs[userIdx].content;
+    const trimmedHistory = msgs.slice(0, userIdx);
+    void runPromptQuery(userPrompt, trimmedHistory);
   };
 
   const handlePromptSubmit = (e?: React.FormEvent) => {
@@ -578,9 +1776,20 @@ export default function App() {
     requestAnimationFrame(() => inputRef.current?.focus());
 
     if (responseText) {
+      const safePrompt = prompt ? detectApiKeyInText(prompt).sanitizedText : null;
+      const safeResponse = detectApiKeyInText(responseText).sanitizedText;
+      const nextMessages: UiChatMessage[] = [
+        ...chatMessagesRef.current,
+        ...(safePrompt
+          ? [{ id: `msg_qb_u_${Date.now()}`, role: "user" as const, content: safePrompt }]
+          : []),
+        { id: `msg_qb_a_${Date.now() + 1}`, role: "assistant" as const, content: safeResponse },
+      ];
+      setChatMessages(nextMessages);
+      void persistConversation(nextMessages);
       setXoxState("success");
-      setXoxMessage(responseText);
-      if (prompt) setStatusMessage(`Continuando desde Quick Bar: "${prompt}"`);
+      setXoxMessage(safeResponse);
+      if (safePrompt) setStatusMessage(`Continuando desde Quick Bar: "${safePrompt}"`);
       setTimeout(() => {
         setXoxState((s) => (s === "success" ? "idle" : s));
         setXoxMessage("¿En qué puedo ayudarte?");
@@ -621,7 +1830,11 @@ export default function App() {
   }, []);
 
   // Estados "ocupados": el texto muestra el efecto shimmer gris con brillo blanco
-  const xoxBusy = xoxState === "thinking" || xoxState === "reading" || xoxState === "syncing";
+  const xoxBusy =
+    xoxState === "thinking" ||
+    xoxState === "reading" ||
+    xoxState === "talking" ||
+    xoxState === "syncing";
 
   // Vista previa manual de un estado de Xox (selector de desarrollo)
   const previewXoxState = (s: XoxState) => {
@@ -667,9 +1880,7 @@ export default function App() {
     inputRef.current?.focus();
   };
 
-  const pendingCards = cards.filter(c => !approvedCards.includes(c.card_id));
-  const completedCards = cards.filter(c => approvedCards.includes(c.card_id));
-  const pendingCount = pendingCards.length;
+  const pendingCount = tasks.length;
 
   // Estados de presencia animada para ventanas laterales y emergentes (entrada y salida)
   const leftPresence = useAnimatedPresence(showLeftSidebar, 270);
@@ -729,8 +1940,53 @@ export default function App() {
           </div>
         </div>
 
-        {/* Lado Derecho: Toggle de Tareas y Decisiones */}
+        {/* Lado Derecho: Registro Local + Estado OpenRouter + Toggle de Tareas y Decisiones */}
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowLocalAuth(true)}
+            title={
+              localUser
+                ? `${localUser.name} · ${localUser.role} (${localUser.storeName}) — Perfil local`
+                : "Crear perfil de operador local"
+            }
+            className="px-2.5 py-1.5 rounded-lg border bg-white/[0.03] hover:bg-white/[0.07] border-white/[0.08] text-zinc-300 hover:text-white flex items-center gap-1.5 transition-all cursor-pointer"
+          >
+            <UserCircle2
+              className={`w-3.5 h-3.5 ${
+                localUser ? "text-emerald-400" : "text-zinc-400"
+              }`}
+            />
+            <span className="text-[11px] font-medium max-w-[110px] truncate hidden sm:inline">
+              {localUser ? localUser.name : "Registro local"}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowAiSettings(true)}
+            title={
+              aiConfig.hasApiKey
+                ? `${usageSummary.primary} · Modelo: ${activeModel.name}`
+                : "Configurar clave de OpenRouter"
+            }
+            className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
+              aiConfig.hasApiKey
+                ? "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 border-white/[0.08]"
+                : "bg-amber-500/10 hover:bg-amber-500/15 text-amber-200 border-amber-400/25"
+            }`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                aiConfig.hasApiKey ? "bg-emerald-400" : "bg-amber-400 animate-pulse"
+              }`}
+            />
+            <KeyRound className="w-3 h-3 opacity-80" />
+            <span className="text-[11px] font-medium max-w-[190px] truncate hidden sm:inline">
+              {usageSummary.primary}
+            </span>
+          </button>
+
           <button
             onClick={() => setShowRightSidebar(!showRightSidebar)}
             aria-pressed={showRightSidebar}
@@ -778,27 +2034,120 @@ export default function App() {
                 className="h-full bg-[#08090d] flex flex-col shrink-0 overflow-hidden select-none"
               >
               
-              {/* Cabecera del Panel */}
-              <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between bg-[#0a0b10]">
-                <div className="flex items-center space-x-2">
-                  <FolderOpen className="w-4 h-4 text-zinc-400" />
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-200">
-                    Contexto & Reglas
-                  </h3>
+              {/* Cabecera del Panel con Tabs Contexto / Chats */}
+              <div className="p-2.5 border-b border-white/[0.06] flex items-center justify-between gap-2 bg-[#0a0b10]">
+                <div className="flex items-center p-0.5 rounded-lg bg-black/50 border border-white/[0.06]">
+                  <button
+                    type="button"
+                    onClick={() => setLeftTab("context")}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                      leftTab === "context"
+                        ? "bg-white/[0.09] text-white"
+                        : "text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    <span>Contexto</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLeftTab("chats")}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                      leftTab === "chats"
+                        ? "bg-white/[0.09] text-white"
+                        : "text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>Chats</span>
+                    {conversations.length > 0 && (
+                      <span className="text-[10px] font-mono text-zinc-400 bg-white/[0.06] px-1 rounded">
+                        {conversations.length}
+                      </span>
+                    )}
+                  </button>
                 </div>
-                <span className="text-[10px] text-zinc-400 font-mono bg-white/[0.04] border border-white/[0.06] px-2 py-0.5 rounded">
-                  5.05k / 128k
-                </span>
+
+                {leftTab === "context" ? (
+                  <span
+                    title="Tokens estimados de contexto activo vs. ventana máxima del modelo seleccionado"
+                    className="text-[10px] text-zinc-400 font-mono bg-white/[0.04] border border-white/[0.06] px-2 py-0.5 rounded shrink-0"
+                  >
+                    {formatTokenCount(totalActiveTokens)} / {formatContextLength(modelContextWindow)}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleStartNewChat}
+                    disabled={isChatStreaming}
+                    title="Iniciar nueva conversación"
+                    className="flex items-center gap-1 text-[11px] text-zinc-200 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] px-2 py-1 rounded-md transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                  >
+                    <SquarePen className="w-3 h-3" />
+                    <span>Nueva</span>
+                  </button>
+                )}
               </div>
 
-              {/* Medidor de Consumo de Contexto */}
-              <div className="px-3.5 py-2.5 bg-black/40 border-b border-white/[0.04]">
-                <div className="flex justify-between text-[11px] text-zinc-400 mb-1.5">
-                  <span>Capacidad del Modelo</span>
-                  <span className="text-zinc-200 font-mono font-medium">4% Usado</span>
+              {leftTab === "context" ? (
+                <>
+              {/* Estado Real de OpenRouter + Contexto del Modelo */}
+              <div className="px-3.5 py-2.5 bg-black/40 border-b border-white/[0.06] space-y-2.5">
+                {/* Consumo y límite real de OpenRouter */}
+                <div>
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-400 mb-1">
+                    <span className="flex items-center gap-1.5 text-zinc-300 font-medium truncate">
+                      <Activity className="w-3 h-3 text-emerald-400 shrink-0" />
+                      <span className="truncate">{usageSummary.tierLabel}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => refreshModelsAndUsage(true)}
+                      title="Actualizar límites de OpenRouter y catálogo de modelos"
+                      className="flex items-center gap-1 text-[10px] font-mono text-zinc-200 hover:text-white transition-colors shrink-0 cursor-pointer"
+                    >
+                      <span>{usageSummary.headline}</span>
+                      <RefreshCw className={`w-2.5 h-2.5 text-zinc-400 ${loadingModels ? "animate-spin" : ""}`} />
+                    </button>
+                  </div>
+                  <div className="w-full bg-white/[0.06] h-1 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${
+                        usageSummary.pct >= 85
+                          ? "bg-amber-400"
+                          : usageSummary.connected
+                          ? "bg-emerald-400/80"
+                          : "bg-zinc-600"
+                      }`}
+                      style={{ width: `${Math.max(usageSummary.connected ? 4 : 0, usageSummary.pct)}%` }}
+                    />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-zinc-500">
+                    <span className="truncate">{usageSummary.detail}</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowAiSettings(true)}
+                      className="text-sky-300/90 hover:text-sky-200 shrink-0 cursor-pointer"
+                    >
+                      {aiConfig.hasApiKey ? "Ver modelos" : "Conectar"}
+                    </button>
+                  </div>
                 </div>
-                <div className="w-full bg-white/[0.06] h-1 rounded-full overflow-hidden">
-                  <div className="bg-zinc-300 h-full w-[4%] rounded-full"></div>
+
+                {/* Uso real de la ventana de contexto del modelo */}
+                <div className="pt-2 border-t border-white/[0.05]">
+                  <div className="flex justify-between text-[11px] text-zinc-400 mb-1">
+                    <span>Contexto activo ({activeModel.name})</span>
+                    <span className="text-zinc-200 font-mono font-medium">
+                      {contextUsagePct}% usado
+                    </span>
+                  </div>
+                  <div className="w-full bg-white/[0.06] h-1 rounded-full overflow-hidden">
+                    <div
+                      className="bg-zinc-300 h-full rounded-full transition-all"
+                      style={{ width: `${Math.min(100, Math.max(totalActiveTokens > 0 ? 2 : 0, contextUsagePct))}%` }}
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -806,20 +2155,38 @@ export default function App() {
               <div className="p-3 border-b border-white/[0.06] space-y-1.5">
                 <div className="flex items-center justify-between text-[10px] text-zinc-500 font-semibold uppercase tracking-wider px-1 pb-1">
                   <span>Fuentes Activas</span>
-                  <button 
-                    onClick={() => {
-                      const newItem: ContextItem = {
-                        id: `ctx_${Date.now()}`,
-                        name: "catalogo-nuevo.json",
-                        type: "catalog",
-                        path: "context/business-profiles/catalogo.json",
-                        tokens: "620 tokens",
-                        pinned: true,
-                        content: JSON.stringify({ "nota": "Nuevo catálogo de productos adjuntado." }, null, 2)
-                      };
-                      setContextItems(prev => [...prev, newItem]);
-                      setSelectedContext(newItem);
+                  <input
+                    ref={contextFileInputRef}
+                    type="file"
+                    accept=".json,.md,.txt,.csv,.yaml,.yml"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = "";
+                      if (!file) return;
+                      try {
+                        const text = await file.text();
+                        const newItem: ContextItem = {
+                          id: `ctx_custom_${Date.now()}`,
+                          name: file.name,
+                          type: "catalog",
+                          path: file.name,
+                          pinned: true,
+                          content: text,
+                          isCustom: true,
+                        };
+                        setContextItems((prev) => [...prev, newItem]);
+                        setSelectedContext(newItem);
+                        triggerReadingPulse(`Leyendo ${file.name}...`);
+                      } catch {
+                        // Ignora si no se pudo leer el archivo seleccionado
+                      }
                     }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => contextFileInputRef.current?.click()}
+                    title="Agregar un archivo local (.json, .md, .txt, .csv) al contexto de Xox"
                     className="text-zinc-400 hover:text-white flex items-center gap-1 text-[10px] cursor-pointer"
                   >
                     <Plus className="w-3 h-3" />
@@ -827,33 +2194,78 @@ export default function App() {
                   </button>
                 </div>
 
-                {contextItems.map((item) => {
-                  const isSelected = selectedContext?.id === item.id;
-                  const friendlyLabel = CONTEXT_LABEL[item.type] || item.name;
-                  return (
-                    <div
-                      key={item.id}
-                      onClick={() => setSelectedContext(item)}
-                      className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all flex items-center justify-between ${
-                        isSelected
-                          ? "bg-white/[0.08] border-white/20 text-white shadow-sm"
-                          : "bg-white/[0.02] border-white/[0.05] text-zinc-400 hover:border-white/10 hover:text-zinc-200"
-                      }`}
-                    >
-                      <div className="flex items-center space-x-2.5 truncate">
-                        <ContextIcon type={item.type} />
-                        <div className="truncate">
-                          <div className="font-medium text-zinc-200 truncate">{friendlyLabel}</div>
-                          <div className="text-[10px] text-zinc-500 truncate font-mono">{item.name}</div>
+                {contextItems.length === 0 ? (
+                  <div className="px-2 py-3 rounded-xl border border-dashed border-white/[0.06] text-[11px] text-zinc-500 text-center">
+                    Cargando archivos locales…
+                  </div>
+                ) : (
+                  contextItems.map((item) => {
+                    const isSelected = selectedContext?.id === item.id;
+                    const friendlyLabel = CONTEXT_LABEL[item.type] || item.name;
+                    const tokenCount = estimateTokens(item.content);
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => {
+                          setSelectedContext(item);
+                          triggerReadingPulse(`Leyendo ${item.name}...`, 1050);
+                        }}
+                        className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all flex items-center justify-between ${
+                          isSelected
+                            ? "bg-white/[0.08] border-white/20 text-white shadow-sm"
+                            : "bg-white/[0.02] border-white/[0.05] text-zinc-400 hover:border-white/10 hover:text-zinc-200"
+                        }`}
+                      >
+                        <div className="flex items-center space-x-2.5 truncate">
+                          <ContextIcon type={item.type} />
+                          <div className="truncate">
+                            <div className="font-medium text-zinc-200 truncate">{friendlyLabel}</div>
+                            <div className="text-[10px] text-zinc-500 truncate font-mono">{item.name}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-center space-x-1 shrink-0 ml-2">
+                          <span
+                            title="Tokens estimados según el contenido actual"
+                            className="text-[10px] text-zinc-500 font-mono mr-0.5"
+                          >
+                            {formatTokenCount(tokenCount)} tok
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setContextItems((prev) =>
+                                prev.map((c) => (c.id === item.id ? { ...c, pinned: !c.pinned } : c))
+                              );
+                            }}
+                            title={item.pinned ? "Incluido siempre en consultas (clic para desfijar)" : "Clic para fijar en consultas"}
+                            className={`p-1 rounded-md transition-colors cursor-pointer ${
+                              item.pinned
+                                ? "text-zinc-200 hover:text-white bg-white/[0.06]"
+                                : "text-zinc-600 hover:text-zinc-300"
+                            }`}
+                          >
+                            <Pin className="w-3 h-3" />
+                          </button>
+                          {item.isCustom && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setContextItems((prev) => prev.filter((c) => c.id !== item.id));
+                                setSelectedContext((curr) => (curr?.id === item.id ? null : curr));
+                              }}
+                              title="Quitar archivo"
+                              className="p-1 rounded-md text-zinc-500 hover:text-red-400 transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          )}
                         </div>
                       </div>
-                      <div className="flex items-center space-x-1.5 shrink-0 ml-2">
-                        <span className="text-[10px] text-zinc-500 font-mono">{item.tokens}</span>
-                        <Pin className="w-3 h-3 text-zinc-400" />
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
               </div>
 
               {/* Inspector de Archivo Seleccionado */}
@@ -881,12 +2293,141 @@ export default function App() {
                   </div>
                 )}
               </div>
+                </>
+              ) : (
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  <div className="p-2.5 flex-1 overflow-y-auto space-y-1">
+                    {conversations.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-center px-4 py-10 space-y-3">
+                        <div className="w-9 h-9 rounded-full bg-white/[0.04] border border-white/[0.06] flex items-center justify-center text-zinc-500">
+                          <MessageSquare className="w-4 h-4" />
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-xs font-medium text-zinc-300">
+                            Sin conversaciones guardadas
+                          </p>
+                          <p className="text-[11px] text-zinc-500 leading-relaxed">
+                            Tus chats con Xox se guardan automáticamente en este equipo para retomarlos cuando quieras.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleStartNewChat}
+                          disabled={isChatStreaming}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] text-xs text-zinc-200 transition-colors cursor-pointer disabled:opacity-40"
+                        >
+                          <SquarePen className="w-3.5 h-3.5" />
+                          <span>Nueva conversación</span>
+                        </button>
+                      </div>
+                    ) : (
+                      conversations.map((thread) => {
+                        const isActive = thread.id === activeConversationId;
+                        const lastMsg = thread.messages[thread.messages.length - 1];
+                        const snippet = lastMsg?.content?.replace(/\s+/g, " ").trim() ?? "";
+                        const dateLabel = (() => {
+                          try {
+                            const d = new Date(thread.updatedAt);
+                            const sameDay =
+                              d.toDateString() === new Date().toDateString();
+                            return sameDay
+                              ? d.toLocaleTimeString("es-MX", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : d.toLocaleDateString("es-MX", {
+                                  day: "numeric",
+                                  month: "short",
+                                });
+                          } catch {
+                            return "";
+                          }
+                        })();
+                        return (
+                          <div
+                            key={thread.id}
+                            onClick={() => handleSelectConversation(thread)}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                handleSelectConversation(thread);
+                              }
+                            }}
+                            className={`group rounded-xl p-2.5 border transition-all cursor-pointer ${
+                              isActive
+                                ? "bg-white/[0.08] border-white/[0.14]"
+                                : "bg-transparent border-transparent hover:bg-white/[0.04] hover:border-white/[0.06]"
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span
+                                    className={`text-xs font-medium truncate ${
+                                      isActive ? "text-white" : "text-zinc-200"
+                                    }`}
+                                  >
+                                    {thread.title}
+                                  </span>
+                                  <span className="text-[10px] text-zinc-500 font-mono shrink-0">
+                                    {dateLabel}
+                                  </span>
+                                </div>
+                                {snippet && (
+                                  <p className="text-[11px] text-zinc-500 truncate mt-0.5">
+                                    {snippet}
+                                  </p>
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void handleDeleteConversation(thread.id);
+                                }}
+                                disabled={isChatStreaming}
+                                title="Eliminar conversación"
+                                className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-zinc-500 hover:text-red-400 hover:bg-white/[0.05] transition-all cursor-pointer disabled:opacity-30 shrink-0"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
 
-              {/* Pie del Panel de Contexto */}
-              <div className="p-3 border-t border-white/[0.06] bg-[#0a0b10] text-[11px] text-zinc-400 flex items-center justify-between">
-                <span>Almacenamiento Local</span>
-                <span className="text-zinc-300 font-medium flex items-center gap-1">
-                  <Check className="w-3 h-3 text-emerald-400" /> Sincronizado
+              {/* Pie del Panel Lateral */}
+              <div className="p-3 border-t border-white/[0.06] bg-[#0a0b10] text-[11px] text-zinc-400 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowLocalAuth(true)}
+                  className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors truncate cursor-pointer"
+                  title="Configurar perfil de usuario local"
+                >
+                  <UserCircle2
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      localUser ? "text-emerald-400" : "text-zinc-500"
+                    }`}
+                  />
+                  <span className="truncate">
+                    {localUser ? localUser.name : "Sin perfil local"}
+                  </span>
+                </button>
+                <span className="text-zinc-400 font-medium flex items-center gap-1 shrink-0">
+                  <Check className="w-3 h-3 text-emerald-400" />{" "}
+                  {leftTab === "context"
+                    ? `${contextItems.length} ${
+                        contextItems.length === 1 ? "archivo" : "archivos"
+                      }`
+                    : `${conversations.length} ${
+                        conversations.length === 1 ? "chat" : "chats"
+                      }`}
                 </span>
               </div>
               </aside>
@@ -939,121 +2480,261 @@ export default function App() {
             </div>
           )}
 
-          {/* Área de Trabajo con Scroll: Xox Hero + Sección de Procesos / Tarjetas */}
-          <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-6">
-            <div className="max-w-4xl mx-auto space-y-7">
-              
-              {/* ========================================================================= */}
-              {/* 1. XOX DIGITAL COMPANION (LIMPIO, SIN TEXTO INVASIVO NI BOTONES PESADOS) */}
-              {/* ========================================================================= */}
-              <div className="flex flex-col items-center justify-center pt-2 pb-1 text-center">
-                
-                {/* Estrella Xox: más grande, con burbuja de diálogo flotante */}
-                <div 
-                  className="relative flex flex-col items-center justify-center cursor-pointer select-none -mb-4"
-                  title="Haz clic para saludar a Xox"
-                >
-                  <XoxStar 
-                    state={xoxState} 
-                    size={280} 
-                    summonTrigger={summonSeq}
-                    onClick={handleXoxClick}
-                  />
-
-                  {/* Burbuja de saludo Liquid Glass (solo al hacer clic en Xox) */}
-                  {greeting && (
-                    <div
-                      role="status"
-                      aria-live="polite"
-                      className={`xox-bubble absolute left-[61%] bottom-[73%] z-10 pointer-events-none ${
-                        greetingLeaving ? "is-leaving" : ""
-                      }`}
-                    >
-                      {/* Estela de burbujitas hacia Xox, como la de "pensando" */}
-                      <span aria-hidden="true" className="xox-bubble-trail xox-bubble-trail-sm" />
-                      <span aria-hidden="true" className="xox-bubble-trail xox-bubble-trail-md" />
-
-                      <div className="xox-bubble-body w-max max-w-[260px] px-4 py-2.5 rounded-[22px] text-left">
-                        <p className="xox-bubble-text relative text-[13px] leading-snug text-white/95 font-medium">
-                          {greeting}
-                        </p>
-                      </div>
-                    </div>
+          {/* Barra mínima fija de conversación activa (siempre sobre el área con scroll) */}
+          {chatMessages.length > 0 && (
+            <div className="shrink-0 border-b border-white/[0.06] bg-[#060709]/95 backdrop-blur-md px-4 sm:px-6 z-10">
+              <div className="max-w-5xl mx-auto py-2.5 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    title={deriveConversationTitle(chatMessages)}
+                    className="text-sm font-medium text-white truncate"
+                  >
+                    {deriveConversationTitle(chatMessages)}
+                  </span>
+                  {!activeModel.is_free && accountUsage && !accountUsage.can_use_paid_models && (
+                    <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[9px] font-medium shrink-0">
+                      Requiere saldo
+                    </span>
                   )}
                 </div>
 
-                {/* Saludo Humano Simplificado */}
-                <div className="space-y-2 max-w-lg flex flex-col items-center">
-                  <h1 className="text-xl sm:text-2xl font-medium text-white tracking-tight">
-                    ¿En qué puedo ayudarte?
-                  </h1>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowLeftSidebar(true);
+                      setLeftTab("chats");
+                    }}
+                    title="Ver historial de conversaciones"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.07] text-[11px] text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <MessageSquare className="w-3 h-3" />
+                    <span className="hidden sm:inline">Chats</span>
+                  </button>
 
-                  {/* Estado activo de Xox durante los procesos (pensando, leyendo, alertas...) */}
-                  {xoxStatusPresence.mounted && (
-                    <div
-                      className={`${
-                        isXoxStatusOpen ? "toast-in" : "toast-out pointer-events-none"
-                      } inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] backdrop-blur-md`}
-                    >
-                      <span className={`w-1.5 h-1.5 rounded-full ${
-                        displayXoxStatus.state === "thinking" || displayXoxStatus.state === "reading"
-                          ? "bg-cyan-400 animate-ping"
-                          : displayXoxStatus.state === "success"
-                          ? "bg-emerald-400"
-                          : displayXoxStatus.state === "syncing"
-                          ? "bg-teal-400 animate-pulse"
-                          : displayXoxStatus.state === "alert"
-                          ? "bg-red-500 animate-pulse"
-                          : "bg-cyan-400"
-                      }`} />
-                      <p className={`text-xs ${
-                        displayXoxStatus.busy ? "xox-shimmer font-medium" : displayXoxStatus.state === "alert" ? "text-red-300" : "text-zinc-300"
-                      }`}>
-                        {displayXoxStatus.message}
-                      </p>
-                    </div>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleStartNewChat}
+                    disabled={isChatStreaming}
+                    title="Nueva conversación"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.07] text-[11px] text-zinc-300 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <SquarePen className="w-3 h-3" />
+                    <span className="hidden sm:inline">Nueva</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
-                  {/* Selector de estados para desarrollo (plegado y discreto por defecto) */}
-                  {import.meta.env.DEV && (
-                    <div className="pt-0.5 flex flex-col items-center">
+          {/* Área de Trabajo con Scroll: Xox Hero / Chat en vivo */}
+          <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-6">
+            <div className="max-w-5xl mx-auto space-y-6">
+
+              {/* ========================================================================= */}
+              {/* 1. XOX DIGITAL COMPANION (HERO EN ESTADO VACÍO / COMPACTO EN CHAT)      */}
+              {/* ========================================================================= */}
+              {chatMessages.length === 0 ? (
+                <div className="min-h-[calc(100vh-18rem)] flex flex-col items-center justify-center py-2 text-center">
+                  {/* Estrella Xox: protagonista en el Home, con burbuja de diálogo flotante */}
+                  <div
+                    className="relative flex flex-col items-center justify-center cursor-pointer select-none -mb-6 sm:-mb-8"
+                    title="Haz clic para saludar a Xox"
+                  >
+                    <XoxStar
+                      state={xoxState}
+                      responsive
+                      className="w-64 h-64 sm:w-80 sm:h-80 lg:w-[340px] lg:h-[340px] xl:w-[380px] xl:h-[380px]"
+                      summonTrigger={summonSeq}
+                      onClick={handleXoxClick}
+                    />
+
+                    {/* Burbuja de saludo Liquid Glass (solo al hacer clic en Xox) */}
+                    {greeting && (
+                      <div
+                        role="status"
+                        aria-live="polite"
+                        className={`xox-bubble absolute left-[61%] bottom-[73%] z-10 pointer-events-none ${
+                          greetingLeaving ? "is-leaving" : ""
+                        }`}
+                      >
+                        <span aria-hidden="true" className="xox-bubble-trail xox-bubble-trail-sm" />
+                        <span aria-hidden="true" className="xox-bubble-trail xox-bubble-trail-md" />
+
+                        <div className="xox-bubble-body w-max max-w-[260px] px-4 py-2.5 rounded-[22px] text-left">
+                          <p className="xox-bubble-text relative text-[13px] leading-snug text-white/95 font-medium">
+                            {greeting}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Saludo Humano Amplio y Protagonista */}
+                  <div className="space-y-3.5 max-w-2xl px-4 flex flex-col items-center">
+                    <h1 className="text-2xl sm:text-3xl lg:text-[34px] font-semibold leading-tight text-white tracking-tight">
+                      {localUser
+                        ? `Hola ${localUser.name.split(" ")[0]}, ¿en qué puedo ayudarte?`
+                        : "¿En qué puedo ayudarte?"}
+                    </h1>
+                    {conversations.length > 0 && (
                       <button
                         type="button"
-                        onClick={() => setShowStatePreview((v) => !v)}
-                        className="text-[10px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors cursor-pointer"
+                        onClick={() => handleSelectConversation(conversations[0])}
+                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-[11px] text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                        title="Retomar tu última conversación guardada"
                       >
-                        {showStatePreview ? "ocultar estados de prueba" : "• probar estados de Xox"}
+                        <MessageSquare className="w-3 h-3 text-zinc-400" />
+                        <span className="truncate max-w-[260px]">
+                          Retomar: {conversations[0].title}
+                        </span>
                       </button>
-                      {statePreviewPresence.mounted && (
-                        <div
-                          className={`${
-                            showStatePreview ? "panel-fade-in" : "panel-fade-out pointer-events-none"
-                          } flex flex-wrap items-center justify-center gap-1 pt-1.5`}
+                    )}
+
+                    {/* Estado activo de Xox durante los procesos */}
+                    {xoxStatusPresence.mounted && (
+                      <div
+                        className={`${
+                          isXoxStatusOpen ? "toast-in" : "toast-out pointer-events-none"
+                        } inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] backdrop-blur-md`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            displayXoxStatus.state === "thinking" || displayXoxStatus.state === "reading"
+                              ? "bg-cyan-400 animate-ping"
+                              : displayXoxStatus.state === "success"
+                              ? "bg-emerald-400"
+                              : displayXoxStatus.state === "syncing"
+                              ? "bg-teal-400 animate-pulse"
+                              : displayXoxStatus.state === "alert"
+                              ? "bg-red-500 animate-pulse"
+                              : "bg-cyan-400"
+                          }`}
+                        />
+                        <p
+                          className={`text-xs ${
+                            displayXoxStatus.busy
+                              ? "xox-shimmer font-medium"
+                              : displayXoxStatus.state === "alert"
+                              ? "text-red-300"
+                              : "text-zinc-300"
+                          }`}
                         >
-                          {(["idle", "reading", "thinking", "syncing", "alert", "success"] as XoxState[]).map((s) => (
-                            <button
-                              key={s}
-                              type="button"
-                              onClick={() => previewXoxState(s)}
-                              className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border cursor-pointer transition-colors ${
-                                xoxState === s
-                                  ? "bg-white/10 border-white/25 text-white"
-                                  : "bg-white/[0.02] border-white/[0.06] text-zinc-500 hover:text-zinc-300"
-                              }`}
-                            >
-                              {s}
-                            </button>
-                          ))}
-                        </div>
+                          {displayXoxStatus.message}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Acciones rápidas iniciales */}
+                    <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          runPromptQuery("Evalúa el stock urgente del almacén y propón qué hacer")
+                        }
+                        className="group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                      >
+                        <Sparkles className="w-3 h-3 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
+                        <span>Evaluar stock urgente</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          runPromptQuery(
+                            "Crea un temporizador de 15 minutos para confirmar recepción de mercancía"
+                          )
+                        }
+                        className="group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                      >
+                        <Sparkles className="w-3 h-3 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
+                        <span>Crear timer de 15 min</span>
+                      </button>
+
+                      {!aiConfig.hasApiKey ? (
+                        <button
+                          type="button"
+                          onClick={() => setShowAiSettings(true)}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-amber-500/10 hover:bg-amber-500/15 border border-amber-400/25 text-xs text-amber-200 transition-colors cursor-pointer"
+                        >
+                          <KeyRound className="w-3 h-3" />
+                          <span>Conectar clave OpenRouter</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            runPromptQuery("Organiza y resume mis tareas pendientes en tarjetas")
+                          }
+                          className="group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                        >
+                          <Sparkles className="w-3 h-3 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
+                          <span>Consolidar tareas</span>
+                        </button>
                       )}
                     </div>
-                  )}
-                </div>
 
-              </div>
+                    {/* Selector de estados para desarrollo (plegado y discreto por defecto) */}
+                    {import.meta.env.DEV && (
+                      <div className="pt-0.5 flex flex-col items-center">
+                        <button
+                          type="button"
+                          onClick={() => setShowStatePreview((v) => !v)}
+                          className="text-[10px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors cursor-pointer"
+                        >
+                          {showStatePreview ? "ocultar estados de prueba" : "• probar estados de Xox"}
+                        </button>
+                        {statePreviewPresence.mounted && (
+                          <div
+                            className={`${
+                              showStatePreview ? "panel-fade-in" : "panel-fade-out pointer-events-none"
+                            } flex flex-wrap items-center justify-center gap-1 pt-1.5`}
+                          >
+                            {(["idle", "reading", "thinking", "talking", "syncing", "alert", "success"] as XoxState[]).map((s) => (
+                              <button
+                                key={s}
+                                type="button"
+                                onClick={() => previewXoxState(s)}
+                                className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full border cursor-pointer transition-colors ${
+                                  xoxState === s
+                                    ? "bg-white/10 border-white/25 text-white"
+                                    : "bg-white/[0.02] border-white/[0.06] text-zinc-500 hover:text-zinc-300"
+                                }`}
+                              >
+                                {s}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <ChatMessageList
+                    messages={chatMessages}
+                    xoxState={xoxState}
+                    thinkingLabel={thinkingLabel}
+                    summonTrigger={summonSeq}
+                    greeting={greeting}
+                    greetingLeaving={greetingLeaving}
+                    modelCatalog={catalogModels}
+                    onXoxClick={handleXoxClick}
+                    onAction={handleChatAction}
+                    onOpenTasksTab={() => {
+                      setShowRightSidebar(true);
+                      setTaskTab("pending");
+                    }}
+                    onRegenerateMessage={(msgId) => void handleRegenerateMessage(msgId)}
+                    onRateMessage={handleRateMessage}
+                  />
+                </div>
+              )}
 
               {/* Espaciador inferior para que el último elemento pueda scrollear sobre el input fijo */}
               <div className="h-44 sm:h-48 shrink-0" />
+              <div ref={chatEndRef} />
 
             </div>
           </div>
@@ -1097,7 +2778,7 @@ export default function App() {
           {/* 4. INPUT / CHAT FIJO EN LA PARTE INFERIOR (PINNED DOCK)                    */}
           {/* ========================================================================= */}
           <div className="absolute inset-x-0 bottom-0 p-4 sm:p-6 bg-gradient-to-t from-[#060709] via-[#060709]/95 to-transparent pointer-events-none z-10">
-            <div className="@container max-w-4xl mx-auto pointer-events-auto">
+            <div className="@container max-w-5xl mx-auto pointer-events-auto">
               <div className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-4 relative group shadow-2xl ${inputExpanded ? "is-expanded" : ""}`}>
                 {/* Capa de recorte para los efectos de luz (los menús desplegables pueden sobresalir) */}
                 <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
@@ -1141,7 +2822,14 @@ export default function App() {
                       className="hidden"
                       onChange={(e) => {
                         const files = Array.from(e.target.files ?? []);
-                        if (files.length) setAttachments((prev) => [...prev, ...files]);
+                        if (files.length) {
+                          setAttachments((prev) => [...prev, ...files]);
+                          triggerReadingPulse(
+                            files.length === 1
+                              ? `Leyendo ${files[0].name}...`
+                              : `Leyendo ${files.length} archivos adjuntos...`
+                          );
+                        }
                         e.target.value = "";
                       }}
                     />
@@ -1166,9 +2854,9 @@ export default function App() {
                           handlePromptSubmit();
                         }
                       }}
-                      disabled={xoxState === "thinking"}
+                      disabled={isChatStreaming}
                       placeholder={
-                        xoxState === "thinking"
+                        isChatStreaming
                           ? "Procesando..."
                           : "Escribe a Xox..."
                       }
@@ -1196,37 +2884,97 @@ export default function App() {
                           role="listbox"
                           className={`${
                             showModelMenu ? "menu-in" : "menu-out pointer-events-none"
-                          } absolute right-0 bottom-full mb-2 w-52 p-1 rounded-xl bg-zinc-900/95 border border-white/10 shadow-2xl backdrop-blur-xl z-30`}
+                          } absolute right-0 bottom-full mb-2 w-72 p-1.5 rounded-xl bg-zinc-900/95 border border-white/10 shadow-2xl backdrop-blur-xl z-30`}
                         >
-                          {MODELS.map((m) => (
+                          <div className="px-2 py-1.5 flex items-center justify-between border-b border-white/[0.06] mb-1">
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                              Modelos disponibles ({availableQuickModels.length})
+                            </span>
                             <button
-                              key={m.id}
                               type="button"
-                              role="option"
-                              aria-selected={m.id === modelId}
-                              onClick={() => {
-                                setModelId(m.id);
-                                setShowModelMenu(false);
-                                inputRef.current?.focus();
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void refreshModelsAndUsage(true);
                               }}
-                              className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-left transition-colors cursor-pointer ${
-                                m.id === modelId ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"
-                              }`}
+                              title="Actualizar catálogo y límites de OpenRouter"
+                              className="p-1 rounded text-zinc-400 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer"
                             >
-                              <span>
-                                <span className="block text-xs text-zinc-100">{m.name}</span>
-                                <span className="block text-[10px] text-zinc-500">{m.hint}</span>
-                              </span>
-                              {m.id === modelId && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                              <RefreshCw className={`w-3 h-3 ${loadingModels ? "animate-spin" : ""}`} />
                             </button>
-                          ))}
+                          </div>
+
+                          {!canUsePaidModels && (
+                            <div className="mx-1 mb-1.5 px-2 py-1.5 rounded-lg bg-emerald-500/5 border border-emerald-500/15 text-[10px] text-zinc-400 leading-snug">
+                              {aiConfig.hasApiKey
+                                ? "Mostrando solo modelos que funcionan sin saldo en tu cuenta."
+                                : "Vista previa de modelos gratuitos disponibles en OpenRouter."}
+                            </div>
+                          )}
+
+                          {unavailableModelIds.size > 0 && (
+                            <div className="mx-1 mb-1.5 px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-200/90 leading-snug">
+                              Se ocultaron {unavailableModelIds.size} modelo(s) que devolvieron error o límite.
+                            </div>
+                          )}
+
+                          <div className="max-h-56 overflow-y-auto space-y-0.5">
+                            {availableQuickModels.map((m) => (
+                              <button
+                                key={m.id}
+                                type="button"
+                                role="option"
+                                aria-selected={m.id === modelId}
+                                onClick={() => void handleSelectModel(m.id)}
+                                className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-left transition-colors cursor-pointer ${
+                                  m.id === modelId ? "bg-white/[0.08]" : "hover:bg-white/[0.05]"
+                                }`}
+                              >
+                                <span className="min-w-0">
+                                  <span className="flex items-center gap-1.5 text-xs text-zinc-100 truncate">
+                                    <span className="truncate">{m.name}</span>
+                                    {canUsePaidModels && m.is_free && (
+                                      <span className="px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-300 text-[9px] font-medium shrink-0">
+                                        gratis
+                                      </span>
+                                    )}
+                                  </span>
+                                  <span className="block text-[10px] text-zinc-500 truncate">
+                                    {m.hint}
+                                  </span>
+                                </span>
+                                {m.id === modelId && (
+                                  <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+
+                          <div className="mt-1 pt-1.5 border-t border-white/[0.08] space-y-1">
+                            {aiConfig.hasApiKey && (
+                              <div className="px-2.5 py-1 flex items-center justify-between text-[10px] text-zinc-400">
+                                <span className="truncate">{usageSummary.tierLabel}</span>
+                                <span className="font-mono text-zinc-200 shrink-0">{usageSummary.headline}</span>
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowModelMenu(false);
+                                setShowAiSettings(true);
+                              }}
+                              className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left text-[11px] text-sky-300 hover:bg-white/[0.06] transition-colors cursor-pointer"
+                            >
+                              <KeyRound className="w-3.5 h-3.5 shrink-0" />
+                              <span>Ver límites, clave y catálogo completo…</span>
+                            </button>
+                          </div>
                         </div>
                       )}
                     </div>
 
                     <button
                       type="submit"
-                      disabled={!inputPrompt.trim() || xoxState === "thinking"}
+                      disabled={!inputPrompt.trim() || isChatStreaming}
                       className="shrink-0 mb-0.5 bg-white hover:bg-zinc-200 disabled:opacity-30 disabled:hover:bg-white text-zinc-950 p-2 rounded-xl transition-all active:scale-95 cursor-pointer shadow-md disabled:cursor-not-allowed"
                       title="Enviar instrucción (Enter)"
                     >
@@ -1358,206 +3106,88 @@ export default function App() {
                 isResizingRight ? "is-resizing" : ""
               } ${rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
             >
-              <aside
-                style={{ width: `${rightWidth}px` }}
-                className="h-full bg-[#08090d] flex flex-col shrink-0 overflow-hidden select-none"
-              >
-            
-            {/* Cabecera del Panel */}
-            <div className="p-3.5 border-b border-white/[0.06] flex items-center justify-between bg-[#0a0b10]">
-              <div className="flex items-center space-x-2">
-                <ListTodo className="w-4 h-4 text-zinc-400" />
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-200">
-                  Tareas & Decisiones
-                </h3>
-              </div>
-              <div className="flex items-center gap-1.5 text-[10px] text-zinc-400 font-mono">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Modo Seguro</span>
-              </div>
-            </div>
-
-            {/* Selector de Pestañas: Por Aceptar vs Hechas */}
-            <div className="p-2 border-b border-white/[0.06] bg-black/40 flex gap-1">
-              <button
-                type="button"
-                onClick={() => setTaskTab("pending")}
-                className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  taskTab === "pending"
-                    ? "bg-white/[0.1] text-white shadow-sm border border-white/15"
-                    : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]"
-                }`}
-              >
-                <Clock className="w-3.5 h-3.5" />
-                <span>Por aceptar</span>
-                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-white/[0.08] text-zinc-300">
-                  {pendingCards.length}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setTaskTab("completed")}
-                className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                  taskTab === "completed"
-                    ? "bg-white/[0.1] text-white shadow-sm border border-white/15"
-                    : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]"
-                }`}
-              >
-                <CheckCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Hechas</span>
-                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-white/[0.08] text-zinc-300">
-                  {completedCards.length}
-                </span>
-              </button>
-            </div>
-
-            {/* Contenido de Tareas (Scrollable) */}
-            <div className="flex-1 p-3.5 overflow-y-auto space-y-3.5">
-              {taskTab === "pending" ? (
-                pendingCards.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-center p-6 text-zinc-500 space-y-2">
-                    <CheckCircle2 className="w-8 h-8 text-emerald-400/50 mb-1" />
-                    <p className="text-xs text-zinc-300 font-medium">¡Todo al día!</p>
-                    <p className="text-[11px] text-zinc-500 max-w-xs">
-                      No tienes tareas pendientes por aceptar. Todo el inventario está en niveles óptimos.
-                    </p>
-                  </div>
-                ) : (
-                  pendingCards.map((card) => (
-                    <div
-                      key={card.card_id}
-                      className="liquid-glass-card rounded-2xl p-4 flex flex-col justify-between space-y-3"
-                    >
-                      {/* Cabecera de la tarjeta: Urgencia y Stock */}
-                      <div className="flex items-start justify-between">
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider ${
-                            card.urgency === "alta"
-                              ? "bg-rose-500/10 text-rose-300 border border-rose-500/20"
-                              : "bg-amber-500/10 text-amber-300 border border-amber-500/20"
-                          }`}
-                        >
-                          Urgencia {card.urgency}
-                        </span>
-                        <span className="text-[11px] text-zinc-400 font-mono">
-                          Stock: <strong className="text-zinc-200">{card.current_stock} un.</strong>
-                        </span>
-                      </div>
-
-                      {/* Título y descripción */}
-                      <div>
-                        <h4 className="text-xs sm:text-sm font-semibold text-white tracking-tight">
-                          {card.title}
-                        </h4>
-                        <p className="text-[11px] text-zinc-400 mt-1 leading-relaxed">
-                          {card.description}
-                        </p>
-                      </div>
-
-                      {/* Resumen de la orden sugerida */}
-                      <div className="liquid-glass-inset rounded-xl p-2.5 space-y-1.5 text-xs">
-                        <div className="flex justify-between text-[11px]">
-                          <span className="text-zinc-400">Proveedor:</span>
-                          <span className="font-medium text-zinc-200 truncate ml-2">{card.supplier_name}</span>
-                        </div>
-                        <div className="flex justify-between text-[11px]">
-                          <span className="text-zinc-400">Reorden sugerida:</span>
-                          <span className="font-medium text-zinc-100 font-mono">+{card.recommended_order} un.</span>
-                        </div>
-                        <div className="flex justify-between text-[11px] pt-1 border-t border-white/[0.05]">
-                          <span className="text-zinc-400">Costo total:</span>
-                          <span className="font-semibold text-white font-mono">
-                            ${card.estimated_cost.toLocaleString()} {card.currency}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Razonamiento */}
-                      <div className="flex items-start gap-2 text-[11px] text-zinc-300 bg-white/[0.02] border border-white/[0.05] p-2.5 rounded-xl leading-relaxed">
-                        <Sparkles className="w-3.5 h-3.5 text-zinc-400 shrink-0 mt-0.5" />
-                        <span>{card.reasoning}</span>
-                      </div>
-
-                      {/* Botones de acción HITL */}
-                      <div className="pt-2 flex gap-2">
-                        <button
-                          onClick={() => handleApprove(card)}
-                          className="flex-1 bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-xs py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-md active:scale-95 cursor-pointer"
-                        >
-                          Aprobar Orden
-                          <ArrowRight className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => {
-                            setCards(cards.filter(c => c.card_id !== card.card_id));
-                          }}
-                          className="bg-white/[0.03] hover:bg-white/[0.08] text-zinc-400 hover:text-zinc-200 text-xs py-2 px-3 rounded-xl border border-white/[0.06] transition-colors cursor-pointer"
-                        >
-                          Descartar
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )
-              ) : (
-                completedCards.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-center p-6 text-zinc-500 space-y-2">
-                    <Clock className="w-8 h-8 text-zinc-600 mb-1" />
-                    <p className="text-xs text-zinc-300 font-medium">Sin historial aún</p>
-                    <p className="text-[11px] text-zinc-500 max-w-xs">
-                      Las órdenes que autorices aparecerán aquí registradas y firmadas.
-                    </p>
-                  </div>
-                ) : (
-                  completedCards.map((card) => (
-                    <div
-                      key={card.card_id}
-                      className="liquid-glass-card rounded-2xl p-3.5 space-y-2 border-emerald-500/20 bg-emerald-950/[0.05]"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-400">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Autorizada y Firmada</span>
-                        </div>
-                        <span className="text-[10px] text-zinc-500 font-mono">Modo HITL</span>
-                      </div>
-
-                      <div>
-                        <h4 className="text-xs font-semibold text-white">
-                          {card.title}
-                        </h4>
-                        <p className="text-[11px] text-zinc-400 mt-0.5">
-                          +{card.recommended_order} unidades con {card.supplier_name}
-                        </p>
-                      </div>
-
-                      <div className="flex justify-between items-center text-[11px] pt-1.5 border-t border-white/[0.05] font-mono text-zinc-400">
-                        <span>Total orden:</span>
-                        <span className="font-semibold text-zinc-200">
-                          ${card.estimated_cost.toLocaleString()} {card.currency}
-                        </span>
-                      </div>
-                    </div>
-                  ))
-                )
-              )}
-            </div>
-
-            {/* Pie del Panel de Tareas */}
-            <div className="p-3 border-t border-white/[0.06] bg-[#0a0b10] text-[11px] text-zinc-400 flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Modo Seguro HITL</span>
-              </span>
-              <span className="text-[10px] font-mono text-zinc-500">Zero-Trust</span>
-            </div>
-              </aside>
+              <TaskDecisionsPanel
+                width={rightWidth}
+                tasks={tasks}
+                agendaItems={agendaItems}
+                historyItems={historyItems}
+                activeTab={taskTab}
+                onTabChange={setTaskTab}
+                onUpdateParam={handleUpdateTaskParam}
+                onToggleTaskChecklist={handleToggleTaskChecklist}
+                onApproveTask={handleApproveTask}
+                onDiscardTask={handleDiscardTask}
+                onAskXox={handleAskXoxAboutTask}
+                onToggleTimer={handleToggleTimer}
+                onResetTimer={handleResetTimer}
+                onCompleteAgendaItem={handleCompleteAgendaItem}
+                onRemoveAgendaItem={handleRemoveAgendaItem}
+                onToggleAgendaChecklist={handleToggleAgendaChecklist}
+                onToggleAgendaAuto={handleToggleAgendaAuto}
+                onCreateQuickTimer={handleCreateQuickTimer}
+                onCreateQuickNote={handleCreateQuickNote}
+                onTriggerXoxReconstruct={() =>
+                  runPromptQuery("Consolida y agrupa las órdenes de inventario")
+                }
+              />
             </div>
           </>
         )}
 
       </div>
+
+      <OpenRouterSettingsModal
+        isOpen={showAiSettings}
+        config={aiConfig}
+        accountUsage={accountUsage}
+        catalogModels={catalogModels}
+        requestsToday={requestsToday}
+        onClose={() => setShowAiSettings(false)}
+        onConfigUpdated={(next) => {
+          setAiConfig(next);
+          if (next.modelId) {
+            setModelId(next.modelId);
+          }
+          setRequestsToday(getLocalDailyRequestCount(next.maskedKey));
+        }}
+        onUsageUpdated={(usage) => {
+          setAccountUsage(usage);
+          if (usage?.ok && usage.can_use_paid_models) {
+            setUnavailableModelIds(new Set());
+          }
+        }}
+        onCatalogUpdated={(models) => {
+          if (models.length > 0) {
+            setCatalogModels(models);
+          }
+        }}
+      />
+
+      <LocalAuthModal
+        isOpen={showLocalAuth}
+        user={localUser}
+        defaultStoreName={(() => {
+          const prof = contextItems.find((c) => c.name === "store-profile.json");
+          if (prof) {
+            try {
+              const parsed = JSON.parse(prof.content) as { company_name?: string };
+              if (parsed.company_name?.trim()) return parsed.company_name.trim();
+            } catch {
+              // Ignorar
+            }
+          }
+          return "Tienda Xook";
+        })()}
+        onClose={() => setShowLocalAuth(false)}
+        onUserUpdated={(updatedUser) => {
+          setLocalUser(updatedUser);
+          setStatusMessage(
+            updatedUser
+              ? `Sesión local activa: ${updatedUser.name} (${updatedUser.storeName})`
+              : "Sesión local cerrada."
+          );
+        }}
+      />
     </div>
   );
 }

@@ -1,0 +1,1565 @@
+import {
+  AgendaItem,
+  TaskProposal,
+  sanitizeTaskProposal,
+} from "../task-decisions/taskSchema";
+
+export interface OpenRouterModelOption {
+  id: string;
+  name: string;
+  provider_name?: string;
+  hint: string;
+  is_free: boolean;
+  context_length?: number | null;
+  prompt_price_per_million?: number | null;
+  completion_price_per_million?: number | null;
+}
+
+export const OPENROUTER_PRESET_MODELS: OpenRouterModelOption[] = [
+  {
+    id: "openrouter/free",
+    name: "Automático (Gratis)",
+    provider_name: "OpenRouter",
+    hint: "Elige el mejor modelo gratuito disponible",
+    is_free: true,
+    context_length: 200000,
+  },
+  {
+    id: "openrouter/auto",
+    name: "Automático (Estándar)",
+    provider_name: "OpenRouter",
+    hint: "Enruta al mejor modelo según la tarea",
+    is_free: false,
+    context_length: 2000000,
+  },
+  {
+    id: "google/gemini-2.5-flash",
+    name: "Gemini 2.5 Flash",
+    provider_name: "Google",
+    hint: "Rápido y económico",
+    is_free: false,
+    context_length: 1000000,
+  },
+  {
+    id: "openai/gpt-4o-mini",
+    name: "GPT-4o Mini",
+    provider_name: "OpenAI",
+    hint: "Preciso y ligero",
+    is_free: false,
+    context_length: 128000,
+  },
+  {
+    id: "openai/gpt-4o",
+    name: "GPT-4o",
+    provider_name: "OpenAI",
+    hint: "Modelo insignia de OpenAI",
+    is_free: false,
+    context_length: 128000,
+  },
+  {
+    id: "anthropic/claude-3.5-sonnet",
+    name: "Claude 3.5 Sonnet",
+    provider_name: "Anthropic",
+    hint: "Razonamiento profundo",
+    is_free: false,
+    context_length: 200000,
+  },
+];
+
+export interface AiConfigStatus {
+  provider: string;
+  modelId: string;
+  hasApiKey: boolean;
+  maskedKey: string | null;
+  keySource: "vault" | "env" | "browser" | "none";
+  customModels: string[];
+}
+
+export interface SaveAiConfigInput {
+  provider?: string;
+  modelId?: string;
+  apiKey?: string;
+  clearKey?: boolean;
+  customModels?: string[];
+}
+
+export interface AiConnectionTestResult {
+  ok: boolean;
+  label?: string;
+  is_free_tier?: boolean;
+  limit?: number | null;
+  limit_remaining?: number | null;
+  limit_reset?: string | null;
+  usage?: number | null;
+  usage_daily?: number | null;
+  usage_weekly?: number | null;
+  usage_monthly?: number | null;
+  credits_total?: number | null;
+  credits_usage?: number | null;
+  credits_remaining?: number | null;
+  can_use_paid_models?: boolean;
+  daily_free_limit?: number;
+  rpm_free_limit?: number;
+  message: string;
+}
+
+export interface ThinkingStep {
+  id: string;
+  label: string;
+  detail?: string;
+  status: "running" | "done";
+}
+
+export interface ChatTurnMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface XoxAiChatRequest {
+  message: string;
+  history: ChatTurnMessage[];
+  currentTasks: TaskProposal[];
+  agendaItems: AgendaItem[];
+  attachedContext: Array<{ name: string; type: string; content: string }>;
+  modelOverride?: string;
+  /** Perfil local activo para contextualizar el saludo y rol */
+  userProfile?: { name: string; storeName?: string; role?: string } | null;
+  /** En modo browser preview, permite leer contexto de negocio en vivo */
+  businessContextSnapshot?: string;
+}
+
+export interface XoxTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cost?: number;
+}
+
+export interface XoxAiChatResponse {
+  reply: string;
+  reasoning?: string;
+  reasoningDurationMs?: number;
+  steps?: ThinkingStep[];
+  xoxMood: "talking" | "success" | "alert";
+  operation: "none" | "add_tasks" | "replace_tasks";
+  tasks: TaskProposal[];
+  modelUsed: string;
+  latencyMs: number;
+  usage?: XoxTokenUsage;
+}
+
+export interface XoxStreamCallbacks {
+  onPhase?: (state: "reading" | "thinking" | "talking" | "syncing", label?: string) => void;
+  onSteps?: (steps: ThinkingStep[]) => void;
+  onReasoningDelta?: (delta: string) => void;
+  onReplyDelta?: (delta: string) => void;
+}
+
+export interface WorkspaceContextSource {
+  id: string;
+  name: string;
+  type: "profile" | "memory" | "skill" | "catalog";
+  path: string;
+  content: string;
+  isCustom?: boolean;
+}
+
+const BROWSER_VAULT_KEY = "xook_ai_vault_v1";
+const DAILY_REQUESTS_KEY = "xook_openrouter_daily_reqs_v1";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+interface BrowserVault {
+  provider: string;
+  modelId: string;
+  apiKey: string | null;
+  customModels: string[];
+}
+
+let cachedCatalog: { fetchedAt: number; models: OpenRouterModelOption[]; source: string } | null = null;
+
+export function isTauriRuntime(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
+  );
+}
+
+export function estimateTokens(text: string): number {
+  const clean = text.trim();
+  if (!clean) return 0;
+  return Math.max(1, Math.ceil(clean.length / 4));
+}
+
+export function formatTokenCount(tokens: number): string {
+  if (tokens <= 0) return "0";
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000;
+    return `${m >= 10 ? Math.round(m) : m.toFixed(1)}M`;
+  }
+  if (tokens >= 1000) {
+    const k = tokens / 1000;
+    return `${k >= 100 ? Math.round(k) : k.toFixed(1)}k`;
+  }
+  return `${tokens}`;
+}
+
+export function formatContextLength(ctx?: number | null): string {
+  if (!ctx || ctx <= 0) return "—";
+  if (ctx >= 1_000_000) {
+    const m = ctx / 1_000_000;
+    return Math.abs(m - Math.round(m)) < 0.08 ? `${Math.round(m)}M` : `${m.toFixed(1)}M`;
+  }
+  if (ctx >= 1000) {
+    return `${Math.round(ctx / 1000)}k`;
+  }
+  return `${ctx}`;
+}
+
+function titleCaseSlug(slug: string): string {
+  return slug
+    .replace(/:free$/i, "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (ch) => ch.toUpperCase())
+    .trim();
+}
+
+export function formatModelDisplay(
+  rawId: string,
+  catalog: OpenRouterModelOption[] = []
+): OpenRouterModelOption {
+  const found =
+    catalog.find((m) => m.id === rawId) ??
+    OPENROUTER_PRESET_MODELS.find((m) => m.id === rawId);
+  if (found) return found;
+
+  const isFree = rawId.endsWith(":free") || rawId === "openrouter/free";
+  if (rawId === "openrouter/free") {
+    return OPENROUTER_PRESET_MODELS[0];
+  }
+  const [vendorRaw, ...rest] = rawId.split("/");
+  const modelSlug = rest.join("/") || rawId;
+  const providerName = rest.length > 0 ? titleCaseSlug(vendorRaw) : undefined;
+  const cleanName = titleCaseSlug(modelSlug);
+
+  return {
+    id: rawId,
+    name: cleanName || rawId,
+    provider_name: providerName,
+    hint: [providerName, isFree ? "Gratis" : "Estándar"].filter(Boolean).join(" · "),
+    is_free: isFree,
+    context_length: null,
+  };
+}
+
+function formatOpenRouterRawModel(raw: {
+  id: string;
+  name?: string;
+  context_length?: number;
+  pricing?: { prompt?: string; completion?: string };
+}): OpenRouterModelOption {
+  const preset = OPENROUTER_PRESET_MODELS.find((p) => p.id === raw.id);
+  const promptStr = String(raw.pricing?.prompt ?? "1");
+  const completionStr = String(raw.pricing?.completion ?? "1");
+  const isFree =
+    raw.id.endsWith(":free") ||
+    raw.id === "openrouter/free" ||
+    (promptStr === "0" && completionStr === "0");
+
+  let cleanedName = (raw.name || raw.id).replace(/\s*\(free\)\s*$/i, "").trim();
+  let providerName: string | undefined;
+  const colonIdx = cleanedName.indexOf(":");
+  if (colonIdx > 0) {
+    const left = cleanedName.slice(0, colonIdx).trim();
+    const right = cleanedName.slice(colonIdx + 1).trim();
+    if (left && right) {
+      providerName = left;
+      cleanedName = right;
+    }
+  } else if (raw.id.includes("/")) {
+    providerName = titleCaseSlug(raw.id.split("/", 1)[0]);
+  }
+
+  if (preset) {
+    cleanedName = preset.name;
+    providerName = preset.provider_name ?? providerName;
+  }
+
+  const ctx = raw.context_length ?? preset?.context_length ?? null;
+  const ctxShort = ctx ? `${formatContextLength(ctx)} ctx` : null;
+
+  const pNum = Number(promptStr);
+  const cNum = Number(completionStr);
+  const promptPricePerMillion = Number.isFinite(pNum) && pNum >= 0 ? Math.round(pNum * 1_000_000 * 10000) / 10000 : null;
+  const completionPricePerMillion = Number.isFinite(cNum) && cNum >= 0 ? Math.round(cNum * 1_000_000 * 10000) / 10000 : null;
+
+  let hint: string;
+  if (raw.id === "openrouter/free") {
+    hint = "Elige el mejor modelo gratuito disponible";
+  } else if (isFree) {
+    hint = [providerName, ctxShort, "Gratis"].filter(Boolean).join(" · ");
+  } else {
+    const priceLabel =
+      promptPricePerMillion !== null && promptPricePerMillion > 0
+        ? `$${promptPricePerMillion.toFixed(2)}/1M`
+        : null;
+    hint = [providerName, ctxShort, priceLabel].filter(Boolean).join(" · ") || "Modelo estándar";
+  }
+
+  return {
+    id: raw.id,
+    name: cleanedName,
+    provider_name: providerName,
+    hint,
+    is_free: isFree,
+    context_length: ctx,
+    prompt_price_per_million: promptPricePerMillion,
+    completion_price_per_million: completionPricePerMillion,
+  };
+}
+
+/**
+ * Devuelve únicamente modelos realmente utilizables según el nivel de la cuenta.
+ * Evita confundir al usuario final mostrando modelos de pago si no hay saldo disponible.
+ */
+export function getAvailableQuickModels(
+  catalog: OpenRouterModelOption[],
+  customModels: string[],
+  canUsePaidModels: boolean,
+  unavailableModelIds: ReadonlySet<string> = new Set()
+): OpenRouterModelOption[] {
+  const baseList = catalog.length > 0 ? catalog : OPENROUTER_PRESET_MODELS;
+  const byId = new Map<string, OpenRouterModelOption>();
+
+  for (const m of baseList) {
+    if (!canUsePaidModels && !m.is_free) continue;
+    if (unavailableModelIds.has(m.id)) continue;
+    byId.set(m.id, m);
+  }
+
+  // Asegurar que Automático (Gratis) siempre esté arriba
+  if (!byId.has("openrouter/free")) {
+    byId.set("openrouter/free", OPENROUTER_PRESET_MODELS[0]);
+  }
+
+  for (const customId of customModels) {
+    if (byId.has(customId) || unavailableModelIds.has(customId)) continue;
+    const formatted = formatModelDisplay(customId, baseList);
+    if (!canUsePaidModels && !formatted.is_free) continue;
+    byId.set(customId, formatted);
+  }
+
+  const presetIds = new Set(OPENROUTER_PRESET_MODELS.map((p) => p.id));
+  const curatedPaid = OPENROUTER_PRESET_MODELS.filter((p) => !p.is_free);
+
+  const list = Array.from(byId.values());
+  list.sort((a, b) => {
+    if (a.id === "openrouter/free") return -1;
+    if (b.id === "openrouter/free") return 1;
+    if (canUsePaidModels) {
+      const aPreset = presetIds.has(a.id);
+      const bPreset = presetIds.has(b.id);
+      if (aPreset !== bPreset) return aPreset ? -1 : 1;
+      if (aPreset && bPreset) {
+        return (
+          curatedPaid.findIndex((p) => p.id === a.id) -
+          curatedPaid.findIndex((p) => p.id === b.id)
+        );
+      }
+    }
+    if (a.is_free !== b.is_free) return a.is_free ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  // Si tiene saldo, mostrar presets + modelos gratuitos reales (no saturar con 475 ítems el menú rápido)
+  if (canUsePaidModels) {
+    const pinnedAndFree = list.filter(
+      (m) => presetIds.has(m.id) || m.is_free || customModels.includes(m.id)
+    );
+    return pinnedAndFree;
+  }
+
+  return list;
+}
+
+export function getLocalDailyRequestCount(keyScope?: string | null): number {
+  try {
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    const scope = keyScope || "default";
+    const raw = localStorage.getItem(DAILY_REQUESTS_KEY);
+    if (!raw) return 0;
+    const parsed = JSON.parse(raw) as { date?: string; counts?: Record<string, number> };
+    if (parsed.date !== todayUtc) return 0;
+    return parsed.counts?.[scope] ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function incrementLocalDailyRequestCount(keyScope?: string | null): number {
+  try {
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    const scope = keyScope || "default";
+    const raw = localStorage.getItem(DAILY_REQUESTS_KEY);
+    let counts: Record<string, number> = {};
+    if (raw) {
+      const parsed = JSON.parse(raw) as { date?: string; counts?: Record<string, number> };
+      if (parsed.date === todayUtc && parsed.counts) {
+        counts = parsed.counts;
+      }
+    }
+    const next = (counts[scope] ?? 0) + 1;
+    counts[scope] = next;
+    localStorage.setItem(DAILY_REQUESTS_KEY, JSON.stringify({ date: todayUtc, counts }));
+    return next;
+  } catch {
+    return 0;
+  }
+}
+
+export function maskApiKey(key: string): string {
+  const trimmed = key.trim();
+  if (trimmed.length <= 8) return "••••";
+  const prefixLen = trimmed.startsWith("sk-or-v1-") && trimmed.length > 14 ? 9 : 4;
+  return `${trimmed.slice(0, prefixLen)}••••${trimmed.slice(-4)}`;
+}
+
+/**
+ * Detecta localmente claves tipo OpenRouter / OpenAI antes de enviarlas a internet.
+ */
+export function detectApiKeyInText(text: string): {
+  detectedKey: string | null;
+  maskedKey: string | null;
+  sanitizedText: string;
+} {
+  const regex = /\b(sk-or-(?:v1-)?[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9_-]{20,})\b/;
+  const match = text.match(regex);
+  if (!match) {
+    return { detectedKey: null, maskedKey: null, sanitizedText: text };
+  }
+  const detectedKey = match[1];
+  const maskedKey = maskApiKey(detectedKey);
+  const sanitizedText = text.replace(detectedKey, maskedKey);
+  return { detectedKey, maskedKey, sanitizedText };
+}
+
+export function isKeySetupIntent(text: string): boolean {
+  return /(api\s*key|clave\s*api|openrouter|token\s*de\s*ia|configur\w*\s*(?:la\s*)?(?:ia|clave|api|modelo)|cambia\w*\s*clave)/i.test(
+    text
+  );
+}
+
+function readBrowserVault(): BrowserVault {
+  try {
+    const raw = localStorage.getItem(BROWSER_VAULT_KEY);
+    if (!raw) {
+      return {
+        provider: "openrouter",
+        modelId: "openrouter/free",
+        apiKey: null,
+        customModels: [],
+      };
+    }
+    const parsed = JSON.parse(raw) as Partial<BrowserVault>;
+    return {
+      provider: parsed.provider || "openrouter",
+      modelId: parsed.modelId || "openrouter/free",
+      apiKey: parsed.apiKey || null,
+      customModels: Array.isArray(parsed.customModels) ? parsed.customModels : [],
+    };
+  } catch {
+    return {
+      provider: "openrouter",
+      modelId: "openrouter/free",
+      apiKey: null,
+      customModels: [],
+    };
+  }
+}
+
+function writeBrowserVault(vault: BrowserVault): void {
+  try {
+    localStorage.setItem(BROWSER_VAULT_KEY, JSON.stringify(vault));
+  } catch {
+    // Ignorar error de almacenamiento privado
+  }
+}
+
+export async function getAiConfigStatus(): Promise<AiConfigStatus> {
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<AiConfigStatus>("get_ai_config");
+    } catch {
+      // Fallback a vault local si el comando no está disponible
+    }
+  }
+  const vault = readBrowserVault();
+  return {
+    provider: vault.provider,
+    modelId: vault.modelId,
+    hasApiKey: Boolean(vault.apiKey),
+    maskedKey: vault.apiKey ? maskApiKey(vault.apiKey) : null,
+    keySource: vault.apiKey ? "browser" : "none",
+    customModels: vault.customModels,
+  };
+}
+
+export function normalizeApiKey(raw?: string | null): string {
+  let key = (raw ?? "").trim().replace(/^['"`]+|['"`,;.]+$/g, "");
+  if (/^bearer\s+/i.test(key)) {
+    key = key
+      .replace(/^bearer\s+/i, "")
+      .trim()
+      .replace(/^['"`]+|['"`,;.]+$/g, "");
+  }
+  const embedded = key.match(/\b(sk-or-(?:v1-)?[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9_-]{20,})\b/);
+  if (embedded) {
+    return embedded[1];
+  }
+  return key;
+}
+
+export async function saveAiConfig(input: SaveAiConfigInput): Promise<AiConfigStatus> {
+  const cleanedKey = normalizeApiKey(input.apiKey);
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<AiConfigStatus>("save_ai_config", {
+        payload: { ...input, apiKey: cleanedKey || undefined },
+      });
+    } catch {
+      // Fallback
+    }
+  }
+
+  const current = readBrowserVault();
+  const next: BrowserVault = {
+    provider: input.provider?.trim() || current.provider,
+    modelId: input.modelId?.trim() || current.modelId,
+    customModels: input.customModels ?? current.customModels,
+    apiKey: input.clearKey ? null : cleanedKey || current.apiKey,
+  };
+  writeBrowserVault(next);
+
+  return {
+    provider: next.provider,
+    modelId: next.modelId,
+    hasApiKey: Boolean(next.apiKey),
+    maskedKey: next.apiKey ? maskApiKey(next.apiKey) : null,
+    keySource: next.apiKey ? "browser" : "none",
+    customModels: next.customModels,
+  };
+}
+
+export async function testAiConnection(): Promise<AiConnectionTestResult> {
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<AiConnectionTestResult>("test_ai_connection");
+    } catch (err) {
+      return { ok: false, message: String(err) };
+    }
+  }
+
+  const vault = readBrowserVault();
+  const key = normalizeApiKey(vault.apiKey);
+  if (!key) {
+    return { ok: false, message: "No hay una clave API de OpenRouter guardada." };
+  }
+  if (/^[a-fA-F0-9]{64}$/.test(key)) {
+    return {
+      ok: false,
+      message: "Parece que falta el prefijo 'sk-or-v1-' al inicio de tu clave de OpenRouter.",
+    };
+  }
+
+  try {
+    const resp = await fetch(`${OPENROUTER_BASE_URL}/key`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${key}`,
+      },
+    });
+    const body = (await resp.json()) as {
+      data?: {
+        label?: string;
+        is_free_tier?: boolean;
+        limit?: number | null;
+        limit_remaining?: number | null;
+        limit_reset?: string | null;
+        usage?: number | null;
+        usage_daily?: number | null;
+        usage_weekly?: number | null;
+        usage_monthly?: number | null;
+      };
+      error?: { message?: string };
+    };
+    if (!resp.ok) {
+      return {
+        ok: false,
+        message: body.error?.message || `Error HTTP ${resp.status}`,
+      };
+    }
+    const d = body.data ?? {};
+    const isFreeTier = Boolean(d.is_free_tier);
+    const limitVal = d.limit ?? null;
+    const limitRemaining = d.limit_remaining ?? null;
+
+    let creditsTotal: number | null = null;
+    let creditsUsage: number | null = null;
+    let creditsRemaining: number | null = null;
+    try {
+      const credResp = await fetch(`${OPENROUTER_BASE_URL}/credits`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      if (credResp.ok) {
+        const credBody = (await credResp.json()) as {
+          data?: { total_credits?: number; total_usage?: number };
+        };
+        if (typeof credBody.data?.total_credits === "number") {
+          creditsTotal = credBody.data.total_credits;
+          creditsUsage = credBody.data.total_usage ?? 0;
+          creditsRemaining = Math.max(0, Math.round((creditsTotal - creditsUsage) * 1_000_000) / 1_000_000);
+        }
+      }
+    } catch {
+      // /credits requiere clave de administración en algunos casos
+    }
+
+    const canUsePaid =
+      creditsRemaining !== null
+        ? creditsRemaining > 0 && (limitRemaining === null || limitRemaining > 0)
+        : limitRemaining !== null
+        ? limitRemaining > 0
+        : !isFreeTier;
+
+    return {
+      ok: true,
+      label: d.label || "OpenRouter",
+      is_free_tier: isFreeTier,
+      limit: limitVal,
+      limit_remaining: limitRemaining,
+      limit_reset: d.limit_reset ?? null,
+      usage: d.usage ?? null,
+      usage_daily: d.usage_daily ?? null,
+      usage_weekly: d.usage_weekly ?? null,
+      usage_monthly: d.usage_monthly ?? null,
+      credits_total: creditsTotal,
+      credits_usage: creditsUsage,
+      credits_remaining: creditsRemaining,
+      can_use_paid_models: canUsePaid,
+      daily_free_limit: isFreeTier ? 50 : 1000,
+      rpm_free_limit: 20,
+      message: "Conexión verificada con OpenRouter.",
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : "No se pudo conectar con OpenRouter.",
+    };
+  }
+}
+
+export async function fetchOpenRouterModels(
+  freeOnly = false,
+  forceRefresh = false
+): Promise<{ ok: boolean; models: OpenRouterModelOption[]; source: string }> {
+  const now = Date.now();
+  if (!forceRefresh && cachedCatalog && now - cachedCatalog.fetchedAt < 5 * 60 * 1000) {
+    const models = freeOnly
+      ? cachedCatalog.models.filter((m) => m.is_free)
+      : cachedCatalog.models;
+    return { ok: true, models, source: cachedCatalog.source };
+  }
+
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const res = await invoke<{ ok: boolean; models: OpenRouterModelOption[]; source: string }>(
+        "fetch_openrouter_models",
+        { freeOnly: false }
+      );
+      if (res.ok && res.models.length > 0) {
+        cachedCatalog = { fetchedAt: now, models: res.models, source: res.source };
+      }
+      const filtered = freeOnly ? res.models.filter((m) => m.is_free) : res.models;
+      return { ...res, models: filtered };
+    } catch {
+      // Fallback abajo
+    }
+  }
+
+  try {
+    const vault = readBrowserVault();
+    const headers: Record<string, string> = {};
+    if (vault.apiKey) headers.Authorization = `Bearer ${vault.apiKey}`;
+    const resp = await fetch(`${OPENROUTER_BASE_URL}/models`, { headers });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const payload = (await resp.json()) as {
+      data?: Array<{
+        id: string;
+        name?: string;
+        context_length?: number;
+        pricing?: { prompt?: string; completion?: string };
+      }>;
+    };
+    const raw = payload.data ?? [];
+    const list: OpenRouterModelOption[] = raw
+      .filter((m) => Boolean(m.id))
+      .map((m) => formatOpenRouterRawModel(m))
+      .sort((a, b) => {
+        if (a.id === "openrouter/free") return -1;
+        if (b.id === "openrouter/free") return 1;
+        if (a.is_free !== b.is_free) return a.is_free ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+
+    cachedCatalog = { fetchedAt: now, models: list, source: "openrouter" };
+    return {
+      ok: true,
+      models: freeOnly ? list.filter((m) => m.is_free) : list,
+      source: "openrouter",
+    };
+  } catch {
+    return {
+      ok: false,
+      models: OPENROUTER_PRESET_MODELS.filter((m) => !freeOnly || m.is_free),
+      source: "presets",
+    };
+  }
+}
+
+export async function loadWorkspaceContext(): Promise<WorkspaceContextSource[]> {
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const files = await invoke<WorkspaceContextSource[]>("get_workspace_context");
+      if (Array.isArray(files) && files.length > 0) {
+        return files;
+      }
+    } catch {
+      // Fallback abajo si corre en modo navegador
+    }
+  }
+
+  return [
+    {
+      id: "ctx_profile",
+      name: "store-profile.json",
+      type: "profile",
+      path: "context/business-profiles/store-profile.json",
+      content: JSON.stringify(
+        {
+          company_name: "Tienda Xook",
+          currency: "MXN",
+          stock_threshold_days: 7,
+          max_budget_per_order: 50000.0,
+          preferred_suppliers: ["Distribuidora del Sur", "Comercializadora Bajío"],
+          business_rules: [
+            "No emitir órdenes de compra a proveedores con menos de 4 estrellas sin confirmación.",
+            "Si un producto tiene menos de 5 unidades, marcar urgencia como ALTA.",
+            "Nunca ejecutar pagos ni mutaciones sin autorización visual del administrador.",
+          ],
+        },
+        null,
+        2
+      ),
+    },
+    {
+      id: "ctx_memory",
+      name: "memory_store.json",
+      type: "memory",
+      path: "context/memory/memory_store.json",
+      content: JSON.stringify(
+        {
+          user_preferences: {
+            budget_safety_limit: 50000.0,
+            preferred_notification_style: "action_cards_only",
+          },
+          inferred_patterns: [
+            "El usuario autoriza compras sin objeción para 'Café Chiapas' si el proveedor es 'Distribuidora del Sur'.",
+          ],
+        },
+        null,
+        2
+      ),
+    },
+    {
+      id: "ctx_skill",
+      name: "inventory-advisor",
+      type: "skill",
+      path: "skills/inventory-advisor/SKILL.md",
+      content: `# Asesor de Inventario y Abastecimiento
+- Monitorea niveles de stock contra venta diaria promedio.
+- Formula tarjetas de compra para productos con menos de 7 días de stock.
+- Exige aprobación visual explícita antes de contactar proveedores.`,
+    },
+  ];
+}
+
+function extractBrowserJson(rawContent: string): {
+  reply: string;
+  xoxMood: "talking" | "success" | "alert";
+  operation: "none" | "add_tasks" | "replace_tasks";
+  tasks: TaskProposal[];
+} {
+  const text = rawContent.trim();
+  const candidates: string[] = [];
+  const fence = text.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
+  if (fence) candidates.push(fence[1]);
+  candidates.push(text);
+  const s = text.indexOf("{");
+  const e = text.lastIndexOf("}");
+  if (s !== -1 && e > s) candidates.push(text.slice(s, e + 1));
+
+  for (const cand of candidates) {
+    try {
+      const parsed = JSON.parse(cand) as {
+        reply?: string;
+        xox_mood?: string;
+        operation?: string;
+        tasks?: TaskProposal[];
+      };
+      if (parsed && typeof parsed.reply === "string") {
+        const safeTasks = Array.isArray(parsed.tasks)
+          ? parsed.tasks.map((t) => sanitizeTaskProposal(t))
+          : [];
+        const op =
+          parsed.operation === "add_tasks" || parsed.operation === "replace_tasks"
+            ? parsed.operation
+            : safeTasks.length > 0
+            ? "add_tasks"
+            : "none";
+        const mood =
+          parsed.xox_mood === "success" || parsed.xox_mood === "alert"
+            ? parsed.xox_mood
+            : safeTasks.length > 0
+            ? "success"
+            : "talking";
+        return { reply: parsed.reply, xoxMood: mood, operation: op, tasks: safeTasks };
+      }
+    } catch {
+      // Intentar siguiente candidato
+    }
+  }
+
+  return {
+    reply: text || "Listo, procesé tu consulta.",
+    xoxMood: "talking",
+    operation: "none",
+    tasks: [],
+  };
+}
+
+function mapFriendlyHttpError(status: number, rawMessage?: string): string {
+  const lower = (rawMessage ?? "").toLowerCase();
+  if (status === 402 || lower.includes("insufficient credits") || lower.includes("more credits")) {
+    return "Tu cuenta de OpenRouter no tiene saldo suficiente para este modelo. Cambia a un modelo gratuito o recarga créditos.";
+  }
+  if (status === 429 || lower.includes("rate limit")) {
+    return "Se alcanzó el límite temporal de solicitudes en OpenRouter (gratuito: 20/min o 50/día). Espera un momento o prueba otro modelo gratuito.";
+  }
+  return rawMessage || `Error OpenRouter HTTP ${status}`;
+}
+
+export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResponse> {
+  if (isTauriRuntime()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const res = await invoke<{
+      reply: string;
+      reasoning?: string;
+      xox_mood?: "talking" | "success" | "alert";
+      operation?: "none" | "add_tasks" | "replace_tasks";
+      tasks?: TaskProposal[];
+      model_used?: string;
+      latency_ms?: number;
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+        cost?: number;
+      };
+    }>("run_xox_chat", {
+      payload: {
+        message: req.message,
+        history: req.history,
+        currentTasks: req.currentTasks,
+        agendaItems: req.agendaItems,
+        attachedContext: req.attachedContext,
+        modelOverride: req.modelOverride ?? null,
+        userProfile: req.userProfile ?? null,
+      },
+    });
+    const usage = res.usage
+      ? {
+          promptTokens: res.usage.prompt_tokens ?? 0,
+          completionTokens: res.usage.completion_tokens ?? 0,
+          totalTokens: res.usage.total_tokens ?? 0,
+          cost: typeof res.usage.cost === "number" ? res.usage.cost : undefined,
+        }
+      : undefined;
+    return {
+      reply: res.reply,
+      reasoning: res.reasoning,
+      xoxMood: res.xox_mood ?? "talking",
+      operation: res.operation ?? "none",
+      tasks: (res.tasks ?? []).map(sanitizeTaskProposal),
+      modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
+      latencyMs: res.latency_ms ?? 0,
+      usage,
+    };
+  }
+
+  return runBrowserAiChat(req);
+}
+
+class BrowserStreamTagRouter {
+  private static readonly OPEN_ANALYSIS = ["<analisis>", "<analysis>"];
+  private static readonly CLOSE_ANALYSIS = ["</analisis>", "</analysis>"];
+  private static readonly OPEN_REPLY = ["<respuesta>", "<response>"];
+  private static readonly CLOSE_REPLY = ["</respuesta>", "</response>"];
+  private static readonly OPEN_ACTIONS = ["<acciones>", "<actions>"];
+  private static readonly CLOSE_ACTIONS = ["</acciones>", "</actions>"];
+  private static readonly STOP_REPLY = [
+    ...BrowserStreamTagRouter.CLOSE_REPLY,
+    ...BrowserStreamTagRouter.OPEN_ACTIONS,
+  ];
+  private static readonly ALL_OPEN = [
+    ...BrowserStreamTagRouter.OPEN_ANALYSIS,
+    ...BrowserStreamTagRouter.OPEN_REPLY,
+    ...BrowserStreamTagRouter.OPEN_ACTIONS,
+  ];
+
+  private mode: "detect" | "analysis" | "after_analysis" | "reply" | "after_reply" | "actions" =
+    "detect";
+  private buf = "";
+  public actionsBuf = "";
+  private enteredReply = false;
+
+  constructor(
+    private onReasoning: (chunk: string) => void,
+    private onReply: (chunk: string) => void,
+    private onPhase: (phase: "thinking" | "talking") => void
+  ) {}
+
+  private enterReply() {
+    if (!this.enteredReply) {
+      this.enteredReply = true;
+      this.onPhase("talking");
+    }
+  }
+
+  private partialSplit(s: string, tags: string[]): [string, string] {
+    const idx = s.lastIndexOf("<");
+    if (idx === -1) return [s, ""];
+    const tail = s.slice(idx).toLowerCase();
+    if (!tail.includes(">") && tags.some((t) => t.startsWith(tail))) {
+      return [s.slice(0, idx), s.slice(idx)];
+    }
+    return [s, ""];
+  }
+
+  private findFirstTag(s: string, tags: string[]): { idx: number; tag: string } | null {
+    const lower = s.toLowerCase();
+    let bestIdx = -1;
+    let bestTag = "";
+    for (const tag of tags) {
+      const idx = lower.indexOf(tag);
+      if (idx !== -1 && (bestIdx === -1 || idx < bestIdx)) {
+        bestIdx = idx;
+        bestTag = tag;
+      }
+    }
+    return bestIdx === -1 ? null : { idx: bestIdx, tag: bestTag };
+  }
+
+  feed(chunk: string) {
+    if (!chunk) return;
+    this.buf += chunk;
+    while (this.buf.length > 0) {
+      if (this.mode === "detect") {
+        const trimmed = this.buf.trimStart();
+        if (!trimmed) {
+          this.buf = "";
+          return;
+        }
+        this.buf = trimmed;
+        const lower = trimmed.toLowerCase();
+        const matched = BrowserStreamTagRouter.ALL_OPEN.find((t) => lower.startsWith(t));
+        if (matched) {
+          this.buf = trimmed.slice(matched.length).replace(/^\r?\n/, "");
+          if (BrowserStreamTagRouter.OPEN_ANALYSIS.includes(matched)) {
+            this.mode = "analysis";
+            this.onPhase("thinking");
+          } else if (BrowserStreamTagRouter.OPEN_REPLY.includes(matched)) {
+            this.mode = "reply";
+            this.enterReply();
+          } else {
+            this.mode = "actions";
+          }
+          continue;
+        }
+        if (BrowserStreamTagRouter.ALL_OPEN.some((t) => t.startsWith(lower))) {
+          return;
+        }
+        this.mode = "reply";
+        this.enterReply();
+        continue;
+      }
+
+      if (this.mode === "analysis") {
+        const found = this.findFirstTag(this.buf, BrowserStreamTagRouter.CLOSE_ANALYSIS);
+        if (found) {
+          if (found.idx > 0) this.onReasoning(this.buf.slice(0, found.idx));
+          this.buf = this.buf.slice(found.idx + found.tag.length);
+          this.mode = "after_analysis";
+          continue;
+        }
+        const [safe, rem] = this.partialSplit(this.buf, BrowserStreamTagRouter.CLOSE_ANALYSIS);
+        if (safe) this.onReasoning(safe);
+        this.buf = rem;
+        return;
+      }
+
+      if (this.mode === "after_analysis") {
+        const trimmed = this.buf.trimStart();
+        if (!trimmed) {
+          this.buf = "";
+          return;
+        }
+        this.buf = trimmed;
+        const lower = trimmed.toLowerCase();
+        const repTag = BrowserStreamTagRouter.OPEN_REPLY.find((t) => lower.startsWith(t));
+        if (repTag) {
+          this.buf = trimmed.slice(repTag.length).replace(/^\r?\n/, "");
+          this.mode = "reply";
+          this.enterReply();
+          continue;
+        }
+        const actTag = BrowserStreamTagRouter.OPEN_ACTIONS.find((t) => lower.startsWith(t));
+        if (actTag) {
+          this.buf = trimmed.slice(actTag.length);
+          this.mode = "actions";
+          continue;
+        }
+        if (
+          [...BrowserStreamTagRouter.OPEN_REPLY, ...BrowserStreamTagRouter.OPEN_ACTIONS].some((t) =>
+            t.startsWith(lower)
+          )
+        ) {
+          return;
+        }
+        this.mode = "reply";
+        this.enterReply();
+        continue;
+      }
+
+      if (this.mode === "reply") {
+        const found = this.findFirstTag(this.buf, BrowserStreamTagRouter.STOP_REPLY);
+        if (found) {
+          if (found.idx > 0) this.onReply(this.buf.slice(0, found.idx));
+          this.buf = this.buf.slice(found.idx + found.tag.length);
+          this.mode = BrowserStreamTagRouter.OPEN_ACTIONS.includes(found.tag)
+            ? "actions"
+            : "after_reply";
+          continue;
+        }
+        const [safe, rem] = this.partialSplit(this.buf, BrowserStreamTagRouter.STOP_REPLY);
+        if (safe) this.onReply(safe);
+        this.buf = rem;
+        return;
+      }
+
+      if (this.mode === "after_reply") {
+        const trimmed = this.buf.trimStart();
+        if (!trimmed) {
+          this.buf = "";
+          return;
+        }
+        this.buf = trimmed;
+        const lower = trimmed.toLowerCase();
+        const actTag = BrowserStreamTagRouter.OPEN_ACTIONS.find((t) => lower.startsWith(t));
+        if (actTag) {
+          this.buf = trimmed.slice(actTag.length);
+          this.mode = "actions";
+          continue;
+        }
+        if (BrowserStreamTagRouter.OPEN_ACTIONS.some((t) => t.startsWith(lower))) {
+          return;
+        }
+        this.buf = "";
+        return;
+      }
+
+      if (this.mode === "actions") {
+        const found = this.findFirstTag(this.buf, BrowserStreamTagRouter.CLOSE_ACTIONS);
+        if (found) {
+          this.actionsBuf += this.buf.slice(0, found.idx);
+          this.buf = "";
+          return;
+        }
+        const [safe, rem] = this.partialSplit(this.buf, BrowserStreamTagRouter.CLOSE_ACTIONS);
+        this.actionsBuf += safe;
+        this.buf = rem;
+        return;
+      }
+    }
+  }
+
+  flush() {
+    if (!this.buf) return;
+    if (this.mode === "detect" || this.mode === "after_analysis") {
+      const trimmed = this.buf.trimStart();
+      if (trimmed) {
+        this.enterReply();
+        this.onReply(trimmed);
+      }
+    } else if (this.mode === "analysis") {
+      this.onReasoning(this.buf);
+    } else if (this.mode === "reply") {
+      this.onReply(this.buf);
+    } else if (this.mode === "actions") {
+      this.actionsBuf += this.buf.replace(/<\/?(?:acciones|actions)>/gi, "");
+    }
+    this.buf = "";
+  }
+}
+
+function getBrowserLocalDateTimeLabel(): string {
+  const now = new Date();
+  let formatted = now.toISOString();
+  try {
+    formatted = new Intl.DateTimeFormat("es-MX", {
+      dateStyle: "full",
+      timeStyle: "medium",
+    }).format(now);
+  } catch {
+    formatted = now.toLocaleString("es-MX");
+  }
+  const timeZone =
+    typeof Intl !== "undefined" && Intl.DateTimeFormat
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
+      : "UTC";
+  return `${formatted} (zona horaria: ${timeZone})`;
+}
+
+function buildBrowserSystemPrompt(
+  req: XoxAiChatRequest,
+  streamMode: boolean
+): string {
+  const compactTasks = req.currentTasks.slice(0, 8).map((t) => ({
+    cardId: t.cardId,
+    title: t.title,
+    category: t.category,
+    urgency: t.urgency,
+    paramValues: t.paramValues,
+    intent: t.intent,
+  }));
+
+  const opLine = req.userProfile?.name
+    ? `\nUSUARIO ACTIVO: ${req.userProfile.name} (${req.userProfile.role || "Operador"}${req.userProfile.storeName ? `, ${req.userProfile.storeName}` : ""})`
+    : "";
+
+  const nowLabel = getBrowserLocalDateTimeLabel();
+
+  const header = `Eres Xox, un asistente inteligente y copiloto operativo dentro de XOOK. Respondes siempre en español claro, directo y humano, sin tecnicismos, sin emojis ni iconos y sin JSON visible al usuario.
+
+FECHA Y HORA LOCAL ACTUAL DEL SISTEMA: ${nowLabel}
+
+CAPACIDADES:
+- Puedes responder preguntas generales de uso diario (qué hora es, qué día es hoy, cálculos, dudas generales, explicaciones o charla casual) de forma directa y natural usando la fecha y hora local actual cuando aplique, SIN desviar la conversación hacia inventario si el usuario no lo pidió.
+- Cuando el usuario trate temas de su operación, tienda, inventario, proveedores, agenda o tareas, apoya usando su contexto operativo, reglamento y memoria.
+${req.businessContextSnapshot ? `\nCONTEXTO DEL NEGOCIO:\n${req.businessContextSnapshot}\n` : ""}${opLine}
+TAREAS PENDIENTES:\n${JSON.stringify(compactTasks)}
+AGENDA ACTIVA:\n${JSON.stringify(req.agendaItems.slice(0, 6))}
+${req.attachedContext.length ? `CONTEXTO ADJUNTO:\n${JSON.stringify(req.attachedContext)}` : ""}`;
+
+  if (streamMode) {
+    return `${header}
+
+FORMATO DE RESPUESTA EN VIVO (OBLIGATORIO):
+1. <analisis> 2 a 4 viñetas breves en español explicando qué revisaste y tu criterio. </analisis>
+2. <respuesta> Tu respuesta clara, natural y humana sin emojis ni iconos. </respuesta>
+3. <acciones>{"xox_mood":"talking","operation":"none","tasks":[]}</acciones>`;
+  }
+
+  return `${header}
+
+Responde SIEMPRE con un objeto JSON válido:
+{
+  "reply": "Tu respuesta natural en español para el usuario",
+  "xox_mood": "talking" | "success" | "alert",
+  "operation": "none" | "add_tasks" | "replace_tasks",
+  "tasks": [] // Opcional: tarjetas TaskProposal válidas cuando corresponda crear/reconstruir tareas, relojes, agendas o notas
+}
+Tipos permitidos en blocks: metrics_strip, coverage_bar, schedule, checklist, note, comparison, kv_list, param_control, insight.`;
+}
+
+export async function runXoxAiChatStream(
+  req: XoxAiChatRequest,
+  callbacks?: XoxStreamCallbacks
+): Promise<XoxAiChatResponse> {
+  if (isTauriRuntime()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { listen } = await import("@tauri-apps/api/event");
+
+    const streamId = `str_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const unlisten = await listen<{
+      stream_id?: string;
+      event?: {
+        type?: string;
+        xox_state?: "reading" | "thinking" | "talking" | "syncing";
+        label?: string;
+        steps?: ThinkingStep[];
+        delta?: string;
+      };
+    }>("xox-chat-stream", (ev) => {
+      const payload = ev.payload;
+      if (!payload || payload.stream_id !== streamId || !payload.event) return;
+      const evt = payload.event;
+      if (evt.type === "phase" && evt.xox_state) {
+        callbacks?.onPhase?.(evt.xox_state, evt.label);
+      } else if (evt.type === "steps" && Array.isArray(evt.steps)) {
+        callbacks?.onSteps?.(evt.steps);
+      } else if (evt.type === "reasoning_delta" && evt.delta) {
+        callbacks?.onReasoningDelta?.(evt.delta);
+      } else if (evt.type === "reply_delta" && evt.delta) {
+        callbacks?.onReplyDelta?.(evt.delta);
+      }
+    });
+
+    try {
+      const res = await invoke<{
+        reply: string;
+        reasoning?: string;
+        reasoning_duration_ms?: number;
+        steps?: ThinkingStep[];
+        xox_mood?: "talking" | "success" | "alert";
+        operation?: "none" | "add_tasks" | "replace_tasks";
+        tasks?: TaskProposal[];
+        model_used?: string;
+        latency_ms?: number;
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          total_tokens?: number;
+          cost?: number;
+        };
+      }>("run_xox_chat_stream", {
+        payload: {
+          message: req.message,
+          history: req.history,
+          currentTasks: req.currentTasks,
+          agendaItems: req.agendaItems,
+          attachedContext: req.attachedContext,
+          modelOverride: req.modelOverride ?? null,
+          streamId,
+          userProfile: req.userProfile ?? null,
+        },
+      });
+
+      const usage = res.usage
+        ? {
+            promptTokens: res.usage.prompt_tokens ?? 0,
+            completionTokens: res.usage.completion_tokens ?? 0,
+            totalTokens: res.usage.total_tokens ?? 0,
+            cost: typeof res.usage.cost === "number" ? res.usage.cost : undefined,
+          }
+        : undefined;
+
+      return {
+        reply: res.reply,
+        reasoning: res.reasoning,
+        reasoningDurationMs: res.reasoning_duration_ms,
+        steps: res.steps,
+        xoxMood: res.xox_mood ?? "talking",
+        operation: res.operation ?? "none",
+        tasks: (res.tasks ?? []).map(sanitizeTaskProposal),
+        modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
+        latencyMs: res.latency_ms ?? 0,
+        usage,
+      };
+    } finally {
+      unlisten();
+    }
+  }
+
+  // Fallback de streaming real para modo preview en navegador
+  const vault = readBrowserVault();
+  if (!vault.apiKey) {
+    throw new Error("Falta configurar tu clave API de OpenRouter.");
+  }
+
+  const chosenModel = req.modelOverride?.trim() || vault.modelId || "openrouter/free";
+  const contextNames = req.attachedContext.map((c) => c.name).filter(Boolean);
+  const steps: ThinkingStep[] = [
+    {
+      id: "read_context",
+      label: "Leyendo contexto y reglas del negocio",
+      detail: contextNames.slice(0, 4).join(" · ") || "Contexto base",
+      status: "running",
+    },
+  ];
+  callbacks?.onPhase?.("reading", "Leyendo perfil y reglas...");
+  callbacks?.onSteps?.([...steps]);
+
+  const systemPrompt = buildBrowserSystemPrompt(req, true);
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...req.history.slice(-10),
+    { role: "user", content: req.message },
+  ];
+
+  steps[0] = { ...steps[0], status: "done" };
+  steps.push({
+    id: "think_llm",
+    label: "Analizando tu solicitud",
+    detail: chosenModel,
+    status: "running",
+  });
+  callbacks?.onPhase?.("thinking", "Analizando tu solicitud...");
+  callbacks?.onSteps?.([...steps]);
+
+  const started = performance.now();
+  const resp = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${normalizeApiKey(vault.apiKey)}`,
+      "HTTP-Referer": window.location.origin,
+      "X-Title": "XOOK Enterprise Agentic Orchestrator",
+    },
+    body: JSON.stringify({
+      model: chosenModel,
+      messages,
+      temperature: 0.3,
+      max_tokens: 4096,
+      stream: true,
+    }),
+  });
+
+  if (!resp.ok || !resp.body) {
+    let errText = "";
+    try {
+      const j = (await resp.json()) as { error?: { message?: string } };
+      errText = j.error?.message ?? "";
+    } catch {
+      // Ignorar
+    }
+    throw new Error(mapFriendlyHttpError(resp.status, errText));
+  }
+
+  let reasoningStarted: number | null = null;
+  let reasoningEnded: number | null = null;
+  let reasoningText = "";
+  let replyText = "";
+  let actualModel = chosenModel;
+  let usageObj: XoxTokenUsage | undefined;
+
+  const pushReasoning = (delta: string) => {
+    if (!delta) return;
+    if (reasoningStarted === null) reasoningStarted = performance.now();
+    reasoningText += delta;
+    callbacks?.onReasoningDelta?.(delta);
+  };
+  const pushReply = (delta: string) => {
+    if (!delta) return;
+    if (reasoningStarted !== null && reasoningEnded === null) reasoningEnded = performance.now();
+    replyText += delta;
+    callbacks?.onReplyDelta?.(delta);
+  };
+
+  const router = new BrowserStreamTagRouter(pushReasoning, pushReply, (phase) => {
+    if (phase === "talking") {
+      if (reasoningStarted !== null && reasoningEnded === null) reasoningEnded = performance.now();
+      steps[1] = { ...steps[1], status: "done" };
+      if (steps.length < 3) {
+        steps.push({ id: "talk_reply", label: "Respondiendo en vivo", status: "running" });
+      }
+      callbacks?.onPhase?.("talking", "Respondiendo...");
+      callbacks?.onSteps?.([...steps]);
+    } else {
+      callbacks?.onPhase?.("thinking", "Evaluando opciones...");
+    }
+  });
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let sseBuf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    sseBuf += decoder.decode(value, { stream: true });
+    const lines = sseBuf.split("\n");
+    sseBuf = lines.pop() ?? "";
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line.startsWith("data:")) continue;
+      const dataStr = line.slice(5).trim();
+      if (dataStr === "[DONE]") break;
+      try {
+        const evt = JSON.parse(dataStr) as {
+          model?: string;
+          usage?: {
+            prompt_tokens?: number;
+            completion_tokens?: number;
+            total_tokens?: number;
+            cost?: number;
+          };
+          choices?: Array<{
+            delta?: {
+              content?: string;
+              reasoning?: string;
+              reasoning_content?: string;
+              reasoning_details?: Array<{ text?: string; summary?: string }>;
+            };
+          }>;
+        };
+        if (evt.model) {
+          actualModel = evt.model;
+          steps[1] = { ...steps[1], detail: actualModel };
+        }
+        if (evt.usage) {
+          usageObj = {
+            promptTokens: evt.usage.prompt_tokens ?? 0,
+            completionTokens: evt.usage.completion_tokens ?? 0,
+            totalTokens: evt.usage.total_tokens ?? 0,
+            cost: typeof evt.usage.cost === "number" ? evt.usage.cost : undefined,
+          };
+        }
+        const delta = evt.choices?.[0]?.delta;
+        if (!delta) continue;
+        const detailsText = Array.isArray(delta.reasoning_details)
+          ? delta.reasoning_details
+              .map((d) => d?.text || d?.summary || "")
+              .filter(Boolean)
+              .join("")
+          : "";
+        const r = delta.reasoning || delta.reasoning_content || detailsText;
+        if (r) pushReasoning(r);
+        if (delta.content) router.feed(delta.content);
+      } catch {
+        // Ignorar chunk incompleto
+      }
+    }
+  }
+  router.flush();
+
+  const latencyMs = Math.round(performance.now() - started);
+  const parsedActions = router.actionsBuf.trim()
+    ? extractBrowserJson(router.actionsBuf)
+    : { reply: replyText, xoxMood: "talking" as const, operation: "none" as const, tasks: [] };
+
+  const finalReply = replyText.trim() || parsedActions.reply;
+  const completedSteps = steps.map((s) => ({ ...s, status: "done" as const }));
+  if (parsedActions.tasks.length > 0) {
+    completedSteps.push({
+      id: "build_tasks",
+      label: `Generando ${parsedActions.tasks.length} tarjeta(s) de acción`,
+      status: "done",
+    });
+    callbacks?.onPhase?.("syncing", "Preparando tarjetas de acción...");
+  } else if (completedSteps.length < 3) {
+    completedSteps.push({ id: "talk_reply", label: "Respuesta completada", status: "done" });
+  }
+  callbacks?.onSteps?.(completedSteps);
+
+  const reasoningDurationMs =
+    reasoningStarted !== null
+      ? Math.max(200, Math.round((reasoningEnded ?? performance.now()) - reasoningStarted))
+      : reasoningText.trim()
+      ? latencyMs
+      : 0;
+
+  return {
+    reply: finalReply,
+    reasoning: reasoningText.trim(),
+    reasoningDurationMs,
+    steps: completedSteps,
+    xoxMood: parsedActions.xoxMood,
+    operation: parsedActions.operation,
+    tasks: parsedActions.tasks,
+    modelUsed: actualModel,
+    latencyMs,
+    usage: usageObj,
+  };
+}
+
+async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResponse> {
+  const vault = readBrowserVault();
+  if (!vault.apiKey) {
+    throw new Error("Falta configurar tu clave API de OpenRouter.");
+  }
+
+  const chosenModel = req.modelOverride?.trim() || vault.modelId || "openrouter/free";
+  const systemPrompt = buildBrowserSystemPrompt(req, false);
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...req.history.slice(-10),
+    { role: "user", content: req.message },
+  ];
+
+  const started = performance.now();
+  const makeCall = async (useJsonFormat: boolean) => {
+    const payload: Record<string, unknown> = {
+      model: chosenModel,
+      messages,
+      temperature: 0.3,
+      max_tokens: 4096,
+    };
+    if (useJsonFormat) {
+      payload.response_format = { type: "json_object" };
+    }
+    return fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${normalizeApiKey(vault.apiKey)}`,
+        "HTTP-Referer": window.location.origin,
+        "X-Title": "XOOK Enterprise Agentic Orchestrator",
+      },
+      body: JSON.stringify(payload),
+    });
+  };
+
+  let resp = await makeCall(true);
+  if (resp.status === 400) {
+    resp = await makeCall(false);
+  }
+
+  const data = (await resp.json()) as {
+    model?: string;
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      total_tokens?: number;
+      cost?: number;
+    };
+    error?: { message?: string };
+  };
+  if (!resp.ok) {
+    throw new Error(mapFriendlyHttpError(resp.status, data.error?.message));
+  }
+
+  const latencyMs = Math.round(performance.now() - started);
+  const rawContent = data.choices?.[0]?.message?.content ?? "";
+  const parsed = extractBrowserJson(rawContent);
+
+  return {
+    ...parsed,
+    modelUsed: data.model || chosenModel,
+    latencyMs,
+    usage: data.usage
+      ? {
+          promptTokens: data.usage.prompt_tokens ?? 0,
+          completionTokens: data.usage.completion_tokens ?? 0,
+          totalTokens: data.usage.total_tokens ?? 0,
+          cost: typeof data.usage.cost === "number" ? data.usage.cost : undefined,
+        }
+      : undefined,
+  };
+}

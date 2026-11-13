@@ -21,6 +21,8 @@ interface XoxStarProps {
   state?: XoxState;
   /** Tamaño total del lienzo (incluye el aura). La estrella ocupa ~55%. */
   size?: number;
+  /** Si es true, toma su tamaño de las clases CSS (ej. utilidades @container / responsive). */
+  responsive?: boolean;
   className?: string;
   onClick?: () => void;
   /** Incrementar para disparar el salto y destello estelar de aparición. */
@@ -147,6 +149,7 @@ function buildStar({ t, amp, speed, lag, reach, wave }: ShapeParams): string {
 export const XoxStar: React.FC<XoxStarProps> = ({
   state = "idle",
   size = 150,
+  responsive = false,
   className = "",
   onClick,
   summonTrigger,
@@ -178,6 +181,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const eyeLRef = useRef<SVGGElement>(null);
   const eyeRRef = useRef<SVGGElement>(null);
   const mouthRef = useRef<SVGPathElement>(null);
+  const talkMouthRef = useRef<SVGEllipseElement>(null);
+  const talkWaveRef = useRef<SVGGElement>(null);
   const sparkRefs = useRef<(SVGCircleElement | null)[]>([]);
   // Props (accesorios) que aparecen según el estado
   const lensRef = useRef<SVGGElement>(null);
@@ -284,6 +289,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     const popBubble: Spring = { x: 0, v: 0 };
     const popBang: Spring = { x: 0, v: 0 };
     const popSync: Spring = { x: 0, v: 0 };
+    const popTalk: Spring = { x: 0, v: 0 };
     const setProp = (el: SVGElement | null, pop: number, transform: string) => {
       if (!el) return;
       const s = Math.max(pop, 0.0001);
@@ -307,6 +313,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const st = stateRef.current;
       const thinking = st === "thinking";
       const reading = st === "reading";
+      const talking = st === "talking";
       const alerting = st === "alert";
       const syncing = st === "syncing";
 
@@ -386,7 +393,11 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
       const windup = a.windupUntil ? -26 : 0;
       const sway =
-        (thinking ? 6 * Math.sin(t * 2.2) : 4 * Math.sin(t * 0.9) + (alerting ? 3.2 * Math.sin(t * 23) : 0)) * A;
+        (thinking
+          ? 6 * Math.sin(t * 2.2)
+          : talking
+          ? 4.8 * Math.sin(t * 3.1)
+          : 4 * Math.sin(t * 0.9) + (alerting ? 3.2 * Math.sin(t * 23) : 0)) * A;
       const dragTilt = dragging ? -dragNx * 14 * A : 0;
       step(
         rot,
@@ -407,7 +418,15 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const stretch = Math.min(Math.abs(jump.v) * 0.00055, 0.14);
       const sy = (1 - squash.x * 0.5) * (1 + stretch) * (1 + breath);
       const sx = (1 + squash.x * 0.45) * (1 - stretch * 0.6) * (1 - breath);
-      const bob = (thinking ? 5 * Math.sin(t * 2.6) : alerting ? 2 * Math.sin(t * 9) : 4 * Math.sin(t * 1.3)) * A;
+      const bob = (
+        thinking
+          ? 5 * Math.sin(t * 2.6)
+          : talking
+          ? 3.2 * Math.sin(t * 6.8) + 2.2 * Math.sin(t * 2.1)
+          : alerting
+          ? 2 * Math.sin(t * 9)
+          : 4 * Math.sin(t * 1.3)
+      ) * A;
       const y = C + bob + jump.x;
       const shakeX = alerting ? 1.8 * Math.sin(t * 37) * A : 0;
 
@@ -441,6 +460,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         "r",
         (thinking
           ? 19 + 3 * Math.sin(t * 6)
+          : talking
+          ? 15.5 + 2.5 * Math.abs(Math.sin(t * 9.5))
           : alerting
           ? 16 + 3 * Math.sin(t * 9)
           : 14 + 1.2 * Math.sin(t * 2)
@@ -493,6 +514,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       step(popBubble, thinking ? 1 : 0, 170, 13, dt);
       step(popBang, alerting ? 1 : 0, 220, 12, dt);
       step(popSync, syncing ? 1 : 0, 120, 14, dt);
+      step(popTalk, talking ? 1 : 0, 220, 16, dt);
 
       // Lupa: barrido horizontal sobre el cuerpo con leve cabeceo
       setProp(
@@ -554,13 +576,35 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         "transform",
         `translate(${(C + sep).toFixed(2)} ${C - 3}) scale(${rsx.toFixed(3)} ${eyeSY.toFixed(3)})`
       );
+      const talkWeight = clamp(popTalk.x, 0, 1);
+      const talkCadence = talking || talkWeight > 0.02
+        ? Math.pow(0.5 + 0.5 * Math.sin(t * 14.5) * Math.cos(t * 6.1), 1.25)
+        : 0;
       mouthRef.current?.setAttribute(
         "opacity",
-        (Math.max(hover.x, st === "success" ? 1 : 0) * 0.85).toFixed(3)
+        (Math.max(hover.x, st === "success" ? 1 : 0) * (1 - talkWeight) * 0.85).toFixed(3)
       );
+      if (talkMouthRef.current) {
+        const rx = 4.8 - 1.2 * talkCadence;
+        const ry = 1.35 + 3.45 * talkCadence;
+        talkMouthRef.current.setAttribute("rx", rx.toFixed(2));
+        talkMouthRef.current.setAttribute("ry", ry.toFixed(2));
+        talkMouthRef.current.setAttribute("opacity", (talkWeight * 0.96).toFixed(3));
+      }
+      if (talkWaveRef.current) {
+        const waveScale = Math.max(popTalk.x * (0.92 + 0.14 * talkCadence), 0.0001);
+        talkWaveRef.current.setAttribute(
+          "transform",
+          `translate(${(C + 68).toFixed(2)} ${(y - 8 + 2 * Math.sin(t * 7)).toFixed(2)}) scale(${waveScale.toFixed(4)})`
+        );
+        talkWaveRef.current.setAttribute(
+          "opacity",
+          (talkWeight * (0.55 + 0.45 * talkCadence)).toFixed(3)
+        );
+      }
 
       // --- Chispas en órbita elíptica (profundidad por opacidad) ----------
-      const orbitBoost = thinking ? 2.2 : dragging ? 1 + dragSpeed * 1.4 : 1;
+      const orbitBoost = thinking ? 2.2 : talking ? 1.45 : dragging ? 1 + dragSpeed * 1.4 : 1;
       sparkRefs.current.forEach((el, i) => {
         if (!el) return;
         const ang = t * (0.35 + i * 0.12) * orbitBoost + i * 2.094;
@@ -608,9 +652,15 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         hoverRef.current = false;
       }}
       className={`relative inline-block cursor-pointer select-none outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/40 rounded-full ${className}`}
-      style={{ width: size, height: size }}
+      style={responsive ? undefined : { width: size, height: size }}
     >
-      <svg viewBox="0 0 240 240" width={size} height={size} aria-hidden="true">
+      <svg
+        viewBox="0 0 240 240"
+        width={responsive ? undefined : size}
+        height={responsive ? undefined : size}
+        className={responsive ? "w-full h-full block" : undefined}
+        aria-hidden="true"
+      >
         <defs>
           <linearGradient id={ids.body} x1="60" y1="50" x2="180" y2="190" gradientUnits="userSpaceOnUse">
             <stop offset="0%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.44" : "0.30"} />
@@ -765,11 +815,43 @@ export const XoxStar: React.FC<XoxStarProps> = ({
               fill="none"
               opacity="0"
             />
+            {/* Boca articulada al hablar en vivo */}
+            <ellipse
+              ref={talkMouthRef}
+              cx={C}
+              cy={C + 8.5}
+              rx="4.6"
+              ry="2.6"
+              fill="#0B1324"
+              stroke="#FFFFFF"
+              strokeWidth="1.35"
+              opacity="0"
+            />
 
             {/* Mejillas */}
             <circle cx={C - 15} cy={C + 5} r="3" fill="#38BDF8" opacity="0.25" />
             <circle cx={C + 15} cy={C + 5} r="3" fill="#38BDF8" opacity="0.25" />
           </g>
+        </g>
+
+        {/* Ondas discretas de voz al hablar (talking) */}
+        <g ref={talkWaveRef} opacity="0" transform={`translate(${C + 68} ${C - 8}) scale(0.0001)`}>
+          <path
+            d="M 0 -7 Q 6 0 0 7"
+            fill="none"
+            stroke="#BAE6FD"
+            strokeWidth="2.1"
+            strokeLinecap="round"
+            opacity="0.9"
+          />
+          <path
+            d="M 6.5 -12 Q 15 0 6.5 12"
+            fill="none"
+            stroke="#38BDF8"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            opacity="0.65"
+          />
         </g>
 
         {/* Aro de sincronización (dos flechas circulares) */}

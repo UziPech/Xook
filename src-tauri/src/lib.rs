@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+mod ai_vault;
 mod quick_summon;
+mod workspace_store;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ActionCard {
@@ -40,15 +42,73 @@ pub struct MemorySummary {
     pub patterns: Vec<MemoryPattern>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WorkspaceContextFile {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub item_type: String,
+    pub path: String,
+    pub content: String,
+    pub exists: bool,
+}
+
+fn get_project_root() -> PathBuf {
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if current_dir.ends_with("src-tauri") {
+        current_dir
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or(current_dir)
+    } else {
+        current_dir
+    }
+}
+
 // Helper para encontrar el directorio base del proyecto
 fn get_context_dir() -> PathBuf {
-    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    // Si estamos corriendo dentro de src-tauri, subimos un nivel
-    if current_dir.ends_with("src-tauri") {
-        current_dir.parent().unwrap().join("context")
-    } else {
-        current_dir.join("context")
-    }
+    get_project_root().join("context")
+}
+
+#[tauri::command]
+fn get_workspace_context() -> Vec<WorkspaceContextFile> {
+    let root = get_project_root();
+    let specs = [
+        (
+            "ctx_profile",
+            "store-profile.json",
+            "profile",
+            "context/business-profiles/store-profile.json",
+        ),
+        (
+            "ctx_memory",
+            "memory_store.json",
+            "memory",
+            "context/memory/memory_store.json",
+        ),
+        (
+            "ctx_skill",
+            "inventory-advisor",
+            "skill",
+            "skills/inventory-advisor/SKILL.md",
+        ),
+    ];
+
+    specs
+        .into_iter()
+        .filter_map(|(id, name, item_type, rel_path)| {
+            let full_path = root.join(rel_path);
+            let content = fs::read_to_string(&full_path).ok()?;
+            Some(WorkspaceContextFile {
+                id: id.to_string(),
+                name: name.to_string(),
+                item_type: item_type.to_string(),
+                path: rel_path.to_string(),
+                content,
+                exists: true,
+            })
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -161,6 +221,19 @@ pub fn run() {
             get_mock_action_cards,
             approve_action,
             get_learned_patterns,
+            get_workspace_context,
+            ai_vault::get_ai_config,
+            ai_vault::save_ai_config,
+            ai_vault::test_ai_connection,
+            ai_vault::fetch_openrouter_models,
+            ai_vault::run_xox_chat,
+            ai_vault::run_xox_chat_stream,
+            workspace_store::get_local_user,
+            workspace_store::save_local_user,
+            workspace_store::clear_local_user,
+            workspace_store::list_conversations,
+            workspace_store::save_conversation,
+            workspace_store::delete_conversation,
             quick_summon::hide_quick_bar,
             quick_summon::toggle_quick_bar_cmd,
             quick_summon::open_main_workspace,

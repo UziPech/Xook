@@ -12,13 +12,6 @@ export interface ActionCard {
   reasoning: string;
 }
 
-// Modelos disponibles para Xox (selector desplegable del input)
-export const MODELS = [
-  { id: "xox-fast", name: "Xox Rápido", hint: "Respuestas ágiles" },
-  { id: "xox-pro", name: "Xox Pro", hint: "Razonamiento profundo" },
-  { id: "xox-local", name: "Xox Local", hint: "100% en tu equipo" },
-] as const;
-
 export const FALLBACK_ACTION_CARDS: ActionCard[] = [
   {
     card_id: "card_cafe_01",
