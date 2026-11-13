@@ -204,6 +204,20 @@ def handle_rpc_request(request_line):
         elif method == "generate_task_ui":
             result = build_generative_task_ui(params.get("items", []))
         elif method == "ai_chat":
+            ws_root = params.get("workspace_root")
+
+            def _make_sync_bridge():
+                def _bridge(req_payload):
+                    sys.stdout.write(json.dumps({"stream": True, "stream_id": params.get("stream_id"), **req_payload}) + "\n")
+                    sys.stdout.flush()
+                    resp_line = sys.stdin.readline()
+                    if not resp_line:
+                        return {"ok": False, "error": "Canal de permisos cerrado."}
+                    resp_obj = json.loads(resp_line.strip())
+                    return resp_obj.get("result", resp_obj)
+
+                return _bridge
+
             result = run_agent_completion(
                 api_key=params.get("api_key", ""),
                 model_id=params.get("model_id", "openrouter/free"),
@@ -216,14 +230,27 @@ def handle_rpc_request(request_line):
                 attached_context=params.get("attached_context", []),
                 user_profile=params.get("user_profile"),
                 active_canvas=params.get("active_canvas"),
+                workspace_root=ws_root,
+                command_bridge=_make_sync_bridge() if params.get("enable_command_bridge") else None,
             )
         elif method == "ai_chat_stream":
             stream_id = params.get("stream_id")
+            ws_root = params.get("workspace_root")
 
             def _emit_stream(ev):
                 payload = {"stream": True, "stream_id": stream_id, "event": ev}
                 sys.stdout.write(json.dumps(payload) + "\n")
                 sys.stdout.flush()
+
+            def _stream_command_bridge(req_payload):
+                payload = {"stream": True, "stream_id": stream_id, **req_payload}
+                sys.stdout.write(json.dumps(payload) + "\n")
+                sys.stdout.flush()
+                resp_line = sys.stdin.readline()
+                if not resp_line:
+                    return {"ok": False, "status": "eof", "error": "Canal de permisos cerrado antes de responder."}
+                resp_obj = json.loads(resp_line.strip())
+                return resp_obj.get("result", resp_obj)
 
             result = stream_agent_completion(
                 api_key=params.get("api_key", ""),
@@ -238,6 +265,8 @@ def handle_rpc_request(request_line):
                 attached_context=params.get("attached_context", []),
                 user_profile=params.get("user_profile"),
                 active_canvas=params.get("active_canvas"),
+                workspace_root=ws_root,
+                command_bridge=_stream_command_bridge if params.get("enable_command_bridge", True) else None,
             )
         elif method == "test_ai_key":
             result = test_openrouter_key(params.get("api_key", ""))
@@ -248,6 +277,16 @@ def handle_rpc_request(request_line):
             )
         elif method == "record_feedback":
             result = register_user_feedback(params.get("feedback", {}))
+        elif method == "run_business_review":
+            from slices.inventory_advisor.review_engine import run_workspace_review
+
+            ws_root = params.get("workspace_root") or str(BASE_DIR)
+            result = run_workspace_review(
+                ws_root,
+                trigger_source=params.get("trigger_source") or "manual",
+                pending_dedup_keys=params.get("pending_dedup_keys"),
+                recent_decided_dedup_keys=params.get("recent_decided_dedup_keys"),
+            )
         elif method == "ping":
             result = {"status": "pong"}
         else:
@@ -258,7 +297,10 @@ def handle_rpc_request(request_line):
         return json.dumps({"error": str(e)})
 
 if __name__ == "__main__":
-    for line in sys.stdin:
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            break
         if line.strip():
             response = handle_rpc_request(line)
             sys.stdout.write(response + "\n")

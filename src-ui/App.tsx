@@ -4,12 +4,10 @@ import {
   Brain, 
   Store, 
   FolderOpen,
-  Pin,
   Plus,
   Send,
   Zap,
   Check,
-  Eye,
   X,
   FileText,
   ListTodo,
@@ -29,7 +27,7 @@ import {
   UserCircle2
 } from "lucide-react";
 import { XoxStar, XoxState } from "./components/XoxStar";
-import { ActionCard, FALLBACK_ACTION_CARDS, XookWordmark } from "./components/XookBrand";
+import { XookWordmark } from "./components/XookBrand";
 import { useAnimatedPresence } from "./hooks/useAnimatedPresence";
 import {
   CanvasArtifact,
@@ -45,22 +43,71 @@ import {
   AgendaItem,
   TaskHistoryItem,
   TaskProposal,
-  actionCardToTaskProposal,
   computeVerifiedDecision,
+  inferAlarmFromMisclassifiedTimer,
+  parseScheduleTarget,
 } from "./features/task-decisions/taskSchema";
 import {
-  INITIAL_AGENDA_ITEMS,
-  INITIAL_GENERATIVE_PROPOSALS,
-} from "./features/task-decisions/mockGeneratedTasks";
-import {
+  ScheduledEventInput,
   TaskDecisionsPanel,
   TaskPanelTab,
 } from "./features/task-decisions/TaskDecisionsPanel";
 import {
+  InventoryItem,
+  LedgerAgendaItem,
+  ReviewRun,
+  completeAgendaItem,
+  decideTaskHitl,
+  deleteAgendaItem,
+  hydrateWorkspaceLedger,
+  importInventoryFile,
+  listAgendaItems,
+  listInventoryItems,
+  listReviewRuns,
+  recordHistoryEntry,
+  resetTimerState,
+  runBusinessReview,
+  subscribeAgendaAndDatosEvents,
+  subscribeLedgerUpdated,
+  subscribeReviewUpdated,
+  toggleTimerState,
+  updateTaskProposal,
+  upsertAgendaItem,
+  upsertTasksBatch,
+} from "./features/task-decisions/ledgerApi";
+import {
+  WorkspaceNodeEntry,
+  WorkspaceOverview,
+  createWorkspace,
+  createWorkspaceFolder,
+  getWorkspaceOverview,
+  isWorkspaceTauriRuntime,
+  openWorkspaceFolder,
+  readWorkspaceFile,
+  renameWorkspace,
+  resolveCommandPermission,
+  saveWorkspaceFile,
+  subscribePermissionEvents,
+  subscribeWorkspaceUpdated,
+  switchWorkspace,
+} from "./features/workspace-store/workspaceApi";
+import {
+  SelectedWorkspaceFile,
+  WorkspaceTreePanel,
+} from "./features/workspace-store/WorkspaceTreePanel";
+import {
   ChatMessageList,
   UiChatMessage,
 } from "./features/ai-service/ChatMessageList";
+import {
+  applyCommandFinishedEvent,
+  applyPermissionRequestItem,
+  applyPermissionResolution,
+  type CommandPermissionDecisionKind,
+  type CommandPermissionUiItem,
+} from "./features/ai-service/CommandPermissionCard";
 import { OpenRouterSettingsModal } from "./features/ai-service/OpenRouterSettingsModal";
+import { ClarificationModal } from "./features/ai-service/ClarificationModal";
 import { LocalAuthModal } from "./features/workspace-store/LocalAuthModal";
 import {
   ConversationThread,
@@ -74,11 +121,13 @@ import {
 import {
   AiConfigStatus,
   AiConnectionTestResult,
+  ClarificationSpec,
   OPENROUTER_PRESET_MODELS,
   OpenRouterModelOption,
   ThinkingStep,
   detectApiKeyInText,
   estimateTokens,
+  extractErrorMessage,
   fetchOpenRouterModels,
   formatContextLength,
   formatModelDisplay,
@@ -88,7 +137,6 @@ import {
   getLocalDailyRequestCount,
   incrementLocalDailyRequestCount,
   isKeySetupIntent,
-  loadWorkspaceContext,
   runXoxAiChatStream,
   saveAiConfig,
   testAiConnection,
@@ -242,9 +290,27 @@ function XoxHeaderFace({
 
 export default function App() {
   const [tasks, setTasks] = useState<TaskProposal[]>([]);
-  const [agendaItems, setAgendaItems] = useState<AgendaItem[]>(INITIAL_AGENDA_ITEMS);
+  const [agendaItems, setAgendaItems] = useState<LedgerAgendaItem[]>([]);
   const [historyItems, setHistoryItems] = useState<TaskHistoryItem[]>([]);
+  const agendaItemsRef = useRef<LedgerAgendaItem[]>(agendaItems);
+  agendaItemsRef.current = agendaItems;
+  const suppressLedgerSyncUntilRef = useRef<number>(0);
+  const paramSyncTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const [patterns, setPatterns] = useState<MemoryPattern[]>([]);
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+  const [latestReview, setLatestReview] = useState<ReviewRun | null>(null);
+  const [isReviewRunning, setIsReviewRunning] = useState<boolean>(false);
+  const [permissionItems, setPermissionItems] = useState<CommandPermissionUiItem[]>([]);
+  const activeStreamIdRef = useRef<string | null>(null);
+  const [workspaceOverview, setWorkspaceOverview] = useState<WorkspaceOverview | null>(null);
+  const [workspaceLoading, setWorkspaceLoading] = useState<boolean>(false);
+  const [selectedWorkspaceFile, setSelectedWorkspaceFile] = useState<SelectedWorkspaceFile | null>(null);
+  const selectedWorkspacePathRef = useRef<string | null>(null);
+  selectedWorkspacePathRef.current = selectedWorkspaceFile?.relativePath ?? null;
+  const [pinnedWorkspacePaths, setPinnedWorkspacePaths] = useState<Set<string>>(
+    () => new Set(["empresa/perfil.json", "empresa/reglas/operacion.md", "memoria/hechos.md"])
+  );
+  const [highlightedWorkspacePath, setHighlightedWorkspacePath] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isTauriEnv, setIsTauriEnv] = useState<boolean>(false);
   const [inputPrompt, setInputPrompt] = useState<string>("");
@@ -289,7 +355,6 @@ export default function App() {
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const contextFileInputRef = useRef<HTMLInputElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
@@ -305,6 +370,7 @@ export default function App() {
     customModels: [],
   });
   const [showAiSettings, setShowAiSettings] = useState<boolean>(false);
+  const [activeClarification, setActiveClarification] = useState<ClarificationSpec | null>(null);
   const [accountUsage, setAccountUsage] = useState<AiConnectionTestResult | null>(null);
   const [catalogModels, setCatalogModels] = useState<OpenRouterModelOption[]>([]);
   const [loadingModels, setLoadingModels] = useState<boolean>(false);
@@ -531,54 +597,154 @@ export default function App() {
     }
   }
 
+  async function hydrateLedgerState(preserveSecretCards = true) {
+    if (!isWorkspaceTauriRuntime()) return;
+    try {
+      const ledger = await hydrateWorkspaceLedger();
+      setTasks((prev) => {
+        if (!preserveSecretCards) return ledger.tasks;
+        const ephemeralSecrets = prev.filter((t) => t.intent.type === "save_api_key");
+        const seen = new Set(ephemeralSecrets.map((t) => t.cardId));
+        return [
+          ...ephemeralSecrets,
+          ...ledger.tasks.filter((t) => !seen.has(t.cardId)),
+        ];
+      });
+      const repairedAgendaToPersist: LedgerAgendaItem[] = [];
+      const normalizedAgenda = ledger.agendaItems.map((item) => {
+        const repaired = inferAlarmFromMisclassifiedTimer(item);
+        if (repaired) {
+          repairedAgendaToPersist.push(repaired as LedgerAgendaItem);
+          return repaired as LedgerAgendaItem;
+        }
+        return item;
+      });
+      setAgendaItems(normalizedAgenda);
+      if (repairedAgendaToPersist.length > 0 && isWorkspaceTauriRuntime()) {
+        suppressLedgerSyncUntilRef.current = Date.now() + 450;
+        for (const repairedItem of repairedAgendaToPersist) {
+          void upsertAgendaItem(repairedItem).catch(() => {});
+        }
+      }
+      setHistoryItems(ledger.historyItems);
+    } catch (err) {
+      console.error("Error hidratando ledger SQLite:", err);
+    }
+  }
+
+  const hydrateWorkspaceState = async (
+    overview: WorkspaceOverview,
+    preferredSelectedPath?: string | null,
+    overridePinned?: Set<string>
+  ) => {
+    setWorkspaceOverview(overview);
+    setPatterns(overview.patterns ?? []);
+
+    const activePinned = overridePinned ?? pinnedWorkspacePaths;
+    const fileEntries = overview.entries.filter((e) => e.kind === "file" && e.editable);
+    const availableSet = new Set(fileEntries.map((e) => e.relativePath));
+
+    const toLoad = Array.from(activePinned).filter((p) => availableSet.has(p));
+    const loadedSnippets = await Promise.all(
+      toLoad.map(async (relPath): Promise<ContextItem | null> => {
+        try {
+          const f = await readWorkspaceFile(relPath);
+          const ctxType: ContextItem["type"] =
+            f.zone === "empresa"
+              ? "profile"
+              : f.zone === "memoria"
+              ? "memory"
+              : f.zone === "habilidades"
+              ? "skill"
+              : "catalog";
+          return {
+            id: `ws_${f.relativePath}`,
+            name: f.name,
+            type: ctxType,
+            path: f.relativePath,
+            pinned: true,
+            content: f.content,
+          };
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    const cleanContext = loadedSnippets.filter((c): c is ContextItem => c !== null);
+    setContextItems(cleanContext);
+
+    const targetSelect =
+      (preferredSelectedPath && availableSet.has(preferredSelectedPath)
+        ? preferredSelectedPath
+        : null) ??
+      (availableSet.has("empresa/perfil.json")
+        ? "empresa/perfil.json"
+        : fileEntries[0]?.relativePath ?? null);
+
+    if (targetSelect) {
+      try {
+        const f = await readWorkspaceFile(targetSelect);
+        setSelectedWorkspaceFile({
+          relativePath: f.relativePath,
+          name: f.name,
+          zone: f.zone,
+          content: f.content,
+          editable: f.editable,
+          pinned: activePinned.has(f.relativePath),
+          tokens: estimateTokens(f.content),
+        });
+        setSelectedContext(
+          cleanContext.find((c) => c.path === f.relativePath) ?? cleanContext[0] ?? null
+        );
+      } catch {
+        setSelectedWorkspaceFile(null);
+      }
+    } else {
+      setSelectedWorkspaceFile(null);
+      setSelectedContext(cleanContext[0] ?? null);
+    }
+  };
+
+  const refreshInventoryAndReview = async () => {
+    if (!isWorkspaceTauriRuntime()) return;
+    const [invItems, reviews] = await Promise.all([
+      listInventoryItems().catch(() => []),
+      listReviewRuns(1).catch(() => []),
+    ]);
+    setInventoryItems(invItems);
+    setLatestReview(reviews[0] ?? null);
+  };
+
   useEffect(() => {
     async function loadData() {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        setIsTauriEnv(true);
-        const fetchedCards = await invoke<ActionCard[]>("get_mock_action_cards");
-        const fetchedPatterns = await invoke<MemoryPattern[]>("get_learned_patterns");
-        const mappedTasks = fetchedCards.map((c, idx) => actionCardToTaskProposal(c, idx));
-        setTasks([...mappedTasks, ...INITIAL_GENERATIVE_PROPOSALS]);
-        setPatterns(fetchedPatterns);
-      } catch {
-        // Fallback local
-        setIsTauriEnv(false);
-        const mappedTasks = FALLBACK_ACTION_CARDS.map((c, idx) =>
-          actionCardToTaskProposal(c, idx)
-        );
-        setTasks([...mappedTasks, ...INITIAL_GENERATIVE_PROPOSALS]);
-        setPatterns([
-          {
-            pattern_id: "pat_01",
-            description: "El usuario autoriza compras sin objeción para 'Café Chiapas' si el proveedor es 'Distribuidora del Sur'.",
-            confidence: 0.95
-          },
-          {
-            pattern_id: "pat_02",
-            description: "Preferencia por órdenes menores a $5,000 MXN en días hábiles.",
-            confidence: 0.88
+      const tauriActive = isWorkspaceTauriRuntime();
+      setIsTauriEnv(tauriActive);
+
+      if (tauriActive) {
+        setWorkspaceLoading(true);
+        try {
+          const overview = await getWorkspaceOverview();
+          if (overview) {
+            await hydrateWorkspaceState(overview);
+            await Promise.all([
+              hydrateLedgerState(false),
+              refreshInventoryAndReview(),
+            ]);
           }
-        ]);
-        // Carga configuración actual de OpenRouter / bóveda local
-      }
-      try {
-        const workspaceSources = await loadWorkspaceContext();
-        const mappedContext: ContextItem[] = workspaceSources.map((src) => ({
-          id: src.id,
-          name: src.name,
-          type: (["profile", "memory", "skill", "catalog"].includes(src.type)
-            ? src.type
-            : "catalog") as ContextItem["type"],
-          path: src.path,
-          pinned: true,
-          content: src.content,
-          isCustom: src.isCustom,
-        }));
-        setContextItems(mappedContext);
-        setSelectedContext((prev) => prev ?? mappedContext[0] ?? null);
-      } catch {
-        // Sin archivos cargados aún
+        } catch (err) {
+          console.error("Error inicializando workspace:", err);
+        } finally {
+          setWorkspaceLoading(false);
+        }
+      } else {
+        // Modo Browser Preview: sin mocks falsos
+        setContextItems([]);
+        setSelectedContext(null);
+        setPatterns([]);
+        setTasks([]);
+        setAgendaItems([]);
+        setHistoryItems([]);
       }
 
       try {
@@ -606,6 +772,27 @@ export default function App() {
     }
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (!isTauriEnv) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    subscribeLedgerUpdated(() => {
+      if (disposed) return;
+      if (Date.now() < suppressLedgerSyncUntilRef.current) return;
+      void hydrateLedgerState(true);
+    })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [isTauriEnv]);
 
   const persistConversation = async (
     nextMessages: UiChatMessage[],
@@ -695,6 +882,81 @@ export default function App() {
       clearTimeout(hideT);
     };
   }, [patterns]);
+
+  useEffect(() => {
+    if (!isTauriEnv) return;
+
+    const showNotice = (msg: string, durationMs = 4500) => {
+      setStatusMessage(msg);
+      setTimeout(() => setStatusMessage((curr) => (curr === msg ? null : curr)), durationMs);
+    };
+
+    const unsubWorkspace = subscribeWorkspaceUpdated(() => {
+      void getWorkspaceOverview()
+        .then((overview) => {
+          if (overview) {
+            return hydrateWorkspaceState(overview, selectedWorkspacePathRef.current);
+          }
+          return undefined;
+        })
+        .catch(() => {});
+      void refreshInventoryAndReview();
+    });
+
+    const unsubReview = subscribeReviewUpdated((result) => {
+      setLatestReview(result.reviewRun);
+      void listInventoryItems().then(setInventoryItems).catch(() => {});
+      if (result.newTasksCount > 0) {
+        void hydrateLedgerState(true).catch(() => {});
+      }
+    });
+
+    const unsubAgendaDatos = subscribeAgendaAndDatosEvents({
+      onTimerExpired: (notice) => {
+        showNotice(`Reloj vencido: "${notice.title}"`, 6000);
+        void hydrateLedgerState(true).catch(() => {});
+      },
+      onAgendaDue: (notice) => {
+        showNotice(`Agenda: "${notice.title}" (${notice.timeLabel})`, 6000);
+        void hydrateLedgerState(true).catch(() => {});
+      },
+      onDatosChanged: (notice) => {
+        showNotice(
+          notice.newTasksCount > 0
+            ? `Cambios detectados en ${notice.path}: ${notice.newTasksCount} nuevas propuestas.`
+            : `Datos actualizados en ${notice.path}: ${notice.summary}`,
+          5500
+        );
+      },
+    });
+
+    const unsubPermissions = subscribePermissionEvents({
+      onRequest: (req) => {
+        if (
+          req.streamId &&
+          activeStreamIdRef.current &&
+          req.streamId !== activeStreamIdRef.current
+        ) {
+          return;
+        }
+        if (!activeStreamIdRef.current && req.streamId) {
+          return;
+        }
+        setPermissionItems((prev) => applyPermissionRequestItem(prev, req));
+      },
+      onFinished: (ev) => {
+        setPermissionItems((prev) => applyCommandFinishedEvent(prev, ev));
+      },
+    });
+
+    return () => {
+      unsubWorkspace();
+      unsubReview();
+      unsubAgendaDatos();
+      unsubPermissions();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTauriEnv]);
 
   // El input crece como una burbuja solo cuando hay texto escrito (vacío siempre queda en 1 línea)
   useEffect(() => {
@@ -827,31 +1089,76 @@ export default function App() {
   useEffect(() => {
     if (!hasRunningTimers) return;
     const interval = setInterval(() => {
+      const nowMs = Date.now();
+      let finishedTitle: string | null = null;
+      for (const item of agendaItemsRef.current) {
+        if (item.kind !== "timer" || !item.isRunning) continue;
+        const nextRem = item.endsAt
+          ? Math.max(0, Math.ceil((Date.parse(item.endsAt) - nowMs) / 1000))
+          : Math.max(0, (item.remainingSeconds ?? 0) - 1);
+        if (nextRem <= 0) {
+          finishedTitle = item.title;
+          break;
+        }
+      }
+
       setAgendaItems((prev) =>
         prev.map((item) => {
           if (item.kind !== "timer" || !item.isRunning) return item;
-          const current = item.remainingSeconds ?? 0;
-          if (current <= 1) {
-            setXoxState("alert");
-            setXoxMessage(`¡Tiempo cumplido: ${item.title}!`);
-            setStatusMessage(`Reloj finalizado: "${item.title}"`);
-            return { ...item, remainingSeconds: 0, isRunning: false };
+          const remaining = item.endsAt
+            ? Math.max(0, Math.ceil((Date.parse(item.endsAt) - nowMs) / 1000))
+            : Math.max(0, (item.remainingSeconds ?? 0) - 1);
+          if (remaining <= 0) {
+            return {
+              ...item,
+              remainingSeconds: 0,
+              isRunning: false,
+              endsAt: undefined,
+              timeLabel: "00:00",
+            };
           }
-          return { ...item, remainingSeconds: current - 1 };
+          return { ...item, remainingSeconds: remaining };
         })
       );
+
+      if (finishedTitle) {
+        setXoxState("alert");
+        setXoxMessage(`¡Tiempo cumplido: ${finishedTitle}!`);
+        setStatusMessage(`Reloj finalizado: "${finishedTitle}"`);
+        if (isTauriEnv) {
+          suppressLedgerSyncUntilRef.current = Date.now() + 350;
+          void listAgendaItems();
+        }
+      }
     }, 1000);
     return () => clearInterval(interval);
-  }, [hasRunningTimers]);
+  }, [hasRunningTimers, isTauriEnv]);
 
   const nowTimeLabel = () =>
     new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  const schedulePersistTaskProposal = (updatedTask: TaskProposal) => {
+    if (!isTauriEnv || updatedTask.intent.type === "save_api_key") return;
+    const prevTimer = paramSyncTimersRef.current[updatedTask.cardId];
+    if (prevTimer) clearTimeout(prevTimer);
+    paramSyncTimersRef.current[updatedTask.cardId] = setTimeout(() => {
+      delete paramSyncTimersRef.current[updatedTask.cardId];
+      void updateTaskProposal(updatedTask.cardId, updatedTask);
+    }, 220);
+  };
 
   const handleUpdateTaskParam = (
     cardId: string,
     key: string,
     value: number | string | boolean
   ) => {
+    const existing = tasksRef.current.find((t) => t.cardId === cardId);
+    if (existing) {
+      schedulePersistTaskProposal({
+        ...existing,
+        paramValues: { ...existing.paramValues, [key]: value },
+      });
+    }
     setTasks((prev) =>
       prev.map((t) =>
         t.cardId === cardId
@@ -862,6 +1169,23 @@ export default function App() {
   };
 
   const handleToggleTaskChecklist = (cardId: string, itemId: string) => {
+    const existing = tasksRef.current.find((t) => t.cardId === cardId);
+    if (existing && isTauriEnv && existing.intent.type !== "save_api_key") {
+      const updatedTask: TaskProposal = {
+        ...existing,
+        blocks: existing.blocks.map((blk) =>
+          blk.type === "checklist"
+            ? {
+                ...blk,
+                items: blk.items.map((it) =>
+                  it.id === itemId ? { ...it, done: !it.done } : it
+                ),
+              }
+            : blk
+        ),
+      };
+      void updateTaskProposal(cardId, updatedTask);
+    }
     setTasks((prev) =>
       prev.map((t) => {
         if (t.cardId !== cardId) return t;
@@ -929,17 +1253,28 @@ export default function App() {
       const maskedLabel = updated.maskedKey ?? "cifrada";
 
       setTasks((prev) => prev.filter((t) => t.cardId !== cardId));
-      setHistoryItems((prev) => [
-        {
-          id: `hist_${cardId}_${Date.now()}`,
-          title: cardRef?.title ?? "Guardar clave API de OpenRouter",
-          category: "boveda",
+      const fallbackHistory: TaskHistoryItem = {
+        id: `hist_${cardId}_${Date.now()}`,
+        title: cardRef?.title ?? "Guardar clave API de OpenRouter",
+        category: "boveda",
+        decision: "approved",
+        summary: `OpenRouter (${maskedLabel})`,
+        timestampLabel: nowTimeLabel(),
+      };
+      if (isTauriEnv) {
+        suppressLedgerSyncUntilRef.current = Date.now() + 450;
+        const savedHist = await recordHistoryEntry({
+          id: fallbackHistory.id,
+          title: fallbackHistory.title,
+          category: fallbackHistory.category,
           decision: "approved",
-          summary: `OpenRouter (${maskedLabel})`,
-          timestampLabel: nowTimeLabel(),
-        },
-        ...prev,
-      ]);
+          summary: fallbackHistory.summary,
+          decidedBy: localUser?.name ?? undefined,
+        }).catch(() => null);
+        setHistoryItems((prev) => [savedHist ?? fallbackHistory, ...prev]);
+      } else {
+        setHistoryItems((prev) => [fallbackHistory, ...prev]);
+      }
 
       const nextMessages: UiChatMessage[] = [
         ...chatMessagesRef.current.map((m) =>
@@ -993,115 +1328,192 @@ export default function App() {
       setShowAiSettings(true);
       return;
     }
+    if (action.kind === "open_clarification" && action.clarification) {
+      setActiveClarification(action.clarification);
+      return;
+    }
     if (action.kind === "save_pending_key" && action.cardId) {
       const matchingCard = tasksRef.current.find((t) => t.cardId === action.cardId);
       await executeSavePendingKey(action.cardId, matchingCard);
     }
   };
 
+  const clearPendingTaskSync = (cardId: string) => {
+    const pendingTimer = paramSyncTimersRef.current[cardId];
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      delete paramSyncTimersRef.current[cardId];
+    }
+  };
+
   const handleApproveTask = async (task: TaskProposal) => {
+    clearPendingTaskSync(task.cardId);
     if (task.intent.type === "save_api_key") {
       await executeSavePendingKey(task.cardId, task);
       return;
     }
 
-    const decision = computeVerifiedDecision(task);
-    try {
-      if (isTauriEnv) {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("approve_action", {
-          payload: {
-            card_id: task.cardId,
-            decision: decision.wasAdjusted ? "adjusted" : "approved",
-            adjusted_qty: decision.wasAdjusted ? decision.quantity : null,
-            notes: decision.wasAdjusted
-              ? "Cantidad o parámetros ajustados por el administrador"
-              : "Autorizado por el administrador",
-          },
+    const decision = computeVerifiedDecision(
+      task,
+      workspaceOverview?.profile.maxBudgetPerOrder
+    );
+    const decisionType: "approved" | "adjusted" = decision.wasAdjusted ? "adjusted" : "approved";
+    const summaryText =
+      decision.quantity !== null && task.intent.supplierName
+        ? `+${decision.quantity} un. con ${task.intent.supplierName}`
+        : task.intent.targetLabel;
+    const amountLabel =
+      decision.verifiedCost !== null
+        ? `$${decision.verifiedCost.toLocaleString()} ${decision.currency}`
+        : undefined;
+    const notesText = decision.wasAdjusted
+      ? "Cantidad o parámetros ajustados por el administrador"
+      : "Autorizado por el administrador";
+
+    let promotedAgendaDraft: LedgerAgendaItem | undefined;
+    if (
+      task.intent.type === "start_timer" ||
+      task.intent.type === "schedule_event" ||
+      task.intent.type === "save_note"
+    ) {
+      const schedBlock = task.blocks.find((b) => b.type === "schedule");
+      const noteBlock = task.blocks.find((b) => b.type === "note");
+      const chkBlock = task.blocks.find((b) => b.type === "checklist");
+      const explicitDurationMin =
+        typeof task.paramValues.duration_min === "number" && task.paramValues.duration_min > 0
+          ? task.paramValues.duration_min
+          : schedBlock?.type === "schedule" &&
+            typeof schedBlock.durationSeconds === "number" &&
+            schedBlock.durationSeconds > 0 &&
+            schedBlock.mode === "timer"
+          ? Math.round(schedBlock.durationSeconds / 60)
+          : null;
+      const autoOn =
+        typeof task.paramValues.auto_schedule === "boolean"
+          ? task.paramValues.auto_schedule
+          : schedBlock?.type === "schedule"
+          ? Boolean(schedBlock.autoSchedule)
+          : false;
+      const normalizedChecklist =
+        chkBlock?.type === "checklist"
+          ? chkBlock.items
+              .map((it, idx) => {
+                const label =
+                  typeof it?.label === "string"
+                    ? it.label.trim()
+                    : typeof it === "string"
+                      ? String(it).trim()
+                      : "";
+                if (!label) return null;
+                return {
+                  id: typeof it?.id === "string" && it.id.trim() ? it.id : `chk_${idx + 1}`,
+                  label,
+                  done: Boolean(it?.done),
+                };
+              })
+              .filter(
+                (it): it is { id: string; label: string; done: boolean } => Boolean(it)
+              )
+          : [];
+      const agendaChecklist = normalizedChecklist.length > 0 ? normalizedChecklist : undefined;
+      const resolvedTimeLabel =
+        typeof task.paramValues.window_slot === "string" && task.paramValues.window_slot.trim()
+          ? `${task.paramValues.window_slot.trim()} hrs`
+          : schedBlock?.type === "schedule" && schedBlock.timeLabel?.trim()
+          ? schedBlock.timeLabel.trim()
+          : task.statusChip?.trim() || "09:00 hrs";
+      const resolvedSubtitle =
+        task.subtitle?.trim() ||
+        (schedBlock?.type === "schedule" ? schedBlock.autoTriggerLabel : undefined);
+
+      if (task.intent.type === "start_timer" && explicitDurationMin !== null) {
+        const secs = Math.max(1, explicitDurationMin) * 60;
+        promotedAgendaDraft = {
+          id: `ag_${Date.now()}`,
+          kind: "timer",
+          title: task.title,
+          subtitle: resolvedSubtitle,
+          timeLabel: `${String(explicitDurationMin).padStart(2, "0")}:00`,
+          durationSeconds: secs,
+          remainingSeconds: secs,
+          endsAt: new Date(Date.now() + secs * 1000).toISOString(),
+          isRunning: true,
+          autoScheduled: autoOn,
+          createdAtLabel: `Hoy · ${nowTimeLabel()}`,
+        };
+      } else if (task.intent.type === "save_note") {
+        promotedAgendaDraft = {
+          id: `ag_${Date.now()}`,
+          kind: "note",
+          title: task.title,
+          timeLabel: "Fijada",
+          noteContent: noteBlock?.type === "note" ? noteBlock.content : task.subtitle,
+          checklist: agendaChecklist,
+          tags: noteBlock?.type === "note" ? noteBlock.tags : undefined,
+          createdAtLabel: `Hoy · ${nowTimeLabel()}`,
+        };
+      } else {
+        const scheduledTarget = parseScheduleTarget({
+          title: task.title,
+          subtitle: resolvedSubtitle,
+          timeLabel: resolvedTimeLabel,
+          dateLabel: schedBlock?.type === "schedule" ? schedBlock.dateLabel : undefined,
         });
+        const recurrenceLabel =
+          schedBlock?.type === "schedule" ? schedBlock.recurrence : undefined;
+        promotedAgendaDraft = {
+          id: `ag_${Date.now()}`,
+          kind: autoOn || Boolean(recurrenceLabel) ? "recurring" : "alarm",
+          title: task.title,
+          subtitle: resolvedSubtitle,
+          timeLabel: scheduledTarget.displayTimeLabel || resolvedTimeLabel,
+          recurrence: recurrenceLabel,
+          autoScheduled: autoOn,
+          scheduleCronOrRule: recurrenceLabel ?? (autoOn ? "Automática" : "Una vez"),
+          nextRunAt: scheduledTarget.nextRunAt,
+          checklist: agendaChecklist,
+          createdAtLabel: `Hoy · ${nowTimeLabel()}`,
+        };
+      }
+    }
+
+    try {
+      let persistedHistory: TaskHistoryItem | null = null;
+      let persistedAgenda: LedgerAgendaItem | null = null;
+
+      if (isTauriEnv) {
+        suppressLedgerSyncUntilRef.current = Date.now() + 450;
+        const result = await decideTaskHitl({
+          cardId: task.cardId,
+          title: task.title,
+          category: task.category,
+          decision: decisionType,
+          summary: summaryText,
+          amountLabel,
+          verifiedCost: decision.verifiedCost,
+          currency: decision.currency,
+          adjustedQty: decision.wasAdjusted ? decision.quantity : null,
+          notes: notesText,
+          decidedBy: localUser?.name ?? undefined,
+          updatedProposal: task,
+          promoteAgendaItem: promotedAgendaDraft,
+        });
+        persistedHistory = result?.historyEntry ?? null;
+        persistedAgenda = result?.promotedAgendaItem ?? null;
       }
 
-      // Promover relojes, agendas o notas aprobadas a la pestaña Agenda
-      if (
-        task.intent.type === "start_timer" ||
-        task.intent.type === "schedule_event" ||
-        task.intent.type === "save_note"
-      ) {
-        const schedBlock = task.blocks.find((b) => b.type === "schedule");
-        const noteBlock = task.blocks.find((b) => b.type === "note");
-        const chkBlock = task.blocks.find((b) => b.type === "checklist");
-        const mins =
-          typeof task.paramValues.duration_min === "number"
-            ? task.paramValues.duration_min
-            : schedBlock?.type === "schedule" && schedBlock.durationSeconds
-            ? Math.round(schedBlock.durationSeconds / 60)
-            : 15;
-        const autoOn =
-          typeof task.paramValues.auto_schedule === "boolean"
-            ? task.paramValues.auto_schedule
-            : schedBlock?.type === "schedule"
-            ? Boolean(schedBlock.autoSchedule)
-            : false;
-
-        const newAgenda: AgendaItem =
-          task.intent.type === "start_timer"
-            ? {
-                id: `ag_${Date.now()}`,
-                kind: "timer",
-                title: task.title,
-                subtitle: task.subtitle,
-                timeLabel: `${String(mins).padStart(2, "0")}:00`,
-                durationSeconds: mins * 60,
-                remainingSeconds: mins * 60,
-                isRunning: true,
-                autoScheduled: autoOn,
-                createdAtLabel: `Hoy · ${nowTimeLabel()}`,
-              }
-            : task.intent.type === "save_note"
-            ? {
-                id: `ag_${Date.now()}`,
-                kind: "note",
-                title: task.title,
-                timeLabel: "Fijada",
-                noteContent: noteBlock?.type === "note" ? noteBlock.content : task.subtitle,
-                checklist: chkBlock?.type === "checklist" ? chkBlock.items : undefined,
-                tags: noteBlock?.type === "note" ? noteBlock.tags : undefined,
-                createdAtLabel: `Hoy · ${nowTimeLabel()}`,
-              }
-            : {
-                id: `ag_${Date.now()}`,
-                kind: autoOn ? "recurring" : "alarm",
-                title: task.title,
-                subtitle: task.subtitle,
-                timeLabel:
-                  typeof task.paramValues.window_slot === "string"
-                    ? `${task.paramValues.window_slot} hrs`
-                    : schedBlock?.type === "schedule"
-                    ? schedBlock.timeLabel
-                    : "09:00 hrs",
-                recurrence:
-                  schedBlock?.type === "schedule" ? schedBlock.recurrence : undefined,
-                autoScheduled: autoOn,
-                checklist: chkBlock?.type === "checklist" ? chkBlock.items : undefined,
-                createdAtLabel: `Hoy · ${nowTimeLabel()}`,
-              };
-
-        setAgendaItems((prev) => [newAgenda, ...prev]);
+      const finalAgenda = persistedAgenda ?? promotedAgendaDraft;
+      if (finalAgenda) {
+        setAgendaItems((prev) => [finalAgenda, ...prev]);
       }
 
-      const historyEntry: TaskHistoryItem = {
+      const historyEntry: TaskHistoryItem = persistedHistory ?? {
         id: `hist_${task.cardId}_${Date.now()}`,
         title: task.title,
         category: task.category,
-        decision: decision.wasAdjusted ? "adjusted" : "approved",
-        summary:
-          decision.quantity !== null && task.intent.supplierName
-            ? `+${decision.quantity} un. con ${task.intent.supplierName}`
-            : task.intent.targetLabel,
-        amountLabel:
-          decision.verifiedCost !== null
-            ? `$${decision.verifiedCost.toLocaleString()} ${decision.currency}`
-            : undefined,
+        decision: decisionType,
+        summary: summaryText,
+        amountLabel,
         timestampLabel: nowTimeLabel(),
       };
 
@@ -1123,6 +1535,7 @@ export default function App() {
   };
 
   const handleDiscardTask = async (task: TaskProposal) => {
+    clearPendingTaskSync(task.cardId);
     if (pendingSecretKeysRef.current.has(task.cardId)) {
       pendingSecretKeysRef.current.delete(task.cardId);
     }
@@ -1134,23 +1547,27 @@ export default function App() {
       );
     }
 
+    let persistedHistory: TaskHistoryItem | null = null;
     try {
       if (isTauriEnv && task.intent.type !== "save_api_key") {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("approve_action", {
-          payload: {
-            card_id: task.cardId,
-            decision: "rejected",
-            adjusted_qty: null,
-            notes: "Descartado desde el panel de tareas",
-          },
+        suppressLedgerSyncUntilRef.current = Date.now() + 450;
+        const result = await decideTaskHitl({
+          cardId: task.cardId,
+          title: task.title,
+          category: task.category,
+          decision: "rejected",
+          summary: `Descartada · ${task.intent.targetLabel}`,
+          notes: "Descartado desde el panel de tareas",
+          decidedBy: localUser?.name ?? undefined,
+          updatedProposal: task,
         });
+        persistedHistory = result?.historyEntry ?? null;
       }
     } catch {
-      // Continuar actualización local si falla RPC mock
+      // Continuar actualización local si falla escritura
     }
 
-    const historyEntry: TaskHistoryItem = {
+    const historyEntry: TaskHistoryItem = persistedHistory ?? {
       id: `hist_rej_${task.cardId}_${Date.now()}`,
       title: task.title,
       category: task.category,
@@ -1170,7 +1587,201 @@ export default function App() {
     inputRef.current?.focus();
   };
 
-  const handleToggleTimer = (id: string) => {
+  const handleRefreshWorkspace = async () => {
+    if (!isTauriEnv) return;
+    setWorkspaceLoading(true);
+    try {
+      const overview = await getWorkspaceOverview();
+      if (overview) {
+        await hydrateWorkspaceState(overview, selectedWorkspaceFile?.relativePath ?? null);
+        await Promise.all([
+          hydrateLedgerState(true),
+          refreshInventoryAndReview(),
+        ]);
+      }
+    } finally {
+      setWorkspaceLoading(false);
+    }
+  };
+
+  const handleSelectWorkspaceFile = async (entry: WorkspaceNodeEntry) => {
+    if (!isTauriEnv || entry.kind !== "file") return;
+    try {
+      const f = await readWorkspaceFile(entry.relativePath);
+      setSelectedWorkspaceFile({
+        relativePath: f.relativePath,
+        name: f.name,
+        zone: f.zone,
+        content: f.content,
+        editable: f.editable,
+        pinned: pinnedWorkspacePaths.has(f.relativePath),
+        tokens: estimateTokens(f.content),
+      });
+      triggerReadingPulse(`Leyendo ${entry.name}...`, 1050);
+    } catch (err) {
+      setStatusMessage(
+        extractErrorMessage(err, "No se pudo abrir el archivo seleccionado.")
+      );
+      setTimeout(() => setStatusMessage(null), 3500);
+    }
+  };
+
+  const handleTogglePinWorkspaceFile = async (entry: WorkspaceNodeEntry) => {
+    if (entry.kind !== "file") return;
+    const nextPinned = new Set(pinnedWorkspacePaths);
+    if (nextPinned.has(entry.relativePath)) {
+      nextPinned.delete(entry.relativePath);
+    } else {
+      nextPinned.add(entry.relativePath);
+    }
+    setPinnedWorkspacePaths(nextPinned);
+    if (selectedWorkspaceFile?.relativePath === entry.relativePath) {
+      setSelectedWorkspaceFile((prev) =>
+        prev ? { ...prev, pinned: nextPinned.has(entry.relativePath) } : null
+      );
+    }
+    if (workspaceOverview) {
+      await hydrateWorkspaceState(
+        workspaceOverview,
+        selectedWorkspaceFile?.relativePath ?? entry.relativePath,
+        nextPinned
+      );
+    }
+  };
+
+  const handleCreateWorkspaceFolder = async (relativePath: string) => {
+    const nextOverview = await createWorkspaceFolder(relativePath);
+    setHighlightedWorkspacePath(relativePath);
+    setTimeout(() => setHighlightedWorkspacePath((curr) => (curr === relativePath ? null : curr)), 1500);
+    await hydrateWorkspaceState(nextOverview, selectedWorkspaceFile?.relativePath ?? null);
+    setStatusMessage(`Carpeta creada: ${relativePath}`);
+    setTimeout(() => setStatusMessage(null), 3500);
+  };
+
+  const handleSaveWorkspaceFile = async (relativePath: string, content: string) => {
+    const nextOverview = await saveWorkspaceFile(relativePath, content);
+    await hydrateWorkspaceState(nextOverview, relativePath);
+    setStatusMessage(`Guardado en ${relativePath}`);
+    setTimeout(() => setStatusMessage(null), 3000);
+  };
+
+  const handleCreateNewWorkspace = async (name: string) => {
+    const nextOverview = await createWorkspace(name);
+    await hydrateWorkspaceState(nextOverview, "empresa/perfil.json");
+    await Promise.all([
+      hydrateLedgerState(true),
+      refreshInventoryAndReview(),
+    ]);
+    setStatusMessage(`Espacio "${nextOverview.active.name}" creado en Documentos/XoxMemoryApp.`);
+    setTimeout(() => setStatusMessage(null), 4000);
+  };
+
+  const handleSwitchActiveWorkspace = async (workspaceId: string) => {
+    const nextOverview = await switchWorkspace(workspaceId);
+    await hydrateWorkspaceState(nextOverview, "empresa/perfil.json");
+    await Promise.all([
+      hydrateLedgerState(true),
+      refreshInventoryAndReview(),
+    ]);
+    setStatusMessage(`Espacio activo: ${nextOverview.active.name}`);
+    setTimeout(() => setStatusMessage(null), 3500);
+  };
+
+  const handleRenameActiveWorkspace = async (workspaceId: string, newName: string) => {
+    const nextOverview = await renameWorkspace(workspaceId, newName);
+    await hydrateWorkspaceState(nextOverview, selectedWorkspaceFile?.relativePath ?? null);
+    setStatusMessage(`Espacio renombrado a "${nextOverview.active.name}".`);
+    setTimeout(() => setStatusMessage(null), 3500);
+  };
+
+  const handleRunBusinessReview = async (triggerSource = "manual") => {
+    if (!isTauriEnv || isReviewRunning) return;
+    setIsReviewRunning(true);
+    try {
+      const res = await runBusinessReview(triggerSource);
+      const [overview] = await Promise.all([
+        getWorkspaceOverview(),
+        refreshInventoryAndReview(),
+        hydrateLedgerState(true),
+      ]);
+      if (overview) {
+        await hydrateWorkspaceState(overview, selectedWorkspacePathRef.current);
+      }
+      if (res) {
+        setLatestReview(res.reviewRun);
+        setStatusMessage(
+          res.newTasksCount > 0
+            ? `Revisión lista: ${res.newTasksCount} nuevas propuestas.`
+            : res.summary || "Revisión completada sin pendientes nuevos."
+        );
+        setTimeout(() => setStatusMessage(null), 5000);
+      }
+    } catch (err) {
+      setStatusMessage(
+        extractErrorMessage(err, "No se pudo completar la revisión del espacio.")
+      );
+      setTimeout(() => setStatusMessage(null), 4500);
+    } finally {
+      setIsReviewRunning(false);
+    }
+  };
+
+  const handleImportInventoryFile = async (filename: string, content: string) => {
+    if (!isTauriEnv) return;
+    try {
+      const imported = await importInventoryFile(filename, content);
+      if (imported) {
+        setInventoryItems(imported.items);
+        setStatusMessage(
+          `Importados ${imported.importedCount} productos en ${imported.filePath}. Analizando...`
+        );
+        await handleRunBusinessReview("import");
+      }
+    } catch (err) {
+      setStatusMessage(
+        extractErrorMessage(err, "No se pudo importar el archivo en datos/.")
+      );
+      setTimeout(() => setStatusMessage(null), 4500);
+    }
+  };
+
+  const handleResolvePermission = async (
+    requestId: string,
+    decision: CommandPermissionDecisionKind
+  ) => {
+    setPermissionItems((prev) =>
+      applyPermissionResolution(prev, requestId, decision)
+    );
+    try {
+      await resolveCommandPermission(requestId, decision);
+    } catch (err) {
+      setPermissionItems((prev) =>
+        prev.map((item) =>
+          item.requestId === requestId
+            ? {
+                ...item,
+                state: "error",
+                error: extractErrorMessage(err, "No se pudo entregar tu decisión."),
+              }
+            : item
+        )
+      );
+    }
+  };
+
+  const handleToggleTimer = async (id: string) => {
+    if (isTauriEnv) {
+      suppressLedgerSyncUntilRef.current = Date.now() + 450;
+      try {
+        const updated = await toggleTimerState(id);
+        if (updated) {
+          setAgendaItems((prev) => prev.map((item) => (item.id === id ? updated : item)));
+          return;
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
     setAgendaItems((prev) =>
       prev.map((item) =>
         item.id === id ? { ...item, isRunning: !item.isRunning } : item
@@ -1178,13 +1789,26 @@ export default function App() {
     );
   };
 
-  const handleResetTimer = (id: string) => {
+  const handleResetTimer = async (id: string) => {
+    if (isTauriEnv) {
+      suppressLedgerSyncUntilRef.current = Date.now() + 450;
+      try {
+        const updated = await resetTimerState(id);
+        if (updated) {
+          setAgendaItems((prev) => prev.map((item) => (item.id === id ? updated : item)));
+          return;
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
     setAgendaItems((prev) =>
       prev.map((item) =>
         item.id === id
           ? {
               ...item,
               isRunning: false,
+              endsAt: undefined,
               remainingSeconds: item.durationSeconds ?? 900,
             }
           : item
@@ -1192,10 +1816,18 @@ export default function App() {
     );
   };
 
-  const handleCompleteAgendaItem = (item: AgendaItem) => {
+  const handleCompleteAgendaItem = async (item: AgendaItem) => {
     setAgendaItems((prev) => prev.filter((a) => a.id !== item.id));
+    let savedHistory: TaskHistoryItem | null = null;
+    if (isTauriEnv) {
+      suppressLedgerSyncUntilRef.current = Date.now() + 450;
+      savedHistory = await completeAgendaItem({
+        agendaItemId: item.id,
+        decidedBy: localUser?.name ?? undefined,
+      }).catch(() => null);
+    }
     setHistoryItems((prev) => [
-      {
+      savedHistory ?? {
         id: `hist_ag_${item.id}_${Date.now()}`,
         title: item.title,
         category: item.kind === "note" ? "nota" : "agenda",
@@ -1209,11 +1841,26 @@ export default function App() {
     setTimeout(() => setStatusMessage(null), 3000);
   };
 
-  const handleRemoveAgendaItem = (id: string) => {
+  const handleRemoveAgendaItem = async (id: string) => {
     setAgendaItems((prev) => prev.filter((a) => a.id !== id));
+    if (isTauriEnv) {
+      suppressLedgerSyncUntilRef.current = Date.now() + 450;
+      await deleteAgendaItem(id).catch(() => {});
+    }
   };
 
-  const handleToggleAgendaChecklist = (agendaId: string, itemId: string) => {
+  const handleToggleAgendaChecklist = async (agendaId: string, itemId: string) => {
+    const existing = agendaItemsRef.current.find((it) => it.id === agendaId);
+    const updatedItem =
+      existing && existing.checklist
+        ? {
+            ...existing,
+            checklist: existing.checklist.map((c) =>
+              c.id === itemId ? { ...c, done: !c.done } : c
+            ),
+          }
+        : null;
+
     setAgendaItems((prev) =>
       prev.map((item) =>
         item.id === agendaId && item.checklist
@@ -1226,19 +1873,65 @@ export default function App() {
           : item
       )
     );
+    if (updatedItem && isTauriEnv) {
+      suppressLedgerSyncUntilRef.current = Date.now() + 450;
+      await upsertAgendaItem(updatedItem).catch(() => {});
+    }
   };
 
-  const handleToggleAgendaAuto = (id: string) => {
+  const handleToggleAgendaAuto = async (id: string) => {
+    const existing = agendaItemsRef.current.find((it) => it.id === id);
+    const updatedItem = existing
+      ? { ...existing, autoScheduled: !existing.autoScheduled }
+      : null;
+
     setAgendaItems((prev) =>
       prev.map((item) =>
         item.id === id ? { ...item, autoScheduled: !item.autoScheduled } : item
       )
     );
+    if (updatedItem && isTauriEnv) {
+      suppressLedgerSyncUntilRef.current = Date.now() + 450;
+      await upsertAgendaItem(updatedItem).catch(() => {});
+    }
   };
 
-  const handleCreateQuickTimer = (title: string, minutes: number) => {
+  const persistAgendaDraft = async (draft: LedgerAgendaItem) => {
+    if (isTauriEnv) {
+      suppressLedgerSyncUntilRef.current = Date.now() + 450;
+      const saved = await upsertAgendaItem(draft).catch(() => null);
+      setAgendaItems((prev) => [saved ?? draft, ...prev]);
+    } else {
+      setAgendaItems((prev) => [draft, ...prev]);
+    }
+  };
+
+  const formatScheduledTimeLabel = (dateIso: string, time24: string): { label: string; nextRunAt?: string } => {
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const tomorrow = new Date(now);
+    tomorrow.setDate(now.getDate() + 1);
+    const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+
+    const parsed = new Date(`${dateIso}T${time24}:00`);
+    const nextRunAt = Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+    const dayPrefix =
+      dateIso === todayStr
+        ? "Hoy"
+        : dateIso === tomorrowStr
+        ? "Mañana"
+        : Number.isNaN(parsed.getTime())
+        ? dateIso
+        : parsed.toLocaleDateString("es-MX", { day: "2-digit", month: "short" });
+    return {
+      label: `${dayPrefix} · ${time24} hrs`,
+      nextRunAt,
+    };
+  };
+
+  const handleCreateQuickTimer = async (title: string, minutes: number) => {
     const secs = Math.max(1, minutes) * 60;
-    const item: AgendaItem = {
+    const draft: LedgerAgendaItem = {
       id: `ag_timer_${Date.now()}`,
       kind: "timer",
       title,
@@ -1246,16 +1939,17 @@ export default function App() {
       timeLabel: `${String(minutes).padStart(2, "0")}:00`,
       durationSeconds: secs,
       remainingSeconds: secs,
+      endsAt: new Date(Date.now() + secs * 1000).toISOString(),
       isRunning: true,
       createdAtLabel: `Hoy · ${nowTimeLabel()}`,
     };
-    setAgendaItems((prev) => [item, ...prev]);
+    await persistAgendaDraft(draft);
     setStatusMessage(`Reloj "${title}" iniciado (${minutes} min).`);
     setTimeout(() => setStatusMessage(null), 3500);
   };
 
-  const handleCreateQuickNote = (title: string, content: string) => {
-    const item: AgendaItem = {
+  const handleCreateQuickNote = async (title: string, content: string) => {
+    const draft: LedgerAgendaItem = {
       id: `ag_note_${Date.now()}`,
       kind: "note",
       title,
@@ -1264,8 +1958,28 @@ export default function App() {
       tags: ["Manual"],
       createdAtLabel: `Hoy · ${nowTimeLabel()}`,
     };
-    setAgendaItems((prev) => [item, ...prev]);
+    await persistAgendaDraft(draft);
     setStatusMessage(`Nota "${title}" guardada en Agenda.`);
+    setTimeout(() => setStatusMessage(null), 3500);
+  };
+
+  const handleCreateScheduledEvent = async (input: ScheduledEventInput) => {
+    const { label, nextRunAt } = formatScheduledTimeLabel(input.dateIso, input.time24);
+    const isRecurring = input.autoScheduled || Boolean(input.recurrence);
+    const draft: LedgerAgendaItem = {
+      id: `ag_sched_${Date.now()}`,
+      kind: isRecurring ? "recurring" : "alarm",
+      title: input.title,
+      subtitle: input.notes,
+      timeLabel: label,
+      recurrence: input.recurrence,
+      autoScheduled: input.autoScheduled,
+      scheduleCronOrRule: input.recurrence ?? "Una vez",
+      nextRunAt,
+      createdAtLabel: `Hoy · ${nowTimeLabel()}`,
+    };
+    await persistAgendaDraft(draft);
+    setStatusMessage(`Agendado: "${input.title}" (${label}).`);
     setTimeout(() => setStatusMessage(null), 3500);
   };
 
@@ -1478,6 +2192,7 @@ export default function App() {
         .join("\n")
         .slice(0, 4500);
 
+      setPermissionItems([]);
       const res = await runXoxAiChatStream(
         {
           message: query,
@@ -1497,6 +2212,9 @@ export default function App() {
           activeCanvas: showCanvas ? activeCanvas : null,
         },
         {
+          onStreamStart: (sid) => {
+            activeStreamIdRef.current = sid;
+          },
           onPhase: (state, label) => {
             if (hasEnteredTalking && (state === "reading" || state === "thinking")) {
               return;
@@ -1563,6 +2281,15 @@ export default function App() {
               )
             );
           },
+          onReasoningReset: () => {
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId
+                  ? { ...m, reasoning: "", isReasoningStreaming: true }
+                  : m
+              )
+            );
+          },
           onReplyDelta: (delta) => {
             if (!hasEnteredTalking) {
               clearXoxPhaseTimers();
@@ -1606,7 +2333,8 @@ export default function App() {
         setShowCanvas(true);
       }
       if (generatedCount > 0) {
-        if (res.operation === "replace_tasks") {
+        const replacePending = res.operation === "replace_tasks";
+        if (replacePending) {
           setTasks((prev) => [
             ...res.tasks,
             ...prev.filter((t) => t.intent.type === "save_api_key"),
@@ -1616,6 +2344,10 @@ export default function App() {
         }
         setShowRightSidebar(true);
         setTaskTab("pending");
+        if (isTauriEnv) {
+          suppressLedgerSyncUntilRef.current = Date.now() + 450;
+          void upsertTasksBatch(res.tasks, replacePending);
+        }
       }
 
       setRequestsToday(incrementLocalDailyRequestCount(aiConfig.maskedKey));
@@ -1623,6 +2355,7 @@ export default function App() {
         .then((u) => setAccountUsage(u))
         .catch(() => {});
 
+      const nextClarification = res.clarification ?? null;
       const finalMessages = chatMessagesRef.current.map((m) =>
         m.id === assistantMsgId
           ? {
@@ -1638,18 +2371,33 @@ export default function App() {
               tokensUsed: res.usage?.totalTokens,
               generatedTaskCount: generatedCount,
               canvas: finalCanvas ?? m.canvas,
+              actionButton: nextClarification
+                ? {
+                    label: "Responder preguntas",
+                    kind: "open_clarification" as const,
+                    clarification: nextClarification,
+                  }
+                : m.actionButton,
             }
           : m
       );
       setChatMessages(finalMessages);
       void persistConversation(finalMessages, convId);
+      if (nextClarification) {
+        setActiveClarification(nextClarification);
+      }
 
       setIsChatStreaming(false);
+      if (res.workspaceMutated && isTauriEnv) {
+        void handleRefreshWorkspace();
+      }
 
       const finalMood: XoxState = res.xoxMood === "alert" ? "alert" : "success";
       const summaryStatus =
         generatedCount > 0
           ? `Xox generó ${generatedCount} ${generatedCount === 1 ? "tarjeta" : "tarjetas"} en Tareas & Decisiones.`
+          : nextClarification
+          ? "Xox necesita unos datos para continuar."
           : "¿En qué más te ayudo?";
       setStatusMessage(generatedCount > 0 ? summaryStatus : null);
 
@@ -1696,10 +2444,10 @@ export default function App() {
       }
     } catch (err) {
       clearXoxPhaseTimers();
-      const message =
-        err instanceof Error
-          ? err.message
-          : "No se pudo completar la consulta con OpenRouter.";
+      const message = extractErrorMessage(
+        err,
+        "No se pudo completar la consulta con OpenRouter."
+      );
       const lowerMsg = message.toLowerCase();
       if (
         lowerMsg.includes("402") ||
@@ -1724,8 +2472,9 @@ export default function App() {
           ? {
               ...m,
               content: `Error al consultar OpenRouter: ${message}`,
-              thinkingSteps: undefined,
-              reasoning: undefined,
+              thinkingSteps: m.thinkingSteps?.map((s) =>
+                s.status === "running" ? { ...s, status: "error" as const } : s
+              ),
               isStreaming: false,
               isReasoningStreaming: false,
               isError: true,
@@ -2026,7 +2775,7 @@ export default function App() {
                 ? `${localUser.name} · ${localUser.role} (${localUser.storeName}) — Perfil local`
                 : "Crear perfil de operador local"
             }
-            className="px-2.5 py-1.5 rounded-lg border bg-white/[0.03] hover:bg-white/[0.07] border-white/[0.08] text-zinc-300 hover:text-white flex items-center gap-1.5 transition-all cursor-pointer"
+            className="quick-liquid-btn px-2.5 py-1.5 rounded-lg text-zinc-200 hover:text-white flex items-center gap-1.5 cursor-pointer"
           >
             <UserCircle2
               className={`w-3.5 h-3.5 ${
@@ -2046,10 +2795,10 @@ export default function App() {
                 ? `${usageSummary.primary} · Modelo: ${activeModel.name}`
                 : "Configurar clave de OpenRouter"
             }
-            className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer ${
               aiConfig.hasApiKey
-                ? "bg-white/[0.04] hover:bg-white/[0.08] text-zinc-200 border-white/[0.08]"
-                : "bg-amber-500/10 hover:bg-amber-500/15 text-amber-200 border-amber-400/25"
+                ? "quick-liquid-btn text-zinc-200 hover:text-white"
+                : "border bg-amber-500/10 hover:bg-amber-500/15 text-amber-200 border-amber-400/25 transition-all"
             }`}
           >
             <span
@@ -2069,10 +2818,10 @@ export default function App() {
               onClick={() => setShowCanvas((v) => !v)}
               aria-pressed={showCanvas}
               title={showCanvas ? "Ocultar Canvas" : `Abrir Canvas: ${activeCanvas.title}`}
-              className={`px-2 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
+              className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer ${
                 showCanvas
-                  ? "bg-sky-500/15 text-sky-200 border-sky-400/35"
-                  : "bg-white/[0.03] text-zinc-300 border-white/[0.08] hover:text-white hover:bg-white/[0.07]"
+                  ? "quick-liquid-btn text-sky-100 !bg-sky-400/[0.10]"
+                  : "quick-liquid-btn text-zinc-200 hover:text-white"
               }`}
             >
               <Table2 className="w-3.5 h-3.5 text-sky-300" />
@@ -2246,148 +2995,29 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Lista de Fuentes de Contexto */}
-              <div className="p-3 border-b border-white/[0.06] space-y-1.5">
-                <div className="flex items-center justify-between text-[10px] text-zinc-500 font-semibold uppercase tracking-wider px-1 pb-1">
-                  <span>Fuentes Activas</span>
-                  <input
-                    ref={contextFileInputRef}
-                    type="file"
-                    accept=".json,.md,.txt,.csv,.yaml,.yml"
-                    className="hidden"
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      e.target.value = "";
-                      if (!file) return;
-                      try {
-                        const text = await file.text();
-                        const newItem: ContextItem = {
-                          id: `ctx_custom_${Date.now()}`,
-                          name: file.name,
-                          type: "catalog",
-                          path: file.name,
-                          pinned: true,
-                          content: text,
-                          isCustom: true,
-                        };
-                        setContextItems((prev) => [...prev, newItem]);
-                        setSelectedContext(newItem);
-                        triggerReadingPulse(`Leyendo ${file.name}...`);
-                      } catch {
-                        // Ignora si no se pudo leer el archivo seleccionado
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => contextFileInputRef.current?.click()}
-                    title="Agregar un archivo local (.json, .md, .txt, .csv) al contexto de Xox"
-                    className="text-zinc-400 hover:text-white flex items-center gap-1 text-[10px] cursor-pointer"
-                  >
-                    <Plus className="w-3 h-3" />
-                    Agregar
-                  </button>
-                </div>
-
-                {contextItems.length === 0 ? (
-                  <div className="px-2 py-3 rounded-xl border border-dashed border-white/[0.06] text-[11px] text-zinc-500 text-center">
-                    Cargando archivos locales…
-                  </div>
-                ) : (
-                  contextItems.map((item) => {
-                    const isSelected = selectedContext?.id === item.id;
-                    const friendlyLabel = CONTEXT_LABEL[item.type] || item.name;
-                    const tokenCount = estimateTokens(item.content);
-                    return (
-                      <div
-                        key={item.id}
-                        onClick={() => {
-                          setSelectedContext(item);
-                          triggerReadingPulse(`Leyendo ${item.name}...`, 1050);
-                        }}
-                        className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all flex items-center justify-between ${
-                          isSelected
-                            ? "bg-white/[0.08] border-white/20 text-white shadow-sm"
-                            : "bg-white/[0.02] border-white/[0.05] text-zinc-400 hover:border-white/10 hover:text-zinc-200"
-                        }`}
-                      >
-                        <div className="flex items-center space-x-2.5 truncate">
-                          <ContextIcon type={item.type} />
-                          <div className="truncate">
-                            <div className="font-medium text-zinc-200 truncate">{friendlyLabel}</div>
-                            <div className="text-[10px] text-zinc-500 truncate font-mono">{item.name}</div>
-                          </div>
-                        </div>
-                        <div className="flex items-center space-x-1 shrink-0 ml-2">
-                          <span
-                            title="Tokens estimados según el contenido actual"
-                            className="text-[10px] text-zinc-500 font-mono mr-0.5"
-                          >
-                            {formatTokenCount(tokenCount)} tok
-                          </span>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setContextItems((prev) =>
-                                prev.map((c) => (c.id === item.id ? { ...c, pinned: !c.pinned } : c))
-                              );
-                            }}
-                            title={item.pinned ? "Incluido siempre en consultas (clic para desfijar)" : "Clic para fijar en consultas"}
-                            className={`p-1 rounded-md transition-colors cursor-pointer ${
-                              item.pinned
-                                ? "text-zinc-200 hover:text-white bg-white/[0.06]"
-                                : "text-zinc-600 hover:text-zinc-300"
-                            }`}
-                          >
-                            <Pin className="w-3 h-3" />
-                          </button>
-                          {item.isCustom && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setContextItems((prev) => prev.filter((c) => c.id !== item.id));
-                                setSelectedContext((curr) => (curr?.id === item.id ? null : curr));
-                              }}
-                              title="Quitar archivo"
-                              className="p-1 rounded-md text-zinc-500 hover:text-red-400 transition-colors cursor-pointer"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-
-              {/* Inspector de Archivo Seleccionado */}
-              <div className="flex-1 flex flex-col overflow-hidden bg-black/30">
-                {selectedContext ? (
-                  <>
-                    <div className="px-3.5 py-2 border-b border-white/[0.05] bg-[#0a0b10] flex items-center justify-between text-xs">
-                      <span className="font-medium text-zinc-300 flex items-center gap-1.5 truncate">
-                        <Eye className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-                        <span className="truncate">{CONTEXT_LABEL[selectedContext.type] || selectedContext.name}</span>
-                      </span>
-                      <span className="text-[10px] font-mono text-zinc-500 uppercase shrink-0">
-                        {selectedContext.type}
-                      </span>
-                    </div>
-                    <div className="flex-1 p-3 overflow-y-auto">
-                      <pre className="text-[11px] font-mono text-zinc-300 bg-black/60 p-3 rounded-xl border border-white/[0.05] overflow-x-auto whitespace-pre-wrap leading-relaxed">
-                        {selectedContext.content}
-                      </pre>
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex-1 flex items-center justify-center text-xs text-zinc-500 p-6 text-center">
-                    Selecciona una fuente de contexto para inspeccionar su configuración.
-                  </div>
-                )}
-              </div>
+              {/* Árbol Real del Espacio de Trabajo + Inspector/Editor */}
+              <WorkspaceTreePanel
+                isTauriEnv={isTauriEnv}
+                overview={workspaceOverview}
+                selectedPath={selectedWorkspaceFile?.relativePath ?? null}
+                pinnedPaths={pinnedWorkspacePaths}
+                highlightedPath={highlightedWorkspacePath}
+                isLoading={workspaceLoading}
+                onSelectFile={handleSelectWorkspaceFile}
+                onTogglePinFile={handleTogglePinWorkspaceFile}
+                onRefresh={handleRefreshWorkspace}
+                onOpenFinder={(rel) => void openWorkspaceFolder(rel)}
+                onCreateFolder={handleCreateWorkspaceFolder}
+                onCreateWorkspace={handleCreateNewWorkspace}
+                onSwitchWorkspace={handleSwitchActiveWorkspace}
+                onRenameWorkspace={handleRenameActiveWorkspace}
+                selectedFile={selectedWorkspaceFile}
+                onSaveFileContent={handleSaveWorkspaceFile}
+                onStatusNotice={(msg) => {
+                  setStatusMessage(msg);
+                  setTimeout(() => setStatusMessage((curr) => (curr === msg ? null : curr)), 4000);
+                }}
+              />
                 </>
               ) : (
                 <div className="flex-1 flex flex-col overflow-hidden">
@@ -2517,9 +3147,12 @@ export default function App() {
                 <span className="text-zinc-400 font-medium flex items-center gap-1 shrink-0">
                   <Check className="w-3 h-3 text-emerald-400" />{" "}
                   {leftTab === "context"
-                    ? `${contextItems.length} ${
-                        contextItems.length === 1 ? "archivo" : "archivos"
-                      }`
+                    ? (() => {
+                        const fileCount = workspaceOverview
+                          ? workspaceOverview.entries.filter((e) => e.kind === "file").length
+                          : contextItems.length;
+                        return `${fileCount} ${fileCount === 1 ? "archivo" : "archivos"}`;
+                      })()
                     : `${conversations.length} ${
                         conversations.length === 1 ? "chat" : "chats"
                       }`}
@@ -2601,7 +3234,7 @@ export default function App() {
                       setLeftTab("chats");
                     }}
                     title="Ver historial de conversaciones"
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.07] text-[11px] text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                    className="quick-liquid-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] text-zinc-200 hover:text-white cursor-pointer"
                   >
                     <MessageSquare className="w-3 h-3" />
                     <span className="hidden sm:inline">Chats</span>
@@ -2612,7 +3245,7 @@ export default function App() {
                     onClick={handleStartNewChat}
                     disabled={isChatStreaming}
                     title="Nueva conversación"
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.07] text-[11px] text-zinc-300 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="quick-liquid-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] text-zinc-200 hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <SquarePen className="w-3 h-3" />
                     <span className="hidden sm:inline">Nueva</span>
@@ -2727,9 +3360,9 @@ export default function App() {
                         onClick={() =>
                           runPromptQuery("Evalúa el stock urgente del almacén y propón qué hacer")
                         }
-                        className="group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                        className="quick-liquid-btn group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs text-zinc-200 hover:text-white cursor-pointer"
                       >
-                        <Sparkles className="w-3 h-3 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
+                        <Sparkles className="w-3 h-3 text-sky-100/70 group-hover:text-sky-100 transition-colors" />
                         <span>Evaluar stock urgente</span>
                       </button>
 
@@ -2740,9 +3373,9 @@ export default function App() {
                             "Crea un temporizador de 15 minutos para confirmar recepción de mercancía"
                           )
                         }
-                        className="group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                        className="quick-liquid-btn group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs text-zinc-200 hover:text-white cursor-pointer"
                       >
-                        <Sparkles className="w-3 h-3 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
+                        <Sparkles className="w-3 h-3 text-sky-100/70 group-hover:text-sky-100 transition-colors" />
                         <span>Crear timer de 15 min</span>
                       </button>
 
@@ -2753,9 +3386,9 @@ export default function App() {
                             "Genera una tabla comparativa en Canvas de nuestros proveedores de café considerando costo, tiempo de entrega y margen"
                           )
                         }
-                        className="group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                        className="quick-liquid-btn group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs text-zinc-200 hover:text-white cursor-pointer"
                       >
-                        <Table2 className="w-3 h-3 text-sky-400/80 group-hover:text-sky-300 transition-colors" />
+                        <Table2 className="w-3 h-3 text-sky-200/85 group-hover:text-sky-100 transition-colors" />
                         <span>Tabla comparativa</span>
                       </button>
 
@@ -2774,9 +3407,9 @@ export default function App() {
                           onClick={() =>
                             runPromptQuery("Organiza y resume mis tareas pendientes en tarjetas")
                           }
-                          className="group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                          className="quick-liquid-btn group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs text-zinc-200 hover:text-white cursor-pointer"
                         >
-                          <Sparkles className="w-3 h-3 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
+                          <Sparkles className="w-3 h-3 text-sky-100/70 group-hover:text-sky-100 transition-colors" />
                           <span>Consolidar tareas</span>
                         </button>
                       )}
@@ -2838,6 +3471,10 @@ export default function App() {
                     }}
                     onRegenerateMessage={(msgId) => void handleRegenerateMessage(msgId)}
                     onRateMessage={handleRateMessage}
+                    permissionItems={permissionItems}
+                    onResolvePermission={(reqId, decision) =>
+                      void handleResolvePermission(reqId, decision)
+                    }
                   />
                 </div>
               )}
@@ -2948,7 +3585,7 @@ export default function App() {
                       onClick={() => fileInputRef.current?.click()}
                       title="Adjuntar archivos"
                       aria-label="Adjuntar archivos"
-                      className="shrink-0 mb-0.5 w-8 h-8 rounded-full flex items-center justify-center bg-white/[0.05] border border-white/[0.08] text-zinc-300 hover:text-white hover:bg-white/[0.1] transition-all active:scale-95 cursor-pointer"
+                      className="quick-liquid-btn shrink-0 mb-0.5 w-8 h-8 rounded-full flex items-center justify-center text-zinc-200 hover:text-white active:scale-95 cursor-pointer"
                     >
                       <Plus className="w-4 h-4" />
                     </button>
@@ -2983,11 +3620,11 @@ export default function App() {
                         }}
                         aria-haspopup="listbox"
                         aria-expanded={showModelMenu}
-                        className="h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2 rounded-full text-[11px] text-zinc-300 hover:text-white bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.06] transition-colors cursor-pointer"
+                        className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] text-zinc-200 hover:text-white cursor-pointer"
                       >
-                        <Cpu className="w-3 h-3 text-zinc-400" />
+                        <Cpu className="w-3 h-3 text-sky-100/75" />
                         <span className="hidden @sm:inline">{activeModel.name}</span>
-                        <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${showModelMenu ? "rotate-180" : ""}`} />
+                        <ChevronDown className={`w-3 h-3 text-white/65 transition-transform ${showModelMenu ? "rotate-180" : ""}`} />
                       </button>
                       {modelMenuPresence.mounted && (
                         <div
@@ -3085,7 +3722,11 @@ export default function App() {
                     <button
                       type="submit"
                       disabled={!inputPrompt.trim() || isChatStreaming}
-                      className="shrink-0 mb-0.5 bg-white hover:bg-zinc-200 disabled:opacity-30 disabled:hover:bg-white text-zinc-950 p-2 rounded-xl transition-all active:scale-95 cursor-pointer shadow-md disabled:cursor-not-allowed"
+                      className={`shrink-0 mb-0.5 w-8 h-8 rounded-full flex items-center justify-center ${
+                        !inputPrompt.trim() || isChatStreaming
+                          ? "quick-liquid-btn text-zinc-200/70 cursor-not-allowed"
+                          : "quick-liquid-btn-ready active:scale-95 cursor-pointer"
+                      }`}
                       title="Enviar instrucción (Enter)"
                     >
                       <Send className="w-3.5 h-3.5" />
@@ -3105,10 +3746,10 @@ export default function App() {
                         aria-expanded={showContextMenu}
                         aria-label="Seleccionar contexto"
                         title="Adjuntar contexto al mensaje"
-                        className={`h-7 inline-flex items-center gap-1.5 pl-2.5 pr-2 rounded-full text-[11px] border transition-colors cursor-pointer ${
+                        className={`quick-liquid-btn h-7 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] cursor-pointer ${
                           activeContextCount > 0 || showContextMenu
-                            ? "bg-white/[0.08] border-white/15 text-white"
-                            : "bg-white/[0.03] hover:bg-white/[0.08] border-white/[0.06] text-zinc-400 hover:text-white"
+                            ? "text-white"
+                            : "text-zinc-300 hover:text-white"
                         }`}
                       >
                         <AtSign className="w-3 h-3 text-zinc-400 shrink-0" />
@@ -3234,6 +3875,8 @@ export default function App() {
                 tasks={tasks}
                 agendaItems={agendaItems}
                 historyItems={historyItems}
+                maxBudgetLimit={workspaceOverview?.profile.maxBudgetPerOrder ?? 25000}
+                currency={workspaceOverview?.profile.currency ?? "MXN"}
                 activeTab={taskTab}
                 onTabChange={setTaskTab}
                 onUpdateParam={handleUpdateTaskParam}
@@ -3249,15 +3892,39 @@ export default function App() {
                 onToggleAgendaAuto={handleToggleAgendaAuto}
                 onCreateQuickTimer={handleCreateQuickTimer}
                 onCreateQuickNote={handleCreateQuickNote}
+                onCreateScheduledEvent={handleCreateScheduledEvent}
                 onTriggerXoxReconstruct={() =>
                   runPromptQuery("Consolida y agrupa las órdenes de inventario")
                 }
+                inventoryCount={inventoryItems.length}
+                latestReview={latestReview}
+                isReviewRunning={isReviewRunning}
+                onRunBusinessReview={() => void handleRunBusinessReview("manual")}
+                onImportInventoryFile={handleImportInventoryFile}
               />
             </div>
           </>
         )}
 
       </div>
+
+      <ClarificationModal
+        isOpen={Boolean(activeClarification)}
+        clarification={activeClarification}
+        onClose={() => setActiveClarification(null)}
+        onSubmit={(formattedReply) => {
+          const clarificationId = activeClarification?.id;
+          const cleanedMessages = chatMessagesRef.current.map((m) =>
+            m.actionButton?.kind === "open_clarification" &&
+            (!clarificationId || m.actionButton.clarification?.id === clarificationId)
+              ? { ...m, actionButton: undefined }
+              : m
+          );
+          setChatMessages(cleanedMessages);
+          setActiveClarification(null);
+          void runPromptQuery(formattedReply, cleanedMessages);
+        }}
+      />
 
       <OpenRouterSettingsModal
         isOpen={showAiSettings}
@@ -3289,18 +3956,11 @@ export default function App() {
       <LocalAuthModal
         isOpen={showLocalAuth}
         user={localUser}
-        defaultStoreName={(() => {
-          const prof = contextItems.find((c) => c.name === "store-profile.json");
-          if (prof) {
-            try {
-              const parsed = JSON.parse(prof.content) as { company_name?: string };
-              if (parsed.company_name?.trim()) return parsed.company_name.trim();
-            } catch {
-              // Ignorar
-            }
-          }
-          return "Tienda Xook";
-        })()}
+        defaultStoreName={
+          workspaceOverview?.profile.companyName ||
+          localUser?.storeName ||
+          "Mi Empresa"
+        }
         onClose={() => setShowLocalAuth(false)}
         onUserUpdated={(updatedUser) => {
           setLocalUser(updatedUser);

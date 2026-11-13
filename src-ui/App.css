@@ -172,6 +172,7 @@
     border-color 0.2s ease,
     box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1),
     background 0.2s ease;
+  animation: xook-card-enter 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .xook-task-card:hover {
@@ -609,16 +610,16 @@ html[data-window-mode="quick"] body {
   position: relative;
   background: linear-gradient(
     170deg,
-    rgba(22, 32, 52, 0.34) 0%,
-    rgba(10, 15, 26, 0.45) 52%,
-    rgba(14, 22, 38, 0.36) 100%
+    rgba(22, 32, 52, 0.28) 0%,
+    rgba(10, 15, 26, 0.37) 52%,
+    rgba(14, 22, 38, 0.29) 100%
   );
   box-shadow:
-    inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.34),
-    inset 0 -1px 1.5px 0 rgba(186, 230, 253, 0.16),
-    inset 0 12px 20px -14px rgba(255, 255, 255, 0.18),
-    0 10px 22px -10px rgba(0, 0, 0, 0.45),
-    0 2px 6px -2px rgba(0, 0, 0, 0.25);
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.17),
+    inset 0 -1px 1px 0 rgba(186, 230, 253, 0.08),
+    inset 0 10px 18px -14px rgba(255, 255, 255, 0.11),
+    0 12px 26px -10px rgba(0, 0, 0, 0.46),
+    0 2px 6px -2px rgba(0, 0, 0, 0.22);
   transform-origin: 50% 45%;
   transition:
     background 0.22s ease,
@@ -629,15 +630,21 @@ html[data-window-mode="quick"] body {
 
 .quick-capsule-shell.is-expanded {
   border-radius: 28px;
+  background: linear-gradient(
+    170deg,
+    rgba(18, 27, 44, 0.36) 0%,
+    rgba(9, 14, 24, 0.45) 52%,
+    rgba(12, 19, 34, 0.37) 100%
+  );
   box-shadow:
-    inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.42),
-    inset 0 -1px 1.5px 0 rgba(186, 230, 253, 0.24),
-    inset 0 14px 24px -14px rgba(255, 255, 255, 0.22),
-    0 14px 28px -10px rgba(0, 0, 0, 0.52),
-    0 4px 10px -2px rgba(56, 189, 248, 0.14);
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.20),
+    inset 0 -1px 1px 0 rgba(186, 230, 253, 0.11),
+    inset 0 12px 22px -14px rgba(255, 255, 255, 0.12),
+    0 16px 32px -10px rgba(0, 0, 0, 0.52),
+    0 4px 10px -2px rgba(56, 189, 248, 0.10);
 }
 
-/* Borde Fresnel prismático (refracción limpia del cristal líquido con sutil matiz aurora) */
+/* Borde Fresnel prismático sutil de cristal óptico (sin trazos blancos rígidos) */
 .quick-capsule-shell::before {
   content: "";
   position: absolute;
@@ -646,12 +653,11 @@ html[data-window-mode="quick"] body {
   padding: 1px;
   background: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.64) 0%,
-    rgba(224, 242, 254, 0.28) 22%,
-    rgba(94, 234, 212, 0.14) 46%,
-    rgba(244, 114, 182, 0.16) 68%,
-    rgba(167, 139, 250, 0.22) 84%,
-    rgba(255, 255, 255, 0.48) 100%
+    rgba(255, 255, 255, 0.25) 0%,
+    rgba(224, 242, 254, 0.11) 24%,
+    rgba(196, 181, 253, 0.07) 52%,
+    rgba(125, 211, 252, 0.08) 76%,
+    rgba(255, 255, 255, 0.16) 100%
   );
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
@@ -664,29 +670,29 @@ html[data-window-mode="quick"] body {
 .quick-capsule-shell:focus-within {
   background: linear-gradient(
     170deg,
-    rgba(24, 36, 58, 0.38) 0%,
-    rgba(10, 16, 28, 0.48) 52%,
-    rgba(16, 26, 44, 0.39) 100%
+    rgba(24, 36, 58, 0.34) 0%,
+    rgba(10, 16, 28, 0.43) 52%,
+    rgba(16, 26, 44, 0.35) 100%
   );
   box-shadow:
-    inset 0 1px 2px 0 rgba(255, 255, 255, 0.42),
-    inset 0 -1px 2px 0 rgba(125, 211, 252, 0.24),
-    inset 0 14px 22px -14px rgba(224, 242, 254, 0.22),
-    0 12px 26px -10px rgba(0, 0, 0, 0.48),
-    0 3px 8px -2px rgba(0, 0, 0, 0.28);
+    inset 0 1px 1.25px 0 rgba(255, 255, 255, 0.21),
+    inset 0 -1px 1.25px 0 rgba(125, 211, 252, 0.12),
+    inset 0 12px 20px -14px rgba(224, 242, 254, 0.13),
+    0 14px 28px -10px rgba(0, 0, 0, 0.48),
+    0 3px 8px -2px rgba(0, 0, 0, 0.26);
 }
 
 .quick-capsule-shell.is-dragging {
   background: linear-gradient(
     170deg,
-    rgba(26, 40, 66, 0.32) 0%,
-    rgba(11, 18, 32, 0.42) 52%,
-    rgba(16, 28, 48, 0.34) 100%
+    rgba(26, 40, 66, 0.30) 0%,
+    rgba(11, 18, 32, 0.39) 52%,
+    rgba(16, 28, 48, 0.31) 100%
   );
   box-shadow:
-    inset 0 1.5px 2px 0 rgba(255, 255, 255, 0.52),
-    inset 0 -1.5px 2px 0 rgba(125, 211, 252, 0.32),
-    inset 0 16px 24px -14px rgba(224, 242, 254, 0.28),
+    inset 0 1.25px 1.5px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1.25px 1.5px 0 rgba(125, 211, 252, 0.18),
+    inset 0 14px 22px -14px rgba(224, 242, 254, 0.17),
     0 16px 30px -10px rgba(0, 0, 0, 0.52),
     0 4px 10px -2px rgba(0, 0, 0, 0.3);
 }
@@ -694,12 +700,11 @@ html[data-window-mode="quick"] body {
 .quick-capsule-shell.is-dragging::before {
   background: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.80) 0%,
-    rgba(224, 242, 254, 0.44) 22%,
-    rgba(94, 234, 212, 0.24) 46%,
-    rgba(251, 113, 133, 0.22) 68%,
-    rgba(167, 139, 250, 0.34) 84%,
-    rgba(255, 255, 255, 0.60) 100%
+    rgba(255, 255, 255, 0.36) 0%,
+    rgba(224, 242, 254, 0.17) 24%,
+    rgba(94, 234, 212, 0.11) 48%,
+    rgba(196, 181, 253, 0.15) 76%,
+    rgba(255, 255, 255, 0.24) 100%
   );
 }
 
@@ -713,20 +718,20 @@ html[data-window-mode="quick"] body {
   animation-play-state: paused !important;
 }
 
-/* Botones y menú desplegable Liquid Glass dentro de la Quick Bar */
+/* Botones y menú desplegable Liquid Glass cristalino (translúcidos y sin bordes blancos duros) */
 .quick-liquid-btn {
   position: relative;
   background: linear-gradient(
-    175deg,
-    rgba(255, 255, 255, 0.16) 0%,
-    rgba(186, 230, 253, 0.07) 44%,
-    rgba(12, 18, 32, 0.22) 100%
+    170deg,
+    rgba(255, 255, 255, 0.10) 0%,
+    rgba(224, 242, 254, 0.04) 48%,
+    rgba(196, 181, 253, 0.025) 100%
   );
   box-shadow:
-    inset 0 1px 1px 0 rgba(255, 255, 255, 0.44),
-    inset 0 -1px 1px 0 rgba(125, 211, 252, 0.18),
-    inset 0 6px 10px -6px rgba(255, 255, 255, 0.24),
-    0 2px 6px -2px rgba(0, 0, 0, 0.32);
+    inset 0 1px 0.75px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0.75px 0 rgba(196, 181, 253, 0.08),
+    inset 0 5px 9px -6px rgba(255, 255, 255, 0.13),
+    0 2px 6px -2px rgba(0, 0, 0, 0.24);
   transition:
     background 0.18s ease,
     box-shadow 0.18s ease,
@@ -741,11 +746,11 @@ html[data-window-mode="quick"] body {
   border-radius: inherit;
   padding: 1px;
   background: linear-gradient(
-    140deg,
-    rgba(255, 255, 255, 0.64) 0%,
-    rgba(186, 230, 253, 0.28) 36%,
-    rgba(244, 114, 182, 0.18) 72%,
-    rgba(255, 255, 255, 0.46) 100%
+    145deg,
+    rgba(255, 255, 255, 0.26) 0%,
+    rgba(224, 242, 254, 0.10) 36%,
+    rgba(196, 181, 253, 0.07) 72%,
+    rgba(255, 255, 255, 0.14) 100%
   );
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
@@ -756,16 +761,16 @@ html[data-window-mode="quick"] body {
 .quick-liquid-btn:hover:not(:disabled),
 .quick-liquid-btn[aria-expanded="true"] {
   background: linear-gradient(
-    175deg,
-    rgba(255, 255, 255, 0.24) 0%,
-    rgba(224, 242, 254, 0.12) 46%,
-    rgba(16, 24, 42, 0.26) 100%
+    170deg,
+    rgba(255, 255, 255, 0.17) 0%,
+    rgba(224, 242, 254, 0.08) 48%,
+    rgba(196, 181, 253, 0.05) 100%
   );
   box-shadow:
-    inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.56),
-    inset 0 -1px 1.5px 0 rgba(186, 230, 253, 0.28),
-    inset 0 7px 12px -6px rgba(255, 255, 255, 0.3),
-    0 4px 10px -3px rgba(0, 0, 0, 0.38);
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.34),
+    inset 0 -1px 1px 0 rgba(196, 181, 253, 0.14),
+    inset 0 7px 12px -6px rgba(255, 255, 255, 0.20),
+    0 4px 10px -3px rgba(0, 0, 0, 0.28);
 }
 
 .quick-liquid-btn:active:not(:disabled) {
@@ -773,22 +778,22 @@ html[data-window-mode="quick"] body {
 }
 
 .quick-liquid-btn:disabled {
-  opacity: 0.72;
+  opacity: 0.62;
 }
 
 .quick-liquid-btn-ready {
   position: relative;
   background: linear-gradient(
-    165deg,
-    rgba(255, 255, 255, 0.94) 0%,
-    rgba(224, 242, 254, 0.84) 55%,
-    rgba(186, 230, 253, 0.76) 100%
+    160deg,
+    rgba(255, 255, 255, 0.88) 0%,
+    rgba(224, 242, 254, 0.78) 54%,
+    rgba(196, 181, 253, 0.70) 100%
   );
   color: #090d16;
   box-shadow:
-    inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.98),
-    inset 0 -1.5px 2px 0 rgba(56, 189, 248, 0.34),
-    0 4px 12px -2px rgba(125, 211, 252, 0.42);
+    inset 0 1px 1.25px 0 rgba(255, 255, 255, 0.92),
+    inset 0 -1.5px 2px 0 rgba(125, 211, 252, 0.28),
+    0 4px 12px -2px rgba(186, 230, 253, 0.32);
   transition:
     background 0.18s ease,
     box-shadow 0.18s ease,
@@ -797,28 +802,28 @@ html[data-window-mode="quick"] body {
 
 .quick-liquid-btn-ready:hover {
   background: linear-gradient(
-    165deg,
-    rgba(255, 255, 255, 1) 0%,
-    rgba(224, 242, 254, 0.94) 60%,
-    rgba(186, 230, 253, 0.88) 100%
+    160deg,
+    rgba(255, 255, 255, 0.96) 0%,
+    rgba(224, 242, 254, 0.88) 58%,
+    rgba(196, 181, 253, 0.80) 100%
   );
   box-shadow:
-    inset 0 1px 1.5px 0 rgba(255, 255, 255, 1),
-    inset 0 -1.5px 2px 0 rgba(56, 189, 248, 0.42),
-    0 6px 14px -2px rgba(125, 211, 252, 0.52);
+    inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.98),
+    inset 0 -1.5px 2px 0 rgba(125, 211, 252, 0.36),
+    0 6px 14px -2px rgba(186, 230, 253, 0.42);
 }
 
 .quick-liquid-menu {
   background: linear-gradient(
     170deg,
-    rgba(22, 32, 52, 0.46) 0%,
-    rgba(10, 15, 26, 0.58) 54%,
-    rgba(16, 22, 38, 0.48) 100%
+    rgba(20, 29, 48, 0.42) 0%,
+    rgba(10, 15, 26, 0.52) 54%,
+    rgba(15, 21, 36, 0.44) 100%
   );
   box-shadow:
-    inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.38),
-    inset 0 -1px 1.5px 0 rgba(186, 230, 253, 0.18),
-    inset 0 10px 18px -12px rgba(255, 255, 255, 0.18),
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.20),
+    inset 0 -1px 1px 0 rgba(186, 230, 253, 0.10),
+    inset 0 10px 18px -12px rgba(255, 255, 255, 0.12),
     0 12px 26px -8px rgba(0, 0, 0, 0.48);
 }
 
@@ -830,11 +835,11 @@ html[data-window-mode="quick"] body {
   padding: 1px;
   background: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.62) 0%,
-    rgba(224, 242, 254, 0.28) 26%,
-    rgba(94, 234, 212, 0.14) 50%,
-    rgba(244, 114, 182, 0.18) 74%,
-    rgba(255, 255, 255, 0.46) 100%
+    rgba(255, 255, 255, 0.28) 0%,
+    rgba(224, 242, 254, 0.12) 28%,
+    rgba(196, 181, 253, 0.08) 56%,
+    rgba(244, 114, 182, 0.09) 76%,
+    rgba(255, 255, 255, 0.17) 100%
   );
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
@@ -855,42 +860,42 @@ html[data-window-mode="quick"] body {
 .quick-liquid-option:hover {
   background: linear-gradient(
     170deg,
-    rgba(255, 255, 255, 0.12) 0%,
-    rgba(186, 230, 253, 0.05) 100%
+    rgba(255, 255, 255, 0.10) 0%,
+    rgba(186, 230, 253, 0.04) 100%
   );
-  border-color: rgba(255, 255, 255, 0.16);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  border-color: rgba(255, 255, 255, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
 .quick-liquid-option.is-selected {
   background: linear-gradient(
     165deg,
-    rgba(255, 255, 255, 0.18) 0%,
-    rgba(125, 211, 252, 0.09) 55%,
-    rgba(244, 114, 182, 0.07) 100%
+    rgba(255, 255, 255, 0.13) 0%,
+    rgba(125, 211, 252, 0.07) 55%,
+    rgba(196, 181, 253, 0.06) 100%
   );
-  border-color: rgba(224, 242, 254, 0.28);
+  border-color: rgba(224, 242, 254, 0.16);
   box-shadow:
-    inset 0 1px 1px 0 rgba(255, 255, 255, 0.36),
-    inset 0 -1px 1px 0 rgba(125, 211, 252, 0.14),
-    0 2px 8px -2px rgba(0, 0, 0, 0.32);
+    inset 0 1px 0.75px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0.75px 0 rgba(125, 211, 252, 0.10),
+    0 2px 8px -2px rgba(0, 0, 0, 0.26);
 }
 
-/* Cápsulas e insignias de iconos estilo Liquid Glass (sin filter/backdrop-filter para WKWebView) */
+/* Cápsulas e insignias de iconos estilo cristal líquido (sin filter/backdrop-filter para WKWebView) */
 .quick-liquid-icon {
   position: relative;
   background: linear-gradient(
-    155deg,
-    rgba(255, 255, 255, 0.24) 0%,
-    rgba(224, 242, 254, 0.11) 46%,
-    rgba(196, 181, 253, 0.13) 100%
+    150deg,
+    rgba(255, 255, 255, 0.12) 0%,
+    rgba(224, 242, 254, 0.05) 48%,
+    rgba(196, 181, 253, 0.07) 100%
   );
   box-shadow:
-    inset 0 1px 1px 0 rgba(255, 255, 255, 0.56),
-    inset 0 -1px 1px 0 rgba(196, 181, 253, 0.26),
-    inset 0 5px 8px -5px rgba(255, 255, 255, 0.28),
-    0 2px 6px -2px rgba(0, 0, 0, 0.32);
-  color: rgba(248, 250, 252, 0.96);
+    inset 0 1px 0.75px 0 rgba(255, 255, 255, 0.26),
+    inset 0 -1px 0.75px 0 rgba(196, 181, 253, 0.12),
+    inset 0 4px 7px -5px rgba(255, 255, 255, 0.16),
+    0 2px 5px -2px rgba(0, 0, 0, 0.24);
+  color: rgba(248, 250, 252, 0.94);
 }
 
 .quick-liquid-icon::before {
@@ -901,10 +906,10 @@ html[data-window-mode="quick"] body {
   padding: 1px;
   background: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.74) 0%,
-    rgba(224, 242, 254, 0.34) 36%,
-    rgba(196, 181, 253, 0.34) 72%,
-    rgba(255, 255, 255, 0.52) 100%
+    rgba(255, 255, 255, 0.28) 0%,
+    rgba(224, 242, 254, 0.11) 38%,
+    rgba(196, 181, 253, 0.13) 72%,
+    rgba(255, 255, 255, 0.15) 100%
   );
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
@@ -918,23 +923,23 @@ html[data-window-mode="quick"] body {
   position: relative;
   background: linear-gradient(
     170deg,
-    rgba(255, 255, 255, 0.085) 0%,
-    rgba(186, 230, 253, 0.032) 38%,
-    rgba(14, 20, 36, 0.24) 100%
+    rgba(255, 255, 255, 0.065) 0%,
+    rgba(186, 230, 253, 0.024) 38%,
+    rgba(14, 20, 36, 0.20) 100%
   );
   box-shadow:
-    inset 0 1px 1px 0 rgba(255, 255, 255, 0.28),
-    inset 0 -1px 1px 0 rgba(196, 181, 253, 0.16),
-    inset 0 12px 24px -16px rgba(255, 255, 255, 0.16),
-    0 6px 18px -6px rgba(0, 0, 0, 0.34);
+    inset 0 1px 0.75px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0.75px 0 rgba(196, 181, 253, 0.09),
+    inset 0 12px 24px -16px rgba(255, 255, 255, 0.11),
+    0 6px 18px -6px rgba(0, 0, 0, 0.32);
 }
 
 .xook-liquid-table {
   background: linear-gradient(
     170deg,
-    rgba(255, 255, 255, 0.065) 0%,
-    rgba(196, 181, 253, 0.028) 42%,
-    rgba(10, 14, 26, 0.48) 100%
+    rgba(255, 255, 255, 0.055) 0%,
+    rgba(196, 181, 253, 0.024) 42%,
+    rgba(10, 14, 26, 0.45) 100%
   );
 }
 
@@ -947,10 +952,10 @@ html[data-window-mode="quick"] body {
   padding: 1px;
   background: linear-gradient(
     140deg,
-    rgba(255, 255, 255, 0.48) 0%,
-    rgba(224, 242, 254, 0.20) 34%,
-    rgba(196, 181, 253, 0.24) 68%,
-    rgba(255, 255, 255, 0.34) 100%
+    rgba(255, 255, 255, 0.22) 0%,
+    rgba(224, 242, 254, 0.09) 34%,
+    rgba(196, 181, 253, 0.11) 68%,
+    rgba(255, 255, 255, 0.14) 100%
   );
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
@@ -963,25 +968,25 @@ html[data-window-mode="quick"] body {
 .xook-liquid-table-head {
   background: linear-gradient(
     180deg,
-    rgba(28, 38, 60, 0.56) 0%,
-    rgba(18, 26, 44, 0.44) 100%
+    rgba(28, 38, 60, 0.48) 0%,
+    rgba(18, 26, 44, 0.36) 100%
   );
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    inset 0 -1px 0 rgba(224, 242, 254, 0.14);
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(224, 242, 254, 0.08);
 }
 
 .xook-liquid-table-head {
   background: linear-gradient(
     180deg,
-    rgba(24, 32, 52, 0.68) 0%,
-    rgba(14, 20, 34, 0.58) 100%
+    rgba(24, 32, 52, 0.64) 0%,
+    rgba(14, 20, 34, 0.54) 100%
   );
 }
 
 .quick-liquid-table-head th,
 .xook-liquid-table-head th {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 /* Filas de tabla con iluminación iris/cristal al pasar el cursor (sin bordes verdes) */
@@ -1057,8 +1062,8 @@ html[data-window-mode="quick"] body {
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(224, 242, 254, 0.95),
-    rgba(125, 211, 252, 0.72),
+    rgba(224, 242, 254, 0.52),
+    rgba(125, 211, 252, 0.38),
     transparent
   );
   animation: console-sweep 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -1109,8 +1114,8 @@ html[data-window-mode="quick"] body {
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(224, 242, 254, 0.85),
-    rgba(125, 211, 252, 0.6),
+    rgba(224, 242, 254, 0.44),
+    rgba(125, 211, 252, 0.30),
     transparent
   );
   animation: console-sweep 0.85s cubic-bezier(0.16, 1, 0.3, 1) 0.06s both;
@@ -1157,8 +1162,86 @@ html[data-window-mode="quick"] body {
   animation: xox-mini-blink 5.2s ease-in-out infinite;
 }
 
+/* Micro-animaciones del Workspace Real y Tarjetas */
+@keyframes xook-tree-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.xook-tree-item {
+  animation: xook-tree-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes xook-node-highlight {
+  0% {
+    background-color: rgba(56, 189, 248, 0.16);
+    border-color: rgba(125, 211, 252, 0.45);
+    box-shadow: 0 0 18px -4px rgba(56, 189, 248, 0.32);
+  }
+  100% {
+    background-color: rgba(255, 255, 255, 0.02);
+    border-color: rgba(255, 255, 255, 0.05);
+    box-shadow: none;
+  }
+}
+
+.xook-node-highlight {
+  animation: xook-node-highlight 1.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes xook-save-flash {
+  0% {
+    border-color: rgba(52, 211, 153, 0.65);
+    box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.25), 0 0 18px -4px rgba(16, 185, 129, 0.35);
+  }
+  100% {
+    border-color: rgba(255, 255, 255, 0.05);
+    box-shadow: none;
+  }
+}
+
+.xook-save-flash {
+  animation: xook-save-flash 0.95s ease-out forwards;
+}
+
+@keyframes xook-empty-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+.xook-empty-float {
+  animation: xook-empty-float 4.6s ease-in-out infinite;
+}
+
+@keyframes xook-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.xook-chevron {
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.xook-chevron.is-open {
+  transform: rotate(90deg);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .xox-bubble, .xox-bubble-body, .xox-bubble-text, .xox-bubble-trail, .menu-in, .menu-out, .xox-mini-eye { animation: none; }
+  .xook-tree-item, .xook-node-highlight, .xook-save-flash, .xook-empty-float, .xook-task-card { animation: none; }
+  .xook-chevron { transition: none; }
   .xox-bubble.is-leaving { opacity: 0; }
   .input-bubble, .input-console, .sidebar-slot, .splitter-aurora-glass, .quick-capsule-shell, .quick-liquid-btn, .quick-liquid-btn-ready, .quick-liquid-option, .xook-liquid-row td, .xook-task-card, .xook-approve-btn, .xook-stepper-btn { transition: none; }
   .input-console.is-expanded { transform: none; }

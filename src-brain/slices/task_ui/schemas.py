@@ -49,6 +49,178 @@ class TaskProposalSpec:
     generatedBy: Optional[str] = None
 
 
+def _recover_spread_text(obj: Dict[str, Any]) -> str:
+    """Recupera texto si un string fue propagado accidentalmente como dict {'0':'A','1':'b',...}."""
+    numeric_keys = [k for k in obj.keys() if isinstance(k, str) and k.isdigit()]
+    if len(numeric_keys) < 2:
+        return ""
+    numeric_keys.sort(key=lambda k: int(k))
+    joined = "".join(str(obj.get(k, "")) for k in numeric_keys).strip()
+    return joined
+
+
+def _normalize_checklist_block(blk: Dict[str, Any]) -> Dict[str, Any]:
+    raw_items = blk.get("items") or blk.get("steps") or blk.get("checklist") or []
+    if not isinstance(raw_items, list):
+        raw_items = []
+
+    clean_items: List[Dict[str, Any]] = []
+    seen_ids = set()
+    for idx, it in enumerate(raw_items):
+        raw_id = ""
+        label = ""
+        done = False
+        if isinstance(it, str):
+            label = it.strip()
+        elif isinstance(it, dict):
+            raw_id = str(it.get("id") or "").strip()
+            for k in ("label", "text", "title", "name", "description", "task"):
+                val = it.get(k)
+                if isinstance(val, str) and val.strip():
+                    label = val.strip()
+                    break
+            if not label:
+                label = _recover_spread_text(it)
+            done = bool(it.get("done") if "done" in it else it.get("checked", False))
+
+        if not label:
+            continue
+
+        item_id = raw_id or f"chk_{idx + 1}"
+        if item_id in seen_ids:
+            item_id = f"chk_{idx + 1}_{len(seen_ids) + 1}"
+        seen_ids.add(item_id)
+        clean_items.append({
+            "id": item_id,
+            "label": label,
+            "done": done,
+        })
+
+    out: Dict[str, Any] = {"type": "checklist", "items": clean_items}
+    title = _as_str(blk.get("title"))
+    if title:
+        out["title"] = title
+    return out
+
+
+def _normalize_schedule_block(blk: Dict[str, Any], raw_task: Dict[str, Any]) -> Dict[str, Any]:
+    mode = _as_str(blk.get("mode")).lower()
+    time_label = _as_str(
+        blk.get("timeLabel")
+        or blk.get("time_label")
+        or blk.get("time")
+        or blk.get("startTime")
+        or blk.get("hour")
+    )
+    date_label = _as_str(
+        blk.get("dateLabel")
+        or blk.get("date_label")
+        or blk.get("date")
+        or blk.get("day")
+    )
+    recurrence = _as_str(blk.get("recurrence") or blk.get("repeat"))
+    auto_trigger = _as_str(blk.get("autoTriggerLabel") or blk.get("auto_trigger_label"))
+    duration_seconds = blk.get("durationSeconds")
+    if duration_seconds is None and isinstance(blk.get("durationMinutes"), (int, float)):
+        duration_seconds = int(blk["durationMinutes"]) * 60
+
+    raw_items = blk.get("items")
+    if isinstance(raw_items, list) and raw_items:
+        step_parts: List[str] = []
+        last_time = ""
+        for entry in raw_items:
+            if isinstance(entry, dict):
+                t = _as_str(entry.get("time") or entry.get("hour") or entry.get("timeLabel"))
+                lbl = _as_str(entry.get("label") or entry.get("text") or entry.get("title"))
+                if t:
+                    last_time = t
+                if t and lbl:
+                    step_parts.append(f"{t} {lbl}")
+                elif lbl:
+                    step_parts.append(lbl)
+            elif isinstance(entry, str) and entry.strip():
+                step_parts.append(entry.strip())
+
+        if not time_label:
+            time_label = last_time or _as_str(raw_task.get("statusChip")) or _as_str(blk.get("title"))
+        if not date_label:
+            date_label = _as_str(blk.get("title"))
+        if not auto_trigger and step_parts:
+            auto_trigger = " · ".join(step_parts)
+
+    if not time_label:
+        time_label = _as_str(raw_task.get("statusChip")) or "Por confirmar"
+
+    if mode not in ("timer", "alarm", "recurring", "auto"):
+        if isinstance(duration_seconds, (int, float)) and raw_task.get("category") == "reloj":
+            mode = "timer"
+        elif recurrence:
+            mode = "recurring"
+        elif blk.get("autoSchedule"):
+            mode = "auto"
+        else:
+            mode = "alarm"
+
+    out: Dict[str, Any] = {
+        "type": "schedule",
+        "mode": mode,
+        "timeLabel": time_label,
+    }
+    if date_label:
+        out["dateLabel"] = date_label
+    if isinstance(duration_seconds, (int, float)):
+        out["durationSeconds"] = int(duration_seconds)
+    if recurrence:
+        out["recurrence"] = recurrence
+    if "autoSchedule" in blk:
+        out["autoSchedule"] = bool(blk["autoSchedule"])
+    if auto_trigger:
+        out["autoTriggerLabel"] = auto_trigger
+    return out
+
+
+def _has_explicit_countdown_text(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b\d+\s*(?:min|mins|minuto|minutos|seg|segs|segundo|segundos)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _has_calendar_or_clock_cue(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:mañana|pasado\s+mañana|hoy|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b|\ba\s+las\s+\d{1,2}\b|\b(?:[01]?\d|2[0-3]):[0-5]\d\b|\b\d{1,2}\s*(?:hrs|a\.m\.|p\.m\.|am|pm)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _normalize_task_block(blk: Dict[str, Any], raw_task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    btype = blk.get("type")
+    if btype not in ALLOWED_BLOCK_TYPES:
+        return None
+    if btype == "checklist":
+        return _normalize_checklist_block(blk)
+    if btype == "schedule":
+        return _normalize_schedule_block(blk, raw_task)
+    if btype == "note":
+        content = _as_str(blk.get("content") or blk.get("text") or blk.get("body"))
+        tags = blk.get("tags") if isinstance(blk.get("tags"), list) else []
+        out: Dict[str, Any] = {"type": "note", "content": content}
+        clean_tags = [str(t).strip() for t in tags if str(t).strip()]
+        if clean_tags:
+            out["tags"] = clean_tags
+        return out
+    if btype == "insight":
+        text = _as_str(blk.get("text") or blk.get("content") or blk.get("summary"))
+        return {"type": "insight", "text": text}
+    return blk
+
+
 def sanitize_task_proposal(raw: Dict[str, Any]) -> Dict[str, Any]:
     """
     Valida y filtra cualquier estructura generada por el agente para garantizar
@@ -64,12 +236,52 @@ def sanitize_task_proposal(raw: Dict[str, Any]) -> Dict[str, Any]:
 
     safe_blocks: List[Dict[str, Any]] = []
     for blk in raw.get("blocks", []):
-        if isinstance(blk, dict) and blk.get("type") in ALLOWED_BLOCK_TYPES:
-            safe_blocks.append(blk)
+        if isinstance(blk, dict):
+            normalized_blk = _normalize_task_block(blk, raw)
+            if normalized_blk is not None:
+                safe_blocks.append(normalized_blk)
 
-    return {
+    title = str(raw.get("title", "Propuesta de acción"))
+    raw_intent = dict(raw.get("intent", {})) if isinstance(raw.get("intent"), dict) else {}
+    if not raw_intent.get("type"):
+        raw_intent["type"] = "schedule_event" if category == "agenda" else "apply_rule"
+    if not raw_intent.get("primaryLabel"):
+        raw_intent["primaryLabel"] = "Autorizar"
+    if not raw_intent.get("targetLabel"):
+        raw_intent["targetLabel"] = title
+
+    param_values = dict(raw.get("paramValues", {})) if isinstance(raw.get("paramValues"), dict) else {}
+    if raw_intent.get("type") == "start_timer":
+        param_mins = param_values.get("duration_min")
+        sched_blk = next((b for b in safe_blocks if b.get("type") == "schedule"), None)
+        block_secs = sched_blk.get("durationSeconds") if isinstance(sched_blk, dict) else None
+        has_positive_duration = (isinstance(param_mins, (int, float)) and param_mins > 0) or (
+            isinstance(block_secs, (int, float)) and block_secs > 0
+        )
+        combined_text = " ".join(
+            [
+                title,
+                _as_str(raw.get("subtitle")),
+                _as_str(raw.get("statusChip")),
+                _as_str(sched_blk.get("timeLabel") if isinstance(sched_blk, dict) else ""),
+                _as_str(sched_blk.get("dateLabel") if isinstance(sched_blk, dict) else ""),
+            ]
+        )
+        looks_like_calendar_event = _has_calendar_or_clock_cue(combined_text) and not _has_explicit_countdown_text(combined_text)
+        sched_mode = _as_str(sched_blk.get("mode")) if isinstance(sched_blk, dict) else ""
+        if not has_positive_duration or sched_mode in ("alarm", "recurring", "auto") or looks_like_calendar_event:
+            raw_intent["type"] = "schedule_event"
+            category = "agenda"
+            if "reloj" in _as_str(raw_intent.get("primaryLabel")).lower() or "timer" in _as_str(raw_intent.get("primaryLabel")).lower():
+                raw_intent["primaryLabel"] = "Agendar recordatorio"
+            for b in safe_blocks:
+                if b.get("type") == "schedule":
+                    b["mode"] = "recurring" if b.get("recurrence") else "alarm"
+                    b.pop("durationSeconds", None)
+
+    out: Dict[str, Any] = {
         "cardId": str(raw.get("cardId", "card_gen_01")),
-        "title": str(raw.get("title", "Propuesta de acción")),
+        "title": title,
         "subtitle": raw.get("subtitle"),
         "category": category,
         "urgency": urgency,
@@ -77,9 +289,79 @@ def sanitize_task_proposal(raw: Dict[str, Any]) -> Dict[str, Any]:
         "defaultExpanded": bool(raw.get("defaultExpanded", False)),
         "generatedBy": raw.get("generatedBy"),
         "blocks": safe_blocks,
-        "intent": dict(raw.get("intent", {})),
-        "paramValues": dict(raw.get("paramValues", {})),
+        "intent": raw_intent,
+        "paramValues": param_values,
     }
+    if isinstance(raw.get("dedupKey"), str) and raw.get("dedupKey").strip():
+        out["dedupKey"] = raw["dedupKey"].strip()
+    if isinstance(raw.get("stagingPayload"), dict):
+        out["stagingPayload"] = raw["stagingPayload"]
+    return out
+
+
+ALLOWED_QUESTION_KINDS = frozenset({"choice_or_text", "single", "multi", "text"})
+
+
+def sanitize_clarification(raw: Any) -> Optional[Dict[str, Any]]:
+    """Valida una solicitud estructurada de preguntas abiertas (Open Question) para aclaración HITL."""
+    if not isinstance(raw, dict):
+        return None
+    raw_questions = raw.get("questions") or raw.get("preguntas") or []
+    if not isinstance(raw_questions, list):
+        return None
+
+    clean_questions: List[Dict[str, Any]] = []
+    for idx, q in enumerate(raw_questions[:5]):
+        if not isinstance(q, dict):
+            continue
+        prompt = _as_str(q.get("prompt") or q.get("question") or q.get("label") or q.get("pregunta"))
+        if not prompt:
+            continue
+        q_kind = _as_str(q.get("kind") or q.get("type")).lower()
+        raw_opts = q.get("options") or q.get("opciones") or []
+        clean_opts: List[str] = []
+        if isinstance(raw_opts, list):
+            for opt in raw_opts[:6]:
+                if isinstance(opt, dict):
+                    s = _as_str(opt.get("label") or opt.get("text") or opt.get("value"))
+                else:
+                    s = _as_str(opt)
+                if s and s not in clean_opts:
+                    clean_opts.append(s)
+
+        if q_kind not in ALLOWED_QUESTION_KINDS:
+            q_kind = "choice_or_text" if clean_opts else "text"
+
+        q_id = _as_str(q.get("id")) or f"q_{idx + 1}"
+        placeholder = _as_str(q.get("placeholder")) or "Escribe tu respuesta..."
+        clean_questions.append({
+            "id": q_id,
+            "prompt": prompt,
+            "kind": q_kind,
+            "options": clean_opts,
+            "placeholder": placeholder,
+            "required": bool(q.get("required", True)),
+        })
+
+    if not clean_questions:
+        return None
+
+    title = _as_str(raw.get("title") or raw.get("titulo")) or "Aclaremos algunos detalles"
+    subtitle = _as_str(raw.get("subtitle") or raw.get("subtitulo") or raw.get("description"))
+    original_query = _as_str(raw.get("originalQuery") or raw.get("original_query"))
+    submit_label = _as_str(raw.get("submitLabel") or raw.get("submit_label")) or "Enviar respuestas a Xox"
+
+    out: Dict[str, Any] = {
+        "id": _as_str(raw.get("id")) or f"clarify_{int(datetime.now(timezone.utc).timestamp())}",
+        "title": title,
+        "submitLabel": submit_label,
+        "questions": clean_questions,
+    }
+    if subtitle:
+        out["subtitle"] = subtitle
+    if original_query:
+        out["originalQuery"] = original_query
+    return out
 
 
 ALLOWED_CANVAS_KINDS = frozenset({"comparison", "table", "document"})

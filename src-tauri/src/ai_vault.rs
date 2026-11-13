@@ -172,7 +172,7 @@ fn to_public_config(vault: &StoredAiVault) -> AiConfigPublic {
     }
 }
 
-fn find_sidecar_script<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+pub(crate) fn find_sidecar_script<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join("src-brain").join("main_sidecar.py"));
@@ -190,7 +190,7 @@ fn find_sidecar_script<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String
         .ok_or_else(|| "No se encontró src-brain/main_sidecar.py".to_string())
 }
 
-fn call_python_sidecar(
+pub(crate) fn call_python_sidecar(
     script_path: &PathBuf,
     method: &str,
     params: serde_json::Value,
@@ -345,6 +345,8 @@ pub async fn run_xox_chat<R: Runtime>(
     };
 
     let script = find_sidecar_script(&app)?;
+    let workspace_root = crate::slices::workspace_manager::registry::resolve_active_workspace_root(&app)
+        .map(|p| p.to_string_lossy().to_string());
     let model_id = payload
         .model_override
         .map(|s| s.trim().to_string())
@@ -358,11 +360,13 @@ pub async fn run_xox_chat<R: Runtime>(
             serde_json::json!({
                 "api_key": api_key,
                 "model_id": model_id,
+                "workspace_root": workspace_root,
                 "message": payload.message,
                 "history": payload.history,
                 "current_tasks": payload.current_tasks,
                 "agenda_items": payload.agenda_items,
                 "attached_context": payload.attached_context,
+                "user_profile": payload.user_profile,
                 "active_canvas": payload.active_canvas,
             }),
         )
@@ -371,11 +375,344 @@ pub async fn run_xox_chat<R: Runtime>(
     .map_err(|e| format!("Error de concurrencia: {e}"))?
 }
 
+struct BrokerPendingCleanup<'a> {
+    broker: &'a crate::slices::command_runner::runner::CommandPermissionBroker,
+    request_id: String,
+}
+
+impl Drop for BrokerPendingCleanup<'_> {
+    fn drop(&mut self) {
+        self.broker.remove(&self.request_id);
+    }
+}
+
+fn handle_command_rpc_callback<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::command_runner::{
+        commands::PERMISSIONS_UPDATED_EVENT,
+        policy::{PolicyVerdict, add_or_update_rule, evaluate_command},
+        runner::{
+            CommandPermissionBroker, CommandPermissionDecision, execute_sandboxed_command,
+            finish_command_execution, insert_command_execution,
+        },
+    };
+    use crate::slices::task_ledger::commands::WORKSPACE_UPDATED_EVENT;
+    use crate::slices::task_ledger::migrations::open_workspace_db;
+    use crate::slices::task_ledger::store::try_record_audit_event_for_root;
+    use crate::slices::workspace_manager::registry::resolve_active_workspace_root;
+
+    let request_id = parsed
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("cmd_req")
+        .to_string();
+    let stream_id = parsed
+        .get("stream_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let purpose = parsed
+        .get("purpose")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Ejecutar utilidad del workspace")
+        .to_string();
+    let command = parsed
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let cwd = parsed
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .unwrap_or(".")
+        .to_string();
+    let timeout_sec = parsed
+        .get("timeout_sec")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20);
+
+    let root = fallback_workspace_root
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| resolve_active_workspace_root(app));
+
+    let Some(workspace_root) = root else {
+        return serde_json::json!({
+            "ok": false,
+            "status": "error",
+            "error": "No hay un espacio de trabajo activo para ejecutar el comando."
+        });
+    };
+
+    let Ok(conn) = open_workspace_db(&workspace_root) else {
+        return serde_json::json!({
+            "ok": false,
+            "status": "error",
+            "error": "No se pudo abrir la base de datos del espacio de trabajo."
+        });
+    };
+
+    let cmd_id = format!("{request_id}_{}", chrono::Utc::now().timestamp_millis());
+    let eval = evaluate_command(&workspace_root, &command, &cwd);
+
+    match &eval.verdict {
+        PolicyVerdict::Deny(reason) => {
+            let _ = insert_command_execution(
+                &conn,
+                &cmd_id,
+                stream_id.as_deref(),
+                Some(&request_id),
+                &purpose,
+                &command,
+                &eval,
+                "blocked",
+                "blocked",
+            );
+            let _ = finish_command_execution(&conn, &cmd_id, "blocked", Some("blocked"), None, None, None);
+            let _ = app.emit(
+                "xox:command-finished",
+                serde_json::json!({
+                    "requestId": request_id,
+                    "streamId": stream_id,
+                    "commandId": cmd_id,
+                    "purpose": purpose,
+                    "command": command,
+                    "cwdRel": eval.cwd_rel,
+                    "riskLevel": eval.risk_level,
+                    "status": "blocked",
+                    "error": reason,
+                }),
+            );
+            serde_json::json!({
+                "ok": false,
+                "commandId": cmd_id,
+                "status": "blocked",
+                "error": reason
+            })
+        }
+        PolicyVerdict::Allow => {
+            let _ = insert_command_execution(
+                &conn,
+                &cmd_id,
+                stream_id.as_deref(),
+                Some(&request_id),
+                &purpose,
+                &command,
+                &eval,
+                "always_rule",
+                "running",
+            );
+            let res = execute_sandboxed_command(
+                &conn,
+                &workspace_root,
+                &cmd_id,
+                &eval,
+                "always_rule",
+                timeout_sec,
+            );
+            let _ = app.emit(
+                "xox:command-finished",
+                serde_json::json!({
+                    "requestId": request_id,
+                    "streamId": stream_id,
+                    "purpose": purpose,
+                    "command": command,
+                    "cwdRel": eval.cwd_rel,
+                    "riskLevel": eval.risk_level,
+                    "result": res,
+                }),
+            );
+            if res.log_path.is_some() {
+                let _ = app.emit(
+                    WORKSPACE_UPDATED_EVENT,
+                    serde_json::json!({ "reason": "command_log" }),
+                );
+            }
+            serde_json::to_value(&res).unwrap_or_else(|_| serde_json::json!({ "ok": res.ok }))
+        }
+        PolicyVerdict::Ask => {
+            let _ = insert_command_execution(
+                &conn,
+                &cmd_id,
+                stream_id.as_deref(),
+                Some(&request_id),
+                &purpose,
+                &command,
+                &eval,
+                "ask",
+                "awaiting_permission",
+            );
+
+            let broker = app.state::<CommandPermissionBroker>();
+            let rx = broker.register(&request_id);
+            let _cleanup = BrokerPendingCleanup {
+                broker: &broker,
+                request_id: request_id.clone(),
+            };
+
+            let _ = app.emit(
+                "xox-permission-request",
+                serde_json::json!({
+                    "requestId": request_id,
+                    "streamId": stream_id,
+                    "commandId": cmd_id,
+                    "purpose": purpose,
+                    "command": command,
+                    "cwdRel": eval.cwd_rel,
+                    "riskLevel": eval.risk_level,
+                    "program": eval.program,
+                    "patternSuggestion": eval.pattern_suggestion,
+                }),
+            );
+
+            match rx.recv_timeout(std::time::Duration::from_secs(180)) {
+                Ok(CommandPermissionDecision::AllowOnce) => {
+                    let res = execute_sandboxed_command(
+                        &conn,
+                        &workspace_root,
+                        &cmd_id,
+                        &eval,
+                        "once",
+                        timeout_sec,
+                    );
+                    let _ = app.emit(
+                        "xox:command-finished",
+                        serde_json::json!({
+                            "requestId": request_id,
+                            "streamId": stream_id,
+                            "purpose": purpose,
+                            "command": command,
+                            "cwdRel": eval.cwd_rel,
+                            "riskLevel": eval.risk_level,
+                            "result": res,
+                        }),
+                    );
+                    if res.log_path.is_some() {
+                        let _ = app.emit(
+                            WORKSPACE_UPDATED_EVENT,
+                            serde_json::json!({ "reason": "command_log" }),
+                        );
+                    }
+                    serde_json::to_value(&res).unwrap_or_else(|_| serde_json::json!({ "ok": res.ok }))
+                }
+                Ok(CommandPermissionDecision::AllowAlways) => {
+                    if let Ok(cfg) = add_or_update_rule(
+                        &workspace_root,
+                        &eval.pattern_suggestion,
+                        "allow",
+                        "program",
+                        Some(purpose.clone()),
+                    ) {
+                        let _ = app.emit(PERMISSIONS_UPDATED_EVENT, &cfg);
+                        let _ = app.emit(
+                            WORKSPACE_UPDATED_EVENT,
+                            serde_json::json!({ "reason": "permission_always" }),
+                        );
+                    }
+                    let res = execute_sandboxed_command(
+                        &conn,
+                        &workspace_root,
+                        &cmd_id,
+                        &eval,
+                        "always",
+                        timeout_sec,
+                    );
+                    let _ = app.emit(
+                        "xox:command-finished",
+                        serde_json::json!({
+                            "requestId": request_id,
+                            "streamId": stream_id,
+                            "purpose": purpose,
+                            "command": command,
+                            "cwdRel": eval.cwd_rel,
+                            "riskLevel": eval.risk_level,
+                            "result": res,
+                        }),
+                    );
+                    serde_json::to_value(&res).unwrap_or_else(|_| serde_json::json!({ "ok": res.ok }))
+                }
+                Ok(CommandPermissionDecision::Deny) => {
+                    let _ = finish_command_execution(
+                        &conn,
+                        &cmd_id,
+                        "denied",
+                        Some("denied"),
+                        None,
+                        None,
+                        None,
+                    );
+                    let _ = try_record_audit_event_for_root(
+                        &workspace_root,
+                        "user",
+                        "command_denied",
+                        &eval.cwd_rel,
+                        "agente",
+                        Some(&command),
+                    );
+                    let _ = app.emit(
+                        "xox:command-finished",
+                        serde_json::json!({
+                            "requestId": request_id,
+                            "streamId": stream_id,
+                            "commandId": cmd_id,
+                            "purpose": purpose,
+                            "command": command,
+                            "cwdRel": eval.cwd_rel,
+                            "riskLevel": eval.risk_level,
+                            "status": "denied",
+                        }),
+                    );
+                    serde_json::json!({
+                        "ok": false,
+                        "commandId": cmd_id,
+                        "status": "denied",
+                        "permissionMode": "denied",
+                        "error": "El usuario rechazó ejecutar este comando."
+                    })
+                }
+                Err(_) => {
+                    let _ = finish_command_execution(
+                        &conn,
+                        &cmd_id,
+                        "timeout_permission",
+                        Some("ask"),
+                        None,
+                        None,
+                        None,
+                    );
+                    let _ = app.emit(
+                        "xox:command-finished",
+                        serde_json::json!({
+                            "requestId": request_id,
+                            "streamId": stream_id,
+                            "commandId": cmd_id,
+                            "status": "denied",
+                            "error": "Tiempo de espera agotado para confirmar permiso."
+                        }),
+                    );
+                    serde_json::json!({
+                        "ok": false,
+                        "commandId": cmd_id,
+                        "status": "denied",
+                        "error": "No se recibió confirmación del usuario a tiempo."
+                    })
+                }
+            }
+        }
+    }
+}
+
 fn call_python_sidecar_streaming<R: Runtime>(
     app: &AppHandle<R>,
     script_path: &PathBuf,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    let ws_root_param = params
+        .get("workspace_root")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let request = serde_json::json!({
         "id": 1,
         "method": "ai_chat_stream",
@@ -391,11 +728,14 @@ fn call_python_sidecar_streaming<R: Runtime>(
         .spawn()
         .map_err(|e| format!("No se pudo iniciar python3 sidecar: {e}"))?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(line.as_bytes())
-            .map_err(|e| format!("Error enviando solicitud al sidecar: {e}"))?;
-    }
+    let mut child_stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "No se pudo capturar stdin del sidecar.".to_string())?;
+    child_stdin
+        .write_all(line.as_bytes())
+        .and_then(|_| child_stdin.flush())
+        .map_err(|e| format!("Error enviando solicitud al sidecar: {e}"))?;
 
     let stdout = child
         .stdout
@@ -415,12 +755,42 @@ fn call_python_sidecar_streaming<R: Runtime>(
         let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) else {
             continue;
         };
+        if parsed.get("rpc_callback").and_then(|v| v.as_str()) == Some("run_workspace_command") {
+            let req_id = parsed
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("cmd_req")
+                .to_string();
+            let cb_result = handle_command_rpc_callback(app, &parsed, ws_root_param.as_deref());
+            let reply_msg = serde_json::json!({
+                "rpc_callback_response": "run_workspace_command",
+                "request_id": req_id,
+                "result": cb_result,
+            });
+            let reply_line = format!("{reply_msg}\n");
+            let _ = child_stdin.write_all(reply_line.as_bytes());
+            let _ = child_stdin.flush();
+            continue;
+        }
         if parsed.get("stream").and_then(|v| v.as_bool()) == Some(true) {
+            if parsed
+                .get("event")
+                .and_then(|e| e.get("type"))
+                .and_then(|t| t.as_str())
+                == Some("workspace_changed")
+            {
+                let _ = app.emit(
+                    crate::slices::task_ledger::commands::WORKSPACE_UPDATED_EVENT,
+                    parsed.get("event").unwrap(),
+                );
+            }
             let _ = app.emit("xox-chat-stream", &parsed);
         } else {
             final_envelope = Some(parsed);
+            break;
         }
     }
+    drop(child_stdin);
 
     let status = child
         .wait()
@@ -445,7 +815,18 @@ fn call_python_sidecar_streaming<R: Runtime>(
         return Err(err.to_string());
     }
 
-    Ok(parsed.get("result").cloned().unwrap_or(parsed))
+    let result_val = parsed.get("result").cloned().unwrap_or(parsed);
+    if result_val
+        .get("workspace_mutated")
+        .and_then(|v| v.as_bool())
+        == Some(true)
+    {
+        let _ = app.emit(
+            crate::slices::task_ledger::commands::WORKSPACE_UPDATED_EVENT,
+            serde_json::json!({ "reason": "agent_tools" }),
+        );
+    }
+    Ok(result_val)
 }
 
 #[tauri::command]
@@ -460,6 +841,8 @@ pub async fn run_xox_chat_stream<R: Runtime>(
     };
 
     let script = find_sidecar_script(&app)?;
+    let workspace_root = crate::slices::workspace_manager::registry::resolve_active_workspace_root(&app)
+        .map(|p| p.to_string_lossy().to_string());
     let model_id = payload
         .model_override
         .map(|s| s.trim().to_string())
@@ -478,6 +861,7 @@ pub async fn run_xox_chat_stream<R: Runtime>(
                 "stream_id": stream_id,
                 "api_key": api_key,
                 "model_id": model_id,
+                "workspace_root": workspace_root,
                 "message": payload.message,
                 "history": payload.history,
                 "current_tasks": payload.current_tasks,

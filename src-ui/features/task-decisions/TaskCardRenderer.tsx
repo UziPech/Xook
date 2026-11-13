@@ -25,6 +25,7 @@ import {
 
 interface TaskCardRendererProps {
   task: TaskProposal;
+  workspaceBudgetLimit?: number;
   onUpdateParam: (cardId: string, key: string, value: number | string | boolean) => void;
   onToggleChecklist: (cardId: string, itemId: string) => void;
   onApprove: (task: TaskProposal) => void;
@@ -90,6 +91,7 @@ function urgencyAccent(urgency: TaskProposal["urgency"]) {
 
 export const TaskCardRenderer: React.FC<TaskCardRendererProps> = ({
   task,
+  workspaceBudgetLimit,
   onUpdateParam,
   onToggleChecklist,
   onApprove,
@@ -98,7 +100,7 @@ export const TaskCardRenderer: React.FC<TaskCardRendererProps> = ({
 }) => {
   const [expanded, setExpanded] = useState<boolean>(Boolean(task.defaultExpanded));
   const accent = urgencyAccent(task.urgency);
-  const decision = computeVerifiedDecision(task);
+  const decision = computeVerifiedDecision(task, workspaceBudgetLimit);
   const categoryLabel = task.generatedBy ?? CATEGORY_META[task.category].label;
 
   // Resumen compacto cuando la tarjeta está colapsada
@@ -634,7 +636,8 @@ export const TaskCardRenderer: React.FC<TaskCardRendererProps> = ({
             <div className="flex items-center gap-2 px-2.5 py-2 rounded-xl bg-rose-500/10 border border-rose-500/25 text-[11px] text-rose-200">
               <ShieldAlert className="w-3.5 h-3.5 text-rose-300 shrink-0" />
               <span>
-                Supera el límite por orden (${(task.intent.maxBudgetLimit ?? 50000).toLocaleString()}{" "}
+                Supera el límite por orden ($
+                {(task.intent.maxBudgetLimit ?? workspaceBudgetLimit ?? 0).toLocaleString()}{" "}
                 {decision.currency}). Ajusta la cantidad para aprobar.
               </span>
             </div>

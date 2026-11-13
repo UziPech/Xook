@@ -424,18 +424,18 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         </linearGradient>
 
         <linearGradient id={ids.crestA} x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#7DD3FC" stopOpacity="0.04" />
-          <stop offset="16%" stopColor="#E0F2FE" stopOpacity="0.48" />
-          <stop offset="56%" stopColor="#BAE6FD" stopOpacity="0.46" />
-          <stop offset="80%" stopColor="#FBCFE8" stopOpacity="0.34" />
-          <stop offset="100%" stopColor="#A78BFA" stopOpacity="0.08" />
+          <stop offset="0%" stopColor="#7DD3FC" stopOpacity="0.02" />
+          <stop offset="16%" stopColor="#E0F2FE" stopOpacity="0.26" />
+          <stop offset="56%" stopColor="#BAE6FD" stopOpacity="0.24" />
+          <stop offset="80%" stopColor="#FBCFE8" stopOpacity="0.18" />
+          <stop offset="100%" stopColor="#A78BFA" stopOpacity="0.04" />
         </linearGradient>
 
         <linearGradient id={ids.causticLine} x1="0%" y1="0%" x2="100%" y2="0%">
           <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0" />
-          <stop offset="18%" stopColor="#E0F2FE" stopOpacity="0.28" />
-          <stop offset="54%" stopColor="#5EEAD4" stopOpacity="0.26" />
-          <stop offset="78%" stopColor="#F9A8D4" stopOpacity="0.20" />
+          <stop offset="18%" stopColor="#E0F2FE" stopOpacity="0.18" />
+          <stop offset="54%" stopColor="#5EEAD4" stopOpacity="0.16" />
+          <stop offset="78%" stopColor="#F9A8D4" stopOpacity="0.13" />
           <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
         </linearGradient>
 
@@ -506,8 +506,8 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         d={initialGeometry.waveA.crestPath}
         fill="none"
         stroke={`url(#${ids.crestA})`}
-        strokeWidth="1.25"
-        opacity="0.54"
+        strokeWidth="1"
+        opacity="0.38"
       />
 
       {/* 4. Filamento cáustico superior */}
@@ -516,8 +516,8 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         d={initialGeometry.caustic.crestPath}
         fill="none"
         stroke={`url(#${ids.causticLine})`}
-        strokeWidth="1"
-        opacity="0.34"
+        strokeWidth="0.9"
+        opacity="0.22"
       />
 
       {/* 5. Destello especular dinámico sobre la superficie vítrea */}

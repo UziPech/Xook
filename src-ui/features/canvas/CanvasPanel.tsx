@@ -382,9 +382,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
     <section
       style={{
         boxShadow:
-          "inset 0 1px 1px rgba(255,255,255,0.16), 0 24px 60px -28px rgba(0,0,0,0.88)",
+          "inset 0 1px 1px rgba(255,255,255,0.10), 0 24px 60px -28px rgba(0,0,0,0.88)",
       }}
-      className={`relative h-full flex flex-col rounded-2xl border border-white/[0.13] bg-gradient-to-b from-white/[0.05] via-[#0c111e]/78 to-[#070a12]/88 overflow-hidden ${
+      className={`relative h-full flex flex-col rounded-2xl border border-white/[0.08] bg-gradient-to-b from-white/[0.045] via-[#0c111e]/78 to-[#070a12]/88 overflow-hidden ${
         visible ? "panel-fade-in" : "panel-fade-out"
       }`}
     >
@@ -395,30 +395,30 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
       />
 
       {/* Cabecera en dos niveles: barra de controles arriba y título amplio debajo */}
-      <header className="relative px-4 pt-3.5 pb-3 border-b border-white/[0.09] bg-white/[0.025] shrink-0 space-y-2.5">
+      <header className="relative px-4 pt-3.5 pb-3 border-b border-white/[0.07] bg-white/[0.02] shrink-0 space-y-2.5">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <div className="quick-liquid-icon w-7 h-7 rounded-xl flex items-center justify-center shrink-0">
-              <Table2 className="w-3.5 h-3.5 text-white/95" />
+              <Table2 className="w-3.5 h-3.5 text-sky-100/95" />
             </div>
             <span className="text-[11px] font-semibold tracking-[0.02em] text-white/90">
               Canvas
             </span>
-            <span className="px-2 py-0.5 rounded-full bg-white/[0.08] border border-white/[0.16] shadow-[inset_0_1px_0_rgba(255,255,255,0.22)] text-[10px] font-medium text-indigo-100 shrink-0">
+            <span className="px-2 py-0.5 rounded-full bg-white/[0.055] border border-white/[0.09] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] text-[10px] font-medium text-indigo-100 shrink-0">
               {kindLabel}
             </span>
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
             {canvas.columns.length > 0 && (
-              <div className="flex items-center rounded-xl bg-white/[0.04] border border-white/[0.1] p-0.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+              <div className="flex items-center rounded-xl bg-white/[0.035] border border-white/[0.08] p-0.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                 <button
                   type="button"
                   onClick={() => setViewMode("table")}
                   title="Vista interactiva"
                   className={`px-2 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer ${
                     viewMode === "table"
-                      ? "bg-white/[0.14] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.26)]"
+                      ? "bg-white/[0.11] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]"
                       : "text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
@@ -430,7 +430,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                   title="Vista Markdown"
                   className={`px-2 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer inline-flex items-center gap-1 ${
                     viewMode === "markdown"
-                      ? "bg-white/[0.14] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.26)]"
+                      ? "bg-white/[0.11] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]"
                       : "text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
@@ -518,11 +518,11 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
 
       {/* Resumen / Conclusión destacada */}
       {canvas.summary && (
-        <div className="relative mx-4 mt-3 px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-white/[0.07] via-indigo-300/[0.06] to-white/[0.03] border border-white/[0.15] flex items-stretch gap-2.5 text-[12px] text-zinc-100 shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.2)]">
-          <div className="w-[2.5px] rounded-full bg-gradient-to-b from-white/80 via-indigo-200/80 to-sky-200/70 shrink-0" />
+        <div className="relative mx-4 mt-3 px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-white/[0.055] via-indigo-300/[0.05] to-white/[0.025] border border-white/[0.09] flex items-stretch gap-2.5 text-[12px] text-zinc-100 shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
+          <div className="w-[2.5px] rounded-full bg-gradient-to-b from-white/70 via-indigo-200/75 to-sky-200/65 shrink-0" />
           <div className="flex items-start gap-2 min-w-0">
             <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0 mt-0.5">
-              <Sparkles className="w-2.5 h-2.5 text-white" />
+              <Sparkles className="w-2.5 h-2.5 text-sky-100/95" />
             </span>
             <p className="leading-relaxed select-text">{canvas.summary}</p>
           </div>
@@ -539,7 +539,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
               value={globalFilter}
               onChange={(e) => setGlobalFilter(e.target.value)}
               placeholder="Filtrar filas..."
-              className="w-full pl-8 pr-7 py-1.5 rounded-xl bg-white/[0.045] border border-white/[0.12] focus:border-indigo-200/45 text-[12px] text-zinc-100 placeholder:text-zinc-500 outline-none transition-colors shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
+              className="w-full pl-8 pr-7 py-1.5 rounded-xl bg-white/[0.04] border border-white/[0.08] focus:border-indigo-200/35 text-[12px] text-zinc-100 placeholder:text-zinc-500 outline-none transition-colors shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
             />
             {globalFilter && (
               <button
@@ -557,11 +557,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
               <button
                 type="button"
                 onClick={() => onAskXoxEdit(canvas)}
-                className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-medium text-white/95 cursor-pointer"
+                className="quick-liquid-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-medium text-white/95 cursor-pointer"
               >
-                <span className="quick-liquid-icon w-4 h-4 rounded-full inline-flex items-center justify-center">
-                  <Sparkles className="w-2.5 h-2.5 text-white" />
-                </span>
+                <Sparkles className="w-3 h-3 text-sky-100/90 shrink-0" />
                 <span>Ajustar con Xox</span>
               </button>
             )}
@@ -703,7 +701,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             </div>
 
             {extraMarkdownNotes && (
-              <div className="rounded-xl border border-white/[0.11] bg-white/[0.03] p-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+              <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
                 <p className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-zinc-400 mb-1.5">
                   Notas de contexto
                 </p>
@@ -723,7 +721,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
       </div>
 
       {/* Pie discreto */}
-      <footer className="relative px-4 py-2 border-t border-white/[0.08] bg-white/[0.02] flex items-center justify-between text-[10.5px] text-zinc-400 shrink-0">
+      <footer className="relative px-4 py-2 border-t border-white/[0.06] bg-white/[0.015] flex items-center justify-between text-[10.5px] text-zinc-400 shrink-0">
         <span>Haz clic en título o celda para editar · Ordena por columna</span>
         {copiedMd && (
           <span className="text-indigo-200 font-medium">Copiado en formato Markdown</span>

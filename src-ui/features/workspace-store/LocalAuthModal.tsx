@@ -140,7 +140,7 @@ export const LocalAuthModal: React.FC<LocalAuthModalProps> = ({
                 type="text"
                 value={storeName}
                 onChange={(e) => setStoreName(e.target.value)}
-                placeholder="Tienda Xook"
+                placeholder="Mi Empresa"
                 className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-black/50 border border-white/10 focus:border-sky-400/40 focus:outline-none text-sm text-white placeholder:text-zinc-600"
               />
             </div>

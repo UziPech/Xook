@@ -12,6 +12,11 @@ import {
   markdownTableToCanvasArtifact,
   sanitizeCanvasArtifact,
 } from "../canvas/canvasSchema";
+import {
+  ClarificationSpec,
+  sanitizeClarificationSpec,
+} from "./clarificationSchema";
+export type { ClarificationSpec };
 
 const BROWSER_CANVAS_TOOL_DEF = {
   type: "function",
@@ -52,6 +57,39 @@ const BROWSER_CANVAS_TOOL_DEF = {
         markdown: { type: "string", description: "Notas o documento Markdown si kind es document" },
       },
       required: ["title", "columns", "rows"],
+    },
+  },
+};
+
+const BROWSER_CLARIFICATION_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "ask_clarification",
+    description:
+      "Abre una ventana interactiva de preguntas abiertas ÚNICAMENTE cuando al analizar el mensaje del usuario falte un dato indispensable no mencionado (ej. 'agenda algo' sin qué ni cuándo, o 'cita mañana' sin hora). Si ya dio evento + fecha + hora (ej. 'cita para mañana a las 10 pm'), NO la uses y crea la tarjeta directo. Prohibido preguntar datos ya dichos.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Título breve y claro de la ventana" },
+        subtitle: { type: "string", description: "Explicación corta de por qué necesitas estos datos" },
+        submit_label: { type: "string", description: "Texto del botón enviar, ej. 'Continuar'" },
+        questions: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              prompt: { type: "string" },
+              kind: { type: "string", enum: ["choice_or_text", "single", "multi", "text"] },
+              options: { type: "array", items: { type: "string" } },
+              placeholder: { type: "string" },
+              required: { type: "boolean" },
+            },
+            required: ["id", "prompt"],
+          },
+        },
+      },
+      required: ["title", "questions"],
     },
   },
 };
@@ -159,7 +197,7 @@ export interface ThinkingStep {
   id: string;
   label: string;
   detail?: string;
-  status: "running" | "done";
+  status: "running" | "done" | "error";
 }
 
 export interface ChatTurnMessage {
@@ -195,18 +233,22 @@ export interface XoxAiChatResponse {
   reasoningDurationMs?: number;
   steps?: ThinkingStep[];
   xoxMood: "talking" | "success" | "alert";
-  operation: "none" | "add_tasks" | "replace_tasks";
+  operation: "none" | "add_tasks" | "replace_tasks" | "ask_clarification";
   tasks: TaskProposal[];
   canvas?: CanvasArtifact;
+  clarification?: ClarificationSpec;
   modelUsed: string;
   latencyMs: number;
   usage?: XoxTokenUsage;
+  workspaceMutated?: boolean;
 }
 
 export interface XoxStreamCallbacks {
+  onStreamStart?: (streamId: string) => void;
   onPhase?: (state: "reading" | "thinking" | "talking" | "syncing", label?: string) => void;
   onSteps?: (steps: ThinkingStep[]) => void;
   onReasoningDelta?: (delta: string) => void;
+  onReasoningReset?: () => void;
   onReplyDelta?: (delta: string) => void;
   onCanvas?: (canvas: CanvasArtifact) => void;
 }
@@ -238,6 +280,26 @@ export function isTauriRuntime(): boolean {
     typeof window !== "undefined" &&
     ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
   );
+}
+
+/** Extrae el mensaje real tanto de Error JS como de strings devueltos por Tauri invoke. */
+export function extractErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message.trim().length > 0) {
+    return err.message.trim();
+  }
+  if (typeof err === "string" && err.trim().length > 0) {
+    return err.trim();
+  }
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "message" in err &&
+    typeof (err as { message?: unknown }).message === "string"
+  ) {
+    const msg = ((err as { message: string }).message || "").trim();
+    if (msg.length > 0) return msg;
+  }
+  return fallback;
 }
 
 export function estimateTokens(text: string): number {
@@ -712,7 +774,7 @@ export async function testAiConnection(): Promise<AiConnectionTestResult> {
   } catch (err) {
     return {
       ok: false,
-      message: err instanceof Error ? err.message : "No se pudo conectar con OpenRouter.",
+      message: extractErrorMessage(err, "No se pudo conectar con OpenRouter."),
     };
   }
 }
@@ -787,71 +849,65 @@ export async function fetchOpenRouterModels(
 }
 
 export async function loadWorkspaceContext(): Promise<WorkspaceContextSource[]> {
-  if (isTauriRuntime()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const files = await invoke<WorkspaceContextSource[]>("get_workspace_context");
-      if (Array.isArray(files) && files.length > 0) {
-        return files;
-      }
-    } catch {
-      // Fallback abajo si corre en modo navegador
-    }
+  if (!isTauriRuntime()) {
+    return [];
   }
 
-  return [
-    {
-      id: "ctx_profile",
-      name: "store-profile.json",
-      type: "profile",
-      path: "context/business-profiles/store-profile.json",
-      content: JSON.stringify(
-        {
-          company_name: "Tienda Xook",
-          currency: "MXN",
-          stock_threshold_days: 7,
-          max_budget_per_order: 50000.0,
-          preferred_suppliers: ["Distribuidora del Sur", "Comercializadora Bajío"],
-          business_rules: [
-            "No emitir órdenes de compra a proveedores con menos de 4 estrellas sin confirmación.",
-            "Si un producto tiene menos de 5 unidades, marcar urgencia como ALTA.",
-            "Nunca ejecutar pagos ni mutaciones sin autorización visual del administrador.",
-          ],
-        },
-        null,
-        2
-      ),
-    },
-    {
-      id: "ctx_memory",
-      name: "memory_store.json",
-      type: "memory",
-      path: "context/memory/memory_store.json",
-      content: JSON.stringify(
-        {
-          user_preferences: {
-            budget_safety_limit: 50000.0,
-            preferred_notification_style: "action_cards_only",
-          },
-          inferred_patterns: [
-            "El usuario autoriza compras sin objeción para 'Café Chiapas' si el proveedor es 'Distribuidora del Sur'.",
-          ],
-        },
-        null,
-        2
-      ),
-    },
-    {
-      id: "ctx_skill",
-      name: "inventory-advisor",
-      type: "skill",
-      path: "skills/inventory-advisor/SKILL.md",
-      content: `# Asesor de Inventario y Abastecimiento
-- Monitorea niveles de stock contra venta diaria promedio.
-- Formula tarjetas de compra para productos con menos de 7 días de stock.
-- Exige aprobación visual explícita antes de contactar proveedores.`,
-    },
-  ];
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const overview = await invoke<{
+      entries: Array<{ relativePath: string; name: string; zone: string; kind: string; editable: boolean }>;
+    }>("get_workspace_overview");
+    if (!overview || !Array.isArray(overview.entries)) {
+      return [];
+    }
+
+    const priorityPaths = [
+      "empresa/perfil.json",
+      "empresa/reglas/operacion.md",
+      "memoria/hechos.md",
+      "empresa/proveedores.json",
+      "agente/notas-xox.md",
+    ];
+    const availablePaths = new Set(
+      overview.entries.filter((e) => e.kind === "file" && e.editable).map((e) => e.relativePath)
+    );
+    const chosen = priorityPaths.filter((p) => availablePaths.has(p));
+
+    const results = await Promise.all(
+      chosen.map(async (relPath) => {
+        try {
+          const file = await invoke<{
+            relativePath: string;
+            name: string;
+            zone: string;
+            content: string;
+          }>("read_workspace_file", { relativePath: relPath });
+          const mappedType: WorkspaceContextSource["type"] =
+            file.zone === "empresa"
+              ? "profile"
+              : file.zone === "memoria"
+              ? "memory"
+              : file.zone === "habilidades"
+              ? "skill"
+              : "catalog";
+          return {
+            id: `ws_${file.relativePath}`,
+            name: file.name,
+            type: mappedType,
+            path: file.relativePath,
+            content: file.content,
+          } satisfies WorkspaceContextSource;
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    return results.filter((item): item is WorkspaceContextSource => item !== null);
+  } catch {
+    return [];
+  }
 }
 
 interface AccumulatedToolCall {
@@ -954,6 +1010,34 @@ function extractCanvasFromToolCalls(toolCalls: AccumulatedToolCall[]): CanvasArt
   return undefined;
 }
 
+function extractClarificationFromToolCalls(
+  toolCalls: AccumulatedToolCall[],
+  originalQuery?: string
+): ClarificationSpec | undefined {
+  for (const tc of toolCalls) {
+    const fnName = (tc.function?.name ?? "").trim().toLowerCase();
+    if (!fnName || (!fnName.includes("ask_clarification") && !fnName.includes("open_question"))) {
+      continue;
+    }
+    const parsedArgs = parseJsonObjectCandidate(tc.function.arguments);
+    if (!parsedArgs) continue;
+    const inner =
+      parsedArgs.clarification && typeof parsedArgs.clarification === "object"
+        ? parsedArgs.clarification
+        : parsedArgs.arguments && typeof parsedArgs.arguments === "object"
+          ? parsedArgs.arguments
+          : parsedArgs;
+    const sanitized = sanitizeClarificationSpec(inner);
+    if (sanitized) {
+      return {
+        ...sanitized,
+        originalQuery: sanitized.originalQuery || originalQuery,
+      };
+    }
+  }
+  return undefined;
+}
+
 function resolveBrowserCanvasArtifact(params: {
   toolCalls: AccumulatedToolCall[];
   canvasBuf: string;
@@ -1015,24 +1099,37 @@ function resolveBrowserCanvasArtifact(params: {
 function extractBrowserJson(rawContent: string): {
   reply: string;
   xoxMood: "talking" | "success" | "alert";
-  operation: "none" | "add_tasks" | "replace_tasks";
+  operation: "none" | "add_tasks" | "replace_tasks" | "ask_clarification";
   tasks: TaskProposal[];
   canvas?: CanvasArtifact;
+  clarification?: ClarificationSpec;
 } {
   const parsed = parseJsonObjectCandidate(rawContent);
-  if (parsed && (typeof parsed.reply === "string" || Array.isArray(parsed.tasks) || parsed.canvas)) {
+  if (
+    parsed &&
+    (typeof parsed.reply === "string" ||
+      Array.isArray(parsed.tasks) ||
+      parsed.canvas ||
+      parsed.clarification)
+  ) {
     const safeTasks = Array.isArray(parsed.tasks)
       ? parsed.tasks.map((t) => sanitizeTaskProposal(t as TaskProposal))
       : [];
     const safeCanvas = parsed.canvas ? sanitizeCanvasArtifact(parsed.canvas) ?? undefined : undefined;
-    const op =
-      parsed.operation === "add_tasks" || parsed.operation === "replace_tasks"
+    const safeClarification = parsed.clarification
+      ? sanitizeClarificationSpec(parsed.clarification) ?? undefined
+      : undefined;
+    const op = safeClarification
+      ? "ask_clarification"
+      : parsed.operation === "add_tasks" ||
+          parsed.operation === "replace_tasks" ||
+          parsed.operation === "ask_clarification"
         ? parsed.operation
         : safeTasks.length > 0
         ? "add_tasks"
         : "none";
     const mood =
-      parsed.xox_mood === "success" || parsed.xox_mood === "alert"
+      parsed.xox_mood === "success" || parsed.xox_mood === "alert" || parsed.xox_mood === "talking"
         ? parsed.xox_mood
         : safeTasks.length > 0 || safeCanvas
         ? "success"
@@ -1043,6 +1140,7 @@ function extractBrowserJson(rawContent: string): {
       operation: op,
       tasks: safeTasks,
       canvas: safeCanvas,
+      clarification: safeClarification,
     };
   }
 
@@ -1072,9 +1170,10 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       reply: string;
       reasoning?: string;
       xox_mood?: "talking" | "success" | "alert";
-      operation?: "none" | "add_tasks" | "replace_tasks";
+      operation?: "none" | "add_tasks" | "replace_tasks" | "ask_clarification";
       tasks?: TaskProposal[];
       canvas?: unknown;
+      clarification?: unknown;
       model_used?: string;
       latency_ms?: number;
       usage?: {
@@ -1103,13 +1202,17 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
           cost: typeof res.usage.cost === "number" ? res.usage.cost : undefined,
         }
       : undefined;
+    const safeClarification = res.clarification
+      ? sanitizeClarificationSpec(res.clarification) ?? undefined
+      : undefined;
     return {
       reply: res.reply,
       reasoning: res.reasoning,
       xoxMood: res.xox_mood ?? "talking",
-      operation: res.operation ?? "none",
+      operation: safeClarification ? "ask_clarification" : res.operation ?? "none",
       tasks: (res.tasks ?? []).map(sanitizeTaskProposal),
       canvas: res.canvas ? sanitizeCanvasArtifact(res.canvas) ?? undefined : undefined,
+      clarification: safeClarification,
       modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
       latencyMs: res.latency_ms ?? 0,
       usage,
@@ -1398,6 +1501,8 @@ CAPACIDADES:
 - Puedes responder preguntas generales de uso diario (qué hora es, qué día es hoy, cálculos, dudas generales, explicaciones o charla casual) de forma directa y natural usando la fecha y hora local actual cuando aplique, SIN desviar la conversación hacia inventario si el usuario no lo pidió.
 - Cuando el usuario trate temas de su operación, tienda, inventario, proveedores, agenda o tareas, apoya usando su contexto operativo, reglamento y memoria.
 - Si el usuario pide crear o mostrar una TABLA, tabla comparativa, desglose, matriz de opciones o presupuesto: usa la herramienta \`create_canvas\` (preferida) pasando columnas en texto simple y TODAS las filas completas en \`rows\`, o incluye <canvas>{"title":"Título","subtitle":"Contexto","kind":"comparison","summary":"Conclusión","columns":["Criterio","Opción A"],"rows":[["Precio","$100"]],"recommended_row":0}</canvas>. NUNCA escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en <respuesta>; escribe únicamente español claro sin duplicar la tabla en HTML.
+- Aclaraciones (\`ask_clarification\`): analiza primero qué ya especificó el usuario. Si ya dio evento/acción + fecha/hora (ej. "cita para mañana a las 10 pm"), NO pidas aclaraciones y genera la tarjeta directo (solo avisa si choca con AGENDA ACTIVA). Úsala únicamente si falta un dato esencial (como en "agenda algo" o "haz una cita mañana" sin hora), preguntando SOLO lo que falta y nunca datos que ya indicó.
+- Agenda vs Reloj: para recordatorios o entregas con fecha/hora del reloj (ej. "mañana 18:00", "viernes 13 a las 19:00", "1 hora antes") usa SIEMPRE \`intent.type="schedule_event"\` y \`schedule.mode="alarm"\` (NUNCA \`start_timer\`). Usa \`start_timer\` solo para temporizadores cortos que arrancan ahora con \`paramValues.duration_min\` explícito.
 ${req.businessContextSnapshot ? `\nCONTEXTO DEL NEGOCIO:\n${req.businessContextSnapshot}\n` : ""}${opLine}${canvasLine}
 TAREAS PENDIENTES:\n${JSON.stringify(compactTasks)}
 AGENDA ACTIVA:\n${JSON.stringify(req.agendaItems.slice(0, 6))}
@@ -1410,7 +1515,7 @@ FORMATO DE RESPUESTA EN VIVO (OBLIGATORIO):
 1. <analisis> 2 a 4 viñetas breves en español explicando qué revisaste y tu criterio. </analisis>
 2. <respuesta> Tu respuesta clara, natural y humana sin emojis ni iconos. </respuesta>
 3. <canvas> {} </canvas> (opcional: JSON del Canvas solo si generaste una tabla sin llamar create_canvas)
-4. <acciones>{"xox_mood":"talking","operation":"none","tasks":[]}</acciones>`;
+4. <acciones>{"xox_mood":"talking","operation":"none","tasks":[],"clarification":null}</acciones>`;
   }
 
   return `${header}
@@ -1419,9 +1524,10 @@ Responde SIEMPRE con un objeto JSON válido:
 {
   "reply": "Tu respuesta natural en español para el usuario",
   "xox_mood": "talking" | "success" | "alert",
-  "operation": "none" | "add_tasks" | "replace_tasks",
+  "operation": "none" | "add_tasks" | "replace_tasks" | "ask_clarification",
   "tasks": [], // Opcional: tarjetas TaskProposal válidas cuando corresponda crear/reconstruir tareas, relojes, agendas o notas
-  "canvas": null // Opcional: objeto Canvas si generaste tabla comparativa/datos sin usar create_canvas
+  "canvas": null, // Opcional: objeto Canvas si generaste tabla comparativa/datos sin usar create_canvas
+  "clarification": null // Opcional: preguntas interactivas si faltan datos del usuario
 }
 Tipos permitidos en blocks: metrics_strip, coverage_bar, schedule, checklist, note, comparison, kv_list, param_control, insight.`;
 }
@@ -1435,6 +1541,7 @@ export async function runXoxAiChatStream(
     const { listen } = await import("@tauri-apps/api/event");
 
     const streamId = `str_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    callbacks?.onStreamStart?.(streamId);
     const unlisten = await listen<{
       stream_id?: string;
       event?: {
@@ -1455,6 +1562,8 @@ export async function runXoxAiChatStream(
         callbacks?.onSteps?.(evt.steps);
       } else if (evt.type === "reasoning_delta" && evt.delta) {
         callbacks?.onReasoningDelta?.(evt.delta);
+      } else if (evt.type === "reasoning_reset") {
+        callbacks?.onReasoningReset?.();
       } else if (evt.type === "reply_delta" && evt.delta) {
         callbacks?.onReplyDelta?.(evt.delta);
       } else if (evt.type === "canvas" && evt.canvas) {
@@ -1470,11 +1579,13 @@ export async function runXoxAiChatStream(
         reasoning_duration_ms?: number;
         steps?: ThinkingStep[];
         xox_mood?: "talking" | "success" | "alert";
-        operation?: "none" | "add_tasks" | "replace_tasks";
+        operation?: "none" | "add_tasks" | "replace_tasks" | "ask_clarification";
         tasks?: TaskProposal[];
         canvas?: unknown;
+        clarification?: unknown;
         model_used?: string;
         latency_ms?: number;
+        workspace_mutated?: boolean;
         usage?: {
           prompt_tokens?: number;
           completion_tokens?: number;
@@ -1506,6 +1617,9 @@ export async function runXoxAiChatStream(
 
       const resCanvas = res.canvas ? sanitizeCanvasArtifact(res.canvas) ?? undefined : undefined;
       const safeCanvas = resCanvas && canvasHasCellData(resCanvas) ? resCanvas : undefined;
+      const safeClarification = res.clarification
+        ? sanitizeClarificationSpec(res.clarification) ?? undefined
+        : undefined;
       const hasTabularCanvas = Boolean(
         safeCanvas && safeCanvas.columns.length > 0 && safeCanvas.rows.length > 0
       );
@@ -1514,7 +1628,9 @@ export async function runXoxAiChatStream(
         cleanedReply ||
         (hasTabularCanvas && safeCanvas
           ? `Listo, preparé "${safeCanvas.title}" en Canvas (${safeCanvas.rows.length} filas y ${safeCanvas.columns.length} columnas).${safeCanvas.summary ? `\n\n${safeCanvas.summary}` : ""}`
-          : res.reply);
+          : safeClarification
+            ? safeClarification.subtitle || safeClarification.title
+            : res.reply);
 
       return {
         reply: finalTauriReply,
@@ -1522,12 +1638,14 @@ export async function runXoxAiChatStream(
         reasoningDurationMs: res.reasoning_duration_ms,
         steps: res.steps,
         xoxMood: res.xox_mood ?? "talking",
-        operation: res.operation ?? "none",
+        operation: safeClarification ? "ask_clarification" : res.operation ?? "none",
         tasks: (res.tasks ?? []).map(sanitizeTaskProposal),
         canvas: safeCanvas,
+        clarification: safeClarification,
         modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
         latencyMs: res.latency_ms ?? 0,
         usage,
+        workspaceMutated: Boolean(res.workspace_mutated),
       };
     } finally {
       unlisten();
@@ -1637,7 +1755,7 @@ export async function runXoxAiChatStream(
         stream: true,
       };
       if (includeTools) {
-        reqBody.tools = [BROWSER_CANVAS_TOOL_DEF];
+        reqBody.tools = [BROWSER_CANVAS_TOOL_DEF, BROWSER_CLARIFICATION_TOOL_DEF];
         reqBody.tool_choice = "auto";
       }
       const attemptResp = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
@@ -1818,7 +1936,17 @@ export async function runXoxAiChatStream(
         operation: "none" as const,
         tasks: [] as TaskProposal[],
         canvas: undefined as CanvasArtifact | undefined,
+        clarification: undefined as ClarificationSpec | undefined,
       };
+
+  const clarificationSpec =
+    extractClarificationFromToolCalls(toolCallsList, req.message) ??
+    (parsedActions.clarification
+      ? {
+          ...parsedActions.clarification,
+          originalQuery: parsedActions.clarification.originalQuery || req.message,
+        }
+      : undefined);
 
   const canvasArtifact = resolveBrowserCanvasArtifact({
     toolCalls: toolCallsList,
@@ -1882,9 +2010,17 @@ export async function runXoxAiChatStream(
     cleanedFinalReply ||
     (hasTabularCanvas && canvasArtifact
       ? `Listo, preparé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).${canvasArtifact.summary ? `\n\n${canvasArtifact.summary}` : ""}`
-      : rawFinalReply);
+      : clarificationSpec
+        ? clarificationSpec.subtitle || clarificationSpec.title
+        : rawFinalReply);
   const completedSteps = steps.map((s) => ({ ...s, status: "done" as const }));
-  if (parsedActions.tasks.length > 0) {
+  if (clarificationSpec) {
+    completedSteps.push({
+      id: "ask_clarification",
+      label: "Esperando detalles del usuario",
+      status: "done",
+    });
+  } else if (parsedActions.tasks.length > 0) {
     completedSteps.push({
       id: "build_tasks",
       label: `Generando ${parsedActions.tasks.length} tarjeta(s) de acción`,
@@ -1909,9 +2045,10 @@ export async function runXoxAiChatStream(
     reasoningDurationMs,
     steps: completedSteps,
     xoxMood: canvasArtifact && parsedActions.xoxMood === "talking" ? "success" : parsedActions.xoxMood,
-    operation: parsedActions.operation,
+    operation: clarificationSpec ? "ask_clarification" : parsedActions.operation,
     tasks: parsedActions.tasks,
     canvas: canvasArtifact,
+    clarification: clarificationSpec,
     modelUsed: actualModel,
     latencyMs,
     usage: usageObj,
@@ -1945,7 +2082,7 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
       payload.response_format = { type: "json_object" };
     }
     if (useTools) {
-      payload.tools = [BROWSER_CANVAS_TOOL_DEF];
+      payload.tools = [BROWSER_CANVAS_TOOL_DEF, BROWSER_CLARIFICATION_TOOL_DEF];
       payload.tool_choice = "auto";
     }
     return fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
@@ -1993,6 +2130,14 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
   const rawContent = msgObj?.content ?? "";
   const toolCalls = Array.isArray(msgObj?.tool_calls) ? msgObj.tool_calls : [];
   const parsed = extractBrowserJson(rawContent);
+  const clarificationSpec =
+    extractClarificationFromToolCalls(toolCalls, req.message) ??
+    (parsed.clarification
+      ? {
+          ...parsed.clarification,
+          originalQuery: parsed.clarification.originalQuery || req.message,
+        }
+      : undefined);
   const canvasArtifact = resolveBrowserCanvasArtifact({
     toolCalls,
     canvasBuf: "",
@@ -2006,12 +2151,16 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
     cleanedSyncReply ||
     (canvasArtifact
       ? `Listo, generé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).`
-      : "Listo, procesé tu consulta.");
+      : clarificationSpec
+        ? clarificationSpec.subtitle || clarificationSpec.title
+        : "Listo, procesé tu consulta.");
 
   return {
     ...parsed,
+    operation: clarificationSpec ? "ask_clarification" : parsed.operation,
     reply: finalReply,
     canvas: canvasArtifact,
+    clarification: clarificationSpec,
     xoxMood: canvasArtifact && parsed.xoxMood === "talking" ? "success" : parsed.xoxMood,
     modelUsed: data.model || chosenModel,
     latencyMs,

@@ -1,9 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, ExternalLink, Send, Sparkles, Star, Table2, X } from "lucide-react";
+import { Check, ChevronDown, ExternalLink, HelpCircle, Send, Sparkles, Star, Table2, X } from "lucide-react";
 import { XoxDragMotion, XoxStar, XoxState } from "./XoxStar";
 import { QuickLiquidLayer } from "./QuickLiquidLayer";
-import { ActionCard, FALLBACK_ACTION_CARDS } from "./XookBrand";
-import { actionCardToTaskProposal } from "../features/task-decisions/taskSchema";
 import { useAnimatedPresence } from "../hooks/useAnimatedPresence";
 import {
   CanvasArtifact,
@@ -18,9 +16,11 @@ import { LocalUserProfile, getLocalUserProfile } from "../features/workspace-sto
 import {
   AiConfigStatus,
   AiConnectionTestResult,
+  ClarificationSpec,
   OPENROUTER_PRESET_MODELS,
   OpenRouterModelOption,
   detectApiKeyInText,
+  extractErrorMessage,
   fetchOpenRouterModels,
   formatModelDisplay,
   getAiConfigStatus,
@@ -31,6 +31,24 @@ import {
   saveAiConfig,
   testAiConnection,
 } from "../features/ai-service/aiClient";
+import {
+  listAgendaItems,
+  listTasks,
+  upsertTasksBatch,
+} from "../features/task-decisions/ledgerApi";
+import { ClarificationForm } from "../features/ai-service/ClarificationModal";
+import {
+  resolveCommandPermission,
+  subscribePermissionEvents,
+} from "../features/workspace-store/workspaceApi";
+import {
+  CommandPermissionCard,
+  applyCommandFinishedEvent,
+  applyPermissionRequestItem,
+  applyPermissionResolution,
+  type CommandPermissionDecisionKind,
+  type CommandPermissionUiItem,
+} from "../features/ai-service/CommandPermissionCard";
 
 const DRAG_THRESHOLD_PX = 4;
 
@@ -87,6 +105,8 @@ export const QuickBar: React.FC = () => {
   const [statusNote, setStatusNote] = useState<string>("");
   const [reply, setReply] = useState<string | null>(null);
   const [quickCanvas, setQuickCanvas] = useState<CanvasArtifact | null>(null);
+  const [pendingClarification, setPendingClarification] = useState<ClarificationSpec | null>(null);
+  const [permissionItems, setPermissionItems] = useState<CommandPermissionUiItem[]>([]);
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [inputExpanded, setInputExpanded] = useState<boolean>(false);
   const [localUser, setLocalUser] = useState<LocalUserProfile | null>(null);
@@ -111,6 +131,7 @@ export const QuickBar: React.FC = () => {
   const suppressNextXoxClickRef = useRef<boolean>(false);
   const isStreamingRef = useRef<boolean>(false);
   isStreamingRef.current = isStreaming;
+  const activeStreamIdRef = useRef<string | null>(null);
   const accountUsageRef = useRef<AiConnectionTestResult | null>(null);
   accountUsageRef.current = accountUsage;
   const catalogLoadingRef = useRef<boolean>(false);
@@ -119,10 +140,12 @@ export const QuickBar: React.FC = () => {
   const lastCanvasRef = useRef<CanvasArtifact | null>(null);
   const lastReplyRef = useRef<string | null>(null);
   const lastCanvasDisplayRef = useRef<CanvasArtifact | null>(null);
+  const lastClarificationDisplayRef = useRef<ClarificationSpec | null>(null);
   const lastStatusNoteRef = useRef<string>("");
 
   if (reply) lastReplyRef.current = reply;
   if (quickCanvas) lastCanvasDisplayRef.current = quickCanvas;
+  if (pendingClarification) lastClarificationDisplayRef.current = pendingClarification;
   if (statusNote) lastStatusNoteRef.current = statusNote;
 
   const xoxDragMotionRef = useRef<XoxDragMotion>({
@@ -580,6 +603,44 @@ export const QuickBar: React.FC = () => {
     triggerSettleImpulse,
   ]);
 
+  useEffect(() => {
+    return subscribePermissionEvents({
+      onRequest: (req) => {
+        if (!activeStreamIdRef.current || req.streamId !== activeStreamIdRef.current) {
+          return;
+        }
+        setPermissionItems((prev) => applyPermissionRequestItem(prev, req));
+      },
+      onFinished: (ev) => {
+        setPermissionItems((prev) => applyCommandFinishedEvent(prev, ev));
+      },
+    });
+  }, []);
+
+  const handleResolveQuickPermission = useCallback(
+    async (requestId: string, decision: CommandPermissionDecisionKind) => {
+      setPermissionItems((prev) =>
+        applyPermissionResolution(prev, requestId, decision)
+      );
+      try {
+        await resolveCommandPermission(requestId, decision);
+      } catch (err) {
+        setPermissionItems((prev) =>
+          prev.map((item) =>
+            item.requestId === requestId
+              ? {
+                  ...item,
+                  state: "error",
+                  error: extractErrorMessage(err, "No se pudo enviar tu decisión."),
+                }
+              : item
+          )
+        );
+      }
+    },
+    []
+  );
+
   // Garantiza cierre limpio del arrastre si la ventana pierde el foco abruptamente
   useEffect(() => {
     const handleBlur = () => {
@@ -664,19 +725,25 @@ export const QuickBar: React.FC = () => {
     return () => window.removeEventListener("mousedown", onDown);
   }, [showModels]);
 
-  const runQuickPrompt = async () => {
-    const text = inputPrompt.trim();
+  const runQuickPrompt = async (overridePrompt?: string) => {
+    const text = (
+      typeof overridePrompt === "string" ? overridePrompt : inputPrompt
+    ).trim();
     if (!text || isStreamingRef.current) return;
 
     clearActionTimers();
     setShowModels(false);
-    setInputPrompt("");
+    if (typeof overridePrompt !== "string") {
+      setInputPrompt("");
+    }
     setReply(null);
     setQuickCanvas(null);
+    setPendingClarification(null);
     lastPromptRef.current = text;
     lastCanvasRef.current = null;
     lastReplyRef.current = null;
     lastCanvasDisplayRef.current = null;
+    lastClarificationDisplayRef.current = null;
 
     // Zero-Trust: bloquear envío de claves API pegadas desde Quick Bar
     const { detectedKey, maskedKey } = detectApiKeyInText(text);
@@ -691,6 +758,7 @@ export const QuickBar: React.FC = () => {
       return;
     }
 
+    setPermissionItems([]);
     setIsStreaming(true);
     setXoxState("reading");
     setStatusNote("Leyendo contexto...");
@@ -716,20 +784,13 @@ export const QuickBar: React.FC = () => {
       }
 
       incrementLocalDailyRequestCount(latestCfg.maskedKey);
-      let actionCards: ActionCard[] = FALLBACK_ACTION_CARDS;
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const fetched = await invoke<ActionCard[]>("get_mock_action_cards");
-        if (Array.isArray(fetched)) actionCards = fetched;
-      } catch {
-        // Mantiene fallback local fuera de Tauri
-      }
-      const currentTasks = actionCards.map((c, idx) => actionCardToTaskProposal(c, idx));
-      const workspaceSources = await loadWorkspaceContext().catch(() => []);
-      const businessContextSnapshot = [
-        ...workspaceSources.map((src) => `- ${src.name} (${src.type}): ${src.content.slice(0, 600)}`),
-        ...currentTasks.map((t) => `- ${t.title}: ${t.subtitle}`),
-      ]
+      const [workspaceSources, currentTasks, agendaItems] = await Promise.all([
+        loadWorkspaceContext().catch(() => []),
+        listTasks("pending").catch(() => []),
+        listAgendaItems().catch(() => []),
+      ]);
+      const businessContextSnapshot = workspaceSources
+        .map((src) => `- ${src.path} (${src.type}): ${src.content.slice(0, 600)}`)
         .join("\n")
         .slice(0, 3500);
 
@@ -738,7 +799,7 @@ export const QuickBar: React.FC = () => {
           message: text,
           history: [],
           currentTasks,
-          agendaItems: [],
+          agendaItems,
           attachedContext: workspaceSources.slice(0, 3).map((src) => ({
             name: src.name,
             type: src.type,
@@ -756,6 +817,9 @@ export const QuickBar: React.FC = () => {
           activeCanvas: lastCanvasRef.current,
         },
         {
+          onStreamStart: (streamId) => {
+            activeStreamIdRef.current = streamId;
+          },
           onPhase: (phase, label) => {
             if (hasEnteredTalking && (phase === "reading" || phase === "thinking")) {
               return;
@@ -811,9 +875,16 @@ export const QuickBar: React.FC = () => {
       );
 
       clearActionTimers();
+      if (res.tasks.length > 0) {
+        void upsertTasksBatch(res.tasks, res.operation === "replace_tasks").catch(() => {});
+      }
       if (res.canvas) {
         lastCanvasRef.current = res.canvas;
         setQuickCanvas(res.canvas);
+      }
+      if (res.clarification) {
+        lastClarificationDisplayRef.current = res.clarification;
+        setPendingClarification(res.clarification);
       }
       setReply(res.reply);
       setIsStreaming(false);
@@ -851,7 +922,7 @@ export const QuickBar: React.FC = () => {
     } catch (err) {
       clearActionTimers();
       setIsStreaming(false);
-      const errMsg = err instanceof Error ? err.message : "No se pudo obtener respuesta.";
+      const errMsg = extractErrorMessage(err, "No se pudo obtener respuesta.");
       if (/saldo suficiente|402|no longer available/i.test(errMsg)) {
         setUnavailableModelIds((prev) => new Set(prev).add(modelId));
       }
@@ -991,10 +1062,13 @@ export const QuickBar: React.FC = () => {
 
   const modelsPresence = useAnimatedPresence(showModels, 145);
   const statusPresence = useAnimatedPresence(Boolean(statusNote), 190);
-  const hasQuickResult = Boolean(reply || quickCanvas);
+  const hasQuickResult = Boolean(
+    reply || quickCanvas || pendingClarification || permissionItems.length > 0
+  );
   const replyPresence = useAnimatedPresence(hasQuickResult, 190);
   const displayReply = reply ?? lastReplyRef.current;
   const displayCanvas = quickCanvas ?? lastCanvasDisplayRef.current;
+  const displayClarification = pendingClarification ?? lastClarificationDisplayRef.current;
   const displayStatusNote = statusNote || lastStatusNoteRef.current;
 
   const previewTableCanvas = useMemo(
@@ -1075,8 +1149,8 @@ export const QuickBar: React.FC = () => {
               dragging={isDragging}
             />
 
-            <div className="absolute inset-x-5 top-0 h-px bg-gradient-to-r from-transparent via-white/55 to-transparent" />
-            <div className="absolute inset-x-10 bottom-0 h-px bg-gradient-to-r from-transparent via-sky-200/35 to-transparent" />
+            <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.16] to-transparent" />
+            <div className="absolute inset-x-14 bottom-0 h-px bg-gradient-to-r from-transparent via-sky-200/[0.14] to-transparent" />
             <span aria-hidden="true" className="quick-starlight-sweep" />
             {settleSeq > 0 && (
               <span key={settleSeq} aria-hidden="true" className="quick-settle-sweep" />
@@ -1255,10 +1329,10 @@ export const QuickBar: React.FC = () => {
                           <rect width="210" height="180" fill="url(#ql-menu-cyan)" />
                           <rect width="210" height="180" fill="url(#ql-menu-aurora)" />
                         </svg>
-                        <div className="absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-white/50 to-transparent" />
+                        <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.18] to-transparent" />
                       </div>
 
-                      <div className="relative z-[1] px-2.5 py-1 mb-1 flex items-center justify-between text-[10px] text-zinc-200/75 border-b border-white/10">
+                      <div className="relative z-[1] px-2.5 py-1 mb-1 flex items-center justify-between text-[10px] text-zinc-200/75 border-b border-white/[0.06]">
                         <span>Disponibles ({modelOptions.length})</span>
                         <span className="font-mono">
                           {canUsePaidModels ? "Con saldo" : "Plan gratuito"}
@@ -1321,16 +1395,21 @@ export const QuickBar: React.FC = () => {
             </div>
 
             {/* Respuesta rápida en vivo inline (con entrada y salida suaves) */}
-            {replyPresence.mounted && (displayReply || previewTableCanvas) && (
+            {replyPresence.mounted &&
+              (displayReply || previewTableCanvas || permissionItems.length > 0) && (
               <div
                 className={`${
                   hasQuickResult ? "toast-in" : "toast-out pointer-events-none"
-                } mt-2.5 pt-2.5 border-t border-white/[0.14] space-y-2`}
+                } mt-2.5 space-y-2`}
               >
+                <div
+                  aria-hidden="true"
+                  className="h-px w-full bg-gradient-to-r from-transparent via-white/[0.08] to-transparent mb-2.5"
+                />
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-start gap-2 min-w-0 flex-1">
                     <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0 mt-0.5">
-                      <Sparkles className="w-2.5 h-2.5 text-white/95" />
+                      <Sparkles className="w-2.5 h-2.5 text-sky-100/95" />
                     </span>
                     <div
                       className={`${
@@ -1376,9 +1455,12 @@ export const QuickBar: React.FC = () => {
                     onClick={() => {
                       setReply(null);
                       setQuickCanvas(null);
+                      setPendingClarification(null);
+                      setPermissionItems([]);
                       lastCanvasRef.current = null;
                       lastReplyRef.current = null;
                       lastCanvasDisplayRef.current = null;
+                      lastClarificationDisplayRef.current = null;
                       inputRef.current?.focus();
                     }}
                     aria-label="Limpiar respuesta"
@@ -1387,6 +1469,21 @@ export const QuickBar: React.FC = () => {
                     <X className="w-3 h-3" />
                   </button>
                 </div>
+
+                {permissionItems.length > 0 && (
+                  <div data-no-drag="true" className="ml-7 space-y-2 select-text">
+                    {permissionItems.map((perm) => (
+                      <CommandPermissionCard
+                        key={perm.requestId}
+                        item={perm}
+                        compact
+                        onResolve={(reqId, decision) =>
+                          void handleResolveQuickPermission(reqId, decision)
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
 
                 {previewTableCanvas && (
                   <div
@@ -1465,28 +1562,54 @@ export const QuickBar: React.FC = () => {
                   </div>
                 )}
 
+                {displayClarification && !isStreaming && (
+                  <div
+                    data-no-drag="true"
+                    className="ml-7 max-h-[215px] overflow-y-auto xook-scroll rounded-xl border border-sky-400/20 bg-black/35 p-2.5 select-text"
+                  >
+                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-sky-200 mb-2">
+                      <HelpCircle className="w-3.5 h-3.5 text-sky-300 shrink-0" />
+                      <span className="truncate">{displayClarification.title}</span>
+                    </div>
+                    <ClarificationForm
+                      compact
+                      clarification={displayClarification}
+                      disabled={isStreaming}
+                      onCancel={() => {
+                        setPendingClarification(null);
+                        lastClarificationDisplayRef.current = null;
+                      }}
+                      onSubmit={(formattedReply) => {
+                        void runQuickPrompt(formattedReply);
+                      }}
+                    />
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between gap-2 pl-7">
                   {previewTableCanvas ? (
                     <button
                       type="button"
                       onClick={() => void openInMainWorkspace()}
-                      className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium text-white/95 cursor-pointer"
+                      className="quick-liquid-btn inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium text-white/95 cursor-pointer"
                     >
-                      <span className="quick-liquid-icon w-4 h-4 rounded-full inline-flex items-center justify-center shrink-0">
-                        <Table2 className="w-2.5 h-2.5 text-white" />
-                      </span>
+                      <Table2 className="w-3 h-3 text-sky-100/90 shrink-0" />
                       <span className="max-w-[250px] truncate">
                         {previewTableCanvas.title} ({previewTableCanvas.rows.length}{" "}
                         {previewTableCanvas.rows.length === 1 ? "fila" : "filas"})
                       </span>
-                      <span className="text-zinc-200/80 shrink-0">· Abrir en Canvas</span>
-                      <kbd className="font-mono text-[10px] px-1.5 py-0.5 rounded-md bg-white/[0.12] border border-white/[0.16] text-white/95 shrink-0">
+                      <span className="text-zinc-200/75 shrink-0">· Abrir en Canvas</span>
+                      <kbd className="font-mono text-[10px] px-1.5 py-0.5 rounded-md bg-white/[0.08] text-white/90 shrink-0">
                         ⌘↩
                       </kbd>
                     </button>
                   ) : (
                     <span className="text-[10.5px] text-zinc-300/75">
-                      {isStreaming ? "Escribiendo en vivo…" : "Listo para continuar"}
+                      {isStreaming
+                        ? "Escribiendo en vivo…"
+                        : displayClarification
+                          ? "Responde para continuar"
+                          : "Listo para continuar"}
                     </span>
                   )}
 
@@ -1494,15 +1617,13 @@ export const QuickBar: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => void openInMainWorkspace()}
-                      className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10.5px] font-medium text-white/95 cursor-pointer"
+                      className="quick-liquid-btn inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-medium text-white/95 cursor-pointer"
                     >
                       <span>Abrir XOOK</span>
-                      <kbd className="font-mono text-[10px] px-1.5 py-0.5 rounded-md bg-white/[0.12] border border-white/[0.16] text-white/95">
+                      <kbd className="font-mono text-[10px] px-1.5 py-0.5 rounded-md bg-white/[0.08] text-white/90">
                         ⌘↩
                       </kbd>
-                      <span className="quick-liquid-icon w-4 h-4 rounded-full inline-flex items-center justify-center shrink-0">
-                        <ExternalLink className="w-2.5 h-2.5 text-white" />
-                      </span>
+                      <ExternalLink className="w-3 h-3 text-sky-100/90 shrink-0" />
                     </button>
                   )}
                 </div>

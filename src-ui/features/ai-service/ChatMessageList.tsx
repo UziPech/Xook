@@ -1,8 +1,14 @@
 import React, { useState } from "react";
 import {
+  CommandPermissionCard,
+  type CommandPermissionDecisionKind,
+  type CommandPermissionUiItem,
+} from "./CommandPermissionCard";
+import {
   Check,
   Copy,
   ExternalLink,
+  HelpCircle,
   KeyRound,
   RotateCcw,
   Sparkles,
@@ -19,6 +25,7 @@ import {
   parseMarkdownTableBlock,
 } from "../canvas/canvasSchema";
 import {
+  ClarificationSpec,
   OpenRouterModelOption,
   ThinkingStep,
   formatModelDisplay,
@@ -42,8 +49,9 @@ export interface UiChatMessage {
   isError?: boolean;
   actionButton?: {
     label: string;
-    kind: "open_settings" | "save_pending_key";
+    kind: "open_settings" | "save_pending_key" | "open_clarification";
     cardId?: string;
+    clarification?: ClarificationSpec;
   };
 }
 
@@ -62,6 +70,11 @@ interface ChatMessageListProps {
   onOpenTasksTab: () => void;
   onRegenerateMessage?: (msg: UiChatMessage) => void;
   onRateMessage?: (msgId: string, rating: "up" | "down") => void;
+  permissionItems?: CommandPermissionUiItem[];
+  onResolvePermission?: (
+    requestId: string,
+    decision: CommandPermissionDecisionKind
+  ) => void;
 }
 
 function renderInlineFormatting(line: string): React.ReactNode[] {
@@ -127,10 +140,10 @@ function FormattedReply({
             key={`tbl_${blockIdx}`}
             className="my-2 xook-liquid-table rounded-2xl overflow-hidden"
           >
-            <div className="flex items-center justify-between px-3 py-2 bg-white/[0.04] border-b border-white/[0.11] text-[11px] text-zinc-300">
+            <div className="flex items-center justify-between px-3 py-2 bg-white/[0.03] border-b border-white/[0.07] text-[11px] text-zinc-300">
               <span className="inline-flex items-center gap-2 font-medium text-white/90">
                 <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
-                  <Table2 className="w-2.5 h-2.5 text-white" />
+                  <Table2 className="w-2.5 h-2.5 text-sky-100/95" />
                 </span>
                 <span>
                   {table.rows.length} {table.rows.length === 1 ? "fila" : "filas"} ·{" "}
@@ -308,6 +321,8 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   onOpenTasksTab,
   onRegenerateMessage,
   onRateMessage,
+  permissionItems = [],
+  onResolvePermission,
 }) => {
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -501,7 +516,9 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                                 className={
                                   step.status === "running"
                                     ? "xox-shimmer inline-block font-medium"
-                                    : "text-zinc-300"
+                                    : step.status === "error"
+                                      ? "text-rose-400"
+                                      : "text-zinc-300"
                                 }
                               >
                                 {step.label}
@@ -549,6 +566,21 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 </div>
               ) : null}
 
+              {/* Tarjetas de permiso / ejecución en espacio de trabajo */}
+              {permissionItems.length > 0 && isActiveGuideTurn && (
+                  <div className="space-y-2 my-1">
+                    {permissionItems.map((perm) => (
+                      <CommandPermissionCard
+                        key={perm.requestId}
+                        item={perm}
+                        onResolve={(reqId, decision) =>
+                          onResolvePermission?.(reqId, decision)
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
+
               {/* Indicador en vivo mientras Xox diseña Canvas */}
               {msg.isStreaming && isActiveGuideTurn && xoxState === "syncing" && !msg.canvas && (
                 <div className="rounded-2xl border border-sky-400/20 bg-sky-500/[0.05] px-3.5 py-2.5 flex items-center gap-2.5 text-[12px] text-sky-200">
@@ -577,13 +609,13 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     onClick={() => onOpenCanvas?.(msg.canvas!)}
                     style={{
                       boxShadow: isOpen
-                        ? "inset 0 1px 1px rgba(255,255,255,0.28), 0 14px 32px -18px rgba(196,181,253,0.45)"
-                        : "inset 0 1px 1px rgba(255,255,255,0.16), 0 12px 28px -18px rgba(0,0,0,0.82)",
+                        ? "inset 0 1px 1px rgba(255,255,255,0.16), 0 14px 32px -18px rgba(196,181,253,0.40)"
+                        : "inset 0 1px 1px rgba(255,255,255,0.10), 0 12px 28px -18px rgba(0,0,0,0.82)",
                     }}
                     className={`group relative overflow-hidden w-full max-w-[490px] text-left rounded-2xl border p-3.5 transition-all duration-200 cursor-pointer ${
                       isOpen
-                        ? "bg-gradient-to-b from-white/[0.10] via-[#13182a]/85 to-[#0b0f1b]/90 border-indigo-200/40"
-                        : "bg-gradient-to-b from-white/[0.065] via-[#111521]/82 to-[#090c14]/88 hover:from-white/[0.095] hover:via-[#151b2b]/84 border-white/[0.14] hover:border-indigo-200/35"
+                        ? "bg-gradient-to-b from-white/[0.08] via-[#13182a]/85 to-[#0b0f1b]/90 border-indigo-200/30"
+                        : "bg-gradient-to-b from-white/[0.05] via-[#111521]/82 to-[#090c14]/88 hover:from-white/[0.075] hover:via-[#151b2b]/84 border-white/[0.08] hover:border-indigo-200/25"
                     }`}
                   >
                     <div
@@ -594,9 +626,9 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     <div className="relative flex items-center justify-between gap-2.5 mb-2.5">
                       <div className="flex items-center gap-2 min-w-0">
                         <div className="quick-liquid-icon w-7 h-7 rounded-xl flex items-center justify-center shrink-0">
-                          <Table2 className="w-3.5 h-3.5 text-white" />
+                          <Table2 className="w-3.5 h-3.5 text-sky-100/95" />
                         </div>
-                        <span className="px-2 py-0.5 rounded-full bg-white/[0.08] border border-white/[0.15] text-[10px] font-medium text-white/90 shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]">
+                        <span className="px-2 py-0.5 rounded-full bg-white/[0.055] border border-white/[0.09] text-[10px] font-medium text-white/90 shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
                           {kindLabel}
                         </span>
                         <span className="text-[11px] text-zinc-400 truncate">
@@ -676,7 +708,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 </div>
               )}
 
-              {/* Acción especial (ej. conectar clave) */}
+              {/* Acción especial (ej. conectar clave o abrir pregunta abierta) */}
               {msg.actionButton && (
                 <div>
                   <button
@@ -684,7 +716,11 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     onClick={() => onAction(msg.actionButton!)}
                     className="xook-approve-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer"
                   >
-                    <KeyRound className="w-3.5 h-3.5" />
+                    {msg.actionButton.kind === "open_clarification" ? (
+                      <HelpCircle className="w-3.5 h-3.5" />
+                    ) : (
+                      <KeyRound className="w-3.5 h-3.5" />
+                    )}
                     <span>{msg.actionButton.label}</span>
                   </button>
                 </div>
