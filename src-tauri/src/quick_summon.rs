@@ -19,13 +19,15 @@ const TRAY_ID: &str = "xook-tray";
 const POS_STORE_FILENAME: &str = "quick-bar-pos.json";
 
 const QUICK_WIDTH: f64 = 700.0;
-const QUICK_HEIGHT: f64 = 340.0;
+const QUICK_HEIGHT: f64 = 435.0;
 const CAPSULE_PAD_X: f64 = 36.0;
 const CAPSULE_TOP_OFFSET: f64 = 20.0;
 const CAPSULE_VISIBLE_BOTTOM: f64 = 112.0;
 const FOCUS_GRACE_MS: u64 = 240;
 const DISMISS_ANIM_MS: u64 = 160;
 const RECENTER_DURATION_MS: u64 = 280;
+const QUICK_IDLE_EMPTY_MS: u64 = 45_000;
+const QUICK_IDLE_CONTENT_MS: u64 = 180_000;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct SavedQuickPos {
@@ -54,11 +56,23 @@ pub struct SummonState {
     pub is_quitting: AtomicBool,
     last_quick_shown_ms: AtomicU64,
     summon_seq: AtomicU64,
+    hidden_seq: AtomicU64,
     quick_dismissing: AtomicBool,
+    quick_busy: AtomicBool,
+    quick_has_content: AtomicBool,
+    quick_ready: AtomicBool,
+    want_quick_visible: AtomicBool,
     is_dragging: AtomicBool,
     recenter_seq: AtomicU64,
     custom_pos: Mutex<Option<SavedQuickPos>>,
     drag_anchor: Mutex<Option<DragAnchor>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickReadyResponse {
+    pub visible: bool,
+    pub seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +95,8 @@ pub struct QuickTransferPayload {
     pub prompt: Option<String>,
     pub auto_run: bool,
     pub response_text: Option<String>,
+    #[serde(default)]
+    pub canvas: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +106,7 @@ pub struct MainSummonPayload {
     pub prompt: Option<String>,
     pub auto_run: bool,
     pub response_text: Option<String>,
+    pub canvas: Option<serde_json::Value>,
 }
 
 fn now_ms() -> u64 {
@@ -260,10 +277,14 @@ fn ensure_quick_window<R: Runtime>(app: &AppHandle<R>) -> Option<WebviewWindow<R
         return Some(win);
     }
 
+    app.state::<SummonState>()
+        .quick_ready
+        .store(false, Ordering::SeqCst);
+
     match WebviewWindowBuilder::new(
         app,
         QUICK_WINDOW_LABEL,
-        WebviewUrl::App("index.html".into()),
+        WebviewUrl::App("index.html?mode=quick".into()),
     )
     .title("Xox Quick Bar")
     .inner_size(QUICK_WIDTH, QUICK_HEIGHT)
@@ -542,6 +563,35 @@ fn position_quick_for_summon<R: Runtime>(app: &AppHandle<R>, quick: &WebviewWind
     position_quick_on_active_monitor(app, quick);
 }
 
+fn schedule_quick_hibernation<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<SummonState>();
+    let hseq = state.hidden_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    let delay_ms = if state.quick_has_content.load(Ordering::SeqCst) {
+        QUICK_IDLE_CONTENT_MS
+    } else {
+        QUICK_IDLE_EMPTY_MS
+    };
+
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        let state = handle.state::<SummonState>();
+        if state.is_quitting.load(Ordering::SeqCst)
+            || state.hidden_seq.load(Ordering::SeqCst) != hseq
+            || state.want_quick_visible.load(Ordering::SeqCst)
+            || state.quick_busy.load(Ordering::SeqCst)
+        {
+            return;
+        }
+        if let Some(win) = handle.get_webview_window(QUICK_WINDOW_LABEL) {
+            if !win.is_visible().unwrap_or(false) {
+                state.quick_ready.store(false, Ordering::SeqCst);
+                let _ = win.destroy();
+            }
+        }
+    });
+}
+
 pub fn show_quick_bar<R: Runtime>(app: &AppHandle<R>) {
     let Some(quick) = ensure_quick_window(app) else {
         return;
@@ -550,30 +600,38 @@ pub fn show_quick_bar<R: Runtime>(app: &AppHandle<R>) {
     let state = app.state::<SummonState>();
     state.quick_dismissing.store(false, Ordering::SeqCst);
     state.is_dragging.store(false, Ordering::SeqCst);
+    state.want_quick_visible.store(true, Ordering::SeqCst);
+    state.hidden_seq.fetch_add(1, Ordering::SeqCst);
     state.recenter_seq.fetch_add(1, Ordering::SeqCst);
     let seq = state.summon_seq.fetch_add(1, Ordering::SeqCst) + 1;
-    state.last_quick_shown_ms.store(now_ms(), Ordering::SeqCst);
 
     position_quick_for_summon(app, &quick);
-    let _ = quick.show();
-    let _ = quick.set_focus();
 
-    let _ = app.emit_to(
-        QUICK_WINDOW_LABEL,
-        "quick:summon",
-        QuickSummonPayload { seq },
-    );
+    if state.quick_ready.load(Ordering::SeqCst) {
+        state.last_quick_shown_ms.store(now_ms(), Ordering::SeqCst);
+        let _ = quick.show();
+        let _ = quick.set_focus();
+
+        let _ = app.emit_to(
+            QUICK_WINDOW_LABEL,
+            "quick:summon",
+            QuickSummonPayload { seq },
+        );
+    }
 }
 
 pub fn request_dismiss_quick_bar<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<SummonState>();
+    state.want_quick_visible.store(false, Ordering::SeqCst);
+
     let Some(quick) = app.get_webview_window(QUICK_WINDOW_LABEL) else {
         return;
     };
     if !quick.is_visible().unwrap_or(false) {
+        schedule_quick_hibernation(app);
         return;
     }
 
-    let state = app.state::<SummonState>();
     if state.quick_dismissing.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -596,6 +654,12 @@ pub fn request_dismiss_quick_bar<R: Runtime>(app: &AppHandle<R>) {
         {
             if let Some(win) = handle.get_webview_window(QUICK_WINDOW_LABEL) {
                 let _ = win.hide();
+                let _ = handle.emit_to(
+                    QUICK_WINDOW_LABEL,
+                    "quick:hidden",
+                    QuickSummonPayload { seq },
+                );
+                schedule_quick_hibernation(&handle);
             }
         }
     });
@@ -604,19 +668,29 @@ pub fn request_dismiss_quick_bar<R: Runtime>(app: &AppHandle<R>) {
 pub fn hide_quick_bar_now<R: Runtime>(app: &AppHandle<R>) {
     let state = app.state::<SummonState>();
     state.quick_dismissing.store(false, Ordering::SeqCst);
+    state.want_quick_visible.store(false, Ordering::SeqCst);
     state.is_dragging.store(false, Ordering::SeqCst);
     state.recenter_seq.fetch_add(1, Ordering::SeqCst);
-    state.summon_seq.fetch_add(1, Ordering::SeqCst);
+    let seq = state.summon_seq.fetch_add(1, Ordering::SeqCst) + 1;
 
     if let Some(quick) = app.get_webview_window(QUICK_WINDOW_LABEL) {
         let _ = quick.hide();
+        let _ = app.emit_to(
+            QUICK_WINDOW_LABEL,
+            "quick:hidden",
+            QuickSummonPayload { seq },
+        );
+        schedule_quick_hibernation(app);
     }
 }
 
 pub fn toggle_quick_bar<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<SummonState>();
     if let Some(quick) = app.get_webview_window(QUICK_WINDOW_LABEL) {
-        if quick.is_visible().unwrap_or(false) {
-            let state = app.state::<SummonState>();
+        let is_vis = quick.is_visible().unwrap_or(false);
+        let booting_to_show =
+            !state.quick_ready.load(Ordering::SeqCst) && state.want_quick_visible.load(Ordering::SeqCst);
+        if is_vis || booting_to_show {
             if state.quick_dismissing.load(Ordering::SeqCst) {
                 show_quick_bar(app);
             } else {
@@ -649,12 +723,14 @@ pub fn show_main_workspace<R: Runtime>(
             prompt: t.prompt,
             auto_run: t.auto_run,
             response_text: t.response_text,
+            canvas: t.canvas,
         },
         None => MainSummonPayload {
             seq,
             prompt: None,
             auto_run: false,
             response_text: None,
+            canvas: None,
         },
     };
     let _ = app.emit_to(MAIN_WINDOW_LABEL, "main:summon", payload);
@@ -739,6 +815,40 @@ pub fn animate_recenter_quick_bar<R: Runtime>(app: &AppHandle<R>) {
             tokio::time::sleep(Duration::from_millis(step_ms)).await;
         }
     });
+}
+
+#[tauri::command]
+pub fn quick_bar_ready(app: AppHandle) -> QuickReadyResponse {
+    let state = app.state::<SummonState>();
+    state.quick_ready.store(true, Ordering::SeqCst);
+    let seq = state.summon_seq.load(Ordering::SeqCst);
+
+    if state.want_quick_visible.load(Ordering::SeqCst) {
+        if let Some(win) = app.get_webview_window(QUICK_WINDOW_LABEL) {
+            position_quick_for_summon(&app, &win);
+            state.last_quick_shown_ms.store(now_ms(), Ordering::SeqCst);
+            let _ = win.show();
+            let _ = win.set_focus();
+            return QuickReadyResponse { visible: true, seq };
+        }
+    }
+
+    QuickReadyResponse { visible: false, seq }
+}
+
+#[tauri::command]
+pub fn set_quick_state(app: AppHandle, busy: bool, has_content: bool) {
+    let state = app.state::<SummonState>();
+    state.quick_busy.store(busy, Ordering::SeqCst);
+    state.quick_has_content.store(has_content, Ordering::SeqCst);
+
+    if !busy && !state.want_quick_visible.load(Ordering::SeqCst) {
+        if let Some(win) = app.get_webview_window(QUICK_WINDOW_LABEL) {
+            if !win.is_visible().unwrap_or(false) {
+                schedule_quick_hibernation(&app);
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -854,8 +964,8 @@ pub fn setup_quick_summon<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         }
     }
 
-    // 1. Pre-creamos la ventana flotante oculta para que aparezca en <15ms al invocar ⌘⇧X
-    let _ = ensure_quick_window(app);
+    // 1. Creamos la Quick Bar bajo demanda (en la primera invocación ⌘⇧X) y hibernamos tras inactividad
+    // para evitar mantener un segundo proceso WebKit (~90-230 MB) residente mientras no se usa.
 
     // 2. Registramos el atajo global ⌘ + ⇧ + X (Ctrl + Shift + X fuera de macOS)
     let summon_shortcut = build_summon_shortcut();
@@ -976,6 +1086,12 @@ pub fn handle_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) 
                 if now_ms().saturating_sub(shown_at) >= FOCUS_GRACE_MS {
                     request_dismiss_quick_bar(app);
                 }
+            }
+            WindowEvent::Destroyed => {
+                state.quick_ready.store(false, Ordering::SeqCst);
+                state.want_quick_visible.store(false, Ordering::SeqCst);
+                state.quick_dismissing.store(false, Ordering::SeqCst);
+                state.is_dragging.store(false, Ordering::SeqCst);
             }
             _ => {}
         },

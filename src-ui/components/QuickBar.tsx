@@ -1,9 +1,20 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Send, Sparkles, X } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, ExternalLink, Send, Sparkles, Star, Table2, X } from "lucide-react";
 import { XoxDragMotion, XoxStar, XoxState } from "./XoxStar";
 import { QuickLiquidLayer } from "./QuickLiquidLayer";
 import { ActionCard, FALLBACK_ACTION_CARDS } from "./XookBrand";
 import { actionCardToTaskProposal } from "../features/task-decisions/taskSchema";
+import { useAnimatedPresence } from "../hooks/useAnimatedPresence";
+import {
+  CanvasArtifact,
+  canvasHasCellData,
+  cleanVisibleReply,
+  extractFirstHtmlTable,
+  extractFirstMarkdownTable,
+  markdownTableToCanvasArtifact,
+  sanitizeCanvasArtifact,
+} from "../features/canvas/canvasSchema";
+import { LocalUserProfile, getLocalUserProfile } from "../features/workspace-store/localStore";
 import {
   AiConfigStatus,
   AiConnectionTestResult,
@@ -15,7 +26,8 @@ import {
   getAiConfigStatus,
   getAvailableQuickModels,
   incrementLocalDailyRequestCount,
-  runXoxAiChat,
+  loadWorkspaceContext,
+  runXoxAiChatStream,
   saveAiConfig,
   testAiConnection,
 } from "../features/ai-service/aiClient";
@@ -40,8 +52,33 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
   );
 }
 
+function resolveQuickPreviewCanvas(
+  rawCanvas: CanvasArtifact | null | undefined,
+  rawText: string | null | undefined,
+  fallbackTitle: string
+): CanvasArtifact | null {
+  const sanitized = rawCanvas ? sanitizeCanvasArtifact(rawCanvas) : null;
+  if (sanitized && sanitized.columns.length > 0 && sanitized.rows.length > 0 && canvasHasCellData(sanitized)) {
+    return sanitized;
+  }
+  if (rawText) {
+    const inlineTbl = extractFirstMarkdownTable(rawText) ?? extractFirstHtmlTable(rawText);
+    if (inlineTbl && inlineTbl.rows.length > 0) {
+      return markdownTableToCanvasArtifact(inlineTbl, {
+        title: sanitized?.title || fallbackTitle || "Tabla rápida",
+        subtitle: sanitized?.subtitle,
+        summary: sanitized?.summary,
+      });
+    }
+  }
+  return null;
+}
+
 export const QuickBar: React.FC = () => {
   const [summonSeq, setSummonSeq] = useState<number>(1);
+  const [isQuickVisible, setIsQuickVisible] = useState<boolean>(
+    () => !(typeof window !== "undefined" && "__TAURI_INTERNALS__" in window)
+  );
   const [isLeaving, setIsLeaving] = useState<boolean>(false);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [settleSeq, setSettleSeq] = useState<number>(0);
@@ -49,7 +86,10 @@ export const QuickBar: React.FC = () => {
   const [xoxState, setXoxState] = useState<XoxState>("idle");
   const [statusNote, setStatusNote] = useState<string>("");
   const [reply, setReply] = useState<string | null>(null);
-  const [pendingCards, setPendingCards] = useState<ActionCard[]>(FALLBACK_ACTION_CARDS);
+  const [quickCanvas, setQuickCanvas] = useState<CanvasArtifact | null>(null);
+  const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  const [inputExpanded, setInputExpanded] = useState<boolean>(false);
+  const [localUser, setLocalUser] = useState<LocalUserProfile | null>(null);
   const [modelId, setModelId] = useState<string>(OPENROUTER_PRESET_MODELS[0].id);
   const [aiConfig, setAiConfig] = useState<AiConfigStatus>({
     provider: "openrouter",
@@ -69,6 +109,21 @@ export const QuickBar: React.FC = () => {
   const capsuleRef = useRef<HTMLDivElement>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const suppressNextXoxClickRef = useRef<boolean>(false);
+  const isStreamingRef = useRef<boolean>(false);
+  isStreamingRef.current = isStreaming;
+  const accountUsageRef = useRef<AiConnectionTestResult | null>(null);
+  accountUsageRef.current = accountUsage;
+  const catalogLoadingRef = useRef<boolean>(false);
+  const cachedSelectedModelRef = useRef<OpenRouterModelOption | null>(null);
+  const lastPromptRef = useRef<string>("");
+  const lastCanvasRef = useRef<CanvasArtifact | null>(null);
+  const lastReplyRef = useRef<string | null>(null);
+  const lastCanvasDisplayRef = useRef<CanvasArtifact | null>(null);
+  const lastStatusNoteRef = useRef<string>("");
+
+  if (reply) lastReplyRef.current = reply;
+  if (quickCanvas) lastCanvasDisplayRef.current = quickCanvas;
+  if (statusNote) lastStatusNoteRef.current = statusNote;
 
   const xoxDragMotionRef = useRef<XoxDragMotion>({
     active: false,
@@ -354,54 +409,79 @@ export const QuickBar: React.FC = () => {
     }
   }, [triggerSettleImpulse]);
 
-  const refreshPendingCards = useCallback(async () => {
+  const refreshQuickSession = useCallback(async () => {
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const fetched = await invoke<ActionCard[]>("get_mock_action_cards");
-      if (Array.isArray(fetched)) setPendingCards(fetched);
-    } catch {
-      // Mantiene fallback local fuera de Tauri
-    }
-    try {
-      const cfg = await getAiConfigStatus();
+      const [cfg, savedUser] = await Promise.all([
+        getAiConfigStatus(),
+        getLocalUserProfile().catch(() => null),
+      ]);
+      setLocalUser(savedUser);
       setAiConfig(cfg);
       if (cfg.modelId) setModelId(cfg.modelId);
       if (cfg.hasApiKey) {
-        void testAiConnection().then((res) => {
-          if (res.ok) setAccountUsage(res);
-        });
+        if (!accountUsageRef.current) {
+          void testAiConnection().then((res) => {
+            if (res.ok) setAccountUsage(res);
+          });
+        }
       } else {
         setAccountUsage(null);
       }
     } catch {
       // Ignora error de carga inicial de bóveda
     }
-    void fetchOpenRouterModels(false).then((res) => {
-      if (res.models.length > 0) setLiveCatalog(res.models);
-    });
   }, []);
 
+  const loadModelCatalog = useCallback(async () => {
+    if (catalogLoadingRef.current) return;
+    catalogLoadingRef.current = true;
+    try {
+      const res = await fetchOpenRouterModels(false);
+      if (res.models.length > 0) setLiveCatalog(res.models);
+    } finally {
+      catalogLoadingRef.current = false;
+    }
+  }, []);
+
+  // Libera el catálogo extenso cuando el menú está cerrado para reducir memoria
   useEffect(() => {
-    void refreshPendingCards();
-    focusInput();
+    if (showModels || liveCatalog.length === 0) return;
+    const t = setTimeout(() => {
+      setLiveCatalog([]);
+    }, 180);
+    return () => clearTimeout(t);
+  }, [showModels, liveCatalog.length]);
+
+  useEffect(() => {
+    const isTauriRuntime =
+      typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+    if (!isTauriRuntime) {
+      void refreshQuickSession();
+      focusInput();
+    }
 
     let cancelled = false;
     let unlistenSummon: (() => void) | undefined;
     let unlistenDismiss: (() => void) | undefined;
+    let unlistenHidden: (() => void) | undefined;
     let unlistenRecenter: (() => void) | undefined;
 
     (async () => {
       try {
         const { listen } = await import("@tauri-apps/api/event");
+        const { invoke } = await import("@tauri-apps/api/core");
+
         const u1 = await listen<{ seq: number }>("quick:summon", (event) => {
           clearActionTimers();
           dragSessionRef.current = null;
           setIsDragging(false);
           xoxDragMotionRef.current.active = false;
           setIsLeaving(false);
+          setIsQuickVisible(true);
           setShowModels(false);
           setSummonSeq(event.payload?.seq ?? Date.now());
-          void refreshPendingCards();
+          void refreshQuickSession();
           focusInput();
         });
         if (cancelled) {
@@ -423,7 +503,32 @@ export const QuickBar: React.FC = () => {
         }
         unlistenDismiss = u2;
 
-        const u3 = await listen<{ phase: "step" | "end"; vx: number; vy: number }>(
+        const u3 = await listen("quick:hidden", () => {
+          clearActionTimers();
+          dragSessionRef.current = null;
+          setIsDragging(false);
+          xoxDragMotionRef.current.active = false;
+          const anim = animStateRef.current;
+          if (anim.rafId) {
+            cancelAnimationFrame(anim.rafId);
+            anim.rafId = 0;
+          }
+          anim.running = false;
+          if (capsuleRef.current && anim.previewX === 0 && anim.previewY === 0) {
+            capsuleRef.current.style.transform = "";
+          }
+          setShowModels(false);
+          setIsLeaving(false);
+          setIsQuickVisible(false);
+          setLiveCatalog([]);
+        });
+        if (cancelled) {
+          u3();
+          return;
+        }
+        unlistenHidden = u3;
+
+        const u4 = await listen<{ phase: "step" | "end"; vx: number; vy: number }>(
           "quick:recenter",
           (event) => {
             const { phase, vx, vy } = event.payload ?? {};
@@ -440,10 +545,21 @@ export const QuickBar: React.FC = () => {
           }
         );
         if (cancelled) {
-          u3();
+          u4();
           return;
         }
-        unlistenRecenter = u3;
+        unlistenRecenter = u4;
+
+        const ready = await invoke<{ visible: boolean; seq: number }>("quick_bar_ready");
+        if (cancelled) return;
+        if (ready?.visible) {
+          clearActionTimers();
+          setIsLeaving(false);
+          setIsQuickVisible(true);
+          if (ready.seq) setSummonSeq(ready.seq);
+          void refreshQuickSession();
+          focusInput();
+        }
       } catch {
         // Preview web sin runtime Tauri
       }
@@ -453,13 +569,14 @@ export const QuickBar: React.FC = () => {
       cancelled = true;
       unlistenSummon?.();
       unlistenDismiss?.();
+      unlistenHidden?.();
       unlistenRecenter?.();
     };
   }, [
     clearActionTimers,
     ensureCapsuleSpringRunning,
     focusInput,
-    refreshPendingCards,
+    refreshQuickSession,
     triggerSettleImpulse,
   ]);
 
@@ -472,17 +589,56 @@ export const QuickBar: React.FC = () => {
     return () => window.removeEventListener("blur", handleBlur);
   }, [finishDragSession]);
 
-  // Auto-altura compacta del textarea (1 a 4 líneas)
+  // Auto-altura suave del textarea estilo burbuja (1 a 4 líneas)
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
+    const prevHeight = el.style.height || `${el.offsetHeight || 32}px`;
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 108)}px`;
-  }, [inputPrompt]);
+    const nextPx = Math.min(Math.max(el.scrollHeight, 32), 108);
+    el.style.height = prevHeight;
+    void el.offsetHeight;
+    el.style.height = `${nextPx}px`;
+    setInputExpanded(nextPx > 44);
+  }, [inputPrompt, summonSeq]);
 
-  // Escape oculta el menú de modelos o la Quick Bar
+  const openInMainWorkspace = useCallback(async () => {
+    const typedPrompt = inputPrompt.trim();
+    const promptToSend = lastPromptRef.current || typedPrompt || null;
+    const rawReply = reply?.trim() ? reply : null;
+    const rawCanvas = resolveQuickPreviewCanvas(
+      lastCanvasRef.current ?? quickCanvas,
+      rawReply,
+      promptToSend || "Tabla rápida"
+    );
+    const responseToSend = rawReply
+      ? cleanVisibleReply(rawReply, { stripTables: Boolean(rawCanvas) }) || rawReply
+      : rawCanvas
+        ? `Listo, preparé "${rawCanvas.title}" en Canvas.`
+        : null;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_main_workspace", {
+        payload: {
+          prompt: promptToSend,
+          autoRun: Boolean(!responseToSend && !rawCanvas && typedPrompt),
+          responseText: responseToSend,
+          canvas: rawCanvas ?? null,
+        },
+      });
+    } catch {
+      // Ignorar fuera de Tauri
+    }
+  }, [inputPrompt, reply, quickCanvas]);
+
+  // Escape oculta el menú de modelos o la Quick Bar; ⌘↩ abre XOOK completo
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        void openInMainWorkspace();
+        return;
+      }
       if (e.key === "Escape") {
         e.preventDefault();
         if (showModels) {
@@ -494,7 +650,7 @@ export const QuickBar: React.FC = () => {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismissGracefully, showModels]);
+  }, [dismissGracefully, openInMainWorkspace, showModels]);
 
   // Cerrar selector de modelo al hacer clic fuera
   useEffect(() => {
@@ -510,12 +666,17 @@ export const QuickBar: React.FC = () => {
 
   const runQuickPrompt = async () => {
     const text = inputPrompt.trim();
-    if (!text || xoxState === "thinking") return;
+    if (!text || isStreamingRef.current) return;
 
     clearActionTimers();
     setShowModels(false);
     setInputPrompt("");
     setReply(null);
+    setQuickCanvas(null);
+    lastPromptRef.current = text;
+    lastCanvasRef.current = null;
+    lastReplyRef.current = null;
+    lastCanvasDisplayRef.current = null;
 
     // Zero-Trust: bloquear envío de claves API pegadas desde Quick Bar
     const { detectedKey, maskedKey } = detectApiKeyInText(text);
@@ -530,13 +691,22 @@ export const QuickBar: React.FC = () => {
       return;
     }
 
-    setXoxState("thinking");
-    setStatusNote(`Consultando ${activeModel.name}...`);
+    setIsStreaming(true);
+    setXoxState("reading");
+    setStatusNote("Leyendo contexto...");
+
+    const READING_MIN_MS = 500;
+    const TALKING_MIN_MS = 950;
+    const readingStartedAt = performance.now();
+    let talkingStartedAt = 0;
+    let latestPhase: "reading" | "thinking" | "talking" | "syncing" = "reading";
+    let hasEnteredTalking = false;
 
     try {
       const latestCfg = await getAiConfigStatus();
       setAiConfig(latestCfg);
       if (!latestCfg.hasApiKey) {
+        setIsStreaming(false);
         setXoxState("idle");
         setStatusNote("");
         setReply(
@@ -546,26 +716,141 @@ export const QuickBar: React.FC = () => {
       }
 
       incrementLocalDailyRequestCount(latestCfg.maskedKey);
-      const currentTasks = pendingCards.map((c, idx) => actionCardToTaskProposal(c, idx));
-      const res = await runXoxAiChat({
-        message: text,
-        history: [],
-        currentTasks,
-        agendaItems: [],
-        attachedContext: [],
-        modelOverride: modelId,
-        businessContextSnapshot: currentTasks
-          .map((t) => `- ${t.title}: ${t.subtitle}`)
-          .join("\n"),
-      });
+      let actionCards: ActionCard[] = FALLBACK_ACTION_CARDS;
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const fetched = await invoke<ActionCard[]>("get_mock_action_cards");
+        if (Array.isArray(fetched)) actionCards = fetched;
+      } catch {
+        // Mantiene fallback local fuera de Tauri
+      }
+      const currentTasks = actionCards.map((c, idx) => actionCardToTaskProposal(c, idx));
+      const workspaceSources = await loadWorkspaceContext().catch(() => []);
+      const businessContextSnapshot = [
+        ...workspaceSources.map((src) => `- ${src.name} (${src.type}): ${src.content.slice(0, 600)}`),
+        ...currentTasks.map((t) => `- ${t.title}: ${t.subtitle}`),
+      ]
+        .join("\n")
+        .slice(0, 3500);
 
-      setXoxState(res.xoxMood === "alert" ? "alert" : "success");
-      setStatusNote("");
+      const res = await runXoxAiChatStream(
+        {
+          message: text,
+          history: [],
+          currentTasks,
+          agendaItems: [],
+          attachedContext: workspaceSources.slice(0, 3).map((src) => ({
+            name: src.name,
+            type: src.type,
+            content: src.content.slice(0, 1500),
+          })),
+          modelOverride: modelId,
+          userProfile: localUser
+            ? {
+                name: localUser.name,
+                storeName: localUser.storeName,
+                role: localUser.role,
+              }
+            : null,
+          businessContextSnapshot,
+          activeCanvas: lastCanvasRef.current,
+        },
+        {
+          onPhase: (phase, label) => {
+            if (hasEnteredTalking && (phase === "reading" || phase === "thinking")) {
+              return;
+            }
+            if (phase === "talking") {
+              hasEnteredTalking = true;
+              if (!talkingStartedAt) talkingStartedAt = performance.now();
+              latestPhase = "talking";
+              setXoxState("talking");
+              setStatusNote(label || "Respondiendo...");
+              return;
+            }
+            if (phase === "thinking" && latestPhase === "reading") {
+              const elapsed = performance.now() - readingStartedAt;
+              const remaining = READING_MIN_MS - elapsed;
+              if (remaining > 40) {
+                const t = setTimeout(() => {
+                  if (hasEnteredTalking || !isStreamingRef.current) return;
+                  latestPhase = "thinking";
+                  setXoxState("thinking");
+                  setStatusNote(`Pensando (${activeModel.name})...`);
+                }, remaining);
+                timersRef.current.push(t);
+                return;
+              }
+            }
+            latestPhase = phase;
+            setXoxState(phase);
+            setStatusNote(
+              label ||
+                (phase === "syncing"
+                  ? "Diseñando tabla en Canvas..."
+                  : phase === "reading"
+                    ? "Leyendo contexto..."
+                    : `Consultando ${activeModel.name}...`)
+            );
+          },
+          onReplyDelta: (delta) => {
+            if (!hasEnteredTalking) {
+              hasEnteredTalking = true;
+              if (!talkingStartedAt) talkingStartedAt = performance.now();
+              latestPhase = "talking";
+              setXoxState("talking");
+              setStatusNote("Respondiendo...");
+            }
+            setReply((prev) => `${prev ?? ""}${delta}`);
+          },
+          onCanvas: (canvas) => {
+            lastCanvasRef.current = canvas;
+            setQuickCanvas(canvas);
+          },
+        }
+      );
+
+      clearActionTimers();
+      if (res.canvas) {
+        lastCanvasRef.current = res.canvas;
+        setQuickCanvas(res.canvas);
+      }
       setReply(res.reply);
+      setIsStreaming(false);
 
-      const t = setTimeout(() => setXoxState("idle"), 2400);
-      timersRef.current.push(t);
+      const finalMood: XoxState = res.xoxMood === "alert" ? "alert" : "success";
+      const finishQuickMood = () => {
+        setXoxState(finalMood);
+        setStatusNote("");
+        const idleTimer = setTimeout(() => {
+          setXoxState((s) => (s === "success" || s === "alert" ? "idle" : s));
+        }, 2200);
+        timersRef.current.push(idleTimer);
+      };
+
+      const talkElapsed = talkingStartedAt ? performance.now() - talkingStartedAt : 0;
+      const talkWait = talkingStartedAt
+        ? Math.max(0, TALKING_MIN_MS - talkElapsed)
+        : res.reply.trim().length > 0
+          ? TALKING_MIN_MS
+          : 0;
+
+      if (res.canvas) {
+        setXoxState("syncing");
+        setStatusNote("Tabla lista en Canvas...");
+        const syncTimer = setTimeout(finishQuickMood, 750);
+        timersRef.current.push(syncTimer);
+      } else if (talkWait > 40) {
+        setXoxState("talking");
+        setStatusNote("Respondiendo...");
+        const talkTimer = setTimeout(finishQuickMood, talkWait);
+        timersRef.current.push(talkTimer);
+      } else {
+        finishQuickMood();
+      }
     } catch (err) {
+      clearActionTimers();
+      setIsStreaming(false);
       const errMsg = err instanceof Error ? err.message : "No se pudo obtener respuesta.";
       if (/saldo suficiente|402|no longer available/i.test(errMsg)) {
         setUnavailableModelIds((prev) => new Set(prev).add(modelId));
@@ -682,19 +967,74 @@ export const QuickBar: React.FC = () => {
   };
 
   const canUsePaidModels = accountUsage?.can_use_paid_models ?? false;
-  const modelOptions: OpenRouterModelOption[] = getAvailableQuickModels(
-    liveCatalog,
-    aiConfig.customModels,
-    canUsePaidModels,
-    unavailableModelIds
+  const modelOptions: OpenRouterModelOption[] = useMemo(
+    () =>
+      getAvailableQuickModels(
+        liveCatalog,
+        aiConfig.customModels,
+        canUsePaidModels,
+        unavailableModelIds
+      ),
+    [liveCatalog, aiConfig.customModels, canUsePaidModels, unavailableModelIds]
   );
 
-  const activeModel: OpenRouterModelOption = formatModelDisplay(modelId, [
-    ...liveCatalog,
-    ...modelOptions,
-  ]);
-  const isBusy = xoxState === "thinking" || xoxState === "reading" || xoxState === "syncing";
-  const canSubmit = Boolean(inputPrompt.trim()) && xoxState !== "thinking";
+  const activeModel: OpenRouterModelOption = useMemo(() => {
+    const extra = cachedSelectedModelRef.current ? [cachedSelectedModelRef.current] : [];
+    const resolved = formatModelDisplay(modelId, [...liveCatalog, ...modelOptions, ...extra]);
+    cachedSelectedModelRef.current = resolved;
+    return resolved;
+  }, [modelId, liveCatalog, modelOptions]);
+
+  const isBusy =
+    isStreaming || xoxState === "thinking" || xoxState === "reading" || xoxState === "syncing";
+  const canSubmit = Boolean(inputPrompt.trim()) && !isStreaming;
+
+  const modelsPresence = useAnimatedPresence(showModels, 145);
+  const statusPresence = useAnimatedPresence(Boolean(statusNote), 190);
+  const hasQuickResult = Boolean(reply || quickCanvas);
+  const replyPresence = useAnimatedPresence(hasQuickResult, 190);
+  const displayReply = reply ?? lastReplyRef.current;
+  const displayCanvas = quickCanvas ?? lastCanvasDisplayRef.current;
+  const displayStatusNote = statusNote || lastStatusNoteRef.current;
+
+  const previewTableCanvas = useMemo(
+    () =>
+      resolveQuickPreviewCanvas(
+        displayCanvas,
+        displayReply,
+        lastPromptRef.current || "Tabla rápida"
+      ),
+    [displayCanvas, displayReply]
+  );
+
+  const cleanedProseReply = useMemo(
+    () =>
+      displayReply
+        ? cleanVisibleReply(displayReply, { stripTables: Boolean(previewTableCanvas) })
+        : "",
+    [displayReply, previewTableCanvas]
+  );
+
+  useEffect(() => {
+    if (!(typeof window !== "undefined" && "__TAURI_INTERNALS__" in window)) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        if (!cancelled) {
+          await invoke("set_quick_state", {
+            busy: isStreaming,
+            hasContent: hasQuickResult,
+          });
+        }
+      } catch {
+        // Ignorar fuera de Tauri
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isStreaming, hasQuickResult]);
 
   return (
     <div
@@ -721,14 +1061,16 @@ export const QuickBar: React.FC = () => {
           onPointerCancel={handleCapsulePointerUp}
           onLostPointerCapture={handleCapsulePointerUp}
           className={`quick-capsule-shell relative w-full rounded-[26px] px-4 py-2.5 ${
-            isDragging ? "is-dragging cursor-grabbing" : "cursor-grab"
+            inputExpanded || hasQuickResult ? "is-expanded" : ""
+          } ${isDragging ? "is-dragging cursor-grabbing" : "cursor-grab"} ${
+            !isQuickVisible ? "is-paused" : ""
           }`}
         >
           {/* Capa líquida viva y destellos recortados (sin backdrop-filter ni blur CSS) */}
           <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
             <QuickLiquidLayer
               motionRef={xoxDragMotionRef}
-              active={!isLeaving}
+              active={isQuickVisible && !isLeaving}
               busy={isBusy}
               dragging={isDragging}
             />
@@ -794,6 +1136,7 @@ export const QuickBar: React.FC = () => {
                   state={xoxState}
                   size={82}
                   glassContrast
+                  active={isQuickVisible && !isLeaving}
                   summonTrigger={summonSeq}
                   dragMotionRef={xoxDragMotionRef}
                   className={isDragging ? "!cursor-grabbing" : "!cursor-grab"}
@@ -802,6 +1145,7 @@ export const QuickBar: React.FC = () => {
                       suppressNextXoxClickRef.current = false;
                       return;
                     }
+                    if (isStreamingRef.current || isBusy) return;
                     setXoxState("success");
                     const t = setTimeout(() => setXoxState("idle"), 1800);
                     timersRef.current.push(t);
@@ -811,19 +1155,31 @@ export const QuickBar: React.FC = () => {
 
               {/* Campo principal */}
               <div className="flex-1 min-w-0">
-                {statusNote && (
-                  <div className="flex items-center gap-1.5 mb-0.5">
+                {statusPresence.mounted && displayStatusNote && (
+                  <div
+                    className={`flex items-center gap-1.5 mb-0.5 ${
+                      statusNote ? "toast-in" : "toast-out pointer-events-none"
+                    }`}
+                  >
                     <span
                       className={`w-1.5 h-1.5 rounded-full ${
-                        isBusy ? "bg-sky-300 animate-ping" : "bg-emerald-400"
+                        xoxState === "thinking" || xoxState === "reading"
+                          ? "bg-indigo-200 animate-ping"
+                          : xoxState === "syncing"
+                            ? "bg-indigo-200 animate-pulse"
+                            : xoxState === "talking"
+                              ? "bg-sky-200"
+                              : "bg-white/85"
                       }`}
                     />
                     <p
                       className={`text-[11px] truncate [text-shadow:0_1px_4px_rgba(4,8,18,0.65)] ${
-                        isBusy ? "xox-shimmer font-medium" : "text-zinc-200"
+                        isBusy || xoxState === "talking"
+                          ? "quick-shimmer font-medium"
+                          : "text-zinc-200"
                       }`}
                     >
-                      {statusNote}
+                      {displayStatusNote}
                     </p>
                   </div>
                 )}
@@ -834,14 +1190,14 @@ export const QuickBar: React.FC = () => {
                   value={inputPrompt}
                   onChange={(e) => setInputPrompt(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       runQuickPrompt();
                     }
                   }}
-                  disabled={xoxState === "thinking"}
-                  placeholder={xoxState === "thinking" ? "Procesando..." : "Escribe a Xox..."}
-                  className="w-full resize-none bg-transparent text-[15px] leading-relaxed text-white placeholder:text-zinc-200/65 [text-shadow:0_1px_5px_rgba(4,8,18,0.68)] focus:outline-none py-1 cursor-text select-text disabled:opacity-50"
+                  disabled={isStreaming}
+                  placeholder={isStreaming ? "Procesando..." : "Escribe a Xox..."}
+                  className="input-bubble w-full resize-none overflow-y-auto bg-transparent text-[15px] leading-relaxed text-white placeholder:text-zinc-200/65 [text-shadow:0_1px_5px_rgba(4,8,18,0.68)] focus:outline-none py-1 cursor-text select-text disabled:opacity-50"
                 />
               </div>
 
@@ -850,7 +1206,15 @@ export const QuickBar: React.FC = () => {
                 <div ref={modelMenuRef} className="relative">
                   <button
                     type="button"
-                    onClick={() => setShowModels((v) => !v)}
+                    onClick={() =>
+                      setShowModels((v) => {
+                        const next = !v;
+                        if (next && liveCatalog.length === 0) {
+                          void loadModelCatalog();
+                        }
+                        return next;
+                      })
+                    }
                     aria-haspopup="listbox"
                     aria-expanded={showModels}
                     className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 px-3.5 rounded-full text-[11.5px] font-medium text-white [text-shadow:0_1px_4px_rgba(4,8,18,0.65)] cursor-pointer"
@@ -863,10 +1227,12 @@ export const QuickBar: React.FC = () => {
                     />
                   </button>
 
-                  {showModels && (
+                  {modelsPresence.mounted && (
                     <div
                       role="listbox"
-                      className="quick-liquid-menu menu-in menu-origin-top-right absolute right-0 top-full mt-2 w-64 p-1.5 rounded-2xl z-30"
+                      className={`quick-liquid-menu ${
+                        modelsPresence.visible ? "menu-in" : "menu-out pointer-events-none"
+                      } menu-origin-top-right absolute right-0 top-full mt-2 w-64 p-1.5 rounded-2xl z-30`}
                     >
                       <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
                         <svg
@@ -899,7 +1265,7 @@ export const QuickBar: React.FC = () => {
                         </span>
                       </div>
 
-                      <div className="relative z-[1] max-h-60 overflow-y-auto space-y-0.5">
+                      <div className="relative z-[1] max-h-52 overflow-y-auto space-y-0.5">
                         {modelOptions.map((m) => (
                           <button
                             key={m.id}
@@ -927,7 +1293,9 @@ export const QuickBar: React.FC = () => {
                               </span>
                             </span>
                             {m.id === modelId && (
-                              <Check className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+                              <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
+                                <Check className="w-2.5 h-2.5 text-white" />
+                              </span>
                             )}
                           </button>
                         ))}
@@ -952,26 +1320,192 @@ export const QuickBar: React.FC = () => {
               </div>
             </div>
 
-            {/* Respuesta rápida inline (solo tras consultar) */}
-            {reply && (
-              <div className="toast-in mt-2.5 pt-2.5 border-t border-white/[0.14] flex items-start justify-between gap-3">
-                <div className="flex items-start gap-2.5 min-w-0">
-                  <Sparkles className="w-3.5 h-3.5 text-sky-300 shrink-0 mt-0.5" />
-                  <p className="text-xs text-zinc-100 leading-relaxed [text-shadow:0_1px_4px_rgba(4,8,18,0.6)]">
-                    {reply}
-                  </p>
+            {/* Respuesta rápida en vivo inline (con entrada y salida suaves) */}
+            {replyPresence.mounted && (displayReply || previewTableCanvas) && (
+              <div
+                className={`${
+                  hasQuickResult ? "toast-in" : "toast-out pointer-events-none"
+                } mt-2.5 pt-2.5 border-t border-white/[0.14] space-y-2`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-2 min-w-0 flex-1">
+                    <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0 mt-0.5">
+                      <Sparkles className="w-2.5 h-2.5 text-white/95" />
+                    </span>
+                    <div
+                      className={`${
+                        previewTableCanvas ? "max-h-[68px]" : "max-h-[145px]"
+                      } overflow-y-auto xook-scroll pr-1 text-xs text-zinc-100 leading-relaxed space-y-1 [text-shadow:0_1px_4px_rgba(4,8,18,0.6)] select-text min-w-0 flex-1`}
+                    >
+                      {cleanedProseReply ? (
+                        cleanedProseReply.split("\n").map((line, lineIdx, arr) => {
+                          const trimmed = line.trim();
+                          if (!trimmed) return <div key={lineIdx} className="h-0.5" />;
+                          const isLast = lineIdx === arr.length - 1;
+                          const caret =
+                            isStreaming && isLast ? (
+                              <span className="inline-block w-1.5 h-3 ml-1 align-middle bg-indigo-200/85 animate-pulse rounded-xs" />
+                            ) : null;
+                          const cleanLine = trimmed
+                            .replace(/^#{1,3}\s+/, "")
+                            .replace(/^[-•*]\s+/, "• ");
+                          return (
+                            <p key={lineIdx}>
+                              {cleanLine.split(/(\*\*[^*]+\*\*)/g).map((seg, segIdx) =>
+                                seg.startsWith("**") && seg.endsWith("**") && seg.length > 4 ? (
+                                  <strong key={segIdx} className="font-semibold text-white">
+                                    {seg.slice(2, -2)}
+                                  </strong>
+                                ) : (
+                                  <React.Fragment key={segIdx}>{seg}</React.Fragment>
+                                )
+                              )}
+                              {caret}
+                            </p>
+                          );
+                        })
+                      ) : previewTableCanvas ? (
+                        <p className="text-zinc-200 font-medium truncate">
+                          {previewTableCanvas.summary || previewTableCanvas.title}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReply(null);
+                      setQuickCanvas(null);
+                      lastCanvasRef.current = null;
+                      lastReplyRef.current = null;
+                      lastCanvasDisplayRef.current = null;
+                      inputRef.current?.focus();
+                    }}
+                    aria-label="Limpiar respuesta"
+                    className="quick-liquid-btn shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-white/85 hover:text-white cursor-pointer"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setReply(null);
-                    inputRef.current?.focus();
-                  }}
-                  aria-label="Limpiar respuesta"
-                  className="quick-liquid-btn shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-zinc-200 hover:text-white cursor-pointer"
-                >
-                  <X className="w-3 h-3" />
-                </button>
+
+                {previewTableCanvas && (
+                  <div
+                    data-no-drag="true"
+                    className="ml-7 quick-liquid-table rounded-xl overflow-hidden select-text"
+                  >
+                    <div className="max-h-[132px] overflow-auto xook-scroll">
+                      <table className="w-full border-separate border-spacing-0 text-[11.5px]">
+                        <thead className="sticky top-0 z-10 quick-liquid-table-head">
+                          <tr>
+                            {previewTableCanvas.columns.map((col) => (
+                              <th
+                                key={col.id}
+                                className={`px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-zinc-200/90 whitespace-nowrap ${
+                                  col.align === "right"
+                                    ? "text-right"
+                                    : col.align === "center"
+                                      ? "text-center"
+                                      : "text-left"
+                                }`}
+                              >
+                                {col.label}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {previewTableCanvas.rows.map((r, rIdx) => {
+                            const isRec = r.highlight === "recommended";
+                            const isWarn = r.highlight === "warning";
+                            return (
+                              <tr
+                                key={r.id || rIdx}
+                                className={`xook-liquid-row ${
+                                  isRec
+                                    ? "is-featured"
+                                    : isWarn
+                                      ? "is-warning"
+                                      : rIdx % 2 === 1
+                                        ? "is-alt"
+                                        : ""
+                                }`}
+                              >
+                                {previewTableCanvas.columns.map((col, cIdx) => {
+                                  const cellVal = r.cells[col.id] ?? "";
+                                  return (
+                                    <td
+                                      key={col.id}
+                                      className={`px-2.5 py-1.5 align-middle ${
+                                        col.align === "right"
+                                          ? "text-right font-mono tabular-nums text-indigo-100/95"
+                                          : col.align === "center"
+                                            ? "text-center text-zinc-100/90"
+                                            : cIdx === 0
+                                              ? "text-left font-medium text-white"
+                                              : "text-left text-zinc-100/90"
+                                      }`}
+                                    >
+                                      <span className="inline-flex items-center gap-1.5">
+                                        {cIdx === 0 && isRec && (
+                                          <span className="quick-liquid-icon w-4 h-4 rounded-full inline-flex items-center justify-center shrink-0">
+                                            <Star className="w-2.5 h-2.5 text-indigo-100 fill-current" />
+                                          </span>
+                                        )}
+                                        <span>{cellVal || "—"}</span>
+                                      </span>
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 pl-7">
+                  {previewTableCanvas ? (
+                    <button
+                      type="button"
+                      onClick={() => void openInMainWorkspace()}
+                      className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium text-white/95 cursor-pointer"
+                    >
+                      <span className="quick-liquid-icon w-4 h-4 rounded-full inline-flex items-center justify-center shrink-0">
+                        <Table2 className="w-2.5 h-2.5 text-white" />
+                      </span>
+                      <span className="max-w-[250px] truncate">
+                        {previewTableCanvas.title} ({previewTableCanvas.rows.length}{" "}
+                        {previewTableCanvas.rows.length === 1 ? "fila" : "filas"})
+                      </span>
+                      <span className="text-zinc-200/80 shrink-0">· Abrir en Canvas</span>
+                      <kbd className="font-mono text-[10px] px-1.5 py-0.5 rounded-md bg-white/[0.12] border border-white/[0.16] text-white/95 shrink-0">
+                        ⌘↩
+                      </kbd>
+                    </button>
+                  ) : (
+                    <span className="text-[10.5px] text-zinc-300/75">
+                      {isStreaming ? "Escribiendo en vivo…" : "Listo para continuar"}
+                    </span>
+                  )}
+
+                  {!previewTableCanvas && !isStreaming && (
+                    <button
+                      type="button"
+                      onClick={() => void openInMainWorkspace()}
+                      className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10.5px] font-medium text-white/95 cursor-pointer"
+                    >
+                      <span>Abrir XOOK</span>
+                      <kbd className="font-mono text-[10px] px-1.5 py-0.5 rounded-md bg-white/[0.12] border border-white/[0.16] text-white/95">
+                        ⌘↩
+                      </kbd>
+                      <span className="quick-liquid-icon w-4 h-4 rounded-full inline-flex items-center justify-center shrink-0">
+                        <ExternalLink className="w-2.5 h-2.5 text-white" />
+                      </span>
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </form>

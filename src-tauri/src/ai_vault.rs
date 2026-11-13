@@ -66,6 +66,8 @@ pub struct XoxChatRequest {
     pub model_override: Option<String>,
     pub stream_id: Option<String>,
     pub user_profile: Option<serde_json::Value>,
+    #[serde(default)]
+    pub active_canvas: Option<serde_json::Value>,
 }
 
 fn vault_file_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
@@ -361,6 +363,7 @@ pub async fn run_xox_chat<R: Runtime>(
                 "current_tasks": payload.current_tasks,
                 "agenda_items": payload.agenda_items,
                 "attached_context": payload.attached_context,
+                "active_canvas": payload.active_canvas,
             }),
         )
     })
@@ -481,6 +484,7 @@ pub async fn run_xox_chat_stream<R: Runtime>(
                 "agenda_items": payload.agenda_items,
                 "attached_context": payload.attached_context,
                 "user_profile": payload.user_profile,
+                "active_canvas": payload.active_canvas,
             }),
         )
     })

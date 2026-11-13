@@ -234,6 +234,8 @@ pub fn run() {
             workspace_store::list_conversations,
             workspace_store::save_conversation,
             workspace_store::delete_conversation,
+            quick_summon::quick_bar_ready,
+            quick_summon::set_quick_state,
             quick_summon::hide_quick_bar,
             quick_summon::toggle_quick_bar_cmd,
             quick_summon::open_main_workspace,

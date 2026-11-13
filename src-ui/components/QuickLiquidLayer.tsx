@@ -36,9 +36,13 @@ interface WavePathOptions {
   amp2: number;
 }
 
+const WAVE_X = new Float64Array(WAVE_SAMPLES + 1);
+const WAVE_Y = new Float64Array(WAVE_SAMPLES + 1);
+const CREST_SEGMENTS = new Array<string>(WAVE_SAMPLES + 1);
+
 /**
  * Construye una onda orgánica C¹ (curvas cuadráticas por punto medio) y su relleno inferior
- * en un solo recorrido para evitar asignaciones redundantes por frame.
+ * usando buffers reutilizables sin asignaciones de objetos por frame.
  */
 function buildFluidWavePaths({
   baseY,
@@ -53,29 +57,27 @@ function buildFluidWavePaths({
   const startX = -20;
   const endX = VIEW_W + 20;
   const span = endX - startX;
-  const pts: Array<{ x: number; y: number }> = [];
 
   for (let i = 0; i <= WAVE_SAMPLES; i++) {
     const u = i / WAVE_SAMPLES;
-    const x = startX + u * span;
+    WAVE_X[i] = startX + u * span;
     const slopeOffset = (u - 0.5) * 2 * tiltY;
-    const y =
+    WAVE_Y[i] =
       baseY +
       slopeOffset +
       amp1 * Math.sin(u * freq1 * Math.PI * 2 + phase1) +
       amp2 * Math.cos(u * freq2 * Math.PI * 2 - phase2);
-    pts.push({ x, y });
   }
 
-  let crestPath = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
-  for (let i = 1; i < pts.length - 1; i++) {
-    const midX = (pts[i].x + pts[i + 1].x) * 0.5;
-    const midY = (pts[i].y + pts[i + 1].y) * 0.5;
-    crestPath += ` Q ${pts[i].x.toFixed(1)} ${pts[i].y.toFixed(1)} ${midX.toFixed(1)} ${midY.toFixed(1)}`;
+  CREST_SEGMENTS[0] = `M ${WAVE_X[0].toFixed(1)} ${WAVE_Y[0].toFixed(1)}`;
+  for (let i = 1; i < WAVE_SAMPLES; i++) {
+    const midX = (WAVE_X[i] + WAVE_X[i + 1]) * 0.5;
+    const midY = (WAVE_Y[i] + WAVE_Y[i + 1]) * 0.5;
+    CREST_SEGMENTS[i] = ` Q ${WAVE_X[i].toFixed(1)} ${WAVE_Y[i].toFixed(1)} ${midX.toFixed(1)} ${midY.toFixed(1)}`;
   }
-  const last = pts[pts.length - 1];
-  crestPath += ` L ${last.x.toFixed(1)} ${last.y.toFixed(1)}`;
+  CREST_SEGMENTS[WAVE_SAMPLES] = ` L ${WAVE_X[WAVE_SAMPLES].toFixed(1)} ${WAVE_Y[WAVE_SAMPLES].toFixed(1)}`;
 
+  const crestPath = CREST_SEGMENTS.join("");
   const fillPath = `${crestPath} L ${endX} ${VIEW_H + 40} L ${startX} ${VIEW_H + 40} Z`;
   return { fillPath, crestPath };
 }
@@ -163,6 +165,7 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
 
     let rafId = 0;
     let lastTime = performance.now();
+    let lastDrawTime = 0;
     let t = 0;
     let phaseA = 0.4;
     let phaseB = 2.1;
@@ -180,11 +183,25 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         return;
       }
 
-      const dt = Math.min(Math.max((now - lastTime) / 1000, 1 / 240), 1 / 24);
+      const flags = stateFlagsRef.current;
+      const isCalmIdle =
+        !flags.dragging &&
+        !flags.busy &&
+        Math.abs(sloshX.v) < 1.2 &&
+        Math.abs(sloshY.v) < 1.2 &&
+        Math.abs(tiltSpring.v) < 0.8 &&
+        Math.abs(energySpring.x) < 0.04;
+
+      if (isCalmIdle && lastDrawTime > 0 && now - lastDrawTime < 36) {
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+      lastDrawTime = now;
+
+      const dt = Math.min(Math.max((now - lastTime) / 1000, 1 / 240), 1 / 20);
       lastTime = now;
       t += dt;
 
-      const flags = stateFlagsRef.current;
       const motion = motionRef.current;
       const vx = motion && motion.active ? motion.vx : 0;
       const vy = motion && motion.active ? motion.vy : 0;

@@ -3,6 +3,58 @@ import {
   TaskProposal,
   sanitizeTaskProposal,
 } from "../task-decisions/taskSchema";
+import {
+  CanvasArtifact,
+  canvasHasCellData,
+  cleanVisibleReply,
+  extractFirstHtmlTable,
+  extractFirstMarkdownTable,
+  markdownTableToCanvasArtifact,
+  sanitizeCanvasArtifact,
+} from "../canvas/canvasSchema";
+
+const BROWSER_CANVAS_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "create_canvas",
+    description:
+      "Crea un lienzo interactivo (Canvas) junto al chat para mostrar tablas comparativas, datos, listas de costos, cronogramas o documentos estructurados. Incluye siempre todas las filas completas en rows.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Título claro del Canvas o tabla" },
+        subtitle: { type: "string", description: "Contexto breve o unidades" },
+        kind: { type: "string", enum: ["comparison", "table", "document"] },
+        summary: { type: "string", description: "Conclusión o recomendación clave en 1 oración" },
+        columns: {
+          type: "array",
+          description: "Nombres de columnas en orden, ej. [\"Sector\", \"Participación (%)\"]",
+          items: { type: "string" },
+        },
+        rows: {
+          type: "array",
+          description:
+            "Lista de filas. Cada fila es un arreglo de textos en el mismo orden de columns, ej. [[\"Agricultura\", \"22%\"], [\"Industria\", \"33%\"]]",
+          items: {
+            type: "array",
+            items: { type: "string" },
+          },
+        },
+        recommended_row: {
+          type: "integer",
+          description:
+            "Opcional (únicamente en comparativas o rankings con una opción ganadora): índice base 0 de la fila recomendada. Omítelo en listas o catálogos neutros.",
+        },
+        recommended_badge: {
+          type: "string",
+          description: "Opcional: etiqueta breve para destacar esa fila, ej. 'Recomendado'",
+        },
+        markdown: { type: "string", description: "Notas o documento Markdown si kind es document" },
+      },
+      required: ["title", "columns", "rows"],
+    },
+  },
+};
 
 export interface OpenRouterModelOption {
   id: string;
@@ -126,6 +178,8 @@ export interface XoxAiChatRequest {
   userProfile?: { name: string; storeName?: string; role?: string } | null;
   /** En modo browser preview, permite leer contexto de negocio en vivo */
   businessContextSnapshot?: string;
+  /** Canvas activo abierto para ediciones incrementales desde el chat */
+  activeCanvas?: CanvasArtifact | null;
 }
 
 export interface XoxTokenUsage {
@@ -143,6 +197,7 @@ export interface XoxAiChatResponse {
   xoxMood: "talking" | "success" | "alert";
   operation: "none" | "add_tasks" | "replace_tasks";
   tasks: TaskProposal[];
+  canvas?: CanvasArtifact;
   modelUsed: string;
   latencyMs: number;
   usage?: XoxTokenUsage;
@@ -153,6 +208,7 @@ export interface XoxStreamCallbacks {
   onSteps?: (steps: ThinkingStep[]) => void;
   onReasoningDelta?: (delta: string) => void;
   onReplyDelta?: (delta: string) => void;
+  onCanvas?: (canvas: CanvasArtifact) => void;
 }
 
 export interface WorkspaceContextSource {
@@ -798,54 +854,200 @@ export async function loadWorkspaceContext(): Promise<WorkspaceContextSource[]> 
   ];
 }
 
+interface AccumulatedToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+function parseJsonObjectCandidate(rawText: string): Record<string, unknown> | null {
+  const text = rawText.trim();
+  if (!text) return null;
+  const baseCandidates: string[] = [];
+  const fence = text.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
+  if (fence) baseCandidates.push(fence[1]);
+  baseCandidates.push(text);
+  const s = text.indexOf("{");
+  const e = text.lastIndexOf("}");
+  if (s !== -1 && e > s) baseCandidates.push(text.slice(s, e + 1));
+
+  const candidates: string[] = [];
+  for (const cand of baseCandidates) {
+    candidates.push(cand);
+    const cleaned = cand.replace(/,\s*([}\]])/g, "$1");
+    if (cleaned !== cand) candidates.push(cleaned);
+  }
+
+  for (const cand of candidates) {
+    try {
+      let parsed = JSON.parse(cand) as unknown;
+      if (typeof parsed === "string") {
+        parsed = JSON.parse(parsed) as unknown;
+      }
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Siguiente candidato
+    }
+  }
+  return null;
+}
+
+function isTableRequestPrompt(userMessage: string): boolean {
+  return /\b(tabla|tablas|comparativa|comparativo|comparaci[oó]n|comparar|compara|composici[oó]n|desglose|canvas|lienzo|matriz|cuadro)\b/i.test(
+    userMessage
+  );
+}
+
+function hasStructuredTableMarkup(text: string): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  if (lower.includes("<tr") && (lower.includes("<td") || lower.includes("<th"))) return true;
+  if (text.includes("|") && text.includes("---")) return true;
+  return false;
+}
+
+function extractCanvasToolMetadata(toolCalls: AccumulatedToolCall[]): Record<string, unknown> {
+  for (const tc of toolCalls) {
+    const fnName = (tc.function?.name ?? "").trim().toLowerCase();
+    if (!fnName || (!fnName.includes("create_canvas") && fnName !== "canvas")) continue;
+    const parsedArgs = parseJsonObjectCandidate(tc.function.arguments);
+    if (parsedArgs) {
+      const inner =
+        parsedArgs.canvas && typeof parsedArgs.canvas === "object"
+          ? parsedArgs.canvas
+          : parsedArgs.arguments && typeof parsedArgs.arguments === "object"
+            ? parsedArgs.arguments
+            : parsedArgs;
+      if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+        return inner as Record<string, unknown>;
+      }
+    }
+  }
+  return {};
+}
+
+function extractCanvasFromToolCalls(toolCalls: AccumulatedToolCall[]): CanvasArtifact | undefined {
+  for (const tc of toolCalls) {
+    const fnName = (tc.function?.name ?? "").trim().toLowerCase();
+    if (!fnName || (!fnName.includes("create_canvas") && fnName !== "canvas")) continue;
+    const rawArgs = tc.function.arguments;
+    const parsedArgs = parseJsonObjectCandidate(rawArgs);
+    if (parsedArgs) {
+      const inner =
+        parsedArgs.canvas && typeof parsedArgs.canvas === "object"
+          ? parsedArgs.canvas
+          : parsedArgs.arguments && typeof parsedArgs.arguments === "object"
+            ? parsedArgs.arguments
+            : parsedArgs;
+      const sanitized = sanitizeCanvasArtifact(inner);
+      if (sanitized && canvasHasCellData(sanitized)) return sanitized;
+    } else if (hasStructuredTableMarkup(rawArgs)) {
+      const tbl = sanitizeCanvasArtifact({ title: "Tabla comparativa", markdown: rawArgs });
+      if (tbl && canvasHasCellData(tbl)) return tbl;
+    }
+  }
+  return undefined;
+}
+
+function resolveBrowserCanvasArtifact(params: {
+  toolCalls: AccumulatedToolCall[];
+  canvasBuf: string;
+  actionsCanvas?: unknown;
+  fullReply: string;
+  userMessage: string;
+}): CanvasArtifact | undefined {
+  const fromTool = extractCanvasFromToolCalls(params.toolCalls);
+  if (fromTool && canvasHasCellData(fromTool)) return fromTool;
+
+  const trimmedCanvas = params.canvasBuf.trim();
+  if (trimmedCanvas && trimmedCanvas !== "{}") {
+    const parsed = parseJsonObjectCandidate(trimmedCanvas);
+    if (parsed) {
+      const sanitized = sanitizeCanvasArtifact(parsed);
+      if (sanitized && canvasHasCellData(sanitized)) return sanitized;
+    }
+    const mdTable = extractFirstMarkdownTable(trimmedCanvas) ?? extractFirstHtmlTable(trimmedCanvas);
+    if (mdTable) {
+      return markdownTableToCanvasArtifact(mdTable, { title: "Tabla comparativa" });
+    }
+  }
+
+  if (params.actionsCanvas && typeof params.actionsCanvas === "object") {
+    const fromActions = sanitizeCanvasArtifact(params.actionsCanvas);
+    if (fromActions && canvasHasCellData(fromActions)) return fromActions;
+  }
+
+  if (
+    hasStructuredTableMarkup(params.fullReply) &&
+    (isTableRequestPrompt(params.userMessage) ||
+      params.toolCalls.length > 0 ||
+      /<tr/i.test(params.fullReply) ||
+      params.fullReply.includes("|"))
+  ) {
+    const inlineTable =
+      extractFirstMarkdownTable(params.fullReply) ?? extractFirstHtmlTable(params.fullReply);
+    if (inlineTable && inlineTable.rows.length > 0) {
+      const meta = params.toolCalls.length > 0 ? extractCanvasToolMetadata(params.toolCalls) : {};
+      const title =
+        typeof meta.title === "string" && meta.title.trim()
+          ? meta.title.trim()
+          : typeof meta.titulo === "string" && meta.titulo.trim()
+            ? meta.titulo.trim()
+            : "Tabla generada";
+      const subtitle =
+        typeof meta.subtitle === "string" && meta.subtitle.trim()
+          ? meta.subtitle.trim()
+          : undefined;
+      const summary =
+        typeof meta.summary === "string" && meta.summary.trim() ? meta.summary.trim() : undefined;
+      return markdownTableToCanvasArtifact(inlineTable, { title, subtitle, summary });
+    }
+  }
+
+  return undefined;
+}
+
 function extractBrowserJson(rawContent: string): {
   reply: string;
   xoxMood: "talking" | "success" | "alert";
   operation: "none" | "add_tasks" | "replace_tasks";
   tasks: TaskProposal[];
+  canvas?: CanvasArtifact;
 } {
-  const text = rawContent.trim();
-  const candidates: string[] = [];
-  const fence = text.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
-  if (fence) candidates.push(fence[1]);
-  candidates.push(text);
-  const s = text.indexOf("{");
-  const e = text.lastIndexOf("}");
-  if (s !== -1 && e > s) candidates.push(text.slice(s, e + 1));
-
-  for (const cand of candidates) {
-    try {
-      const parsed = JSON.parse(cand) as {
-        reply?: string;
-        xox_mood?: string;
-        operation?: string;
-        tasks?: TaskProposal[];
-      };
-      if (parsed && typeof parsed.reply === "string") {
-        const safeTasks = Array.isArray(parsed.tasks)
-          ? parsed.tasks.map((t) => sanitizeTaskProposal(t))
-          : [];
-        const op =
-          parsed.operation === "add_tasks" || parsed.operation === "replace_tasks"
-            ? parsed.operation
-            : safeTasks.length > 0
-            ? "add_tasks"
-            : "none";
-        const mood =
-          parsed.xox_mood === "success" || parsed.xox_mood === "alert"
-            ? parsed.xox_mood
-            : safeTasks.length > 0
-            ? "success"
-            : "talking";
-        return { reply: parsed.reply, xoxMood: mood, operation: op, tasks: safeTasks };
-      }
-    } catch {
-      // Intentar siguiente candidato
-    }
+  const parsed = parseJsonObjectCandidate(rawContent);
+  if (parsed && (typeof parsed.reply === "string" || Array.isArray(parsed.tasks) || parsed.canvas)) {
+    const safeTasks = Array.isArray(parsed.tasks)
+      ? parsed.tasks.map((t) => sanitizeTaskProposal(t as TaskProposal))
+      : [];
+    const safeCanvas = parsed.canvas ? sanitizeCanvasArtifact(parsed.canvas) ?? undefined : undefined;
+    const op =
+      parsed.operation === "add_tasks" || parsed.operation === "replace_tasks"
+        ? parsed.operation
+        : safeTasks.length > 0
+        ? "add_tasks"
+        : "none";
+    const mood =
+      parsed.xox_mood === "success" || parsed.xox_mood === "alert"
+        ? parsed.xox_mood
+        : safeTasks.length > 0 || safeCanvas
+        ? "success"
+        : "talking";
+    return {
+      reply: typeof parsed.reply === "string" ? parsed.reply : "",
+      xoxMood: mood,
+      operation: op,
+      tasks: safeTasks,
+      canvas: safeCanvas,
+    };
   }
 
   return {
-    reply: text || "Listo, procesé tu consulta.",
+    reply: rawContent.trim() || "Listo, procesé tu consulta.",
     xoxMood: "talking",
     operation: "none",
     tasks: [],
@@ -872,6 +1074,7 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       xox_mood?: "talking" | "success" | "alert";
       operation?: "none" | "add_tasks" | "replace_tasks";
       tasks?: TaskProposal[];
+      canvas?: unknown;
       model_used?: string;
       latency_ms?: number;
       usage?: {
@@ -889,6 +1092,7 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
         attachedContext: req.attachedContext,
         modelOverride: req.modelOverride ?? null,
         userProfile: req.userProfile ?? null,
+        activeCanvas: req.activeCanvas ?? null,
       },
     });
     const usage = res.usage
@@ -905,6 +1109,7 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       xoxMood: res.xox_mood ?? "talking",
       operation: res.operation ?? "none",
       tasks: (res.tasks ?? []).map(sanitizeTaskProposal),
+      canvas: res.canvas ? sanitizeCanvasArtifact(res.canvas) ?? undefined : undefined,
       modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
       latencyMs: res.latency_ms ?? 0,
       usage,
@@ -919,34 +1124,55 @@ class BrowserStreamTagRouter {
   private static readonly CLOSE_ANALYSIS = ["</analisis>", "</analysis>"];
   private static readonly OPEN_REPLY = ["<respuesta>", "<response>"];
   private static readonly CLOSE_REPLY = ["</respuesta>", "</response>"];
+  private static readonly OPEN_CANVAS = ["<canvas>", "<lienzo>"];
+  private static readonly CLOSE_CANVAS = ["</canvas>", "</lienzo>"];
   private static readonly OPEN_ACTIONS = ["<acciones>", "<actions>"];
   private static readonly CLOSE_ACTIONS = ["</acciones>", "</actions>"];
   private static readonly STOP_REPLY = [
     ...BrowserStreamTagRouter.CLOSE_REPLY,
+    ...BrowserStreamTagRouter.OPEN_CANVAS,
     ...BrowserStreamTagRouter.OPEN_ACTIONS,
   ];
   private static readonly ALL_OPEN = [
     ...BrowserStreamTagRouter.OPEN_ANALYSIS,
     ...BrowserStreamTagRouter.OPEN_REPLY,
+    ...BrowserStreamTagRouter.OPEN_CANVAS,
     ...BrowserStreamTagRouter.OPEN_ACTIONS,
   ];
 
-  private mode: "detect" | "analysis" | "after_analysis" | "reply" | "after_reply" | "actions" =
-    "detect";
+  private mode:
+    | "detect"
+    | "analysis"
+    | "after_analysis"
+    | "reply"
+    | "after_reply"
+    | "canvas"
+    | "after_canvas"
+    | "actions" = "detect";
   private buf = "";
+  public canvasBuf = "";
   public actionsBuf = "";
   private enteredReply = false;
+  private enteredCanvas = false;
 
   constructor(
     private onReasoning: (chunk: string) => void,
     private onReply: (chunk: string) => void,
-    private onPhase: (phase: "thinking" | "talking") => void
+    private onPhase: (phase: "thinking" | "talking" | "canvas") => void
   ) {}
 
   private enterReply() {
     if (!this.enteredReply) {
       this.enteredReply = true;
       this.onPhase("talking");
+    }
+  }
+
+  private enterCanvas() {
+    this.mode = "canvas";
+    if (!this.enteredCanvas) {
+      this.enteredCanvas = true;
+      this.onPhase("canvas");
     }
   }
 
@@ -974,37 +1200,61 @@ class BrowserStreamTagRouter {
     return bestIdx === -1 ? null : { idx: bestIdx, tag: bestTag };
   }
 
+  private tryMatchNextSection(allowFallbackReply: boolean): boolean {
+    const trimmed = this.buf.trimStart();
+    if (!trimmed) {
+      this.buf = "";
+      return false;
+    }
+    this.buf = trimmed;
+    const lower = trimmed.toLowerCase();
+    const matchers: Array<{ tags: string[]; target: "analysis" | "reply" | "canvas" | "actions" }> = [
+      { tags: BrowserStreamTagRouter.OPEN_ANALYSIS, target: "analysis" },
+      { tags: BrowserStreamTagRouter.OPEN_REPLY, target: "reply" },
+      { tags: BrowserStreamTagRouter.OPEN_CANVAS, target: "canvas" },
+      { tags: BrowserStreamTagRouter.OPEN_ACTIONS, target: "actions" },
+    ];
+    for (const { tags, target } of matchers) {
+      const matched = tags.find((t) => lower.startsWith(t));
+      if (matched) {
+        this.buf = trimmed.slice(matched.length).replace(/^\r?\n/, "");
+        if (target === "analysis") {
+          this.mode = "analysis";
+          this.onPhase("thinking");
+        } else if (target === "reply") {
+          this.mode = "reply";
+          this.enterReply();
+        } else if (target === "canvas") {
+          this.enterCanvas();
+        } else {
+          this.mode = "actions";
+        }
+        return true;
+      }
+    }
+    if (BrowserStreamTagRouter.ALL_OPEN.some((t) => t.startsWith(lower))) {
+      return false;
+    }
+    if (allowFallbackReply) {
+      this.mode = "reply";
+      this.enterReply();
+      return true;
+    }
+    this.buf = "";
+    return false;
+  }
+
   feed(chunk: string) {
     if (!chunk) return;
     this.buf += chunk;
     while (this.buf.length > 0) {
-      if (this.mode === "detect") {
-        const trimmed = this.buf.trimStart();
-        if (!trimmed) {
-          this.buf = "";
-          return;
-        }
-        this.buf = trimmed;
-        const lower = trimmed.toLowerCase();
-        const matched = BrowserStreamTagRouter.ALL_OPEN.find((t) => lower.startsWith(t));
-        if (matched) {
-          this.buf = trimmed.slice(matched.length).replace(/^\r?\n/, "");
-          if (BrowserStreamTagRouter.OPEN_ANALYSIS.includes(matched)) {
-            this.mode = "analysis";
-            this.onPhase("thinking");
-          } else if (BrowserStreamTagRouter.OPEN_REPLY.includes(matched)) {
-            this.mode = "reply";
-            this.enterReply();
-          } else {
-            this.mode = "actions";
-          }
-          continue;
-        }
-        if (BrowserStreamTagRouter.ALL_OPEN.some((t) => t.startsWith(lower))) {
-          return;
-        }
-        this.mode = "reply";
-        this.enterReply();
+      if (this.mode === "detect" || this.mode === "after_analysis") {
+        if (!this.tryMatchNextSection(true)) return;
+        continue;
+      }
+
+      if (this.mode === "after_reply" || this.mode === "after_canvas") {
+        if (!this.tryMatchNextSection(this.mode === "after_canvas")) return;
         continue;
       }
 
@@ -1022,47 +1272,18 @@ class BrowserStreamTagRouter {
         return;
       }
 
-      if (this.mode === "after_analysis") {
-        const trimmed = this.buf.trimStart();
-        if (!trimmed) {
-          this.buf = "";
-          return;
-        }
-        this.buf = trimmed;
-        const lower = trimmed.toLowerCase();
-        const repTag = BrowserStreamTagRouter.OPEN_REPLY.find((t) => lower.startsWith(t));
-        if (repTag) {
-          this.buf = trimmed.slice(repTag.length).replace(/^\r?\n/, "");
-          this.mode = "reply";
-          this.enterReply();
-          continue;
-        }
-        const actTag = BrowserStreamTagRouter.OPEN_ACTIONS.find((t) => lower.startsWith(t));
-        if (actTag) {
-          this.buf = trimmed.slice(actTag.length);
-          this.mode = "actions";
-          continue;
-        }
-        if (
-          [...BrowserStreamTagRouter.OPEN_REPLY, ...BrowserStreamTagRouter.OPEN_ACTIONS].some((t) =>
-            t.startsWith(lower)
-          )
-        ) {
-          return;
-        }
-        this.mode = "reply";
-        this.enterReply();
-        continue;
-      }
-
       if (this.mode === "reply") {
         const found = this.findFirstTag(this.buf, BrowserStreamTagRouter.STOP_REPLY);
         if (found) {
           if (found.idx > 0) this.onReply(this.buf.slice(0, found.idx));
           this.buf = this.buf.slice(found.idx + found.tag.length);
-          this.mode = BrowserStreamTagRouter.OPEN_ACTIONS.includes(found.tag)
-            ? "actions"
-            : "after_reply";
+          if (BrowserStreamTagRouter.OPEN_CANVAS.includes(found.tag)) {
+            this.enterCanvas();
+          } else if (BrowserStreamTagRouter.OPEN_ACTIONS.includes(found.tag)) {
+            this.mode = "actions";
+          } else {
+            this.mode = "after_reply";
+          }
           continue;
         }
         const [safe, rem] = this.partialSplit(this.buf, BrowserStreamTagRouter.STOP_REPLY);
@@ -1071,24 +1292,17 @@ class BrowserStreamTagRouter {
         return;
       }
 
-      if (this.mode === "after_reply") {
-        const trimmed = this.buf.trimStart();
-        if (!trimmed) {
-          this.buf = "";
-          return;
-        }
-        this.buf = trimmed;
-        const lower = trimmed.toLowerCase();
-        const actTag = BrowserStreamTagRouter.OPEN_ACTIONS.find((t) => lower.startsWith(t));
-        if (actTag) {
-          this.buf = trimmed.slice(actTag.length);
-          this.mode = "actions";
+      if (this.mode === "canvas") {
+        const found = this.findFirstTag(this.buf, BrowserStreamTagRouter.CLOSE_CANVAS);
+        if (found) {
+          this.canvasBuf += this.buf.slice(0, found.idx);
+          this.buf = this.buf.slice(found.idx + found.tag.length);
+          this.mode = "after_canvas";
           continue;
         }
-        if (BrowserStreamTagRouter.OPEN_ACTIONS.some((t) => t.startsWith(lower))) {
-          return;
-        }
-        this.buf = "";
+        const [safe, rem] = this.partialSplit(this.buf, BrowserStreamTagRouter.CLOSE_CANVAS);
+        this.canvasBuf += safe;
+        this.buf = rem;
         return;
       }
 
@@ -1119,6 +1333,8 @@ class BrowserStreamTagRouter {
       this.onReasoning(this.buf);
     } else if (this.mode === "reply") {
       this.onReply(this.buf);
+    } else if (this.mode === "canvas") {
+      this.canvasBuf += this.buf.replace(/<\/?(?:canvas|lienzo)>/gi, "");
     } else if (this.mode === "actions") {
       this.actionsBuf += this.buf.replace(/<\/?(?:acciones|actions)>/gi, "");
     }
@@ -1163,6 +1379,17 @@ function buildBrowserSystemPrompt(
 
   const nowLabel = getBrowserLocalDateTimeLabel();
 
+  const canvasLine = req.activeCanvas
+    ? `\nCANVAS ACTIVO EN PANTALLA (si el usuario pide modificarlo o ampliarlo, actualiza este Canvas manteniendo su id):\n${JSON.stringify({
+        id: req.activeCanvas.id,
+        title: req.activeCanvas.title,
+        kind: req.activeCanvas.kind,
+        summary: req.activeCanvas.summary,
+        columns: req.activeCanvas.columns.slice(0, 12),
+        rows: req.activeCanvas.rows.slice(0, 25),
+      })}`
+    : "";
+
   const header = `Eres Xox, un asistente inteligente y copiloto operativo dentro de XOOK. Respondes siempre en español claro, directo y humano, sin tecnicismos, sin emojis ni iconos y sin JSON visible al usuario.
 
 FECHA Y HORA LOCAL ACTUAL DEL SISTEMA: ${nowLabel}
@@ -1170,7 +1397,8 @@ FECHA Y HORA LOCAL ACTUAL DEL SISTEMA: ${nowLabel}
 CAPACIDADES:
 - Puedes responder preguntas generales de uso diario (qué hora es, qué día es hoy, cálculos, dudas generales, explicaciones o charla casual) de forma directa y natural usando la fecha y hora local actual cuando aplique, SIN desviar la conversación hacia inventario si el usuario no lo pidió.
 - Cuando el usuario trate temas de su operación, tienda, inventario, proveedores, agenda o tareas, apoya usando su contexto operativo, reglamento y memoria.
-${req.businessContextSnapshot ? `\nCONTEXTO DEL NEGOCIO:\n${req.businessContextSnapshot}\n` : ""}${opLine}
+- Si el usuario pide crear o mostrar una TABLA, tabla comparativa, desglose, matriz de opciones o presupuesto: usa la herramienta \`create_canvas\` (preferida) pasando columnas en texto simple y TODAS las filas completas en \`rows\`, o incluye <canvas>{"title":"Título","subtitle":"Contexto","kind":"comparison","summary":"Conclusión","columns":["Criterio","Opción A"],"rows":[["Precio","$100"]],"recommended_row":0}</canvas>. NUNCA escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en <respuesta>; escribe únicamente español claro sin duplicar la tabla en HTML.
+${req.businessContextSnapshot ? `\nCONTEXTO DEL NEGOCIO:\n${req.businessContextSnapshot}\n` : ""}${opLine}${canvasLine}
 TAREAS PENDIENTES:\n${JSON.stringify(compactTasks)}
 AGENDA ACTIVA:\n${JSON.stringify(req.agendaItems.slice(0, 6))}
 ${req.attachedContext.length ? `CONTEXTO ADJUNTO:\n${JSON.stringify(req.attachedContext)}` : ""}`;
@@ -1181,7 +1409,8 @@ ${req.attachedContext.length ? `CONTEXTO ADJUNTO:\n${JSON.stringify(req.attached
 FORMATO DE RESPUESTA EN VIVO (OBLIGATORIO):
 1. <analisis> 2 a 4 viñetas breves en español explicando qué revisaste y tu criterio. </analisis>
 2. <respuesta> Tu respuesta clara, natural y humana sin emojis ni iconos. </respuesta>
-3. <acciones>{"xox_mood":"talking","operation":"none","tasks":[]}</acciones>`;
+3. <canvas> {} </canvas> (opcional: JSON del Canvas solo si generaste una tabla sin llamar create_canvas)
+4. <acciones>{"xox_mood":"talking","operation":"none","tasks":[]}</acciones>`;
   }
 
   return `${header}
@@ -1191,7 +1420,8 @@ Responde SIEMPRE con un objeto JSON válido:
   "reply": "Tu respuesta natural en español para el usuario",
   "xox_mood": "talking" | "success" | "alert",
   "operation": "none" | "add_tasks" | "replace_tasks",
-  "tasks": [] // Opcional: tarjetas TaskProposal válidas cuando corresponda crear/reconstruir tareas, relojes, agendas o notas
+  "tasks": [], // Opcional: tarjetas TaskProposal válidas cuando corresponda crear/reconstruir tareas, relojes, agendas o notas
+  "canvas": null // Opcional: objeto Canvas si generaste tabla comparativa/datos sin usar create_canvas
 }
 Tipos permitidos en blocks: metrics_strip, coverage_bar, schedule, checklist, note, comparison, kv_list, param_control, insight.`;
 }
@@ -1213,6 +1443,7 @@ export async function runXoxAiChatStream(
         label?: string;
         steps?: ThinkingStep[];
         delta?: string;
+        canvas?: unknown;
       };
     }>("xox-chat-stream", (ev) => {
       const payload = ev.payload;
@@ -1226,6 +1457,9 @@ export async function runXoxAiChatStream(
         callbacks?.onReasoningDelta?.(evt.delta);
       } else if (evt.type === "reply_delta" && evt.delta) {
         callbacks?.onReplyDelta?.(evt.delta);
+      } else if (evt.type === "canvas" && evt.canvas) {
+        const parsedCanvas = sanitizeCanvasArtifact(evt.canvas);
+        if (parsedCanvas) callbacks?.onCanvas?.(parsedCanvas);
       }
     });
 
@@ -1238,6 +1472,7 @@ export async function runXoxAiChatStream(
         xox_mood?: "talking" | "success" | "alert";
         operation?: "none" | "add_tasks" | "replace_tasks";
         tasks?: TaskProposal[];
+        canvas?: unknown;
         model_used?: string;
         latency_ms?: number;
         usage?: {
@@ -1256,6 +1491,7 @@ export async function runXoxAiChatStream(
           modelOverride: req.modelOverride ?? null,
           streamId,
           userProfile: req.userProfile ?? null,
+          activeCanvas: req.activeCanvas ?? null,
         },
       });
 
@@ -1268,14 +1504,27 @@ export async function runXoxAiChatStream(
           }
         : undefined;
 
+      const resCanvas = res.canvas ? sanitizeCanvasArtifact(res.canvas) ?? undefined : undefined;
+      const safeCanvas = resCanvas && canvasHasCellData(resCanvas) ? resCanvas : undefined;
+      const hasTabularCanvas = Boolean(
+        safeCanvas && safeCanvas.columns.length > 0 && safeCanvas.rows.length > 0
+      );
+      const cleanedReply = cleanVisibleReply(res.reply, { stripTables: hasTabularCanvas });
+      const finalTauriReply =
+        cleanedReply ||
+        (hasTabularCanvas && safeCanvas
+          ? `Listo, preparé "${safeCanvas.title}" en Canvas (${safeCanvas.rows.length} filas y ${safeCanvas.columns.length} columnas).${safeCanvas.summary ? `\n\n${safeCanvas.summary}` : ""}`
+          : res.reply);
+
       return {
-        reply: res.reply,
+        reply: finalTauriReply,
         reasoning: res.reasoning,
         reasoningDurationMs: res.reasoning_duration_ms,
         steps: res.steps,
         xoxMood: res.xox_mood ?? "talking",
         operation: res.operation ?? "none",
         tasks: (res.tasks ?? []).map(sanitizeTaskProposal),
+        canvas: safeCanvas,
         modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
         latencyMs: res.latency_ms ?? 0,
         usage,
@@ -1323,40 +1572,21 @@ export async function runXoxAiChatStream(
   callbacks?.onSteps?.([...steps]);
 
   const started = performance.now();
-  const resp = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${normalizeApiKey(vault.apiKey)}`,
-      "HTTP-Referer": window.location.origin,
-      "X-Title": "XOOK Enterprise Agentic Orchestrator",
-    },
-    body: JSON.stringify({
-      model: chosenModel,
-      messages,
-      temperature: 0.3,
-      max_tokens: 4096,
-      stream: true,
-    }),
-  });
-
-  if (!resp.ok || !resp.body) {
-    let errText = "";
-    try {
-      const j = (await resp.json()) as { error?: { message?: string } };
-      errText = j.error?.message ?? "";
-    } catch {
-      // Ignorar
-    }
-    throw new Error(mapFriendlyHttpError(resp.status, errText));
-  }
-
   let reasoningStarted: number | null = null;
   let reasoningEnded: number | null = null;
   let reasoningText = "";
   let replyText = "";
   let actualModel = chosenModel;
   let usageObj: XoxTokenUsage | undefined;
+
+  const upsertStep = (id: string, label: string, status: "running" | "done") => {
+    const idx = steps.findIndex((s) => s.id === id);
+    if (idx !== -1) {
+      steps[idx] = { ...steps[idx], label, status };
+    } else {
+      steps.push({ id, label, status });
+    }
+  };
 
   const pushReasoning = (delta: string) => {
     if (!delta) return;
@@ -1370,89 +1600,289 @@ export async function runXoxAiChatStream(
     replyText += delta;
     callbacks?.onReplyDelta?.(delta);
   };
-
-  const router = new BrowserStreamTagRouter(pushReasoning, pushReply, (phase) => {
+  const handlePhase = (phase: "thinking" | "talking" | "canvas") => {
     if (phase === "talking") {
       if (reasoningStarted !== null && reasoningEnded === null) reasoningEnded = performance.now();
       steps[1] = { ...steps[1], status: "done" };
-      if (steps.length < 3) {
-        steps.push({ id: "talk_reply", label: "Respondiendo en vivo", status: "running" });
-      }
+      upsertStep("talk_reply", "Respondiendo en vivo", "running");
       callbacks?.onPhase?.("talking", "Respondiendo...");
+      callbacks?.onSteps?.([...steps]);
+    } else if (phase === "canvas") {
+      if (reasoningStarted !== null && reasoningEnded === null) reasoningEnded = performance.now();
+      steps[1] = { ...steps[1], status: "done" };
+      upsertStep("build_canvas", "Generando tabla en Canvas", "running");
+      callbacks?.onPhase?.("syncing", "Diseñando tabla en Canvas...");
       callbacks?.onSteps?.([...steps]);
     } else {
       callbacks?.onPhase?.("thinking", "Evaluando opciones...");
     }
-  });
+  };
 
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let sseBuf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    sseBuf += decoder.decode(value, { stream: true });
-    const lines = sseBuf.split("\n");
-    sseBuf = lines.pop() ?? "";
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line.startsWith("data:")) continue;
-      const dataStr = line.slice(5).trim();
-      if (dataStr === "[DONE]") break;
+  const apiKey = normalizeApiKey(vault.apiKey);
+
+  const runBrowserStreamPass = async (
+    reqMessages: Array<Record<string, unknown>>,
+    allowTools: boolean,
+    tagRouter: BrowserStreamTagRouter
+  ): Promise<AccumulatedToolCall[]> => {
+    let includeTools = allowTools;
+    let resp: Response | null = null;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const reqBody: Record<string, unknown> = {
+        model: chosenModel,
+        messages: reqMessages,
+        temperature: 0.3,
+        max_tokens: 4096,
+        stream: true,
+      };
+      if (includeTools) {
+        reqBody.tools = [BROWSER_CANVAS_TOOL_DEF];
+        reqBody.tool_choice = "auto";
+      }
+      const attemptResp = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "HTTP-Referer": window.location.origin,
+          "X-Title": "XOOK Enterprise Agentic Orchestrator",
+        },
+        body: JSON.stringify(reqBody),
+      });
+      if (attemptResp.ok && attemptResp.body) {
+        resp = attemptResp;
+        break;
+      }
+      let errText = "";
       try {
-        const evt = JSON.parse(dataStr) as {
-          model?: string;
-          usage?: {
-            prompt_tokens?: number;
-            completion_tokens?: number;
-            total_tokens?: number;
-            cost?: number;
-          };
-          choices?: Array<{
-            delta?: {
-              content?: string;
-              reasoning?: string;
-              reasoning_content?: string;
-              reasoning_details?: Array<{ text?: string; summary?: string }>;
-            };
-          }>;
-        };
-        if (evt.model) {
-          actualModel = evt.model;
-          steps[1] = { ...steps[1], detail: actualModel };
-        }
-        if (evt.usage) {
-          usageObj = {
-            promptTokens: evt.usage.prompt_tokens ?? 0,
-            completionTokens: evt.usage.completion_tokens ?? 0,
-            totalTokens: evt.usage.total_tokens ?? 0,
-            cost: typeof evt.usage.cost === "number" ? evt.usage.cost : undefined,
-          };
-        }
-        const delta = evt.choices?.[0]?.delta;
-        if (!delta) continue;
-        const detailsText = Array.isArray(delta.reasoning_details)
-          ? delta.reasoning_details
-              .map((d) => d?.text || d?.summary || "")
-              .filter(Boolean)
-              .join("")
-          : "";
-        const r = delta.reasoning || delta.reasoning_content || detailsText;
-        if (r) pushReasoning(r);
-        if (delta.content) router.feed(delta.content);
+        const j = (await attemptResp.json()) as { error?: { message?: string } };
+        errText = j.error?.message ?? "";
       } catch {
-        // Ignorar chunk incompleto
+        // Ignorar
+      }
+      if (
+        includeTools &&
+        (attemptResp.status === 400 || attemptResp.status === 404) &&
+        /(tool|function|endpoints|unsupported)/i.test(errText)
+      ) {
+        includeTools = false;
+        continue;
+      }
+      throw new Error(mapFriendlyHttpError(attemptResp.status, errText));
+    }
+
+    if (!resp || !resp.body) {
+      throw new Error("No se pudo abrir la transmisión en vivo.");
+    }
+
+    const tcAcc = new Map<number, AccumulatedToolCall>();
+    let notifiedCanvasTc = false;
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let sseBuf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuf += decoder.decode(value, { stream: true });
+      const lines = sseBuf.split("\n");
+      sseBuf = lines.pop() ?? "";
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line.startsWith("data:")) continue;
+        const dataStr = line.slice(5).trim();
+        if (dataStr === "[DONE]") break;
+        try {
+          const evt = JSON.parse(dataStr) as {
+            model?: string;
+            usage?: {
+              prompt_tokens?: number;
+              completion_tokens?: number;
+              total_tokens?: number;
+              cost?: number;
+            };
+            choices?: Array<{
+              delta?: {
+                content?: string;
+                reasoning?: string;
+                reasoning_content?: string;
+                reasoning_details?: Array<{ text?: string; summary?: string }>;
+                tool_calls?: Array<{
+                  index?: number;
+                  id?: string;
+                  function?: { name?: string; arguments?: string };
+                }>;
+              };
+            }>;
+          };
+          if (evt.model) {
+            actualModel = evt.model;
+            steps[1] = { ...steps[1], detail: actualModel };
+          }
+          if (evt.usage) {
+            usageObj = {
+              promptTokens: evt.usage.prompt_tokens ?? 0,
+              completionTokens: evt.usage.completion_tokens ?? 0,
+              totalTokens: evt.usage.total_tokens ?? 0,
+              cost: typeof evt.usage.cost === "number" ? evt.usage.cost : undefined,
+            };
+          }
+          const delta = evt.choices?.[0]?.delta;
+          if (!delta) continue;
+          const detailsText = Array.isArray(delta.reasoning_details)
+            ? delta.reasoning_details
+                .map((d) => d?.text || d?.summary || "")
+                .filter(Boolean)
+                .join("")
+            : "";
+          const r = delta.reasoning || delta.reasoning_content || detailsText;
+          if (r) pushReasoning(r);
+
+          if (Array.isArray(delta.tool_calls)) {
+            for (const tcd of delta.tool_calls) {
+              const idx = typeof tcd.index === "number" ? tcd.index : 0;
+              const entry: AccumulatedToolCall = tcAcc.get(idx) ?? {
+                id: tcd.id || `call_${idx}`,
+                type: "function",
+                function: { name: "", arguments: "" },
+              };
+              if (tcd.id) entry.id = tcd.id;
+              if (tcd.function?.name) {
+                const nameDelta = tcd.function.name;
+                if (!entry.function.name) {
+                  entry.function.name = nameDelta;
+                } else if (
+                  nameDelta !== entry.function.name &&
+                  !entry.function.name.endsWith(nameDelta)
+                ) {
+                  entry.function.name += nameDelta;
+                }
+              }
+              if (typeof tcd.function?.arguments === "string" && tcd.function.arguments) {
+                const argsDelta = tcd.function.arguments;
+                let replaced = false;
+                if (
+                  entry.function.arguments.trimEnd().endsWith("}") &&
+                  argsDelta.trimStart().startsWith("{")
+                ) {
+                  try {
+                    const prevObj = JSON.parse(entry.function.arguments);
+                    const nextObj = JSON.parse(argsDelta);
+                    if (prevObj && typeof prevObj === "object" && nextObj && typeof nextObj === "object") {
+                      entry.function.arguments = argsDelta;
+                      replaced = true;
+                    }
+                  } catch {
+                    // Continuar acumulando
+                  }
+                }
+                if (!replaced) {
+                  entry.function.arguments += argsDelta;
+                }
+              } else if (tcd.function?.arguments && typeof tcd.function.arguments === "object") {
+                entry.function.arguments = JSON.stringify(tcd.function.arguments);
+              }
+              tcAcc.set(idx, entry);
+              if (!notifiedCanvasTc && entry.function.name.toLowerCase().includes("create_canvas")) {
+                notifiedCanvasTc = true;
+                handlePhase("canvas");
+              }
+            }
+          }
+
+          if (delta.content) tagRouter.feed(delta.content);
+        } catch {
+          // Ignorar chunk incompleto
+        }
       }
     }
-  }
-  router.flush();
+    tagRouter.flush();
+    return Array.from(tcAcc.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([, val]) => val);
+  };
+
+  const router = new BrowserStreamTagRouter(pushReasoning, pushReply, handlePhase);
+  const toolCallsList = await runBrowserStreamPass(
+    messages as Array<Record<string, unknown>>,
+    true,
+    router
+  );
 
   const latencyMs = Math.round(performance.now() - started);
-  const parsedActions = router.actionsBuf.trim()
+  let parsedActions = router.actionsBuf.trim()
     ? extractBrowserJson(router.actionsBuf)
-    : { reply: replyText, xoxMood: "talking" as const, operation: "none" as const, tasks: [] };
+    : {
+        reply: replyText,
+        xoxMood: "talking" as const,
+        operation: "none" as const,
+        tasks: [] as TaskProposal[],
+        canvas: undefined as CanvasArtifact | undefined,
+      };
 
-  const finalReply = replyText.trim() || parsedActions.reply;
+  const canvasArtifact = resolveBrowserCanvasArtifact({
+    toolCalls: toolCallsList,
+    canvasBuf: router.canvasBuf,
+    actionsCanvas: parsedActions.canvas,
+    fullReply: replyText.trim() || parsedActions.reply,
+    userMessage: req.message,
+  });
+
+  if (canvasArtifact) {
+    upsertStep("build_canvas", `Tabla lista en Canvas: "${canvasArtifact.title}"`, "done");
+    callbacks?.onCanvas?.(canvasArtifact);
+    callbacks?.onSteps?.([...steps]);
+
+    if (toolCallsList.length > 0 && !replyText.trim()) {
+      const followupRouter = new BrowserStreamTagRouter(pushReasoning, pushReply, handlePhase);
+      const toolResultContent = JSON.stringify({
+        ok: true,
+        canvas_title: canvasArtifact.title,
+        columns: canvasArtifact.columns.length,
+        rows: canvasArtifact.rows.length,
+        instruction:
+          "La tabla ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves de conclusión en español dentro de <respuesta>. NO repitas la tabla ni escribas HTML.",
+      });
+      try {
+        await runBrowserStreamPass(
+          [
+            ...(messages as Array<Record<string, unknown>>),
+            { role: "assistant", content: null, tool_calls: toolCallsList },
+            ...toolCallsList.map((tc, i) => ({
+              role: "tool",
+              tool_call_id: tc.id || `call_${i}`,
+              content: toolResultContent,
+            })),
+          ],
+          false,
+          followupRouter
+        );
+        if (followupRouter.actionsBuf.trim()) {
+          parsedActions = extractBrowserJson(followupRouter.actionsBuf);
+        }
+      } catch {
+        // Fallback amigable debajo
+      }
+    }
+
+    if (!replyText.trim()) {
+      const fallbackText =
+        `Listo, preparé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).` +
+        (canvasArtifact.summary ? `\n\n${canvasArtifact.summary}` : "");
+      pushReply(fallbackText);
+    }
+  }
+
+  const rawFinalReply = replyText.trim() || parsedActions.reply;
+  const hasTabularCanvas = Boolean(
+    canvasArtifact && canvasArtifact.columns.length > 0 && canvasArtifact.rows.length > 0
+  );
+  const cleanedFinalReply = cleanVisibleReply(rawFinalReply, { stripTables: hasTabularCanvas });
+  const finalReply =
+    cleanedFinalReply ||
+    (hasTabularCanvas && canvasArtifact
+      ? `Listo, preparé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).${canvasArtifact.summary ? `\n\n${canvasArtifact.summary}` : ""}`
+      : rawFinalReply);
   const completedSteps = steps.map((s) => ({ ...s, status: "done" as const }));
   if (parsedActions.tasks.length > 0) {
     completedSteps.push({
@@ -1461,7 +1891,7 @@ export async function runXoxAiChatStream(
       status: "done",
     });
     callbacks?.onPhase?.("syncing", "Preparando tarjetas de acción...");
-  } else if (completedSteps.length < 3) {
+  } else if (completedSteps.length < 3 && !canvasArtifact) {
     completedSteps.push({ id: "talk_reply", label: "Respuesta completada", status: "done" });
   }
   callbacks?.onSteps?.(completedSteps);
@@ -1478,9 +1908,10 @@ export async function runXoxAiChatStream(
     reasoning: reasoningText.trim(),
     reasoningDurationMs,
     steps: completedSteps,
-    xoxMood: parsedActions.xoxMood,
+    xoxMood: canvasArtifact && parsedActions.xoxMood === "talking" ? "success" : parsedActions.xoxMood,
     operation: parsedActions.operation,
     tasks: parsedActions.tasks,
+    canvas: canvasArtifact,
     modelUsed: actualModel,
     latencyMs,
     usage: usageObj,
@@ -1503,7 +1934,7 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
   ];
 
   const started = performance.now();
-  const makeCall = async (useJsonFormat: boolean) => {
+  const makeCall = async (useJsonFormat: boolean, useTools: boolean) => {
     const payload: Record<string, unknown> = {
       model: chosenModel,
       messages,
@@ -1512,6 +1943,10 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
     };
     if (useJsonFormat) {
       payload.response_format = { type: "json_object" };
+    }
+    if (useTools) {
+      payload.tools = [BROWSER_CANVAS_TOOL_DEF];
+      payload.tool_choice = "auto";
     }
     return fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
       method: "POST",
@@ -1525,14 +1960,22 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
     });
   };
 
-  let resp = await makeCall(true);
-  if (resp.status === 400) {
-    resp = await makeCall(false);
+  let resp = await makeCall(true, true);
+  if (resp.status === 400 || resp.status === 404) {
+    resp = await makeCall(false, true);
+    if (resp.status === 400 || resp.status === 404) {
+      resp = await makeCall(false, false);
+    }
   }
 
   const data = (await resp.json()) as {
     model?: string;
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+      message?: {
+        content?: string;
+        tool_calls?: AccumulatedToolCall[];
+      };
+    }>;
     usage?: {
       prompt_tokens?: number;
       completion_tokens?: number;
@@ -1546,11 +1989,30 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
   }
 
   const latencyMs = Math.round(performance.now() - started);
-  const rawContent = data.choices?.[0]?.message?.content ?? "";
+  const msgObj = data.choices?.[0]?.message;
+  const rawContent = msgObj?.content ?? "";
+  const toolCalls = Array.isArray(msgObj?.tool_calls) ? msgObj.tool_calls : [];
   const parsed = extractBrowserJson(rawContent);
+  const canvasArtifact = resolveBrowserCanvasArtifact({
+    toolCalls,
+    canvasBuf: "",
+    actionsCanvas: parsed.canvas,
+    fullReply: parsed.reply,
+    userMessage: req.message,
+  });
+
+  const cleanedSyncReply = cleanVisibleReply(parsed.reply || "", { stripTables: false });
+  const finalReply =
+    cleanedSyncReply ||
+    (canvasArtifact
+      ? `Listo, generé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).`
+      : "Listo, procesé tu consulta.");
 
   return {
     ...parsed,
+    reply: finalReply,
+    canvas: canvasArtifact,
+    xoxMood: canvasArtifact && parsed.xoxMood === "talking" ? "success" : parsed.xoxMood,
     modelUsed: data.model || chosenModel,
     latencyMs,
     usage: data.usage

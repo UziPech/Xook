@@ -14,11 +14,60 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from slices.task_ui.schemas import sanitize_task_proposal
+from slices.task_ui.schemas import (
+    canvas_has_cell_data,
+    clean_visible_reply,
+    sanitize_canvas_artifact,
+    sanitize_task_proposal,
+)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 APP_REFERER = "https://xook.local"
 APP_TITLE = "XOOK Enterprise Agentic Orchestrator"
+
+CANVAS_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "create_canvas",
+        "description": (
+            "Crea un lienzo interactivo (Canvas) junto al chat para mostrar tablas "
+            "comparativas, datos, listas de costos, cronogramas o documentos "
+            "estructurados. Incluye siempre los datos completos en rows."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Título claro del Canvas o tabla"},
+                "subtitle": {"type": "string", "description": "Contexto breve o unidades"},
+                "kind": {"type": "string", "enum": ["comparison", "table", "document"]},
+                "summary": {"type": "string", "description": "Conclusión clave en 1 oración"},
+                "columns": {
+                    "type": "array",
+                    "description": "Nombres de columnas en orden, ej. [\"Sector\", \"Participación (%)\"]",
+                    "items": {"type": "string"},
+                },
+                "rows": {
+                    "type": "array",
+                    "description": "Lista de filas. Cada fila es un arreglo de textos en el mismo orden de columns, ej. [[\"Agricultura\", \"22%\"], [\"Industria\", \"33%\"]]",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "recommended_row": {
+                    "type": "integer",
+                    "description": "Opcional (únicamente en comparativas o rankings con una opción ganadora): índice base 0 de la fila recomendada. Omítelo en listas o catálogos neutros.",
+                },
+                "recommended_badge": {
+                    "type": "string",
+                    "description": "Opcional: etiqueta breve para destacar esa fila, ej. 'Recomendado' o 'Principal'",
+                },
+                "markdown": {"type": "string", "description": "Notas o documento Markdown si kind es document"},
+            },
+            "required": ["title", "columns", "rows"],
+        },
+    },
+}
 
 DEFAULT_MODELS: List[Dict[str, Any]] = [
     {
@@ -379,6 +428,7 @@ def _build_system_prompt(
     attached_context: List[Dict[str, Any]],
     stream_mode: bool = False,
     user_profile: Optional[Dict[str, Any]] = None,
+    active_canvas: Optional[Dict[str, Any]] = None,
 ) -> str:
     profile = _load_json_safe(context_dir / "business-profiles" / "store-profile.json")
     memory = _load_json_safe(context_dir / "memory" / "memory_store.json")
@@ -419,6 +469,28 @@ def _build_system_prompt(
         op_store = user_profile.get("storeName") or ""
         operator_ctx = f"\nUSUARIO ACTIVO EN SESIÓN:\nNombre: {op_name} | Rol: {op_role}" + (f" | Sucursal/Negocio: {op_store}" if op_store else "")
 
+    canvas_ctx = ""
+    if isinstance(active_canvas, dict) and active_canvas.get("title"):
+        compact_canvas = {
+            "id": active_canvas.get("id"),
+            "title": active_canvas.get("title"),
+            "kind": active_canvas.get("kind"),
+            "summary": active_canvas.get("summary"),
+            "columns": active_canvas.get("columns", [])[:12],
+            "rows": active_canvas.get("rows", [])[:25],
+        }
+        canvas_ctx = (
+            "\nCANVAS ACTIVO EN PANTALLA (si el usuario pide modificar, filtrar, ampliar o mejorar la tabla, actualiza este Canvas manteniendo su id):\n"
+            + json.dumps(compact_canvas, ensure_ascii=False)
+        )
+
+    canvas_hint = """USO DE CANVAS PARA TABLAS Y COMPARATIVAS (IMPORTANTE):
+Cuando el usuario pida o convenga mostrar una TABLA, tabla comparativa, desglose, matriz de opciones o presupuesto:
+- Usa la herramienta `create_canvas` (preferida) pasando columnas en texto simple y TODAS las filas completas en `rows`, O incluye una sección `<canvas>{...}</canvas>` con:
+  {"title":"Título corto","subtitle":"Criterio breve","kind":"comparison","summary":"Conclusión clave en 1 oración","columns":["Criterio","Opción A","Opción B"],"rows":[["Precio","$100","$120"],["Tiempo","2 días","5 días"]],"recommended_row":0,"recommended_badge":"Recomendado"}
+- NUNCA envíes `rows` con celdas vacías ni escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en `<respuesta>`.
+- En `<respuesta>` escribe únicamente una explicación clara en español o la conclusión clave sin duplicar tablas HTML."""
+
     task_schema_hint = """ESQUEMA DE CADA TaskProposal EN "tasks":
 {
   "cardId": "card_<slug>_<num>",
@@ -448,18 +520,23 @@ def _build_system_prompt(
 
     if stream_mode:
         output_rules = f"""FORMATO DE RESPUESTA EN VIVO (OBLIGATORIO):
-Responde usando EXACTAMENTE estas 3 secciones en orden (sin texto fuera de las etiquetas):
+Responde usando estas secciones en orden (sin texto fuera de las etiquetas; opcionalmente incluye <canvas> si generas una tabla sin usar tool call):
 <analisis>
 - Explica en 2 a 4 viñetas breves en español humano qué revisaste (contexto del negocio, reglas aplicables, estado actual o intención del mensaje) y tu criterio antes de responder.
 </analisis>
 <respuesta>
 Tu respuesta clara, directa y humana en español para el usuario (párrafos cortos o viñetas simples; nunca pongas JSON aquí).
 </respuesta>
+<canvas>
+{{}} // Opcional: solo si generas una tabla/comparativa y no llamaste a la herramienta create_canvas
+</canvas>
 <acciones>
 {{"xox_mood": "talking", "operation": "none", "tasks": []}}
 </acciones>
 
 En <acciones>: si el usuario pide analizar stock, reponer, agendar, crear un reloj/temporizador, nota o consolidar tarjetas, incluye 1 a 3 objetos TaskProposal dentro de "tasks" con "operation": "add_tasks" o "replace_tasks" y "xox_mood": "success". Si es conversación normal, deja "tasks": [] y "operation": "none".
+
+{canvas_hint}
 
 {task_schema_hint}"""
     else:
@@ -471,8 +548,11 @@ Responde ÚNICAMENTE con un objeto JSON válido (sin texto fuera del JSON) con e
   "operation": "none" | "add_tasks" | "replace_tasks",
   "tasks": [
     // Opcional: 0 a 3 tarjetas TaskProposal si el usuario pide analizar, reponer, agendar, poner un reloj/temporizador, crear una nota o consolidar/reconstruir tareas.
-  ]
+  ],
+  "canvas": null // Opcional: objeto Canvas si el usuario pidió una tabla o comparativa y no usaste `create_canvas`
 }}
+
+{canvas_hint}
 
 {task_schema_hint}"""
 
@@ -499,7 +579,7 @@ TAREAS PENDIENTES EN PANEL DERECHO:
 {json.dumps(compact_tasks, ensure_ascii=False)}
 
 AGENDA Y RELOJES ACTIVOS:
-{json.dumps(compact_agenda, ensure_ascii=False)}{operator_ctx}{extra_ctx}
+{json.dumps(compact_agenda, ensure_ascii=False)}{operator_ctx}{canvas_ctx}{extra_ctx}
 
 {output_rules}
 
@@ -537,16 +617,18 @@ def _find_first_tag(buf: str, tags: Tuple[str, ...]) -> Optional[Tuple[int, str]
 
 
 class _StreamTagRouter:
-    """Enruta chunks de contenido streaming hacia análisis, respuesta y acciones ocultas."""
+    """Enruta chunks de contenido streaming hacia análisis, respuesta, canvas y acciones ocultas."""
 
     OPEN_ANALYSIS = ("<analisis>", "<analysis>")
     CLOSE_ANALYSIS = ("</analisis>", "</analysis>")
     OPEN_REPLY = ("<respuesta>", "<response>")
     CLOSE_REPLY = ("</respuesta>", "</response>")
+    OPEN_CANVAS = ("<canvas>", "<lienzo>")
+    CLOSE_CANVAS = ("</canvas>", "</lienzo>")
     OPEN_ACTIONS = ("<acciones>", "<actions>")
     CLOSE_ACTIONS = ("</acciones>", "</actions>")
-    STOP_REPLY = CLOSE_REPLY + OPEN_ACTIONS
-    ALL_OPEN = OPEN_ANALYSIS + OPEN_REPLY + OPEN_ACTIONS
+    STOP_REPLY = CLOSE_REPLY + OPEN_CANVAS + OPEN_ACTIONS
+    ALL_OPEN = OPEN_ANALYSIS + OPEN_REPLY + OPEN_CANVAS + OPEN_ACTIONS
 
     def __init__(
         self,
@@ -556,16 +638,61 @@ class _StreamTagRouter:
     ) -> None:
         self.mode = "detect"
         self.buf = ""
+        self.canvas_buf = ""
         self.actions_buf = ""
         self.on_reasoning = on_reasoning
         self.on_reply = on_reply
         self.on_phase = on_phase
         self._entered_reply = False
+        self._entered_canvas = False
 
     def _enter_reply(self) -> None:
         if not self._entered_reply:
             self._entered_reply = True
             self.on_phase("talking")
+
+    def _enter_canvas(self) -> None:
+        self.mode = "canvas"
+        if not self._entered_canvas:
+            self._entered_canvas = True
+            self.on_phase("canvas")
+
+    def _try_match_next_section(self, allow_fallback_reply: bool = False) -> Optional[bool]:
+        """Intenta consumir el inicio de la siguiente etiqueta conocida. Retorna True si avanzó, False si espera más chunks, None si no coincide."""
+        trimmed = self.buf.lstrip()
+        if not trimmed:
+            self.buf = ""
+            return False
+        self.buf = trimmed
+        lower = trimmed.lower()
+        for tags, target in (
+            (self.OPEN_ANALYSIS, "analysis"),
+            (self.OPEN_REPLY, "reply"),
+            (self.OPEN_CANVAS, "canvas"),
+            (self.OPEN_ACTIONS, "actions"),
+        ):
+            matched = next((t for t in tags if lower.startswith(t)), None)
+            if matched:
+                self.buf = trimmed[len(matched) :].lstrip("\r\n")
+                if target == "analysis":
+                    self.mode = "analysis"
+                    self.on_phase("thinking")
+                elif target == "reply":
+                    self.mode = "reply"
+                    self._enter_reply()
+                elif target == "canvas":
+                    self._enter_canvas()
+                else:
+                    self.mode = "actions"
+                return True
+        if any(t.startswith(lower) for t in self.ALL_OPEN):
+            return False
+        if allow_fallback_reply:
+            self.mode = "reply"
+            self._enter_reply()
+            return True
+        self.buf = ""
+        return False
 
     def feed(self, chunk: str) -> None:
         if not chunk:
@@ -575,29 +702,16 @@ class _StreamTagRouter:
 
     def _process(self) -> None:
         while self.buf:
-            if self.mode == "detect":
-                trimmed = self.buf.lstrip()
-                if not trimmed:
-                    self.buf = ""
+            if self.mode in ("detect", "after_analysis"):
+                res = self._try_match_next_section(allow_fallback_reply=True)
+                if res is False:
                     return
-                self.buf = trimmed
-                lower = trimmed.lower()
-                matched = next((t for t in self.ALL_OPEN if lower.startswith(t)), None)
-                if matched:
-                    self.buf = trimmed[len(matched) :].lstrip("\r\n")
-                    if matched in self.OPEN_ANALYSIS:
-                        self.mode = "analysis"
-                        self.on_phase("thinking")
-                    elif matched in self.OPEN_REPLY:
-                        self.mode = "reply"
-                        self._enter_reply()
-                    else:
-                        self.mode = "actions"
-                    continue
-                if any(t.startswith(lower) for t in self.ALL_OPEN):
+                continue
+
+            if self.mode in ("after_reply", "after_canvas"):
+                res = self._try_match_next_section(allow_fallback_reply=(self.mode == "after_canvas"))
+                if res is False:
                     return
-                self.mode = "reply"
-                self._enter_reply()
                 continue
 
             if self.mode == "analysis":
@@ -615,30 +729,6 @@ class _StreamTagRouter:
                 self.buf = rem
                 return
 
-            if self.mode == "after_analysis":
-                trimmed = self.buf.lstrip()
-                if not trimmed:
-                    self.buf = ""
-                    return
-                self.buf = trimmed
-                lower = trimmed.lower()
-                matched_rep = next((t for t in self.OPEN_REPLY if lower.startswith(t)), None)
-                if matched_rep:
-                    self.buf = trimmed[len(matched_rep) :].lstrip("\r\n")
-                    self.mode = "reply"
-                    self._enter_reply()
-                    continue
-                matched_act = next((t for t in self.OPEN_ACTIONS if lower.startswith(t)), None)
-                if matched_act:
-                    self.buf = trimmed[len(matched_act) :]
-                    self.mode = "actions"
-                    continue
-                if any(t.startswith(lower) for t in (self.OPEN_REPLY + self.OPEN_ACTIONS)):
-                    return
-                self.mode = "reply"
-                self._enter_reply()
-                continue
-
             if self.mode == "reply":
                 found = _find_first_tag(self.buf, self.STOP_REPLY)
                 if found:
@@ -646,7 +736,12 @@ class _StreamTagRouter:
                     if idx > 0:
                         self.on_reply(self.buf[:idx])
                     self.buf = self.buf[idx + len(tag) :]
-                    self.mode = "actions" if tag in self.OPEN_ACTIONS else "after_reply"
+                    if tag in self.OPEN_CANVAS:
+                        self._enter_canvas()
+                    elif tag in self.OPEN_ACTIONS:
+                        self.mode = "actions"
+                    else:
+                        self.mode = "after_reply"
                     continue
                 safe, rem = _partial_tag_split(self.buf, self.STOP_REPLY)
                 if safe:
@@ -654,28 +749,23 @@ class _StreamTagRouter:
                 self.buf = rem
                 return
 
-            if self.mode == "after_reply":
-                trimmed = self.buf.lstrip()
-                if not trimmed:
-                    self.buf = ""
-                    return
-                self.buf = trimmed
-                lower = trimmed.lower()
-                matched_act = next((t for t in self.OPEN_ACTIONS if lower.startswith(t)), None)
-                if matched_act:
-                    self.buf = trimmed[len(matched_act) :]
-                    self.mode = "actions"
+            if self.mode == "canvas":
+                found = _find_first_tag(self.buf, self.CLOSE_CANVAS)
+                if found:
+                    idx, tag = found
+                    self.canvas_buf += self.buf[:idx]
+                    self.buf = self.buf[idx + len(tag) :]
+                    self.mode = "after_canvas"
                     continue
-                if any(t.startswith(lower) for t in self.OPEN_ACTIONS):
-                    return
-                # Texto residual si el modelo escribió algo después de </respuesta> sin <acciones>
-                self.buf = ""
+                safe, rem = _partial_tag_split(self.buf, self.CLOSE_CANVAS)
+                self.canvas_buf += safe
+                self.buf = rem
                 return
 
             if self.mode == "actions":
                 found = _find_first_tag(self.buf, self.CLOSE_ACTIONS)
                 if found:
-                    idx, tag = found
+                    idx, _ = found
                     self.actions_buf += self.buf[:idx]
                     self.buf = ""
                     return
@@ -687,7 +777,7 @@ class _StreamTagRouter:
     def flush(self) -> None:
         if not self.buf:
             return
-        if self.mode == "detect" or self.mode == "after_analysis":
+        if self.mode in ("detect", "after_analysis"):
             trimmed = self.buf.lstrip()
             if trimmed:
                 self._enter_reply()
@@ -696,16 +786,19 @@ class _StreamTagRouter:
             self.on_reasoning(self.buf)
         elif self.mode == "reply":
             self.on_reply(self.buf)
+        elif self.mode == "canvas":
+            cleaned = re.sub(r"</?(?:canvas|lienzo)>", "", self.buf, flags=re.IGNORECASE)
+            self.canvas_buf += cleaned
         elif self.mode == "actions":
             cleaned = re.sub(r"</?(?:acciones|actions)>", "", self.buf, flags=re.IGNORECASE)
             self.actions_buf += cleaned
         self.buf = ""
 
 
-def _parse_actions_payload(raw_actions: str) -> Dict[str, Any]:
-    text = (raw_actions or "").strip()
+def _parse_json_candidates(raw_text: str) -> Optional[Dict[str, Any]]:
+    text = (raw_text or "").strip()
     if not text:
-        return {"xox_mood": "talking", "operation": "none", "tasks": []}
+        return None
     candidates = [text]
     fence = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", text)
     if fence:
@@ -714,14 +807,150 @@ def _parse_actions_payload(raw_actions: str) -> Dict[str, Any]:
     e = text.rfind("}")
     if s != -1 and e > s:
         candidates.append(text[s : e + 1])
+
+    expanded: List[str] = []
     for cand in candidates:
+        expanded.append(cand)
+        cleaned = re.sub(r",\s*([}\]])", r"\1", cand)
+        if cleaned != cand:
+            expanded.append(cleaned)
+
+    for cand in expanded:
         try:
-            parsed = json.loads(cand)
+            parsed: Any = json.loads(cand)
+            if isinstance(parsed, str):
+                parsed = json.loads(parsed)
             if isinstance(parsed, dict):
                 return parsed
         except Exception:
             continue
+    return None
+
+
+def _parse_actions_payload(raw_actions: str) -> Dict[str, Any]:
+    parsed = _parse_json_candidates(raw_actions)
+    if parsed is not None:
+        return parsed
     return {"xox_mood": "talking", "operation": "none", "tasks": []}
+
+
+def _parse_canvas_payload(raw_canvas: str) -> Optional[Dict[str, Any]]:
+    text = (raw_canvas or "").strip()
+    if not text or text == "{}":
+        return None
+    parsed = _parse_json_candidates(text)
+    if parsed:
+        sanitized = sanitize_canvas_artifact(parsed)
+        if sanitized and canvas_has_cell_data(sanitized):
+            return sanitized
+    # Fallback: el modelo escribió tabla Markdown o HTML dentro de <canvas>...</canvas>
+    if ("|" in text and "---" in text) or "<tr" in text.lower() or "<table" in text.lower():
+        sanitized_tbl = sanitize_canvas_artifact({"title": "Tabla comparativa", "markdown": text})
+        if sanitized_tbl and canvas_has_cell_data(sanitized_tbl):
+            return sanitized_tbl
+    return None
+
+
+def _is_table_request(user_message: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(tabla|tablas|comparativa|comparativo|comparaci[oó]n|comparar|compara|composici[oó]n|desglose|canvas|lienzo|matriz|cuadro)\b",
+            user_message or "",
+            re.IGNORECASE,
+        )
+    )
+
+
+def _has_structured_table_markup(text: str) -> bool:
+    if not text:
+        return False
+    lower = text.lower()
+    if "<tr" in lower and ("<td" in lower or "<th" in lower):
+        return True
+    if "|" in text and "---" in text:
+        return True
+    return False
+
+
+def _extract_canvas_tool_metadata(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        fn_name = str(fn.get("name") or "").strip().lower()
+        if not fn_name or ("create_canvas" not in fn_name and fn_name != "canvas"):
+            continue
+        raw_args = fn.get("arguments")
+        parsed_args = raw_args if isinstance(raw_args, dict) else _parse_json_candidates(str(raw_args or ""))
+        if isinstance(parsed_args, dict):
+            inner = (
+                parsed_args.get("canvas")
+                if isinstance(parsed_args.get("canvas"), dict)
+                else parsed_args.get("arguments")
+                if isinstance(parsed_args.get("arguments"), dict)
+                else parsed_args
+            )
+            if isinstance(inner, dict):
+                return inner
+    return {}
+
+
+def _extract_canvas_from_tool_calls(tool_calls: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        fn_name = str(fn.get("name") or "").strip().lower()
+        if not fn_name or ("create_canvas" not in fn_name and fn_name != "canvas"):
+            continue
+        raw_args = fn.get("arguments")
+        parsed_args: Optional[Dict[str, Any]] = None
+        if isinstance(raw_args, dict):
+            parsed_args = raw_args
+        elif isinstance(raw_args, str):
+            parsed_args = _parse_json_candidates(raw_args)
+            if parsed_args is None and _has_structured_table_markup(raw_args):
+                tbl = sanitize_canvas_artifact({"title": "Tabla comparativa", "markdown": raw_args})
+                if tbl and canvas_has_cell_data(tbl):
+                    return tbl
+        if isinstance(parsed_args, dict):
+            inner = (
+                parsed_args.get("canvas")
+                if isinstance(parsed_args.get("canvas"), dict)
+                else parsed_args.get("arguments")
+                if isinstance(parsed_args.get("arguments"), dict)
+                else parsed_args
+            )
+            canvas = sanitize_canvas_artifact(inner)
+            if canvas and canvas_has_cell_data(canvas):
+                return canvas
+    return None
+
+
+def _resolve_canvas_artifact(
+    tool_calls: List[Dict[str, Any]],
+    canvas_buf: str,
+    actions_canvas: Any,
+    full_reply: str,
+    user_message: str,
+) -> Optional[Dict[str, Any]]:
+    from_tool = _extract_canvas_from_tool_calls(tool_calls)
+    if from_tool and canvas_has_cell_data(from_tool):
+        return from_tool
+    from_tag = _parse_canvas_payload(canvas_buf)
+    if from_tag and canvas_has_cell_data(from_tag):
+        return from_tag
+    if isinstance(actions_canvas, dict):
+        from_actions = sanitize_canvas_artifact(actions_canvas)
+        if from_actions and canvas_has_cell_data(from_actions):
+            return from_actions
+    if _has_structured_table_markup(full_reply) and (_is_table_request(user_message) or bool(tool_calls) or "<tr" in full_reply.lower() or "|" in full_reply):
+        tool_meta = _extract_canvas_tool_metadata(tool_calls) if tool_calls else {}
+        extracted = sanitize_canvas_artifact({
+            "title": tool_meta.get("title") or tool_meta.get("titulo") or "Tabla generada",
+            "subtitle": tool_meta.get("subtitle") or tool_meta.get("subtitulo"),
+            "summary": tool_meta.get("summary") or tool_meta.get("resumen"),
+            "markdown": full_reply,
+        })
+        if extracted and canvas_has_cell_data(extracted) and extracted.get("columns"):
+            return extracted
+    return None
 
 
 def _parse_agent_json(raw_content: str) -> Dict[str, Any]:
@@ -767,7 +996,8 @@ def _validate_and_build_messages(
     attached_context: Optional[List[Dict[str, Any]]],
     stream_mode: bool = False,
     user_profile: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, str, List[Dict[str, str]]]:
+    active_canvas: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, str, List[Dict[str, Any]]]:
     key = _normalize_api_key(api_key)
     if not key:
         raise RuntimeError("Falta la clave API de OpenRouter. Configúrala en Xook o pégala en el chat.")
@@ -785,9 +1015,10 @@ def _validate_and_build_messages(
         attached_context=attached_context or [],
         stream_mode=stream_mode,
         user_profile=user_profile,
+        active_canvas=active_canvas,
     )
 
-    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     for msg in (history or [])[-10:]:
         role = msg.get("role")
         content = msg.get("content")
@@ -822,6 +1053,8 @@ def run_agent_completion(
     current_tasks: Optional[List[Dict[str, Any]]] = None,
     agenda_items: Optional[List[Dict[str, Any]]] = None,
     attached_context: Optional[List[Dict[str, Any]]] = None,
+    user_profile: Optional[Dict[str, Any]] = None,
+    active_canvas: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     key, chosen_model, messages = _validate_and_build_messages(
         api_key=api_key,
@@ -834,6 +1067,8 @@ def run_agent_completion(
         agenda_items=agenda_items,
         attached_context=attached_context,
         stream_mode=False,
+        user_profile=user_profile,
+        active_canvas=active_canvas,
     )
 
     started = time.time()
@@ -843,54 +1078,61 @@ def run_agent_completion(
         "temperature": 0.3,
         "max_tokens": 4096,
         "response_format": {"type": "json_object"},
+        "tools": [CANVAS_TOOL_DEF],
+        "tool_choice": "auto",
     }
 
-    try:
-        res = _http_json(
-            f"{OPENROUTER_BASE_URL}/chat/completions",
-            method="POST",
-            api_key=key,
-            payload=payload,
-            timeout=60,
-        )
-    except RuntimeError as err:
-        # Algunos modelos gratuitos en OpenRouter rechazan response_format; reintentar sin él
-        err_lower = str(err).lower()
-        if any(tok in err_lower for tok in ("400", "404", "response_format", "json_object", "structured")):
-            payload.pop("response_format", None)
+    def _call_with_fallbacks(cur_payload: Dict[str, Any]) -> Dict[str, Any]:
+        for _attempt in range(3):
             try:
-                res = _http_json(
+                return _http_json(
                     f"{OPENROUTER_BASE_URL}/chat/completions",
                     method="POST",
                     api_key=key,
-                    payload=payload,
+                    payload=cur_payload,
                     timeout=60,
                 )
-            except RuntimeError as retry_err:
-                raise _friendly_http_error(retry_err) from retry_err
-        else:
-            raise _friendly_http_error(err) from err
+            except RuntimeError as err:
+                err_lower = str(err).lower()
+                dropped = False
+                if "tools" in cur_payload and any(
+                    tok in err_lower for tok in ("400", "404", "tool", "function", "endpoints", "unsupported")
+                ):
+                    cur_payload.pop("tools", None)
+                    cur_payload.pop("tool_choice", None)
+                    dropped = True
+                if "response_format" in cur_payload and any(
+                    tok in err_lower for tok in ("400", "404", "response_format", "json_object", "structured")
+                ):
+                    cur_payload.pop("response_format", None)
+                    dropped = True
+                if not dropped:
+                    raise _friendly_http_error(err) from err
+        raise RuntimeError("No se pudo completar la solicitud tras reintentar.")
 
+    res = _call_with_fallbacks(payload)
     choices = res.get("choices") or []
     message_obj = (choices[0].get("message") or {}) if choices else {}
     raw_content = message_obj.get("content") or ""
+    tool_calls = message_obj.get("tool_calls") or []
 
-    # Si un modelo del router gratuito devolvió content vacío con response_format, reintentar sin response_format
-    if not raw_content.strip() and "response_format" in payload:
+    if not raw_content.strip() and not tool_calls and "response_format" in payload:
         payload.pop("response_format", None)
-        try:
-            res = _http_json(
-                f"{OPENROUTER_BASE_URL}/chat/completions",
-                method="POST",
-                api_key=key,
-                payload=payload,
-                timeout=60,
-            )
-        except RuntimeError as retry_err:
-            raise _friendly_http_error(retry_err) from retry_err
+        res = _call_with_fallbacks(payload)
         choices = res.get("choices") or []
         message_obj = (choices[0].get("message") or {}) if choices else {}
         raw_content = message_obj.get("content") or ""
+        tool_calls = message_obj.get("tool_calls") or []
+
+    canvas_obj = _extract_canvas_from_tool_calls(tool_calls) if isinstance(tool_calls, list) else None
+
+    if not raw_content.strip() and canvas_obj is not None:
+        raw_content = json.dumps({
+            "reply": f'Listo, generé "{canvas_obj["title"]}" en Canvas ({len(canvas_obj["rows"])} filas y {len(canvas_obj["columns"])} columnas).',
+            "xox_mood": "success",
+            "operation": "none",
+            "tasks": [],
+        }, ensure_ascii=False)
 
     if not raw_content.strip():
         raise RuntimeError(
@@ -901,15 +1143,28 @@ def run_agent_completion(
 
     parsed = _parse_agent_json(raw_content)
     safe_tasks, operation, mood = _normalize_agent_actions(parsed)
+    full_reply = str(parsed.get("reply") or "Listo.")
+    if canvas_obj is None:
+        canvas_obj = _resolve_canvas_artifact(
+            tool_calls=tool_calls if isinstance(tool_calls, list) else [],
+            canvas_buf="",
+            actions_canvas=parsed.get("canvas"),
+            full_reply=full_reply,
+            user_message=user_message,
+        )
+    full_reply = clean_visible_reply(full_reply, strip_tables=False)
+    if canvas_obj is not None and mood == "talking":
+        mood = "success"
+
     reasoning = (
         message_obj.get("reasoning")
         or message_obj.get("reasoning_content")
         or ""
     )
 
-    return {
+    out: Dict[str, Any] = {
         "status": "ok",
-        "reply": str(parsed.get("reply") or "Listo."),
+        "reply": full_reply,
         "reasoning": str(reasoning).strip(),
         "xox_mood": mood,
         "operation": operation,
@@ -918,6 +1173,9 @@ def run_agent_completion(
         "usage": res.get("usage") or {},
         "latency_ms": latency_ms,
     }
+    if canvas_obj is not None:
+        out["canvas"] = canvas_obj
+    return out
 
 
 def _extract_delta_reasoning(delta: Dict[str, Any]) -> str:
@@ -948,6 +1206,7 @@ def stream_agent_completion(
     agenda_items: Optional[List[Dict[str, Any]]] = None,
     attached_context: Optional[List[Dict[str, Any]]] = None,
     user_profile: Optional[Dict[str, Any]] = None,
+    active_canvas: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     sources = _collect_context_sources(context_dir, skills_dir, attached_context or [])
     steps: List[Dict[str, Any]] = [
@@ -973,6 +1232,7 @@ def stream_agent_completion(
         attached_context=attached_context,
         stream_mode=True,
         user_profile=user_profile,
+        active_canvas=active_canvas,
     )
 
     steps[0]["status"] = "done"
@@ -1013,21 +1273,28 @@ def stream_agent_completion(
         reply_chunks.append(chunk)
         emit_event({"type": "reply_delta", "delta": chunk})
 
+    def _upsert_step(step_id: str, label: str, status: str = "running") -> None:
+        for idx, st in enumerate(steps):
+            if st.get("id") == step_id:
+                steps[idx] = {**st, "label": label, "status": status}
+                return
+        steps.append({"id": step_id, "label": label, "status": status})
+
     def on_phase_change(phase: str) -> None:
         nonlocal reasoning_ended
         if phase == "talking":
             if reasoning_started is not None and reasoning_ended is None:
                 reasoning_ended = time.time()
             steps[1]["status"] = "done"
-            if len(steps) < 3:
-                steps.append(
-                    {
-                        "id": "talk_reply",
-                        "label": "Respondiendo en vivo",
-                        "status": "running",
-                    }
-                )
+            _upsert_step("talk_reply", "Respondiendo en vivo", "running")
             emit_event({"type": "phase", "xox_state": "talking", "label": "Respondiendo..."})
+            emit_event({"type": "steps", "steps": steps})
+        elif phase == "canvas":
+            if reasoning_started is not None and reasoning_ended is None:
+                reasoning_ended = time.time()
+            steps[1]["status"] = "done"
+            _upsert_step("build_canvas", "Generando tabla en Canvas", "running")
+            emit_event({"type": "phase", "xox_state": "syncing", "label": "Diseñando tabla en Canvas..."})
             emit_event({"type": "steps", "steps": steps})
         elif phase == "thinking":
             emit_event({"type": "phase", "xox_state": "thinking", "label": "Evaluando opciones..."})
@@ -1038,16 +1305,19 @@ def stream_agent_completion(
         on_phase=on_phase_change,
     )
 
-    def _open_stream(include_usage: bool) -> Any:
+    def _open_stream(req_messages: List[Dict[str, Any]], include_usage: bool, include_tools: bool) -> Any:
         payload: Dict[str, Any] = {
             "model": chosen_model,
-            "messages": messages,
+            "messages": req_messages,
             "temperature": 0.3,
             "max_tokens": 4096,
             "stream": True,
         }
         if include_usage:
             payload["stream_options"] = {"include_usage": True}
+        if include_tools:
+            payload["tools"] = [CANVAS_TOOL_DEF]
+            payload["tool_choice"] = "auto"
         req = urllib.request.Request(
             f"{OPENROUTER_BASE_URL}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -1056,22 +1326,44 @@ def stream_agent_completion(
         )
         return urllib.request.urlopen(req, timeout=90, context=_ssl_context())
 
-    try:
-        try:
-            resp = _open_stream(include_usage=True)
-        except urllib.error.HTTPError as err:
-            detail_msg = _extract_http_error_detail(err)
-            if err.code == 400 and "stream_options" in detail_msg.lower():
-                resp = _open_stream(include_usage=False)
-            else:
+    def _run_stream_pass(
+        req_messages: List[Dict[str, Any]],
+        allow_tools: bool,
+        tag_router: _StreamTagRouter,
+    ) -> List[Dict[str, Any]]:
+        nonlocal actual_model, usage_data
+        include_usage = True
+        include_tools = allow_tools
+        resp = None
+        for _attempt in range(3):
+            try:
+                resp = _open_stream(req_messages, include_usage=include_usage, include_tools=include_tools)
+                break
+            except urllib.error.HTTPError as err:
+                detail_msg = _extract_http_error_detail(err)
+                lower_msg = detail_msg.lower()
+                retried = False
+                if include_usage and err.code == 400 and "stream_options" in lower_msg:
+                    include_usage = False
+                    retried = True
+                if include_tools and err.code in (400, 404) and any(
+                    tok in lower_msg for tok in ("tool", "function", "endpoints", "unsupported")
+                ):
+                    include_tools = False
+                    retried = True
+                if retried:
+                    continue
                 raise RuntimeError(detail_msg) from err
 
+        if resp is None:
+            raise RuntimeError("No se pudo abrir el stream con OpenRouter.")
+
+        tc_acc: Dict[int, Dict[str, Any]] = {}
+        notified_canvas_tc = False
         with resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line or line.startswith(":"):
-                    continue
-                if not line.startswith("data:"):
+                if not line or line.startswith(":") or not line.startswith("data:"):
                     continue
                 data_str = line[5:].strip()
                 if data_str == "[DONE]":
@@ -1095,17 +1387,67 @@ def stream_agent_completion(
                 r_chunk = _extract_delta_reasoning(delta)
                 if r_chunk:
                     on_reasoning_delta(r_chunk)
+                tc_deltas = delta.get("tool_calls")
+                if isinstance(tc_deltas, list):
+                    for tcd in tc_deltas:
+                        if not isinstance(tcd, dict):
+                            continue
+                        idx = int(tcd.get("index", 0) or 0)
+                        entry = tc_acc.setdefault(
+                            idx,
+                            {
+                                "id": f"call_{idx}",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            },
+                        )
+                        if isinstance(tcd.get("id"), str) and tcd["id"]:
+                            entry["id"] = tcd["id"]
+                        fn_delta = tcd.get("function") or {}
+                        fn_name_delta = fn_delta.get("name")
+                        if isinstance(fn_name_delta, str) and fn_name_delta:
+                            existing_name = entry["function"]["name"]
+                            if not existing_name:
+                                entry["function"]["name"] = fn_name_delta
+                            elif (
+                                fn_name_delta != existing_name
+                                and not existing_name.endswith(fn_name_delta)
+                            ):
+                                entry["function"]["name"] += fn_name_delta
+                        args_delta = fn_delta.get("arguments")
+                        if isinstance(args_delta, str) and args_delta:
+                            existing_args = entry["function"]["arguments"]
+                            replaced = False
+                            if existing_args.rstrip().endswith("}") and args_delta.lstrip().startswith("{"):
+                                try:
+                                    parsed_existing = json.loads(existing_args)
+                                    parsed_new = json.loads(args_delta)
+                                    if isinstance(parsed_existing, dict) and isinstance(parsed_new, dict):
+                                        entry["function"]["arguments"] = args_delta
+                                        replaced = True
+                                except Exception:
+                                    pass
+                            if not replaced:
+                                entry["function"]["arguments"] += args_delta
+                        elif isinstance(args_delta, dict) and args_delta:
+                            entry["function"]["arguments"] = json.dumps(args_delta, ensure_ascii=False)
+                        if not notified_canvas_tc and "create_canvas" in entry["function"]["name"].lower():
+                            notified_canvas_tc = True
+                            on_phase_change("canvas")
                 c_chunk = delta.get("content")
                 if isinstance(c_chunk, str) and c_chunk:
-                    router.feed(c_chunk)
+                    tag_router.feed(c_chunk)
+        tag_router.flush()
+        return [tc_acc[k] for k in sorted(tc_acc.keys())]
+
+    try:
+        tool_calls_list = _run_stream_pass(messages, allow_tools=True, tag_router=router)
     except urllib.error.HTTPError as err:
         raise _friendly_http_error(RuntimeError(_extract_http_error_detail(err))) from err
     except urllib.error.URLError as err:
         raise RuntimeError(f"Error de red al conectar con OpenRouter: {err.reason}") from err
     except RuntimeError as err:
         raise _friendly_http_error(err) from err
-
-    router.flush()
 
     latency_ms = int((time.time() - started) * 1000)
     full_reasoning = "".join(reasoning_chunks).strip()
@@ -1118,6 +1460,76 @@ def stream_agent_completion(
         if not parsed_actions.get("tasks") and isinstance(fallback_json.get("tasks"), list):
             parsed_actions = fallback_json
 
+    canvas_obj = _resolve_canvas_artifact(
+        tool_calls=tool_calls_list,
+        canvas_buf=router.canvas_buf,
+        actions_canvas=parsed_actions.get("canvas"),
+        full_reply=full_reply,
+        user_message=user_message,
+    )
+
+    if canvas_obj is not None:
+        _upsert_step("build_canvas", f'Tabla lista en Canvas: "{canvas_obj["title"]}"', "done")
+        emit_event({"type": "canvas", "canvas": canvas_obj})
+        emit_event({"type": "steps", "steps": steps})
+
+        # Si el modelo invocó create_canvas sin texto aún, ejecutamos el turno tool -> assistant en vivo
+        if tool_calls_list and not full_reply:
+            tool_result_content = json.dumps(
+                {
+                    "ok": True,
+                    "canvas_title": canvas_obj["title"],
+                    "columns": len(canvas_obj["columns"]),
+                    "rows": len(canvas_obj["rows"]),
+                    "instruction": (
+                        "La tabla ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves "
+                        "de conclusión en español dentro de <respuesta>. NO repitas la tabla ni escribas HTML."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+            followup_messages = [
+                *messages,
+                {"role": "assistant", "content": None, "tool_calls": tool_calls_list},
+                *[
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.get("id") or f"call_{i}",
+                        "content": tool_result_content,
+                    }
+                    for i, tc in enumerate(tool_calls_list)
+                ],
+            ]
+            followup_router = _StreamTagRouter(
+                on_reasoning=on_reasoning_delta,
+                on_reply=on_reply_delta,
+                on_phase=on_phase_change,
+            )
+            try:
+                _run_stream_pass(followup_messages, allow_tools=False, tag_router=followup_router)
+                full_reply = "".join(reply_chunks).strip()
+                if followup_router.actions_buf.strip():
+                    parsed_actions = _parse_actions_payload(followup_router.actions_buf)
+            except Exception:
+                pass
+
+        if not full_reply:
+            summary_msg = f'Listo, preparé "{canvas_obj["title"]}" en Canvas ({len(canvas_obj["rows"])} filas y {len(canvas_obj["columns"])} columnas).'
+            if canvas_obj.get("summary"):
+                summary_msg += f"\n\n{canvas_obj['summary']}"
+            on_reply_delta(summary_msg)
+            full_reply = summary_msg
+
+    # Limpia etiquetas HTML residuales (<table>, <tr>, </pdf>) en la respuesta visible final
+    has_tabular_canvas = bool(canvas_obj and canvas_obj.get("columns") and canvas_obj.get("rows"))
+    if full_reply:
+        cleaned_reply = clean_visible_reply(full_reply, strip_tables=has_tabular_canvas)
+        if not cleaned_reply and has_tabular_canvas and canvas_obj is not None:
+            cleaned_reply = f'Listo, preparé "{canvas_obj["title"]}" en Canvas ({len(canvas_obj["rows"])} filas y {len(canvas_obj["columns"])} columnas).'
+            if canvas_obj.get("summary"):
+                cleaned_reply += f"\n\n{canvas_obj['summary']}"
+        full_reply = cleaned_reply or full_reply
+
     if not full_reply and full_reasoning:
         full_reply = "Terminé el análisis; revisa los detalles arriba si deseas profundizar."
 
@@ -1127,6 +1539,8 @@ def stream_agent_completion(
         )
 
     safe_tasks, operation, mood = _normalize_agent_actions(parsed_actions)
+    if canvas_obj is not None and mood == "talking":
+        mood = "success"
 
     for st in steps:
         if st.get("status") == "running":
@@ -1141,7 +1555,7 @@ def stream_agent_completion(
             }
         )
         emit_event({"type": "phase", "xox_state": "syncing", "label": "Preparando tarjetas de acción..."})
-    elif len(steps) < 3:
+    elif len(steps) < 3 and canvas_obj is None:
         steps.append({"id": "talk_reply", "label": "Respuesta completada", "status": "done"})
 
     emit_event({"type": "steps", "steps": steps})
@@ -1153,7 +1567,7 @@ def stream_agent_completion(
     elif full_reasoning:
         reasoning_ms = latency_ms
 
-    return {
+    result: Dict[str, Any] = {
         "status": "ok",
         "reply": full_reply,
         "reasoning": full_reasoning,
@@ -1166,4 +1580,7 @@ def stream_agent_completion(
         "usage": usage_data,
         "latency_ms": latency_ms,
     }
+    if canvas_obj is not None:
+        result["canvas"] = canvas_obj
+    return result
 

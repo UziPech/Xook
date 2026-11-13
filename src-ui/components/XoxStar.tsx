@@ -31,6 +31,8 @@ interface XoxStarProps {
   dragMotionRef?: React.RefObject<XoxDragMotion | null>;
   /** Refuerza silueta y cuerpo sobre fondos líquidos o transparentes (ej. Quick Bar). */
   glassContrast?: boolean;
+  /** Pausa el bucle de animación y listeners cuando la ventana está oculta para ahorrar RAM/CPU. */
+  active?: boolean;
 }
 
 /**
@@ -88,10 +90,13 @@ const step = (s: Spring, target: number, k: number, c: number, dt: number) => {
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const toRad = (d: number) => (d * Math.PI) / 180;
 
-/** Polígono con esquinas redondeadas (curvas cuadráticas en cada vértice). */
+const STAR_PTS: number[][] = Array.from({ length: 10 }, () => [0, 0]);
+const STAR_RADII: number[] = new Array(10).fill(PEAK_ROUND);
+const PATH_SEGMENTS: string[] = new Array(11);
+
+/** Polígono con esquinas redondeadas (curvas cuadráticas en cada vértice sin reasignar buffers). */
 function roundedPath(pts: number[][], radii: number[]): string {
   const n = pts.length;
-  let d = "";
   for (let i = 0; i < n; i++) {
     const p0 = pts[(i - 1 + n) % n];
     const p1 = pts[i];
@@ -107,9 +112,10 @@ function roundedPath(pts: number[][], radii: number[]): string {
     const ay = p1[1] - (d1y / l1) * r;
     const bx = p1[0] + (d2x / l2) * r;
     const by = p1[1] + (d2y / l2) * r;
-    d += `${i === 0 ? "M" : "L"}${ax.toFixed(2)} ${ay.toFixed(2)}Q${p1[0].toFixed(2)} ${p1[1].toFixed(2)} ${bx.toFixed(2)} ${by.toFixed(2)}`;
+    PATH_SEGMENTS[i] = `${i === 0 ? "M" : "L"}${ax.toFixed(2)} ${ay.toFixed(2)}Q${p1[0].toFixed(2)} ${p1[1].toFixed(2)} ${bx.toFixed(2)} ${by.toFixed(2)}`;
   }
-  return d + "Z";
+  PATH_SEGMENTS[n] = "Z";
+  return PATH_SEGMENTS.join("");
 }
 
 interface ShapeParams {
@@ -122,8 +128,6 @@ interface ShapeParams {
 }
 
 function buildStar({ t, amp, speed, lag, reach, wave }: ShapeParams): string {
-  const pts: number[][] = [];
-  const radii: number[] = [];
   for (let i = 0; i < 5; i++) {
     let pa = PEAKS[i].a + lag + 2.2 * amp * Math.sin(t * 1.1 * speed + i * 2.1);
     let pr = PEAKS[i].r * (1 + 0.035 * amp * Math.sin(t * 1.6 * speed + i * 1.35) + reach);
@@ -135,15 +139,19 @@ function buildStar({ t, amp, speed, lag, reach, wave }: ShapeParams): string {
       pr *= 1 + 0.06 * env;
     }
 
-    pts.push([C + pr * Math.cos(toRad(pa)), C + pr * Math.sin(toRad(pa))]);
-    radii.push(PEAK_ROUND);
+    const pIdx = i * 2;
+    STAR_PTS[pIdx][0] = C + pr * Math.cos(toRad(pa));
+    STAR_PTS[pIdx][1] = C + pr * Math.sin(toRad(pa));
+    STAR_RADII[pIdx] = PEAK_ROUND;
 
     const va = VALLEYS[i].a + lag * 0.4;
     const vr = VALLEYS[i].r * (1 + 0.045 * amp * Math.sin(t * 2 * speed + i * 0.9 + 1));
-    pts.push([C + vr * Math.cos(toRad(va)), C + vr * Math.sin(toRad(va))]);
-    radii.push(VALLEY_ROUND);
+    const vIdx = pIdx + 1;
+    STAR_PTS[vIdx][0] = C + vr * Math.cos(toRad(va));
+    STAR_PTS[vIdx][1] = C + vr * Math.sin(toRad(va));
+    STAR_RADII[vIdx] = VALLEY_ROUND;
   }
-  return roundedPath(pts, radii);
+  return roundedPath(STAR_PTS, STAR_RADII);
 }
 
 export const XoxStar: React.FC<XoxStarProps> = ({
@@ -155,6 +163,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   summonTrigger,
   dragMotionRef,
   glassContrast = false,
+  active = true,
 }) => {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const ids = {
@@ -235,13 +244,13 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   useEffect(() => {
     stateRef.current = state;
     if (state === "success") triggerSpin();
-    // Sincronizando: pirueta repetida mientras dure el estado
-    if (state === "syncing") {
+    // Sincronizando: pirueta repetida mientras dure el estado y la vista esté activa
+    if (state === "syncing" && active) {
       triggerSpin();
       const id = window.setInterval(triggerSpin, 2200);
       return () => window.clearInterval(id);
     }
-  }, [state]);
+  }, [state, active]);
 
   // Coreografía de entrada al invocar con ⌘⇧X (micro-salto, saludo y pulso estelar)
   useEffect(() => {
@@ -257,8 +266,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     a.jumpKick = -195;
   }, [summonTrigger]);
 
-  // Seguimiento global del cursor: Xox mira hacia donde esté el puntero
+  // Seguimiento global del cursor: Xox mira hacia donde esté el puntero solo cuando está activo
   useEffect(() => {
+    if (!active) return;
     const onMove = (e: PointerEvent) => {
       const el = wrapRef.current;
       if (!el) return;
@@ -270,15 +280,16 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     };
     window.addEventListener("pointermove", onMove, { passive: true });
     return () => window.removeEventListener("pointermove", onMove);
-  }, []);
+  }, [active]);
 
-  // Loop principal de animación
+  // Loop principal de animación (se detiene cuando está oculto)
   useEffect(() => {
+    if (!active) return;
     const a = anim.current;
     a.reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     const A = a.reduce ? 0.35 : 1;
 
-    const rot: Spring = { x: 0, v: 0 };
+    const rot: Spring = { x: a.spinTarget, v: 0 };
     const lookX: Spring = { x: 0, v: 0 };
     const lookY: Spring = { x: 0, v: 0 };
     const jump: Spring = { x: 0, v: 0 };
@@ -299,18 +310,48 @@ export const XoxStar: React.FC<XoxStarProps> = ({
 
     let raf = 0;
     let last = performance.now();
-    let nextBlink = 1.6;
+    let lastDraw = 0;
+    let nextBlink = a.t + 1.6;
     let blinkStart = -1;
-    let nextGlance = 2;
+    let nextGlance = a.t + 2;
     let glance = { x: 0, y: 0 };
     let prevDragActive = false;
 
     const frame = (now: number) => {
-      const dt = Math.min((now - last) / 1000, 1 / 30);
+      if (document.hidden) {
+        raf = 0;
+        return;
+      }
+
+      const st = stateRef.current;
+      const dmNow = dragMotionPropRef.current?.current ?? null;
+      const draggingNow = Boolean(dmNow?.active);
+      const isCalmIdle =
+        st === "idle" &&
+        !draggingNow &&
+        !hoverRef.current &&
+        Math.abs(jump.x) < 0.25 &&
+        Math.abs(jump.v) < 2 &&
+        Math.abs(squash.v) < 0.05 &&
+        Math.abs(rot.v) < 4 &&
+        a.t - a.waveStart > 1.6 &&
+        a.t - a.summonAt > 0.8 &&
+        popLens.x < 0.01 &&
+        popBubble.x < 0.01 &&
+        popBang.x < 0.01 &&
+        popSync.x < 0.01 &&
+        popTalk.x < 0.01;
+
+      if (isCalmIdle && lastDraw > 0 && now - lastDraw < 32) {
+        raf = requestAnimationFrame(frame);
+        return;
+      }
+      lastDraw = now;
+
+      const dt = Math.min((now - last) / 1000, 1 / 20);
       last = now;
       a.t += dt;
       const t = a.t;
-      const st = stateRef.current;
       const thinking = st === "thinking";
       const reading = st === "reading";
       const talking = st === "talking";
@@ -620,9 +661,20 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       raf = requestAnimationFrame(frame);
     };
 
+    const onVisibility = () => {
+      if (!document.hidden && !raf) {
+        last = performance.now();
+        raf = requestAnimationFrame(frame);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
     raf = requestAnimationFrame(frame);
-    return () => cancelAnimationFrame(raf);
-  }, []);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [active]);
 
   const handleActivate = () => {
     triggerSpin();

@@ -25,10 +25,22 @@ import {
   Trash2,
   MessageSquare,
   SquarePen,
+  Table2,
   UserCircle2
 } from "lucide-react";
 import { XoxStar, XoxState } from "./components/XoxStar";
 import { ActionCard, FALLBACK_ACTION_CARDS, XookWordmark } from "./components/XookBrand";
+import { useAnimatedPresence } from "./hooks/useAnimatedPresence";
+import {
+  CanvasArtifact,
+  canvasHasCellData,
+  cleanVisibleReply,
+  extractFirstHtmlTable,
+  extractFirstMarkdownTable,
+  markdownTableToCanvasArtifact,
+  sanitizeCanvasArtifact,
+} from "./features/canvas/canvasSchema";
+import { CanvasPanel } from "./features/canvas/CanvasPanel";
 import {
   AgendaItem,
   TaskHistoryItem,
@@ -228,50 +240,6 @@ function XoxHeaderFace({
   );
 }
 
-/**
- * Mantiene montados los paneles y ventanas durante su animación de salida.
- */
-function useAnimatedPresence(isOpen: boolean, durationMs: number) {
-  const [mounted, setMounted] = useState(isOpen);
-  const [visible, setVisible] = useState(isOpen);
-  const prevOpenRef = useRef(isOpen);
-
-  useEffect(() => {
-    if (prevOpenRef.current === isOpen) return;
-    prevOpenRef.current = isOpen;
-
-    const reducedMotion =
-      typeof window !== "undefined" &&
-      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-
-    if (isOpen) {
-      setMounted(true);
-      if (reducedMotion) {
-        setVisible(true);
-        return;
-      }
-      let raf2 = 0;
-      const raf1 = requestAnimationFrame(() => {
-        raf2 = requestAnimationFrame(() => setVisible(true));
-      });
-      return () => {
-        cancelAnimationFrame(raf1);
-        cancelAnimationFrame(raf2);
-      };
-    }
-
-    setVisible(false);
-    if (reducedMotion) {
-      setMounted(false);
-      return;
-    }
-    const timer = setTimeout(() => setMounted(false), durationMs);
-    return () => clearTimeout(timer);
-  }, [isOpen, durationMs]);
-
-  return { mounted, visible };
-}
-
 export default function App() {
   const [tasks, setTasks] = useState<TaskProposal[]>([]);
   const [agendaItems, setAgendaItems] = useState<AgendaItem[]>(INITIAL_AGENDA_ITEMS);
@@ -343,6 +311,8 @@ export default function App() {
   const [unavailableModelIds, setUnavailableModelIds] = useState<Set<string>>(() => new Set());
   const [requestsToday, setRequestsToday] = useState<number>(() => getLocalDailyRequestCount(null));
   const [chatMessages, setChatMessages] = useState<UiChatMessage[]>([]);
+  const [activeCanvas, setActiveCanvas] = useState<CanvasArtifact | null>(null);
+  const [showCanvas, setShowCanvas] = useState<boolean>(false);
   const [isChatStreaming, setIsChatStreaming] = useState<boolean>(false);
   const [localUser, setLocalUser] = useState<LocalUserProfile | null>(null);
   const [showLocalAuth, setShowLocalAuth] = useState<boolean>(false);
@@ -665,6 +635,8 @@ export default function App() {
     activeConvCreatedAtRef.current = new Date().toISOString();
     setActiveConversationId(nextId);
     setChatMessages([]);
+    setActiveCanvas(null);
+    setShowCanvas(false);
     setXoxState("idle");
     setXoxMessage("¿En qué puedo ayudarte?");
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -674,7 +646,20 @@ export default function App() {
     if (isChatStreaming) return;
     activeConvCreatedAtRef.current = thread.createdAt;
     setActiveConversationId(thread.id);
-    setChatMessages(thread.messages ?? []);
+    const msgs = thread.messages ?? [];
+    setChatMessages(msgs);
+    let restoredCanvas: CanvasArtifact | null = null;
+    for (let i = msgs.length - 1; i >= 0; i -= 1) {
+      if (msgs[i].canvas) {
+        const cleanRestored = sanitizeCanvasArtifact(msgs[i].canvas);
+        if (cleanRestored && canvasHasCellData(cleanRestored)) {
+          restoredCanvas = cleanRestored;
+          break;
+        }
+      }
+    }
+    setActiveCanvas(restoredCanvas);
+    setShowCanvas(Boolean(restoredCanvas));
     setXoxState("idle");
     setXoxMessage("¿En qué puedo ayudarte?");
   };
@@ -770,17 +755,24 @@ export default function App() {
     };
   }, [showModelMenu, showContextMenu]);
 
-  // Atajo de teclado ⌘K para enfocar el input
+  // Atajo de teclado ⌘K para enfocar el input y respaldo local ⌘⇧X para Quick Bar
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "k") {
         e.preventDefault();
         inputRef.current?.focus();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "x" && isTauriEnv) {
+        e.preventDefault();
+        void import("@tauri-apps/api/core")
+          .then(({ invoke }) => invoke("toggle_quick_bar_cmd"))
+          .catch(() => {});
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [isTauriEnv]);
 
   // Manejador global de arrastre para redimensionar paneles (60fps sin pérdida de foco)
   useEffect(() => {
@@ -1502,6 +1494,7 @@ export default function App() {
               }
             : null,
           businessContextSnapshot,
+          activeCanvas: showCanvas ? activeCanvas : null,
         },
         {
           onPhase: (state, label) => {
@@ -1590,11 +1583,28 @@ export default function App() {
               )
             );
           },
+          onCanvas: (canvas) => {
+            const withSource: CanvasArtifact = { ...canvas, sourceMessageId: assistantMsgId };
+            setActiveCanvas(withSource);
+            setShowCanvas(true);
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId ? { ...m, canvas: withSource } : m
+              )
+            );
+          },
         }
       );
 
       clearXoxPhaseTimers();
       const generatedCount = res.tasks.length;
+      const finalCanvas = res.canvas
+        ? { ...res.canvas, sourceMessageId: assistantMsgId }
+        : undefined;
+      if (finalCanvas) {
+        setActiveCanvas(finalCanvas);
+        setShowCanvas(true);
+      }
       if (generatedCount > 0) {
         if (res.operation === "replace_tasks") {
           setTasks((prev) => [
@@ -1627,6 +1637,7 @@ export default function App() {
               latencyMs: res.latencyMs,
               tokensUsed: res.usage?.totalTokens,
               generatedTaskCount: generatedCount,
+              canvas: finalCanvas ?? m.canvas,
             }
           : m
       );
@@ -1767,25 +1778,64 @@ export default function App() {
     prompt?: string | null;
     autoRun?: boolean;
     responseText?: string | null;
+    canvas?: unknown;
   };
 
   const mainSummonHandlerRef = useRef<(payload: MainSummonEventPayload) => void>(() => {});
   mainSummonHandlerRef.current = (payload) => {
-    const { seq, prompt, autoRun, responseText } = payload ?? {};
+    const { seq, prompt, autoRun, responseText, canvas } = payload ?? {};
     setSummonSeq(seq ?? Date.now());
     requestAnimationFrame(() => inputRef.current?.focus());
 
-    if (responseText) {
+    if (responseText || canvas) {
       const safePrompt = prompt ? detectApiKeyInText(prompt).sanitizedText : null;
-      const safeResponse = detectApiKeyInText(responseText).sanitizedText;
+      const rawResponse = responseText ? detectApiKeyInText(responseText).sanitizedText : "";
+      const normalizedIncoming = canvas ? sanitizeCanvasArtifact(canvas) ?? undefined : undefined;
+      let transferredCanvas: CanvasArtifact | undefined =
+        normalizedIncoming && canvasHasCellData(normalizedIncoming)
+          ? normalizedIncoming
+          : undefined;
+      if (!transferredCanvas && rawResponse) {
+        const inlineTbl =
+          extractFirstMarkdownTable(rawResponse) ?? extractFirstHtmlTable(rawResponse);
+        if (inlineTbl && inlineTbl.rows.length > 0) {
+          transferredCanvas = markdownTableToCanvasArtifact(inlineTbl, {
+            title: normalizedIncoming?.title || safePrompt || "Tabla en Canvas",
+            subtitle: normalizedIncoming?.subtitle,
+            summary: normalizedIncoming?.summary,
+          });
+        }
+      }
+      const hasTabularTransferred = Boolean(
+        transferredCanvas &&
+          transferredCanvas.columns.length > 0 &&
+          transferredCanvas.rows.length > 0
+      );
+      const cleanedResponse = cleanVisibleReply(rawResponse, { stripTables: hasTabularTransferred });
+      const safeResponse =
+        cleanedResponse ||
+        (hasTabularTransferred && transferredCanvas
+          ? `Listo, preparé "${transferredCanvas.title}" en Canvas (${transferredCanvas.rows.length} filas y ${transferredCanvas.columns.length} columnas).${transferredCanvas.summary ? `\n\n${transferredCanvas.summary}` : ""}`
+          : rawResponse || "Listo.");
+      const assistantQbId = `msg_qb_a_${Date.now() + 1}`;
       const nextMessages: UiChatMessage[] = [
         ...chatMessagesRef.current,
         ...(safePrompt
           ? [{ id: `msg_qb_u_${Date.now()}`, role: "user" as const, content: safePrompt }]
           : []),
-        { id: `msg_qb_a_${Date.now() + 1}`, role: "assistant" as const, content: safeResponse },
+        {
+          id: assistantQbId,
+          role: "assistant" as const,
+          content: safeResponse,
+          canvas: transferredCanvas,
+        },
       ];
       setChatMessages(nextMessages);
+      if (transferredCanvas) {
+        const withSource = { ...transferredCanvas, sourceMessageId: assistantQbId };
+        setActiveCanvas(withSource);
+        setShowCanvas(true);
+      }
       void persistConversation(nextMessages);
       setXoxState("success");
       setXoxMessage(safeResponse);
@@ -1885,6 +1935,32 @@ export default function App() {
   // Estados de presencia animada para ventanas laterales y emergentes (entrada y salida)
   const leftPresence = useAnimatedPresence(showLeftSidebar, 270);
   const rightPresence = useAnimatedPresence(showRightSidebar, 270);
+  const canvasPresence = useAnimatedPresence(showCanvas && Boolean(activeCanvas), 220);
+
+  const handleOpenCanvas = (canvas: CanvasArtifact) => {
+    setActiveCanvas(canvas);
+    setShowCanvas(true);
+  };
+
+  const handleUpdateCanvas = (updated: CanvasArtifact) => {
+    setActiveCanvas(updated);
+    const nextMessages = chatMessagesRef.current.map((m) =>
+      m.id === updated.sourceMessageId || m.canvas?.id === updated.id
+        ? { ...m, canvas: updated }
+        : m
+    );
+    setChatMessages(nextMessages);
+    void persistConversation(nextMessages);
+  };
+
+  const handleAskXoxAboutCanvas = (canvas: CanvasArtifact) => {
+    setActiveCanvas(canvas);
+    setShowCanvas(true);
+    setInputPrompt((prev) =>
+      prev.trim() ? prev : `Sobre la tabla "${canvas.title}": `
+    );
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
 
   const statusToastPresence = useAnimatedPresence(Boolean(statusMessage), 190);
   const lastStatusRef = useRef<string | null>(statusMessage);
@@ -1986,6 +2062,25 @@ export default function App() {
               {usageSummary.primary}
             </span>
           </button>
+
+          {activeCanvas && (
+            <button
+              type="button"
+              onClick={() => setShowCanvas((v) => !v)}
+              aria-pressed={showCanvas}
+              title={showCanvas ? "Ocultar Canvas" : `Abrir Canvas: ${activeCanvas.title}`}
+              className={`px-2 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
+                showCanvas
+                  ? "bg-sky-500/15 text-sky-200 border-sky-400/35"
+                  : "bg-white/[0.03] text-zinc-300 border-white/[0.08] hover:text-white hover:bg-white/[0.07]"
+              }`}
+            >
+              <Table2 className="w-3.5 h-3.5 text-sky-300" />
+              <span className="text-[11px] font-medium hidden sm:inline max-w-[120px] truncate">
+                Canvas
+              </span>
+            </button>
+          )}
 
           <button
             onClick={() => setShowRightSidebar(!showRightSidebar)}
@@ -2651,6 +2746,19 @@ export default function App() {
                         <span>Crear timer de 15 min</span>
                       </button>
 
+                      <button
+                        type="button"
+                        onClick={() =>
+                          runPromptQuery(
+                            "Genera una tabla comparativa en Canvas de nuestros proveedores de café considerando costo, tiempo de entrega y margen"
+                          )
+                        }
+                        className="group inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                      >
+                        <Table2 className="w-3 h-3 text-sky-400/80 group-hover:text-sky-300 transition-colors" />
+                        <span>Tabla comparativa</span>
+                      </button>
+
                       {!aiConfig.hasApiKey ? (
                         <button
                           type="button"
@@ -2719,6 +2827,8 @@ export default function App() {
                     summonTrigger={summonSeq}
                     greeting={greeting}
                     greetingLeaving={greetingLeaving}
+                    activeCanvasId={showCanvas ? activeCanvas?.id ?? null : null}
+                    onOpenCanvas={handleOpenCanvas}
                     modelCatalog={catalogModels}
                     onXoxClick={handleXoxClick}
                     onAction={handleChatAction}
@@ -3077,6 +3187,19 @@ export default function App() {
           </div>
 
         </section>
+
+        {/* PANEL CANVAS INTERACTIVO ESTILO GEMINI (TABLAS COMPARATIVAS Y DATOS) */}
+        {canvasPresence.mounted && activeCanvas && (
+          <div className="w-[44%] min-w-[330px] max-w-[660px] shrink-0 bg-[#060709] border-l border-white/[0.07] p-2.5 overflow-hidden">
+            <CanvasPanel
+              canvas={activeCanvas}
+              visible={canvasPresence.visible}
+              onUpdateCanvas={handleUpdateCanvas}
+              onAskXoxEdit={handleAskXoxAboutCanvas}
+              onClose={() => setShowCanvas(false)}
+            />
+          </div>
+        )}
 
         {/* ========================================================================= */}
         {/* COLUMNA 3: TAREAS Y DECISIONES DEL LADO DERECHO (POR ACEPTAR Y HECHAS)    */}

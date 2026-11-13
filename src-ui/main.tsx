@@ -1,7 +1,5 @@
-import React from "react";
+import React, { Suspense, lazy } from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
-import { QuickBar } from "./components/QuickBar";
 import "./App.css";
 
 declare global {
@@ -18,8 +16,15 @@ if (isQuickWindow) {
   document.documentElement.dataset.windowMode = "quick";
 }
 
+const LazyApp = lazy(() => import("./App"));
+const LazyQuickBar = lazy(() =>
+  import("./components/QuickBar").then((m) => ({ default: m.QuickBar }))
+);
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {isQuickWindow ? <QuickBar /> : <App />}
+    <Suspense fallback={null}>
+      {isQuickWindow ? <LazyQuickBar /> : <LazyApp />}
+    </Suspense>
   </React.StrictMode>,
 );

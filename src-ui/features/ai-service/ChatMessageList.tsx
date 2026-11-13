@@ -2,12 +2,22 @@ import React, { useState } from "react";
 import {
   Check,
   Copy,
+  ExternalLink,
   KeyRound,
   RotateCcw,
+  Sparkles,
+  Table2,
   ThumbsDown,
   ThumbsUp,
 } from "lucide-react";
 import { XoxStar, XoxState } from "../../components/XoxStar";
+import {
+  CanvasArtifact,
+  cleanVisibleReply,
+  isMarkdownTableSeparator,
+  markdownTableToCanvasArtifact,
+  parseMarkdownTableBlock,
+} from "../canvas/canvasSchema";
 import {
   OpenRouterModelOption,
   ThinkingStep,
@@ -28,6 +38,7 @@ export interface UiChatMessage {
   latencyMs?: number;
   tokensUsed?: number;
   generatedTaskCount?: number;
+  canvas?: CanvasArtifact;
   isError?: boolean;
   actionButton?: {
     label: string;
@@ -44,6 +55,8 @@ interface ChatMessageListProps {
   summonTrigger?: number;
   greeting?: string | null;
   greetingLeaving?: boolean;
+  activeCanvasId?: string | null;
+  onOpenCanvas?: (canvas: CanvasArtifact) => void;
   onXoxClick?: () => void;
   onAction: (action: NonNullable<UiChatMessage["actionButton"]>) => void;
   onOpenTasksTab: () => void;
@@ -78,61 +91,176 @@ function renderInlineFormatting(line: string): React.ReactNode[] {
 function FormattedReply({
   text,
   streaming,
+  onOpenCanvas,
+  messageId,
 }: {
   text: string;
   streaming?: boolean;
+  onOpenCanvas?: (canvas: CanvasArtifact) => void;
+  messageId?: string;
 }) {
-  const lines = text.split("\n");
-  return (
-    <div className="space-y-2 text-[14px] leading-relaxed text-zinc-200 select-text">
-      {lines.map((line, i) => {
-        const trimmed = line.trim();
-        if (!trimmed) return <div key={i} className="h-1" />;
-        const isLastLine = i === lines.length - 1;
-        const caret = streaming && isLastLine ? (
-          <span className="inline-block w-1.5 h-3.5 ml-1 align-middle bg-sky-300/80 animate-pulse rounded-xs" />
-        ) : null;
+  const normalizedText = cleanVisibleReply(text, { stripTables: false });
+  const lines = normalizedText.split("\n");
+  const blocks: React.ReactNode[] = [];
+  let i = 0;
 
-        if (/^#{1,3}\s+/.test(trimmed)) {
-          return (
-            <h4 key={i} className="text-[14.5px] font-semibold text-white pt-1">
-              {renderInlineFormatting(trimmed.replace(/^#{1,3}\s+/, ""))}
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) {
+      blocks.push(<div key={`sp_${i}`} className="h-1" />);
+      i += 1;
+      continue;
+    }
+
+    // Detectar tabla Markdown GFM (encabezado + separador con pipes)
+    if (
+      i + 1 < lines.length &&
+      trimmed.includes("|") &&
+      isMarkdownTableSeparator(lines[i + 1])
+    ) {
+      const table = parseMarkdownTableBlock(lines.slice(i));
+      if (table) {
+        const consumedLines = 2 + table.rows.length;
+        const blockIdx = i;
+        blocks.push(
+          <div
+            key={`tbl_${blockIdx}`}
+            className="my-2 xook-liquid-table rounded-2xl overflow-hidden"
+          >
+            <div className="flex items-center justify-between px-3 py-2 bg-white/[0.04] border-b border-white/[0.11] text-[11px] text-zinc-300">
+              <span className="inline-flex items-center gap-2 font-medium text-white/90">
+                <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
+                  <Table2 className="w-2.5 h-2.5 text-white" />
+                </span>
+                <span>
+                  {table.rows.length} {table.rows.length === 1 ? "fila" : "filas"} ·{" "}
+                  {table.headers.length} columnas
+                </span>
+              </span>
+              {onOpenCanvas && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onOpenCanvas(
+                      markdownTableToCanvasArtifact(table, {
+                        id: messageId ? `canvas_md_${messageId}_${blockIdx}` : undefined,
+                        title: "Tabla en Canvas",
+                      })
+                    )
+                  }
+                  className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-white/95 text-[10.5px] font-medium cursor-pointer"
+                >
+                  <ExternalLink className="w-2.5 h-2.5 text-indigo-100" />
+                  <span>Abrir en Canvas</span>
+                </button>
+              )}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-separate border-spacing-0 text-[12.5px]">
+                <thead className="xook-liquid-table-head">
+                  <tr>
+                    {table.headers.map((h, hIdx) => (
+                      <th
+                        key={hIdx}
+                        className={`px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.04em] text-zinc-200/90 whitespace-nowrap ${
+                          table.alignments[hIdx] === "right"
+                            ? "text-right"
+                            : table.alignments[hIdx] === "center"
+                              ? "text-center"
+                              : "text-left"
+                        }`}
+                      >
+                        {renderInlineFormatting(h)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {table.rows.map((row, rIdx) => (
+                    <tr
+                      key={rIdx}
+                      className={`xook-liquid-row ${rIdx % 2 === 1 ? "is-alt" : ""}`}
+                    >
+                      {row.map((cell, cIdx) => (
+                        <td
+                          key={cIdx}
+                          className={`px-3 py-2 text-zinc-200 ${
+                            table.alignments[cIdx] === "right"
+                              ? "text-right tabular-nums text-indigo-100/95"
+                              : table.alignments[cIdx] === "center"
+                                ? "text-center"
+                                : cIdx === 0
+                                  ? "text-left font-medium text-white"
+                                  : "text-left"
+                          }`}
+                        >
+                          {renderInlineFormatting(cell)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+        i += consumedLines;
+        continue;
+      }
+    }
+
+    const isLastLine = i === lines.length - 1;
+    const caret =
+      streaming && isLastLine ? (
+        <span className="inline-block w-1.5 h-3.5 ml-1 align-middle bg-sky-300/80 animate-pulse rounded-xs" />
+      ) : null;
+
+    if (/^#{1,3}\s+/.test(trimmed)) {
+      blocks.push(
+        <h4 key={i} className="text-[14.5px] font-semibold text-white pt-1">
+          {renderInlineFormatting(trimmed.replace(/^#{1,3}\s+/, ""))}
+          {caret}
+        </h4>
+      );
+    } else if (/^[-•*]\s+/.test(trimmed)) {
+      blocks.push(
+        <div key={i} className="flex items-start gap-2.5 pl-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-sky-300/75 mt-2 shrink-0" />
+          <span>
+            {renderInlineFormatting(trimmed.replace(/^[-•*]\s+/, ""))}
+            {caret}
+          </span>
+        </div>
+      );
+    } else {
+      const numMatch = trimmed.match(/^(\d+\.)\s+(.*)$/);
+      if (numMatch) {
+        blocks.push(
+          <div key={i} className="flex items-start gap-2 pl-1">
+            <span className="text-sky-300/80 font-mono text-[12.5px] mt-0.5 shrink-0">
+              {numMatch[1]}
+            </span>
+            <span>
+              {renderInlineFormatting(numMatch[2])}
               {caret}
-            </h4>
-          );
-        }
-        if (/^[-•*]\s+/.test(trimmed)) {
-          return (
-            <div key={i} className="flex items-start gap-2.5 pl-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-sky-300/75 mt-2 shrink-0" />
-              <span>
-                {renderInlineFormatting(trimmed.replace(/^[-•*]\s+/, ""))}
-                {caret}
-              </span>
-            </div>
-          );
-        }
-        const numMatch = trimmed.match(/^(\d+\.)\s+(.*)$/);
-        if (numMatch) {
-          return (
-            <div key={i} className="flex items-start gap-2 pl-1">
-              <span className="text-sky-300/80 font-mono text-[12.5px] mt-0.5 shrink-0">
-                {numMatch[1]}
-              </span>
-              <span>
-                {renderInlineFormatting(numMatch[2])}
-                {caret}
-              </span>
-            </div>
-          );
-        }
-        return (
+            </span>
+          </div>
+        );
+      } else {
+        blocks.push(
           <p key={i}>
             {renderInlineFormatting(trimmed)}
             {caret}
           </p>
         );
-      })}
+      }
+    }
+    i += 1;
+  }
+
+  return (
+    <div className="space-y-2 text-[14px] leading-relaxed text-zinc-200 select-text">
+      {blocks}
     </div>
   );
 }
@@ -140,7 +268,7 @@ function FormattedReply({
 const STREAM_PHASE_LABEL: Partial<Record<XoxState, string>> = {
   reading: "Leyendo contexto…",
   talking: "Respondiendo…",
-  syncing: "Organizando tareas…",
+  syncing: "Preparando Canvas y tareas…",
 };
 
 /** Mini silueta estática de la estrella Xox para turnos anteriores sin animación rAF. */
@@ -173,6 +301,8 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   summonTrigger,
   greeting,
   greetingLeaving = false,
+  activeCanvasId = null,
+  onOpenCanvas,
   onXoxClick,
   onAction,
   onOpenTasksTab,
@@ -251,7 +381,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
             : null;
 
         const cleanReasoning = (msg.reasoning ?? "")
-          .replace(/<\/?(?:analisis|analysis|respuesta|response|acciones|actions)\s*>/gi, "")
+          .replace(/<\/?(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions)\s*>/gi, "")
           .trim();
 
         return (
@@ -406,13 +536,127 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     <FormattedReply text={msg.content} />
                   </div>
                 ) : (
-                  <FormattedReply text={msg.content} streaming={Boolean(msg.isStreaming)} />
+                  <FormattedReply
+                    text={msg.content}
+                    streaming={Boolean(msg.isStreaming)}
+                    onOpenCanvas={onOpenCanvas}
+                    messageId={msg.id}
+                  />
                 )
               ) : msg.isStreaming && !showThinkingRow && !phaseLabel ? (
                 <div className="py-0.5 text-[12.5px]">
                   <span className="xox-shimmer inline-block font-medium">Thinking</span>
                 </div>
               ) : null}
+
+              {/* Indicador en vivo mientras Xox diseña Canvas */}
+              {msg.isStreaming && isActiveGuideTurn && xoxState === "syncing" && !msg.canvas && (
+                <div className="rounded-2xl border border-sky-400/20 bg-sky-500/[0.05] px-3.5 py-2.5 flex items-center gap-2.5 text-[12px] text-sky-200">
+                  <Sparkles className="w-3.5 h-3.5 text-sky-300 animate-pulse shrink-0" />
+                  <span className="xox-shimmer font-medium">
+                    Construyendo tabla interactiva en Canvas…
+                  </span>
+                </div>
+              )}
+
+              {/* Tarjeta interactiva de Canvas estilo Gemini */}
+              {msg.canvas && (() => {
+                const isOpen = activeCanvasId === msg.canvas.id;
+                const kindLabel =
+                  msg.canvas.kind === "comparison"
+                    ? "Comparativa"
+                    : msg.canvas.kind === "document"
+                      ? "Documento"
+                      : "Tabla";
+                const visibleColumns = msg.canvas.columns.slice(0, 4);
+                const extraColumns = msg.canvas.columns.length - visibleColumns.length;
+
+                return (
+                  <button
+                    type="button"
+                    onClick={() => onOpenCanvas?.(msg.canvas!)}
+                    style={{
+                      boxShadow: isOpen
+                        ? "inset 0 1px 1px rgba(255,255,255,0.28), 0 14px 32px -18px rgba(196,181,253,0.45)"
+                        : "inset 0 1px 1px rgba(255,255,255,0.16), 0 12px 28px -18px rgba(0,0,0,0.82)",
+                    }}
+                    className={`group relative overflow-hidden w-full max-w-[490px] text-left rounded-2xl border p-3.5 transition-all duration-200 cursor-pointer ${
+                      isOpen
+                        ? "bg-gradient-to-b from-white/[0.10] via-[#13182a]/85 to-[#0b0f1b]/90 border-indigo-200/40"
+                        : "bg-gradient-to-b from-white/[0.065] via-[#111521]/82 to-[#090c14]/88 hover:from-white/[0.095] hover:via-[#151b2b]/84 border-white/[0.14] hover:border-indigo-200/35"
+                    }`}
+                  >
+                    <div
+                      className={`pointer-events-none absolute -top-10 -right-10 h-24 w-36 rounded-full blur-2xl transition-opacity ${
+                        isOpen ? "bg-indigo-300/20 opacity-100" : "bg-indigo-300/12 opacity-0 group-hover:opacity-100"
+                      }`}
+                    />
+                    <div className="relative flex items-center justify-between gap-2.5 mb-2.5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="quick-liquid-icon w-7 h-7 rounded-xl flex items-center justify-center shrink-0">
+                          <Table2 className="w-3.5 h-3.5 text-white" />
+                        </div>
+                        <span className="px-2 py-0.5 rounded-full bg-white/[0.08] border border-white/[0.15] text-[10px] font-medium text-white/90 shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]">
+                          {kindLabel}
+                        </span>
+                        <span className="text-[11px] text-zinc-400 truncate">
+                          {msg.canvas.columns.length > 0
+                            ? `${msg.canvas.rows.length} ${
+                                msg.canvas.rows.length === 1 ? "fila" : "filas"
+                              } · ${msg.canvas.columns.length} cols`
+                            : "Vista Canvas"}
+                        </span>
+                      </div>
+                      <span
+                        className={`quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium shrink-0 ${
+                          isOpen
+                            ? "text-white"
+                            : "text-zinc-100 group-hover:text-white"
+                        }`}
+                      >
+                        {isOpen && <span className="w-1.5 h-1.5 rounded-full bg-indigo-200" />}
+                        <span>{isOpen ? "Abierto" : "Abrir"}</span>
+                        <ExternalLink className="w-3 h-3 text-indigo-100/90" />
+                      </span>
+                    </div>
+
+                    <div className="relative space-y-1">
+                      <h4 className="text-[13.5px] font-semibold text-white leading-snug line-clamp-2 tracking-[-0.01em]">
+                        {msg.canvas.title}
+                      </h4>
+                      {msg.canvas.subtitle && (
+                        <p className="text-[11px] text-zinc-400 leading-snug line-clamp-1">
+                          {msg.canvas.subtitle}
+                        </p>
+                      )}
+                    </div>
+
+                    {visibleColumns.length > 0 && (
+                      <div className="relative mt-2.5 flex flex-wrap items-center gap-1.5">
+                        {visibleColumns.map((col) => (
+                          <span
+                            key={col.id}
+                            className="px-2 py-0.5 rounded-md bg-white/[0.045] border border-white/[0.07] text-[10.5px] text-zinc-300"
+                          >
+                            {col.label}
+                          </span>
+                        ))}
+                        {extraColumns > 0 && (
+                          <span className="px-1.5 py-0.5 text-[10px] text-zinc-500">
+                            +{extraColumns}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {msg.canvas.summary && (
+                      <div className="relative mt-2.5 px-2.5 py-2 rounded-xl bg-black/25 border border-white/[0.06] text-[11.5px] leading-relaxed text-zinc-300/90 line-clamp-2">
+                        {msg.canvas.summary}
+                      </div>
+                    )}
+                  </button>
+                );
+              })()}
 
               {/* Enlace a tarjetas generadas */}
               {(msg.generatedTaskCount ?? 0) > 0 && (
@@ -494,7 +738,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     className="p-1.5 rounded-lg hover:text-zinc-200 hover:bg-white/[0.05] transition-colors cursor-pointer"
                   >
                     {copiedId === msg.id ? (
-                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                      <Check className="w-3.5 h-3.5 text-indigo-200" />
                     ) : (
                       <Copy className="w-3.5 h-3.5" />
                     )}

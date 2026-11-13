@@ -214,6 +214,8 @@ def handle_rpc_request(request_line):
                 current_tasks=params.get("current_tasks", []),
                 agenda_items=params.get("agenda_items", []),
                 attached_context=params.get("attached_context", []),
+                user_profile=params.get("user_profile"),
+                active_canvas=params.get("active_canvas"),
             )
         elif method == "ai_chat_stream":
             stream_id = params.get("stream_id")
@@ -235,6 +237,7 @@ def handle_rpc_request(request_line):
                 agenda_items=params.get("agenda_items", []),
                 attached_context=params.get("attached_context", []),
                 user_profile=params.get("user_profile"),
+                active_canvas=params.get("active_canvas"),
             )
         elif method == "test_ai_key":
             result = test_openrouter_key(params.get("api_key", ""))
