@@ -24,7 +24,8 @@ import {
   MessageSquare,
   SquarePen,
   Table2,
-  UserCircle2
+  UserCircle2,
+  Image as ImageIcon,
 } from "lucide-react";
 import { XoxStar, XoxState } from "./components/XoxStar";
 import { XookWordmark } from "./components/XookBrand";
@@ -39,6 +40,10 @@ import {
   sanitizeCanvasArtifact,
 } from "./features/canvas/canvasSchema";
 import { CanvasPanel } from "./features/canvas/CanvasPanel";
+import {
+  PdfWorkspacePanel,
+  type PdfWorkspaceState,
+} from "./features/pdf-viewer/PdfWorkspacePanel";
 import {
   AgendaItem,
   TaskHistoryItem,
@@ -80,13 +85,18 @@ import {
   WorkspaceOverview,
   createWorkspace,
   createWorkspaceFolder,
+  exportCanvasToPdf,
   getWorkspaceOverview,
   isWorkspaceTauriRuntime,
+  openWorkspaceFile,
   openWorkspaceFolder,
+  readWorkspaceBinaryPreview,
   readWorkspaceFile,
+  renderPdfPreview,
   renameWorkspace,
   resolveCommandPermission,
   saveWorkspaceFile,
+  stageWorkspaceAttachment,
   subscribePermissionEvents,
   subscribeWorkspaceUpdated,
   switchWorkspace,
@@ -97,6 +107,7 @@ import {
 } from "./features/workspace-store/WorkspaceTreePanel";
 import {
   ChatMessageList,
+  type UiChatAttachment,
   UiChatMessage,
 } from "./features/ai-service/ChatMessageList";
 import {
@@ -121,7 +132,10 @@ import {
 import {
   AiConfigStatus,
   AiConnectionTestResult,
+  type AttachedContextItem,
   ClarificationSpec,
+  type GeneratedPdfArtifact,
+  type PdfDraftProgressEvent,
   OPENROUTER_PRESET_MODELS,
   OpenRouterModelOption,
   ThinkingStep,
@@ -138,9 +152,140 @@ import {
   incrementLocalDailyRequestCount,
   isKeySetupIntent,
   runXoxAiChatStream,
+  sanitizeGeneratedPdfArtifact,
   saveAiConfig,
   testAiConnection,
 } from "./features/ai-service/aiClient";
+
+const BINARY_IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|tiff?|heic)$/i;
+const BINARY_PREVIEW_EXT_SET = new Set([
+  "pdf",
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+  "bmp",
+  "svg",
+  "tif",
+  "tiff",
+  "heic",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "ppt",
+  "pptx",
+  "zip",
+]);
+
+function classifyAttachmentFile(
+  file: Pick<File, "name" | "type">
+): "pdf" | "image" | "text" | "binary" {
+  const name = file.name.trim();
+  const mime = (file.type || "").toLowerCase();
+  if (/\.pdf$/i.test(name) || mime === "application/pdf") return "pdf";
+  if (BINARY_IMAGE_EXT_RE.test(name) || mime.startsWith("image/")) return "image";
+  if (
+    /^(text\/|application\/(json|csv|xml|javascript))/.test(mime) ||
+    /\.(txt|md|json|csv|tsv|log|yaml|yml|xml)$/i.test(name)
+  ) {
+    return "text";
+  }
+  return "binary";
+}
+
+async function fileToBase64Payload(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const chunkSize = 0x8000;
+  const parts: string[] = [];
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const slice = bytes.subarray(i, i + chunkSize);
+    parts.push(String.fromCharCode(...slice));
+  }
+  return btoa(parts.join(""));
+}
+
+async function prepareImagePayload(file: File): Promise<{
+  imageDataUrl?: string;
+  thumbUrl?: string;
+  width?: number;
+  height?: number;
+}> {
+  if (typeof window === "undefined") return {};
+  const objUrl = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("image_decode_failed"));
+      el.src = objUrl;
+    });
+    const naturalW = img.naturalWidth || img.width;
+    const naturalH = img.naturalHeight || img.height;
+    if (!naturalW || !naturalH) return {};
+
+    const renderScaled = (maxDim: number, forceJpeg: boolean): string | undefined => {
+      const scale = Math.min(1, maxDim / Math.max(naturalW, naturalH));
+      const w = Math.max(1, Math.round(naturalW * scale));
+      const h = Math.max(1, Math.round(naturalH * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return undefined;
+      ctx.drawImage(img, 0, 0, w, h);
+      const keepPng =
+        !forceJpeg &&
+        (/\.(png|webp|gif)$/i.test(file.name) ||
+          /image\/(png|webp|gif)/i.test(file.type || ""));
+      return keepPng
+        ? canvas.toDataURL("image/png")
+        : canvas.toDataURL("image/jpeg", 0.85);
+    };
+
+    const imageDataUrl = renderScaled(1408, false);
+    const thumbUrl = renderScaled(144, true);
+    return { imageDataUrl, thumbUrl, width: naturalW, height: naturalH };
+  } catch {
+    return {};
+  } finally {
+    URL.revokeObjectURL(objUrl);
+  }
+}
+
+function buildPdfSpecFromCanvas(canvas: CanvasArtifact): Record<string, unknown> {
+  const blocks: Array<Record<string, unknown>> = [];
+  if (canvas.summary?.trim()) {
+    blocks.push({
+      type: "callout",
+      title: "Resumen ejecutivo",
+      text: canvas.summary.trim(),
+      tone: "info",
+    });
+  }
+  if (canvas.columns.length > 0 && canvas.rows.length > 0) {
+    blocks.push({ type: "heading", level: 1, text: "Detalle comparativo" });
+    blocks.push({
+      type: "table",
+      headers: canvas.columns.map((c) => c.label),
+      rows: canvas.rows.map((r) =>
+        canvas.columns.map((c) => String(r.cells[c.id] ?? ""))
+      ),
+    });
+  }
+  return {
+    title: canvas.title || "Reporte XOOK",
+    subtitle: canvas.subtitle || undefined,
+    theme: "executive",
+    cover: { enabled: false },
+    blocks,
+    ...(canvas.columns.length === 0 && canvas.markdown?.trim()
+      ? { markdown: canvas.markdown.trim() }
+      : {}),
+  };
+}
 
 interface MemoryPattern {
   pattern_id: string;
@@ -322,15 +467,21 @@ export default function App() {
   // Estados para paneles laterales y tareas
   const [showLeftSidebar, setShowLeftSidebar] = useState<boolean>(true);
   const [showRightSidebar, setShowRightSidebar] = useState<boolean>(true);
+  const [rightSidebarMode, setRightSidebarMode] = useState<"tasks" | "pdf">("tasks");
+  const [pdfPanelState, setPdfPanelState] = useState<PdfWorkspaceState | null>(null);
   const [taskTab, setTaskTab] = useState<TaskPanelTab>("pending");
   const [selectedContext, setSelectedContext] = useState<ContextItem | null>(null);
   const [showStatePreview, setShowStatePreview] = useState<boolean>(false);
+
+  const pdfPreviewReqRef = useRef<number>(0);
+  const rightPanelAutoOpenedTurnRef = useRef<string | null>(null);
+  const lastPdfByTurnRef = useRef<Record<string, GeneratedPdfArtifact>>({});
 
   // Límites y anchos redimensionables para paneles laterales (Estilo Antigravity / IDE)
   const MIN_LEFT_WIDTH = 220;
   const MAX_LEFT_WIDTH = 480;
   const MIN_RIGHT_WIDTH = 280;
-  const MAX_RIGHT_WIDTH = 540;
+  const MAX_RIGHT_WIDTH = 720;
 
   const [leftWidth, setLeftWidth] = useState<number>(() => {
     try {
@@ -360,6 +511,7 @@ export default function App() {
 
   // Archivos adjuntos, modelo activo, bóveda IA y chat real
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [isDraggingOverChat, setIsDraggingOverChat] = useState<boolean>(false);
   const [modelId, setModelId] = useState<string>(OPENROUTER_PRESET_MODELS[0].id);
   const [aiConfig, setAiConfig] = useState<AiConfigStatus>({
     provider: "openrouter",
@@ -1607,6 +1759,27 @@ export default function App() {
   const handleSelectWorkspaceFile = async (entry: WorkspaceNodeEntry) => {
     if (!isTauriEnv || entry.kind !== "file") return;
     try {
+      const ext = (entry.extension || "").toLowerCase();
+      if (BINARY_PREVIEW_EXT_SET.has(ext)) {
+        const preview = await readWorkspaceBinaryPreview(entry.relativePath);
+        setSelectedWorkspaceFile({
+          relativePath: preview.relativePath,
+          name: preview.name,
+          zone: entry.zone,
+          content: "",
+          editable: false,
+          pinned: pinnedWorkspacePaths.has(preview.relativePath),
+          tokens: 0,
+          kind: preview.kind,
+          sizeBytes: preview.sizeBytes,
+          mimeType: preview.mimeType,
+          dataUrl: preview.dataUrl ?? null,
+          pdfSummary: preview.pdfSummary ?? null,
+        });
+        triggerReadingPulse(`Inspeccionando ${entry.name}...`, 950);
+        return;
+      }
+
       const f = await readWorkspaceFile(entry.relativePath);
       setSelectedWorkspaceFile({
         relativePath: f.relativePath,
@@ -1616,6 +1789,8 @@ export default function App() {
         editable: f.editable,
         pinned: pinnedWorkspacePaths.has(f.relativePath),
         tokens: estimateTokens(f.content),
+        kind: "text",
+        sizeBytes: f.sizeBytes,
       });
       triggerReadingPulse(`Leyendo ${entry.name}...`, 1050);
     } catch (err) {
@@ -1624,6 +1799,17 @@ export default function App() {
       );
       setTimeout(() => setStatusMessage(null), 3500);
     }
+  };
+
+  const handleAskXoxAnalyzeFile = (file: SelectedWorkspaceFile) => {
+    const promptSuggestion =
+      file.kind === "pdf"
+        ? `Lee el PDF "${file.relativePath}" y dame un resumen estructurado con sus puntos clave.`
+        : file.kind === "image"
+        ? `Usa la imagen "${file.relativePath}" `
+        : `Revisa el archivo "${file.relativePath}" y `;
+    setInputPrompt((prev) => (prev.trim() ? `${prev.trim()} (${file.relativePath})` : promptSuggestion));
+    requestAnimationFrame(() => inputRef.current?.focus());
   };
 
   const handleTogglePinWorkspaceFile = async (entry: WorkspaceNodeEntry) => {
@@ -1987,11 +2173,16 @@ export default function App() {
     rawQuery: string,
     overrideMessages?: UiChatMessage[]
   ) => {
-    const query = rawQuery.trim();
-    if (!query || isChatStreaming) return;
+    const rawTrimmed = rawQuery.trim();
+    if ((!rawTrimmed && attachments.length === 0) || isChatStreaming) return;
 
     const baseMessages = overrideMessages ?? chatMessagesRef.current;
     const currentAttachments = attachments;
+    const query =
+      rawTrimmed ||
+      (currentAttachments.length === 1
+        ? `Analiza el archivo adjunto (${currentAttachments[0].name}).`
+        : `Analiza los ${currentAttachments.length} archivos adjuntos.`);
     setInputPrompt("");
     setAttachments([]);
 
@@ -2072,10 +2263,16 @@ export default function App() {
       return;
     }
 
+    const initialAttachmentsMeta: UiChatAttachment[] = currentAttachments.map((file) => ({
+      name: file.name,
+      kind: classifyAttachmentFile(file),
+    }));
+
     const userMsg: UiChatMessage = {
       id: `msg_u_${Date.now()}`,
       role: "user",
       content: query,
+      ...(initialAttachmentsMeta.length > 0 ? { attachments: initialAttachmentsMeta } : {}),
     };
 
     // 2) Sin clave configurada: informar con honestidad y abrir flujo guiado (cero respuestas mock)
@@ -2145,35 +2342,132 @@ export default function App() {
     setXoxMessage("Leyendo contexto y reglas...");
 
     try {
-      const fileSnippets = await Promise.all(
-        currentAttachments.map(async (file) => {
-          const isReadableText =
-            file.size <= 131072 &&
-            (/^(text\/|application\/(json|csv|xml|javascript))/.test(file.type) ||
-              /\.(txt|md|json|csv|tsv|log|yaml|yml|xml)$/i.test(file.name));
-          if (!isReadableText) {
+      let stagedAnyBinary = false;
+      const thumbByIdx = new Map<number, { previewUrl?: string; workspacePath?: string }>();
+
+      const fileSnippets: AttachedContextItem[] = await Promise.all(
+        currentAttachments.map(async (file, fIdx): Promise<AttachedContextItem> => {
+          const kind = classifyAttachmentFile(file);
+
+          if (kind === "pdf" || kind === "image" || kind === "binary") {
+            let stagedPath: string | undefined;
+            let stagedMime = file.type || (kind === "pdf" ? "application/pdf" : "application/octet-stream");
+            if (isTauriEnv && file.size > 0 && file.size <= 25 * 1024 * 1024) {
+              try {
+                const b64 = await fileToBase64Payload(file);
+                const staged = await stageWorkspaceAttachment(file.name, b64);
+                stagedPath = staged.relativePath;
+                stagedMime = staged.mimeType || stagedMime;
+                stagedAnyBinary = true;
+              } catch {
+                stagedPath = undefined;
+              }
+            }
+
+            if (kind === "image") {
+              const imgPrep = await prepareImagePayload(file);
+              if (imgPrep.thumbUrl || stagedPath) {
+                thumbByIdx.set(fIdx, {
+                  previewUrl: imgPrep.thumbUrl,
+                  workspacePath: stagedPath,
+                });
+              }
+              const dimText =
+                imgPrep.width && imgPrep.height ? ` (${imgPrep.width}×${imgPrep.height}px)` : "";
+              return {
+                name: file.name,
+                type: stagedMime,
+                kind: "image",
+                workspacePath: stagedPath,
+                mimeType: stagedMime,
+                sizeBytes: file.size,
+                width: imgPrep.width,
+                height: imgPrep.height,
+                imageDataUrl: imgPrep.imageDataUrl,
+                content: stagedPath
+                  ? `Imagen adjunta guardada en '${stagedPath}'${dimText}. Puedes usarla en 'pdf_generate' (como portada en 'cover.image_path' o bloque {type:'image', path:'${stagedPath}'}) o inspeccionarla con 'workspace_read'.`
+                  : `Imagen adjunta '${file.name}'${dimText}.`,
+              };
+            }
+
+            if (kind === "pdf") {
+              if (stagedPath) {
+                thumbByIdx.set(fIdx, { workspacePath: stagedPath });
+              }
+              return {
+                name: file.name,
+                type: "application/pdf",
+                kind: "pdf",
+                workspacePath: stagedPath,
+                mimeType: "application/pdf",
+                sizeBytes: file.size,
+                content: stagedPath
+                  ? `PDF adjunto guardado en '${stagedPath}' (${Math.max(1, Math.round(file.size / 1024))} KB). Usa SIEMPRE la herramienta 'pdf_read' con path='${stagedPath}' para extraer su texto, tablas y OCR.`
+                  : `Archivo PDF adjunto '${file.name}' (${Math.max(1, Math.round(file.size / 1024))} KB).`,
+              };
+            }
+
             return {
               name: file.name,
-              type: file.type || "archivo",
-              content: `(Archivo adjunto de ${Math.round(file.size / 1024)} KB)`,
+              type: stagedMime,
+              kind: "binary",
+              workspacePath: stagedPath,
+              mimeType: stagedMime,
+              sizeBytes: file.size,
+              content: stagedPath
+                ? `Archivo binario guardado en '${stagedPath}' (${Math.max(1, Math.round(file.size / 1024))} KB).`
+                : `(Archivo adjunto de ${Math.max(1, Math.round(file.size / 1024))} KB)`,
             };
           }
-          try {
-            const raw = await file.text();
-            return {
-              name: file.name,
-              type: file.type || "text/plain",
-              content: raw.slice(0, 4000),
-            };
-          } catch {
-            return {
-              name: file.name,
-              type: file.type || "archivo",
-              content: "(No se pudo leer el contenido del archivo)",
-            };
+
+          if (file.size <= 131072) {
+            try {
+              const raw = await file.text();
+              return {
+                name: file.name,
+                type: file.type || "text/plain",
+                kind: "text",
+                sizeBytes: file.size,
+                content: raw.slice(0, 4000),
+              };
+            } catch {
+              return {
+                name: file.name,
+                type: file.type || "archivo",
+                kind: "text",
+                content: "(No se pudo leer el contenido del archivo)",
+              };
+            }
           }
+
+          return {
+            name: file.name,
+            type: file.type || "archivo",
+            kind: "text",
+            sizeBytes: file.size,
+            content: `(Archivo de texto grande de ${Math.round(file.size / 1024)} KB)`,
+          };
         })
       );
+
+      if (thumbByIdx.size > 0) {
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === userMsg.id && m.attachments
+              ? {
+                  ...m,
+                  attachments: m.attachments.map((att, idx) => {
+                    const patch = thumbByIdx.get(idx);
+                    return patch ? { ...att, ...patch } : att;
+                  }),
+                }
+              : m
+          )
+        );
+      }
+      if (stagedAnyBinary && isTauriEnv) {
+        void handleRefreshWorkspace();
+      }
 
       const activeContextSnippets = contextItems
         .filter((c) => c.pinned || selectedContext?.id === c.id)
@@ -2320,6 +2614,28 @@ export default function App() {
               )
             );
           },
+          onPdfDraftProgress: (draft) => {
+            handlePdfDraftProgress(draft, assistantMsgId);
+          },
+          onPdfGenerated: (pdf) => {
+            const slimPdf: GeneratedPdfArtifact = {
+              ...pdf,
+              previewPages: undefined,
+              previewHasMore: undefined,
+            };
+            lastPdfByTurnRef.current[assistantMsgId] = slimPdf;
+            setChatMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== assistantMsgId) return m;
+                const prevList = m.generatedPdfs ?? [];
+                const nextList = prevList.some((p) => p.path === slimPdf.path)
+                  ? prevList.map((p) => (p.path === slimPdf.path ? slimPdf : p))
+                  : [...prevList, slimPdf];
+                return { ...m, generatedPdfs: nextList };
+              })
+            );
+            void openPdfInRightPanel(pdf);
+          },
         }
       );
 
@@ -2332,6 +2648,9 @@ export default function App() {
         setActiveCanvas(finalCanvas);
         setShowCanvas(true);
       }
+      const hasTurnPdf =
+        (res.generatedPdfs?.length ?? 0) > 0 ||
+        rightPanelAutoOpenedTurnRef.current === assistantMsgId;
       if (generatedCount > 0) {
         const replacePending = res.operation === "replace_tasks";
         if (replacePending) {
@@ -2344,6 +2663,9 @@ export default function App() {
         }
         setShowRightSidebar(true);
         setTaskTab("pending");
+        if (!hasTurnPdf) {
+          setRightSidebarMode("tasks");
+        }
         if (isTauriEnv) {
           suppressLedgerSyncUntilRef.current = Date.now() + 450;
           void upsertTasksBatch(res.tasks, replacePending);
@@ -2356,6 +2678,7 @@ export default function App() {
         .catch(() => {});
 
       const nextClarification = res.clarification ?? null;
+      const resPdfs = res.generatedPdfs ?? [];
       const finalMessages = chatMessagesRef.current.map((m) =>
         m.id === assistantMsgId
           ? {
@@ -2371,6 +2694,14 @@ export default function App() {
               tokensUsed: res.usage?.totalTokens,
               generatedTaskCount: generatedCount,
               canvas: finalCanvas ?? m.canvas,
+              generatedPdfs: (() => {
+                const base = m.generatedPdfs ?? [];
+                if (resPdfs.length === 0) return base.length > 0 ? base : undefined;
+                const byPath = new Map<string, GeneratedPdfArtifact>();
+                for (const p of base) byPath.set(p.path, p);
+                for (const p of resPdfs) byPath.set(p.path, p);
+                return Array.from(byPath.values());
+              })(),
               actionButton: nextClarification
                 ? {
                     label: "Responder preguntas",
@@ -2444,6 +2775,21 @@ export default function App() {
       }
     } catch (err) {
       clearXoxPhaseTimers();
+      const recoveredTurnPdf = lastPdfByTurnRef.current[assistantMsgId];
+      if (recoveredTurnPdf) {
+        void openPdfInRightPanel(recoveredTurnPdf);
+      } else {
+        setPdfPanelState((curr) =>
+          curr && curr.status === "generating"
+            ? {
+                ...curr,
+                status: "error",
+                loadingPreview: false,
+                error: "Se interrumpió la conexión con el modelo antes de compilar el PDF.",
+              }
+            : curr
+        );
+      }
       const message = extractErrorMessage(
         err,
         "No se pudo completar la consulta con OpenRouter."
@@ -2711,6 +3057,261 @@ export default function App() {
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
+  const openPdfInRightPanel = async (meta: {
+    path: string;
+    title?: string;
+    filename?: string;
+    pageCount?: number;
+    sizeBytes?: number;
+    hasCover?: boolean;
+    theme?: string;
+    previewPages?: Array<{ page: number; width: number; height: number; dataUrl: string }>;
+    previewHasMore?: boolean;
+  }) => {
+    const reqId = (pdfPreviewReqRef.current += 1);
+    setShowRightSidebar(true);
+    setRightSidebarMode("pdf");
+    setRightWidth((w) => Math.max(w, 460));
+
+    const cleanTitle = meta.title || meta.filename || meta.path.split("/").pop() || "Documento PDF";
+    if (meta.previewPages && meta.previewPages.length > 0) {
+      setPdfPanelState({
+        status: "ready",
+        path: meta.path,
+        filename: meta.filename || meta.path.split("/").pop(),
+        title: cleanTitle,
+        pageCount: meta.pageCount ?? meta.previewPages.length,
+        sizeBytes: meta.sizeBytes,
+        hasCover: meta.hasCover,
+        theme: meta.theme,
+        pages: meta.previewPages,
+        hasMore: Boolean(meta.previewHasMore),
+        loadingPreview: false,
+      });
+      return;
+    }
+
+    setPdfPanelState((prev) => ({
+      status: "ready",
+      path: meta.path,
+      filename: meta.filename || meta.path.split("/").pop(),
+      title: cleanTitle,
+      pageCount: meta.pageCount ?? prev?.pageCount,
+      sizeBytes: meta.sizeBytes ?? prev?.sizeBytes,
+      hasCover: meta.hasCover ?? prev?.hasCover,
+      theme: meta.theme ?? prev?.theme,
+      draftBlocks: prev?.path === meta.path || prev?.status === "generating" ? prev.draftBlocks : undefined,
+      cover: prev?.path === meta.path || prev?.status === "generating" ? prev.cover : null,
+      pages: [],
+      hasMore: false,
+      loadingPreview: true,
+    }));
+
+    if (!isTauriEnv) return;
+    try {
+      const res = await renderPdfPreview(meta.path, { startPage: 1, maxPages: 8 });
+      if (reqId !== pdfPreviewReqRef.current) return;
+      if (res && res.ok && res.pages.length > 0) {
+        setPdfPanelState((curr) =>
+          curr
+            ? {
+                ...curr,
+                status: "ready",
+                pageCount: res.pageCount,
+                pages: res.pages,
+                hasMore: res.hasMore,
+                loadingPreview: false,
+                error: undefined,
+              }
+            : null
+        );
+      } else {
+        setPdfPanelState((curr) =>
+          curr
+            ? {
+                ...curr,
+                status: "error",
+                loadingPreview: false,
+                error: res?.error || "No se pudo generar la vista previa de páginas.",
+              }
+            : null
+        );
+      }
+    } catch (err) {
+      if (reqId !== pdfPreviewReqRef.current) return;
+      setPdfPanelState((curr) =>
+        curr
+          ? {
+              ...curr,
+              status: "error",
+              loadingPreview: false,
+              error: extractErrorMessage(err, "No se pudo renderizar la vista previa del PDF."),
+            }
+          : null
+      );
+    }
+  };
+
+  const handleLoadMorePdfPages = async () => {
+    const snap = pdfPanelState;
+    if (!snap || snap.status !== "ready" || !snap.path || snap.loadingMore || !isTauriEnv) {
+      return;
+    }
+    const reqId = pdfPreviewReqRef.current;
+    const nextStart = snap.pages.length + 1;
+    setPdfPanelState((curr) => (curr ? { ...curr, loadingMore: true } : curr));
+    try {
+      const res = await renderPdfPreview(snap.path, { startPage: nextStart, maxPages: 8 });
+      if (reqId !== pdfPreviewReqRef.current) return;
+      if (res && res.ok) {
+        setPdfPanelState((curr) => {
+          if (!curr) return curr;
+          const seen = new Set(curr.pages.map((p) => p.page));
+          const merged = [...curr.pages, ...res.pages.filter((p) => !seen.has(p.page))];
+          return {
+            ...curr,
+            pages: merged,
+            pageCount: res.pageCount,
+            hasMore: res.hasMore,
+            loadingMore: false,
+          };
+        });
+      } else {
+        setPdfPanelState((curr) => (curr ? { ...curr, loadingMore: false } : curr));
+      }
+    } catch {
+      setPdfPanelState((curr) => (curr ? { ...curr, loadingMore: false } : curr));
+    }
+  };
+
+  const handlePdfDraftProgress = (draft: PdfDraftProgressEvent, turnId: string) => {
+    pdfPreviewReqRef.current += 1;
+    if (rightPanelAutoOpenedTurnRef.current !== turnId) {
+      rightPanelAutoOpenedTurnRef.current = turnId;
+      setShowRightSidebar(true);
+      setRightSidebarMode("pdf");
+      setRightWidth((w) => Math.max(w, 460));
+    }
+    setPdfPanelState((prev) => ({
+      status: "generating",
+      stage: draft.stage,
+      stepLabel: draft.stepLabel || "Construyendo documento...",
+      progress: draft.progress,
+      title: draft.title || prev?.title || "Documento PDF",
+      subtitle: draft.subtitle ?? prev?.subtitle,
+      theme: draft.theme || prev?.theme || "executive",
+      author: draft.author || prev?.author,
+      date: draft.date || prev?.date,
+      hasCover: draft.hasCover ?? prev?.hasCover,
+      cover: draft.cover ?? prev?.cover ?? null,
+      draftBlocks: draft.blocks.length > 0 ? draft.blocks : prev?.draftBlocks ?? [],
+      path: draft.path || prev?.path,
+      pages: [],
+      hasMore: false,
+      loadingPreview: false,
+      error: undefined,
+    }));
+  };
+
+  const handleExportCanvasPdf = async (canvas: CanvasArtifact) => {
+    if (!isTauriEnv) return;
+    const reqId = (pdfPreviewReqRef.current += 1);
+    setShowRightSidebar(true);
+    setRightSidebarMode("pdf");
+    setRightWidth((w) => Math.max(w, 460));
+    const canvasPreviewBlocks: PdfDraftProgressEvent["blocks"] = [];
+    if (canvas.summary?.trim()) {
+      canvasPreviewBlocks.push({
+        type: "callout",
+        title: "Resumen ejecutivo",
+        text: canvas.summary.trim(),
+      });
+    }
+    if (canvas.columns.length > 0 && canvas.rows.length > 0) {
+      canvasPreviewBlocks.push({
+        type: "table",
+        columns: canvas.columns.map((c) => c.label),
+        rows: canvas.rows.slice(0, 6).map((r) => canvas.columns.map((c) => r.cells[c.id] ?? "")),
+      });
+    } else if (canvas.markdown?.trim()) {
+      canvasPreviewBlocks.push({ type: "paragraph", text: canvas.markdown.trim().slice(0, 240) });
+    }
+    setPdfPanelState({
+      status: "generating",
+      stage: "rendering_pdf",
+      stepLabel: "Compilando Canvas en páginas PDF...",
+      progress: 0.45,
+      title: canvas.title || "Canvas XOOK",
+      subtitle: canvas.subtitle,
+      theme: "executive",
+      hasCover: false,
+      cover: null,
+      draftBlocks: canvasPreviewBlocks,
+      pages: [],
+      loadingPreview: false,
+    });
+
+    setXoxState("syncing");
+    setThinkingLabel("Generando PDF...");
+    setXoxMessage("Generando documento PDF...");
+    try {
+      const rawRes = await exportCanvasToPdf(buildPdfSpecFromCanvas(canvas));
+      const pdfArtifact = sanitizeGeneratedPdfArtifact(rawRes);
+      if (pdfArtifact) {
+        const targetMsgId = canvas.sourceMessageId;
+        const hasSourceMsg = Boolean(
+          targetMsgId && chatMessagesRef.current.some((m) => m.id === targetMsgId)
+        );
+        const nextMessages: UiChatMessage[] = hasSourceMsg
+          ? chatMessagesRef.current.map((m) => {
+              if (m.id !== targetMsgId) return m;
+              const prevList = m.generatedPdfs ?? [];
+              const merged = prevList.some((p) => p.path === pdfArtifact.path)
+                ? prevList.map((p) => (p.path === pdfArtifact.path ? pdfArtifact : p))
+                : [...prevList, pdfArtifact];
+              return { ...m, generatedPdfs: merged };
+            })
+          : [
+              ...chatMessagesRef.current,
+              {
+                id: `msg_pdf_${Date.now()}`,
+                role: "assistant",
+                content: `Exporté **${pdfArtifact.title}** a PDF en \`${pdfArtifact.path}\`.`,
+                generatedPdfs: [pdfArtifact],
+              },
+            ];
+        setChatMessages(nextMessages);
+        void persistConversation(nextMessages);
+        setStatusMessage(`PDF listo: ${pdfArtifact.path}`);
+        setTimeout(() => setStatusMessage(null), 4500);
+        if (reqId === pdfPreviewReqRef.current) {
+          void openPdfInRightPanel(pdfArtifact);
+        }
+      }
+      void handleRefreshWorkspace();
+      setXoxState("success");
+      setXoxMessage("PDF generado correctamente.");
+      setTimeout(() => {
+        setXoxState((s) => (s === "success" ? "idle" : s));
+        setXoxMessage("¿En qué puedo ayudarte?");
+      }, 2800);
+    } catch (err) {
+      setXoxState("alert");
+      const msg = extractErrorMessage(err, "No se pudo exportar el PDF.");
+      if (reqId === pdfPreviewReqRef.current) {
+        setPdfPanelState((curr) =>
+          curr ? { ...curr, status: "error", error: msg, loadingPreview: false } : curr
+        );
+      }
+      setStatusMessage(msg);
+      setTimeout(() => setStatusMessage(null), 4500);
+      setTimeout(() => {
+        setXoxState((s) => (s === "alert" ? "idle" : s));
+        setXoxMessage("¿En qué puedo ayudarte?");
+      }, 3000);
+    }
+  };
+
   const statusToastPresence = useAnimatedPresence(Boolean(statusMessage), 190);
   const lastStatusRef = useRef<string | null>(statusMessage);
   if (statusMessage) lastStatusRef.current = statusMessage;
@@ -2832,11 +3433,22 @@ export default function App() {
           )}
 
           <button
-            onClick={() => setShowRightSidebar(!showRightSidebar)}
-            aria-pressed={showRightSidebar}
-            title={showRightSidebar ? "Ocultar panel de tareas" : "Mostrar panel de tareas"}
+            onClick={() => {
+              if (showRightSidebar && rightSidebarMode === "pdf") {
+                setRightSidebarMode("tasks");
+              } else {
+                setRightSidebarMode("tasks");
+                setShowRightSidebar(!showRightSidebar);
+              }
+            }}
+            aria-pressed={showRightSidebar && rightSidebarMode === "tasks"}
+            title={
+              showRightSidebar && rightSidebarMode === "tasks"
+                ? "Ocultar panel de tareas"
+                : "Mostrar panel de tareas"
+            }
             className={`px-2 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
-              showRightSidebar
+              showRightSidebar && rightSidebarMode === "tasks"
                 ? "bg-white/[0.08] text-white border-white/[0.1]"
                 : "bg-transparent text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]"
             }`}
@@ -3007,6 +3619,17 @@ export default function App() {
                 onTogglePinFile={handleTogglePinWorkspaceFile}
                 onRefresh={handleRefreshWorkspace}
                 onOpenFinder={(rel) => void openWorkspaceFolder(rel)}
+                onOpenFile={(rel) => void openWorkspaceFile(rel)}
+                onPreviewPdf={(file) =>
+                  void openPdfInRightPanel({
+                    path: file.relativePath,
+                    title: file.pdfSummary?.title || file.name,
+                    filename: file.name,
+                    pageCount: file.pdfSummary?.page_count,
+                    sizeBytes: file.sizeBytes,
+                  })
+                }
+                onAskXoxAnalyzeFile={handleAskXoxAnalyzeFile}
                 onCreateFolder={handleCreateWorkspaceFolder}
                 onCreateWorkspace={handleCreateNewWorkspace}
                 onSwitchWorkspace={handleSwitchActiveWorkspace}
@@ -3462,10 +4085,14 @@ export default function App() {
                     greetingLeaving={greetingLeaving}
                     activeCanvasId={showCanvas ? activeCanvas?.id ?? null : null}
                     onOpenCanvas={handleOpenCanvas}
+                    onPreviewPdf={(pdf) => void openPdfInRightPanel(pdf)}
+                    onOpenPdf={(rel) => void openWorkspaceFile(rel)}
+                    onRevealPdfFolder={(rel) => void openWorkspaceFolder(rel)}
                     modelCatalog={catalogModels}
                     onXoxClick={handleXoxClick}
                     onAction={handleChatAction}
                     onOpenTasksTab={() => {
+                      setRightSidebarMode("tasks");
                       setShowRightSidebar(true);
                       setTaskTab("pending");
                     }}
@@ -3526,7 +4153,37 @@ export default function App() {
           {/* ========================================================================= */}
           <div className="absolute inset-x-0 bottom-0 p-4 sm:p-6 bg-gradient-to-t from-[#060709] via-[#060709]/95 to-transparent pointer-events-none z-10">
             <div className="@container max-w-5xl mx-auto pointer-events-auto">
-              <div className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-4 relative group shadow-2xl ${inputExpanded ? "is-expanded" : ""}`}>
+              <div
+                onDragOver={(e) => {
+                  if (e.dataTransfer?.types?.includes("Files")) {
+                    e.preventDefault();
+                    setIsDraggingOverChat(true);
+                  }
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                    setIsDraggingOverChat(false);
+                  }
+                }}
+                onDrop={(e) => {
+                  if (e.dataTransfer?.files?.length) {
+                    e.preventDefault();
+                    setIsDraggingOverChat(false);
+                    const dropped = Array.from(e.dataTransfer.files);
+                    setAttachments((prev) => [...prev, ...dropped]);
+                    triggerReadingPulse(
+                      dropped.length === 1
+                        ? `Leyendo ${dropped[0].name}...`
+                        : `Leyendo ${dropped.length} archivos adjuntos...`
+                    );
+                  } else {
+                    setIsDraggingOverChat(false);
+                  }
+                }}
+                className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-4 relative group shadow-2xl transition-all ${
+                  inputExpanded ? "is-expanded" : ""
+                } ${isDraggingOverChat ? "ring-2 ring-sky-300/60 border-sky-300/40" : ""}`}
+              >
                 {/* Capa de recorte para los efectos de luz (los menús desplegables pueden sobresalir) */}
                 <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
                   {/* Reflejo especular superior tenue */}
@@ -3540,23 +4197,32 @@ export default function App() {
                   {/* Archivos adjuntos */}
                   {attachments.length > 0 && (
                     <div className="flex flex-wrap gap-1.5 px-1">
-                      {attachments.map((f, i) => (
-                        <span
-                          key={`${f.name}-${i}`}
-                          className="toast-in inline-flex items-center gap-1.5 text-[11px] pl-2 pr-1 py-1 rounded-lg bg-white/[0.06] border border-white/[0.1] text-zinc-200 max-w-[200px]"
-                        >
-                          <Paperclip className="w-3 h-3 text-zinc-400 shrink-0" />
-                          <span className="truncate">{f.name}</span>
-                          <button
-                            type="button"
-                            onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
-                            aria-label={`Quitar ${f.name}`}
-                            className="text-zinc-500 hover:text-zinc-200 p-0.5 cursor-pointer"
+                      {attachments.map((f, i) => {
+                        const attKind = classifyAttachmentFile(f);
+                        return (
+                          <span
+                            key={`${f.name}-${i}`}
+                            className="toast-in inline-flex items-center gap-1.5 text-[11px] pl-2 pr-1 py-1 rounded-lg bg-white/[0.06] border border-white/[0.1] text-zinc-200 max-w-[220px]"
                           >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </span>
-                      ))}
+                            {attKind === "pdf" ? (
+                              <FileText className="w-3 h-3 text-rose-300 shrink-0" />
+                            ) : attKind === "image" ? (
+                              <ImageIcon className="w-3 h-3 text-sky-300 shrink-0" />
+                            ) : (
+                              <Paperclip className="w-3 h-3 text-zinc-400 shrink-0" />
+                            )}
+                            <span className="truncate">{f.name}</span>
+                            <button
+                              type="button"
+                              onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                              aria-label={`Quitar ${f.name}`}
+                              className="text-zinc-500 hover:text-zinc-200 p-0.5 cursor-pointer"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        );
+                      })}
                     </div>
                   )}
 
@@ -3583,7 +4249,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
-                      title="Adjuntar archivos"
+                      title="Adjuntar archivos (PDF, imágenes, CSV, texto...)"
                       aria-label="Adjuntar archivos"
                       className="quick-liquid-btn shrink-0 mb-0.5 w-8 h-8 rounded-full flex items-center justify-center text-zinc-200 hover:text-white active:scale-95 cursor-pointer"
                     >
@@ -3595,6 +4261,18 @@ export default function App() {
                       rows={1}
                       value={inputPrompt}
                       onChange={(e) => setInputPrompt(e.target.value)}
+                      onPaste={(e) => {
+                        const pastedFiles = Array.from(e.clipboardData?.files ?? []);
+                        if (pastedFiles.length > 0) {
+                          e.preventDefault();
+                          setAttachments((prev) => [...prev, ...pastedFiles]);
+                          triggerReadingPulse(
+                            pastedFiles.length === 1
+                              ? `Imagen o archivo adjuntado (${pastedFiles[0].name || "portapapeles"})...`
+                              : `${pastedFiles.length} archivos pegados...`
+                          );
+                        }
+                      }}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                           e.preventDefault();
@@ -3605,7 +4283,9 @@ export default function App() {
                       placeholder={
                         isChatStreaming
                           ? "Procesando..."
-                          : "Escribe a Xox..."
+                          : isDraggingOverChat
+                          ? "Suelta tu PDF, imagen o archivo aquí..."
+                          : "Escribe a Xox (o arrastra PDFs e imágenes)..."
                       }
                       className="input-bubble flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-sm sm:text-base text-zinc-100 placeholder:text-zinc-500 focus:outline-none py-1.5 px-1 font-normal leading-relaxed disabled:opacity-50 select-text"
                     />
@@ -3721,9 +4401,9 @@ export default function App() {
 
                     <button
                       type="submit"
-                      disabled={!inputPrompt.trim() || isChatStreaming}
+                      disabled={(!inputPrompt.trim() && attachments.length === 0) || isChatStreaming}
                       className={`shrink-0 mb-0.5 w-8 h-8 rounded-full flex items-center justify-center ${
-                        !inputPrompt.trim() || isChatStreaming
+                        (!inputPrompt.trim() && attachments.length === 0) || isChatStreaming
                           ? "quick-liquid-btn text-zinc-200/70 cursor-not-allowed"
                           : "quick-liquid-btn-ready active:scale-95 cursor-pointer"
                       }`}
@@ -3837,6 +4517,7 @@ export default function App() {
               visible={canvasPresence.visible}
               onUpdateCanvas={handleUpdateCanvas}
               onAskXoxEdit={handleAskXoxAboutCanvas}
+              onExportPdf={isTauriEnv ? handleExportCanvasPdf : undefined}
               onClose={() => setShowCanvas(false)}
             />
           </div>
@@ -3853,7 +4534,9 @@ export default function App() {
                 e.preventDefault();
                 setIsResizingRight(true);
               }}
-              onDoubleClick={() => setRightWidth(340)}
+              onDoubleClick={() =>
+                setRightWidth(rightSidebarMode === "pdf" && pdfPanelState ? 460 : 340)
+              }
               className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""} ${
                 rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
               }`}
@@ -3866,42 +4549,123 @@ export default function App() {
               aria-hidden={!showRightSidebar}
               inert={!showRightSidebar}
               style={{ width: rightPresence.visible ? `${rightWidth}px` : "0px" }}
-              className={`sidebar-slot flex justify-start shrink-0 overflow-hidden ${
+              className={`sidebar-slot flex flex-col shrink-0 overflow-hidden bg-[#08090d] ${
                 isResizingRight ? "is-resizing" : ""
               } ${rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
             >
-              <TaskDecisionsPanel
-                width={rightWidth}
-                tasks={tasks}
-                agendaItems={agendaItems}
-                historyItems={historyItems}
-                maxBudgetLimit={workspaceOverview?.profile.maxBudgetPerOrder ?? 25000}
-                currency={workspaceOverview?.profile.currency ?? "MXN"}
-                activeTab={taskTab}
-                onTabChange={setTaskTab}
-                onUpdateParam={handleUpdateTaskParam}
-                onToggleTaskChecklist={handleToggleTaskChecklist}
-                onApproveTask={handleApproveTask}
-                onDiscardTask={handleDiscardTask}
-                onAskXox={handleAskXoxAboutTask}
-                onToggleTimer={handleToggleTimer}
-                onResetTimer={handleResetTimer}
-                onCompleteAgendaItem={handleCompleteAgendaItem}
-                onRemoveAgendaItem={handleRemoveAgendaItem}
-                onToggleAgendaChecklist={handleToggleAgendaChecklist}
-                onToggleAgendaAuto={handleToggleAgendaAuto}
-                onCreateQuickTimer={handleCreateQuickTimer}
-                onCreateQuickNote={handleCreateQuickNote}
-                onCreateScheduledEvent={handleCreateScheduledEvent}
-                onTriggerXoxReconstruct={() =>
-                  runPromptQuery("Consolida y agrupa las órdenes de inventario")
-                }
-                inventoryCount={inventoryItems.length}
-                latestReview={latestReview}
-                isReviewRunning={isReviewRunning}
-                onRunBusinessReview={() => void handleRunBusinessReview("manual")}
-                onImportInventoryFile={handleImportInventoryFile}
-              />
+              {pdfPanelState && (
+                <div className="px-3 py-2 border-b border-white/[0.06] bg-[#0a0b10] flex items-center gap-1.5 shrink-0 select-none">
+                  <button
+                    type="button"
+                    onClick={() => setRightSidebarMode("pdf")}
+                    className={`flex-1 min-w-0 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer ${
+                      rightSidebarMode === "pdf"
+                        ? "bg-rose-500/15 border-rose-400/35 text-rose-100"
+                        : "bg-white/[0.03] border-white/[0.06] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06]"
+                    }`}
+                  >
+                    {pdfPanelState.status === "generating" ? (
+                      <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse shrink-0" />
+                    ) : (
+                      <FileText className="w-3.5 h-3.5 text-rose-300 shrink-0" />
+                    )}
+                    <span className="truncate">
+                      {pdfPanelState.status === "generating" ? "Generando PDF" : "Documento PDF"}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setRightSidebarMode("tasks")}
+                    className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer ${
+                      rightSidebarMode === "tasks"
+                        ? "bg-white/[0.1] border-white/20 text-white"
+                        : "bg-white/[0.03] border-white/[0.06] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06]"
+                    }`}
+                  >
+                    <ListTodo className="w-3.5 h-3.5 shrink-0" />
+                    <span>Tareas</span>
+                    {pendingCount > 0 && (
+                      <span className="px-1.5 rounded-full bg-rose-500/20 text-rose-200 text-[10px] font-mono tabular-nums">
+                        {pendingCount}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    title="Cerrar vista del documento"
+                    onClick={() => {
+                      pdfPreviewReqRef.current += 1;
+                      setPdfPanelState(null);
+                      setRightSidebarMode("tasks");
+                    }}
+                    className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.06] transition-colors cursor-pointer shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              <div className="flex-1 min-h-0 flex">
+                {pdfPanelState && rightSidebarMode === "pdf" ? (
+                  <PdfWorkspacePanel
+                    width={rightWidth}
+                    state={pdfPanelState}
+                    isTauriEnv={isTauriEnv}
+                    onOpenExternal={(rel) => void openWorkspaceFile(rel)}
+                    onRevealFolder={(rel) => void openWorkspaceFolder(rel)}
+                    onLoadMorePages={() => void handleLoadMorePdfPages()}
+                    onRetryPreview={
+                      pdfPanelState.path
+                        ? () =>
+                            void openPdfInRightPanel({
+                              path: pdfPanelState.path!,
+                              title: pdfPanelState.title,
+                              filename: pdfPanelState.filename,
+                              pageCount: pdfPanelState.pageCount,
+                              sizeBytes: pdfPanelState.sizeBytes,
+                              hasCover: pdfPanelState.hasCover,
+                              theme: pdfPanelState.theme,
+                            })
+                        : undefined
+                    }
+                  />
+                ) : (
+                  <TaskDecisionsPanel
+                    width={rightWidth}
+                    tasks={tasks}
+                    agendaItems={agendaItems}
+                    historyItems={historyItems}
+                    maxBudgetLimit={workspaceOverview?.profile.maxBudgetPerOrder ?? 25000}
+                    currency={workspaceOverview?.profile.currency ?? "MXN"}
+                    activeTab={taskTab}
+                    onTabChange={setTaskTab}
+                    onUpdateParam={handleUpdateTaskParam}
+                    onToggleTaskChecklist={handleToggleTaskChecklist}
+                    onApproveTask={handleApproveTask}
+                    onDiscardTask={handleDiscardTask}
+                    onAskXox={handleAskXoxAboutTask}
+                    onToggleTimer={handleToggleTimer}
+                    onResetTimer={handleResetTimer}
+                    onCompleteAgendaItem={handleCompleteAgendaItem}
+                    onRemoveAgendaItem={handleRemoveAgendaItem}
+                    onToggleAgendaChecklist={handleToggleAgendaChecklist}
+                    onToggleAgendaAuto={handleToggleAgendaAuto}
+                    onCreateQuickTimer={handleCreateQuickTimer}
+                    onCreateQuickNote={handleCreateQuickNote}
+                    onCreateScheduledEvent={handleCreateScheduledEvent}
+                    onTriggerXoxReconstruct={() =>
+                      runPromptQuery("Consolida y agrupa las órdenes de inventario")
+                    }
+                    inventoryCount={inventoryItems.length}
+                    latestReview={latestReview}
+                    isReviewRunning={isReviewRunning}
+                    onRunBusinessReview={() => void handleRunBusinessReview("manual")}
+                    onImportInventoryFile={handleImportInventoryFile}
+                  />
+                )}
+              </div>
             </div>
           </>
         )}

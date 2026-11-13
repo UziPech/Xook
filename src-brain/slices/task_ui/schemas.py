@@ -533,12 +533,37 @@ def clean_visible_reply(text: str, *, strip_tables: bool = False) -> str:
         out,
         flags=re.I,
     )
+    code_stash: list[str] = []
+
+    def _stash_code(match: re.Match[str]) -> str:
+        code_stash.append(match.group(0))
+        return f"\x00CODEBLOCK{len(code_stash) - 1}\x00"
+
+    out = re.sub(r"```[\s\S]*?```|`[^`\n]+`", _stash_code, out)
     out = re.sub(
-        r"</?(?:pdf|doc|document|response|respuesta|analysis|analisis|canvas|lienzo|acciones|actions|table|thead|tbody|tfoot|tr|th|td)\b[^>]*>",
+        r"<\s*(?:/\s*)?(?:pdf|doc|document|response|respuesta|analysis|analisis|canvas|lienzo|acciones|actions|posta|reply|resp|table|thead|tbody|tfoot|tr|th|td)\b[^>]*>",
         "",
         out,
         flags=re.I,
     )
+    out = re.sub(
+        r"(?:^\s*<\s*(?:res|answer|output|final)\s*>|<\s*/\s*(?:res|answer|output|final)\s*>\s*$|(?:^|\n)[ \t]*<\s*(?:/\s*)?(?:res|answer|output|final)\s*>[ \t]*(?=\n|$))",
+        lambda m: "\n" if m.group(0).startswith("\n") else "",
+        out,
+        flags=re.I,
+    )
+    out = re.sub(
+        r"<\s*/\s*(?:pdf|doc|document|response|respuesta|analysis|analisis|canvas|lienzo|acciones|actions|posta|reply|resp|res|answer|output|final)\s*$",
+        "",
+        out,
+        flags=re.I,
+    )
+    if code_stash:
+        out = re.sub(
+            r"\x00CODEBLOCK(\d+)\x00",
+            lambda m: code_stash[int(m.group(1))],
+            out,
+        )
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
     return out
 

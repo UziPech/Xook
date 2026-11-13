@@ -9,6 +9,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  Image as ImageIcon,
   Lock,
   Pencil,
   Pin,
@@ -22,6 +23,7 @@ import {
   Zap,
 } from "lucide-react";
 import {
+  PdfSummaryInfo,
   WorkspaceNodeEntry,
   WorkspaceOverview,
 } from "./workspaceApi";
@@ -35,6 +37,11 @@ export interface SelectedWorkspaceFile {
   editable: boolean;
   pinned: boolean;
   tokens: number;
+  kind?: "text" | "image" | "pdf" | "binary";
+  sizeBytes?: number;
+  mimeType?: string;
+  dataUrl?: string | null;
+  pdfSummary?: PdfSummaryInfo | null;
 }
 
 interface WorkspaceTreePanelProps {
@@ -48,6 +55,9 @@ interface WorkspaceTreePanelProps {
   onTogglePinFile: (entry: WorkspaceNodeEntry) => void;
   onRefresh: () => void;
   onOpenFinder: (relativePath?: string) => void;
+  onOpenFile?: (relativePath: string) => void;
+  onPreviewPdf?: (file: SelectedWorkspaceFile) => void;
+  onAskXoxAnalyzeFile?: (file: SelectedWorkspaceFile) => void;
   onCreateFolder: (relativePath: string) => Promise<void>;
   onCreateWorkspace: (name: string) => Promise<void>;
   onSwitchWorkspace: (workspaceId: string) => Promise<void>;
@@ -109,6 +119,9 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
   onTogglePinFile,
   onRefresh,
   onOpenFinder,
+  onOpenFile,
+  onPreviewPdf,
+  onAskXoxAnalyzeFile,
   onCreateFolder,
   onCreateWorkspace,
   onSwitchWorkspace,
@@ -530,7 +543,15 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                 ) : (
                   <>
                     <span className="w-3 shrink-0" />
-                    <FileText className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                    {entry.extension.toLowerCase() === "pdf" ? (
+                      <FileText className="w-3.5 h-3.5 text-rose-300/85 shrink-0" />
+                    ) : ["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg"].includes(
+                        entry.extension.toLowerCase()
+                      ) ? (
+                      <ImageIcon className="w-3.5 h-3.5 text-sky-300/85 shrink-0" />
+                    ) : (
+                      <FileText className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                    )}
                     <span className="truncate font-mono text-[11px] text-zinc-300">
                       {entry.name}
                     </span>
@@ -581,11 +602,30 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                   {selectedFile.relativePath}
                 </div>
                 <div className="text-[10px] text-zinc-500">
-                  ~{selectedFile.tokens} tok
+                  {selectedFile.kind === "pdf"
+                    ? `${
+                        typeof selectedFile.pdfSummary?.page_count === "number"
+                          ? `${selectedFile.pdfSummary.page_count} pág(s) · `
+                          : ""
+                      }${Math.max(1, Math.round((selectedFile.sizeBytes ?? 0) / 1024))} KB`
+                    : selectedFile.kind === "image" || selectedFile.kind === "binary"
+                    ? `${Math.max(1, Math.round((selectedFile.sizeBytes ?? 0) / 1024))} KB`
+                    : `~${selectedFile.tokens} tok`}
                 </div>
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
+                {isTauriEnv && onOpenFile && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenFile(selectedFile.relativePath)}
+                    title="Abrir en el visor del sistema"
+                    className="px-2 py-1 rounded-md text-[10.5px] bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-zinc-200 flex items-center gap-1 cursor-pointer"
+                  >
+                    <ExternalLink className="w-2.5 h-2.5" />
+                    <span>Abrir</span>
+                  </button>
+                )}
                 {selectedFile.editable && !isEditingFile && (
                   <button
                     type="button"
@@ -621,7 +661,124 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
             </div>
 
             <div className="flex-1 p-2.5 overflow-y-auto">
-              {isEditingFile ? (
+              {selectedFile.kind === "image" ? (
+                <div className="space-y-2.5">
+                  {selectedFile.dataUrl ? (
+                    <div className="rounded-xl overflow-hidden border border-white/[0.08] bg-black/50 p-2 flex items-center justify-center">
+                      <img
+                        src={selectedFile.dataUrl}
+                        alt={selectedFile.name}
+                        className="max-h-[240px] w-auto object-contain rounded-lg"
+                      />
+                    </div>
+                  ) : (
+                    <div className="p-3 rounded-xl border border-white/[0.07] bg-black/40 text-[11px] text-zinc-400 flex items-center gap-2">
+                      <ImageIcon className="w-4 h-4 text-sky-300 shrink-0" />
+                      <span>Imagen disponible en el espacio de trabajo.</span>
+                    </div>
+                  )}
+                  <div className="flex flex-wrap gap-1.5">
+                    {onAskXoxAnalyzeFile && (
+                      <button
+                        type="button"
+                        onClick={() => onAskXoxAnalyzeFile(selectedFile)}
+                        className="px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/30 text-[11px] text-sky-100 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>Usar con Xox</span>
+                      </button>
+                    )}
+                    {isTauriEnv && onOpenFile && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenFile(selectedFile.relativePath)}
+                        className="px-2.5 py-1 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-zinc-200 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>Abrir en visor</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : selectedFile.kind === "pdf" ? (
+                <div className="space-y-2.5 rounded-xl border border-white/[0.08] bg-black/45 p-3">
+                  <div className="flex items-start gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-rose-500/15 border border-rose-400/25 flex items-center justify-center shrink-0">
+                      <FileText className="w-4 h-4 text-rose-200" />
+                    </div>
+                    <div className="min-w-0 space-y-0.5">
+                      <p className="text-[12px] font-medium text-zinc-100 truncate">
+                        {selectedFile.pdfSummary?.title || selectedFile.name}
+                      </p>
+                      <p className="text-[10.5px] text-zinc-400">
+                        {typeof selectedFile.pdfSummary?.page_count === "number"
+                          ? `${selectedFile.pdfSummary.page_count} ${
+                              selectedFile.pdfSummary.page_count === 1 ? "página" : "páginas"
+                            }`
+                          : "Documento PDF"}
+                        {selectedFile.pdfSummary?.has_selectable_text === false
+                          ? " · Escaneado (OCR listo)"
+                          : selectedFile.pdfSummary?.has_selectable_text === true
+                          ? " · Texto extraíble"
+                          : ""}
+                      </p>
+                      {selectedFile.pdfSummary?.author && (
+                        <p className="text-[10px] text-zinc-500 truncate">
+                          Autor: {selectedFile.pdfSummary.author}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {onPreviewPdf && (
+                      <button
+                        type="button"
+                        onClick={() => onPreviewPdf(selectedFile)}
+                        className="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-400/30 text-[11px] text-rose-100 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <FileText className="w-3 h-3" />
+                        <span>Ver en panel</span>
+                      </button>
+                    )}
+                    {isTauriEnv && onOpenFile && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenFile(selectedFile.relativePath)}
+                        className="px-2.5 py-1 rounded-lg bg-white/[0.07] hover:bg-white/[0.12] border border-white/[0.1] text-[11px] text-zinc-100 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>Abrir PDF</span>
+                      </button>
+                    )}
+                    {onAskXoxAnalyzeFile && (
+                      <button
+                        type="button"
+                        onClick={() => onAskXoxAnalyzeFile(selectedFile)}
+                        className="px-2.5 py-1 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/30 text-[11px] text-sky-100 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>Leer y analizar con Xox</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : selectedFile.kind === "binary" ? (
+                <div className="rounded-xl border border-white/[0.08] bg-black/45 p-3 space-y-2">
+                  <p className="text-[11px] text-zinc-400">
+                    Archivo binario ({Math.max(1, Math.round((selectedFile.sizeBytes ?? 0) / 1024))} KB).
+                  </p>
+                  {isTauriEnv && onOpenFile && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenFile(selectedFile.relativePath)}
+                      className="px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-zinc-200 inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      <span>Abrir con el sistema</span>
+                    </button>
+                  )}
+                </div>
+              ) : isEditingFile ? (
                 <textarea
                   value={draftContent}
                   onChange={(e) => setDraftContent(e.target.value)}

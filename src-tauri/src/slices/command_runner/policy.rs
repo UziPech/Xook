@@ -190,7 +190,7 @@ pub fn add_or_update_rule(
         _ => return Err("Acción de permiso inválida (usa allow, ask o deny).".to_string()),
     };
     let clean_scope = match scope.trim().to_ascii_lowercase().as_str() {
-        "program" | "prefix" | "exact" => scope.trim().to_ascii_lowercase(),
+        "program" | "prefix" | "exact" | "app" | "capability" => scope.trim().to_ascii_lowercase(),
         _ => "program".to_string(),
     };
 
@@ -369,6 +369,7 @@ fn rule_matches(rule: &PermissionRule, program: &str, full_cmd: &str) -> bool {
         return false;
     }
     match rule.scope.as_str() {
+        "app" | "capability" => false,
         "exact" => full_cmd.eq_ignore_ascii_case(pat),
         "prefix" => {
             full_cmd.eq_ignore_ascii_case(pat)
@@ -378,6 +379,220 @@ fn rule_matches(rule: &PermissionRule, program: &str, full_cmd: &str) -> bool {
         }
         _ => program.eq_ignore_ascii_case(pat),
     }
+}
+
+fn app_rule_matches(
+    rule: &PermissionRule,
+    bundle_id: Option<&str>,
+    display_name: &str,
+    fs_name: &str,
+) -> bool {
+    if rule.scope != "app" {
+        return false;
+    }
+    let raw_pat = rule.pattern.trim();
+    let pat = raw_pat
+        .strip_prefix("app:")
+        .unwrap_or(raw_pat)
+        .trim();
+    if pat.is_empty() {
+        return false;
+    }
+    if let Some(bid) = bundle_id {
+        if bid.eq_ignore_ascii_case(pat) {
+            return true;
+        }
+    }
+    fs_name.eq_ignore_ascii_case(pat) || display_name.eq_ignore_ascii_case(pat)
+}
+
+pub fn make_app_evaluation(
+    verdict: PolicyVerdict,
+    matched_rule: Option<String>,
+    risk_level: &str,
+    cwd_abs: PathBuf,
+    suggestion: &str,
+    fs_name: &str,
+) -> CommandEvaluation {
+    CommandEvaluation {
+        verdict,
+        matched_rule,
+        risk_level: risk_level.to_string(),
+        program: suggestion.to_string(),
+        args: vec![fs_name.to_string()],
+        cwd_abs,
+        cwd_rel: "equipo".to_string(),
+        pattern_suggestion: suggestion.to_string(),
+    }
+}
+
+pub fn evaluate_app_launch(
+    workspace_root: &Path,
+    bundle_id: Option<&str>,
+    display_name: &str,
+    fs_name: &str,
+) -> CommandEvaluation {
+    let cfg = load_permissions(workspace_root);
+    let suggestion = bundle_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fs_name);
+    let cwd_abs = workspace_root.to_path_buf();
+
+    if let Some(deny_rule) = cfg
+        .rules
+        .iter()
+        .find(|r| r.action == "deny" && app_rule_matches(r, bundle_id, display_name, fs_name))
+    {
+        return make_app_evaluation(
+            PolicyVerdict::Deny(
+                "Esta aplicación está bloqueada por las reglas de permisos del espacio."
+                    .to_string(),
+            ),
+            Some(deny_rule.id.clone()),
+            "blocked",
+            cwd_abs,
+            suggestion,
+            fs_name,
+        );
+    }
+
+    if let Some(allow_rule) = cfg
+        .rules
+        .iter()
+        .find(|r| r.action == "allow" && app_rule_matches(r, bundle_id, display_name, fs_name))
+    {
+        return make_app_evaluation(
+            PolicyVerdict::Allow,
+            Some(allow_rule.id.clone()),
+            "low",
+            cwd_abs,
+            suggestion,
+            fs_name,
+        );
+    }
+
+    if let Some(ask_rule) = cfg
+        .rules
+        .iter()
+        .find(|r| r.action == "ask" && app_rule_matches(r, bundle_id, display_name, fs_name))
+    {
+        return make_app_evaluation(
+            PolicyVerdict::Ask,
+            Some(ask_rule.id.clone()),
+            "low",
+            cwd_abs,
+            suggestion,
+            fs_name,
+        );
+    }
+
+    if cfg.default_policy == "deny" {
+        return make_app_evaluation(
+            PolicyVerdict::Deny(
+                "Política estricta: las aplicaciones nuevas requieren autorización explícita en Permisos."
+                    .to_string(),
+            ),
+            None,
+            "blocked",
+            cwd_abs,
+            suggestion,
+            fs_name,
+        );
+    }
+
+    make_app_evaluation(
+        PolicyVerdict::Ask,
+        None,
+        "low",
+        cwd_abs,
+        suggestion,
+        fs_name,
+    )
+}
+
+fn capability_rule_matches(rule: &PermissionRule, capability_key: &str) -> bool {
+    rule.scope == "capability" && rule.pattern.trim().eq_ignore_ascii_case(capability_key.trim())
+}
+
+pub fn evaluate_capability(
+    workspace_root: &Path,
+    capability_key: &str,
+    risk_level: &str,
+) -> CommandEvaluation {
+    let cfg = load_permissions(workspace_root);
+    let cwd_abs = workspace_root.to_path_buf();
+
+    if let Some(deny_rule) = cfg
+        .rules
+        .iter()
+        .find(|r| r.action == "deny" && capability_rule_matches(r, capability_key))
+    {
+        return make_app_evaluation(
+            PolicyVerdict::Deny(
+                "Esta integración del sistema está bloqueada por las reglas de permisos del espacio."
+                    .to_string(),
+            ),
+            Some(deny_rule.id.clone()),
+            "blocked",
+            cwd_abs,
+            capability_key,
+            capability_key,
+        );
+    }
+
+    if let Some(allow_rule) = cfg
+        .rules
+        .iter()
+        .find(|r| r.action == "allow" && capability_rule_matches(r, capability_key))
+    {
+        return make_app_evaluation(
+            PolicyVerdict::Allow,
+            Some(allow_rule.id.clone()),
+            risk_level,
+            cwd_abs,
+            capability_key,
+            capability_key,
+        );
+    }
+
+    if let Some(ask_rule) = cfg
+        .rules
+        .iter()
+        .find(|r| r.action == "ask" && capability_rule_matches(r, capability_key))
+    {
+        return make_app_evaluation(
+            PolicyVerdict::Ask,
+            Some(ask_rule.id.clone()),
+            risk_level,
+            cwd_abs,
+            capability_key,
+            capability_key,
+        );
+    }
+
+    if cfg.default_policy == "deny" {
+        return make_app_evaluation(
+            PolicyVerdict::Deny(
+                "Política estricta: las integraciones con Notas y Calendario requieren autorización manual en Permisos."
+                    .to_string(),
+            ),
+            None,
+            "blocked",
+            cwd_abs,
+            capability_key,
+            capability_key,
+        );
+    }
+
+    make_app_evaluation(
+        PolicyVerdict::Ask,
+        None,
+        risk_level,
+        cwd_abs,
+        capability_key,
+        capability_key,
+    )
 }
 
 pub fn evaluate_command(
@@ -578,6 +793,66 @@ mod tests {
         let eval_py = evaluate_command(&root, "python3 -c \"print(1)\"", ".");
         assert_eq!(eval_py.verdict, PolicyVerdict::Ask);
         assert_eq!(eval_py.risk_level, "medium");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn app_launch_policy_respects_app_scope_without_exposing_cli() {
+        let root = temp_ws("app_scope");
+        let ask_eval = evaluate_app_launch(&root, Some("com.apple.Notes"), "Notas", "Notes");
+        assert_eq!(ask_eval.verdict, PolicyVerdict::Ask);
+        assert_eq!(ask_eval.pattern_suggestion, "com.apple.Notes");
+
+        add_or_update_rule(
+            &root,
+            "com.apple.Notes",
+            "allow",
+            "app",
+            Some("Abrir Notas".to_string()),
+        )
+        .unwrap();
+
+        let allow_eval = evaluate_app_launch(&root, Some("com.apple.Notes"), "Notas", "Notes");
+        assert_eq!(allow_eval.verdict, PolicyVerdict::Allow);
+
+        // Reglas con scope="app" nunca deben autorizar ejecución por consola
+        let cli_eval = evaluate_command(&root, "Notes", ".");
+        assert_eq!(cli_eval.verdict, PolicyVerdict::Ask);
+
+        add_or_update_rule(&root, "com.apple.iCal", "deny", "app", None).unwrap();
+        let deny_eval = evaluate_app_launch(&root, Some("com.apple.iCal"), "Calendario", "Calendar");
+        assert!(matches!(deny_eval.verdict, PolicyVerdict::Deny(_)));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn capability_policy_respects_scope_without_exposing_cli() {
+        let root = temp_ws("cap_scope");
+        let ask_eval = evaluate_capability(&root, "notes:write", "medium");
+        assert_eq!(ask_eval.verdict, PolicyVerdict::Ask);
+        assert_eq!(ask_eval.risk_level, "medium");
+
+        add_or_update_rule(
+            &root,
+            "notes:write",
+            "allow",
+            "capability",
+            Some("Crear notas en Notas".to_string()),
+        )
+        .unwrap();
+
+        let allow_eval = evaluate_capability(&root, "notes:write", "medium");
+        assert_eq!(allow_eval.verdict, PolicyVerdict::Allow);
+
+        // Reglas con scope="capability" nunca autorizan comandos de terminal
+        let cli_eval = evaluate_command(&root, "notes:write", ".");
+        assert!(matches!(cli_eval.verdict, PolicyVerdict::Deny(_)) || cli_eval.verdict == PolicyVerdict::Ask);
+
+        add_or_update_rule(&root, "calendar:write", "deny", "capability", None).unwrap();
+        let deny_eval = evaluate_capability(&root, "calendar:write", "medium");
+        assert!(matches!(deny_eval.verdict, PolicyVerdict::Deny(_)));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
 
 const MAX_READ_BYTES: u64 = 512 * 1024;
+const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
+const MAX_PREVIEW_IMAGE_BYTES: u64 = 12 * 1024 * 1024;
 const MAX_TREE_ENTRIES: usize = 600;
 const VISIBLE_ROOT_ZONES: [&str; 5] = ["empresa", "datos", "memoria", "habilidades", "agente"];
 
@@ -537,4 +539,557 @@ pub fn record_workspace_decision<R: Runtime>(
         "Decisión '{}' registrada en el espacio de trabajo '{}'.",
         payload.card_id, active.name
     ))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedAttachmentResult {
+    pub relative_path: String,
+    pub file_name: String,
+    pub size_bytes: u64,
+    pub mime_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceBinaryPreview {
+    pub relative_path: String,
+    pub name: String,
+    pub kind: String, // "image" | "pdf" | "binary"
+    pub mime_type: String,
+    pub size_bytes: u64,
+    pub data_url: Option<String>,
+    pub pdf_summary: Option<serde_json::Value>,
+    pub openable: bool,
+}
+
+fn guess_mime_from_ext(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "md" => "text/markdown",
+        "txt" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+fn sanitize_attachment_filename(raw: &str) -> String {
+    let base = raw
+        .trim()
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('.');
+    if base.is_empty() {
+        return "adjunto.bin".to_string();
+    }
+
+    let (stem_raw, ext_raw) = match base.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() && !e.is_empty() && e.len() <= 12 => (s, e),
+        _ => (base, ""),
+    };
+
+    let clean_stem: String = stem_raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else if c.is_whitespace() {
+                '_'
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .chars()
+        .take(96)
+        .collect();
+
+    let clean_ext: String = ext_raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+
+    let safe_stem = if clean_stem.is_empty() {
+        "adjunto".to_string()
+    } else {
+        clean_stem
+    };
+
+    if clean_ext.is_empty() {
+        safe_stem
+    } else {
+        format!("{safe_stem}.{clean_ext}")
+    }
+}
+
+fn write_bytes_atomic(target: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("No se pudo preparar la carpeta destino: {e}"))?;
+    }
+    let tmp_name = format!(
+        ".{}.tmp.{}",
+        target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("xook_file"),
+        std::process::id()
+    );
+    let tmp_path = target.with_file_name(tmp_name);
+    {
+        use std::io::Write;
+        let mut f = fs::File::create(&tmp_path)
+            .map_err(|e| format!("No se pudo crear archivo temporal: {e}"))?;
+        f.write_all(bytes)
+            .map_err(|e| format!("No se pudo escribir archivo: {e}"))?;
+        f.sync_all()
+            .map_err(|e| format!("No se pudo sincronizar archivo: {e}"))?;
+    }
+    fs::rename(&tmp_path, target).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("No se pudo mover archivo final: {e}")
+    })
+}
+
+fn decode_base64_clean(input: &str) -> Result<Vec<u8>, String> {
+    let trimmed = input.trim();
+    let payload = if let Some(rest) = trimmed.strip_prefix("data:") {
+        if let Some((_, b64)) = rest.split_once(";base64,") {
+            b64
+        } else {
+            return Err("Encabezado data URL sin base64.".to_string());
+        }
+    } else {
+        trimmed
+    };
+
+    let filtered: Vec<u8> = payload
+        .bytes()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    if filtered.is_empty() {
+        return Ok(Vec::new());
+    }
+    if filtered.len() % 4 != 0 {
+        return Err("Longitud base64 inválida.".to_string());
+    }
+
+    fn val(b: u8) -> Result<u8, String> {
+        match b {
+            b'A'..=b'Z' => Ok(b - b'A'),
+            b'a'..=b'z' => Ok(b - b'a' + 26),
+            b'0'..=b'9' => Ok(b - b'0' + 52),
+            b'+' | b'-' => Ok(62),
+            b'/' | b'_' => Ok(63),
+            _ => Err(format!("Carácter base64 inválido: {}", b as char)),
+        }
+    }
+
+    let mut out = Vec::with_capacity((filtered.len() / 4) * 3);
+    for (idx, chunk) in filtered.chunks_exact(4).enumerate() {
+        let is_last = (idx + 1) * 4 == filtered.len();
+        let a = val(chunk[0])?;
+        let b = val(chunk[1])?;
+        if chunk[2] == b'=' {
+            if !is_last || chunk[3] != b'=' {
+                return Err("Padding base64 inválido.".to_string());
+            }
+            out.push((a << 2) | (b >> 4));
+            break;
+        }
+        let c = val(chunk[2])?;
+        if chunk[3] == b'=' {
+            if !is_last {
+                return Err("Padding base64 inválido.".to_string());
+            }
+            out.push((a << 2) | (b >> 4));
+            out.push((b << 4) | (c >> 2));
+            break;
+        }
+        let d = val(chunk[3])?;
+        out.push((a << 2) | (b >> 4));
+        out.push((b << 4) | (c >> 2));
+        out.push((c << 6) | d);
+    }
+    Ok(out)
+}
+
+fn encode_base64_std(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = *chunk.get(1).unwrap_or(&0) as usize;
+        let b2 = *chunk.get(2).unwrap_or(&0) as usize;
+
+        out.push(TABLE[b0 >> 2] as char);
+        out.push(TABLE[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[b2 & 0x3f] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+#[tauri::command]
+pub fn stage_workspace_attachment<R: Runtime>(
+    app: AppHandle<R>,
+    file_name: String,
+    data_base64: String,
+    sub_dir: Option<String>,
+) -> Result<StagedAttachmentResult, String> {
+    let (_, active) = ensure_active_workspace(&app)?;
+    let root = PathBuf::from(&active.root_path);
+
+    let bytes = decode_base64_clean(&data_base64)?;
+    if bytes.is_empty() {
+        return Err("El archivo adjunto está vacío.".to_string());
+    }
+    if bytes.len() > MAX_ATTACHMENT_BYTES {
+        return Err(format!(
+            "El archivo adjunto supera el límite permitido ({} MB).",
+            MAX_ATTACHMENT_BYTES / (1024 * 1024)
+        ));
+    }
+
+    let safe_name = sanitize_attachment_filename(&file_name);
+    let folder_raw = sub_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("agente/adjuntos");
+    let (_, clean_folder_rel, folder_zone) = resolve_inside_workspace(&root, folder_raw, false)?;
+    if !matches!(folder_zone, WorkspaceZone::Agente) {
+        return Err("Los adjuntos del chat solo pueden guardarse dentro de 'agente/'.".to_string());
+    }
+    let folder_str = clean_folder_rel.to_string_lossy().replace('\\', "/");
+
+    let (stem, ext) = match safe_name.rsplit_once('.') {
+        Some((s, e)) => (s.to_string(), format!(".{e}")),
+        None => (safe_name.clone(), String::new()),
+    };
+
+    let mut chosen_name = safe_name.clone();
+    let mut final_rel = format!("{folder_str}/{chosen_name}");
+    let (mut target_abs, _, _) = resolve_inside_workspace(&root, &final_rel, false)?;
+
+    let mut reused_existing = false;
+    if target_abs.exists() {
+        if fs::read(&target_abs).map(|prev| prev == bytes).unwrap_or(false) {
+            reused_existing = true;
+        } else {
+            let mut found = false;
+            for idx in 2..=99 {
+                let candidate_name = format!("{stem}_{idx}{ext}");
+                let candidate_rel = format!("{folder_str}/{candidate_name}");
+                let (cand_abs, _, _) = resolve_inside_workspace(&root, &candidate_rel, false)?;
+                if !cand_abs.exists() {
+                    chosen_name = candidate_name;
+                    final_rel = candidate_rel;
+                    target_abs = cand_abs;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                let stamp = Utc::now().format("%H%M%S").to_string();
+                chosen_name = format!("{stem}_{stamp}{ext}");
+                final_rel = format!("{folder_str}/{chosen_name}");
+                let (cand_abs, _, _) = resolve_inside_workspace(&root, &final_rel, false)?;
+                target_abs = cand_abs;
+            }
+        }
+    }
+
+    if !reused_existing {
+        write_bytes_atomic(&target_abs, &bytes)?;
+        let _ = app.emit(
+            crate::slices::task_ledger::commands::WORKSPACE_UPDATED_EVENT,
+            serde_json::json!({ "path": final_rel, "action": "stage_attachment" }),
+        );
+    }
+
+    let ext_only = ext.trim_start_matches('.');
+    Ok(StagedAttachmentResult {
+        relative_path: final_rel,
+        file_name: chosen_name,
+        size_bytes: bytes.len() as u64,
+        mime_type: guess_mime_from_ext(ext_only).to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn open_workspace_file<R: Runtime>(
+    app: AppHandle<R>,
+    relative_path: String,
+) -> Result<(), String> {
+    let (_, active) = ensure_active_workspace(&app)?;
+    let root = PathBuf::from(&active.root_path);
+    let (resolved, _, zone) = resolve_inside_workspace(&root, &relative_path, false)?;
+    if zone.is_protected_system() {
+        return Err("No es posible abrir archivos internos del sistema.".to_string());
+    }
+    if !resolved.exists() {
+        return Err(format!("No se encontró el archivo '{relative_path}'."));
+    }
+
+    tauri_plugin_opener::open_path(&resolved, None::<&str>)
+        .map_err(|e| format!("No se pudo abrir el archivo en tu visor del sistema: {e}"))
+}
+
+#[tauri::command]
+pub async fn read_workspace_binary_preview<R: Runtime>(
+    app: AppHandle<R>,
+    relative_path: String,
+) -> Result<WorkspaceBinaryPreview, String> {
+    let (_, active) = ensure_active_workspace(&app)?;
+    let root = PathBuf::from(&active.root_path);
+    let (resolved, clean_rel, zone) = resolve_inside_workspace(&root, &relative_path, false)?;
+    if zone.is_protected_system() {
+        return Err("No está permitido leer rutas reservadas del sistema.".to_string());
+    }
+    if !resolved.is_file() {
+        return Err(format!("Archivo no encontrado: {relative_path}"));
+    }
+
+    let meta = fs::metadata(&resolved)
+        .map_err(|e| format!("No se pudieron leer metadatos del archivo: {e}"))?;
+    let size_bytes = meta.len();
+    let name = resolved
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "archivo".to_string());
+    let ext = resolved
+        .extension()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let clean_rel_str = clean_rel.to_string_lossy().replace('\\', "/");
+    let mime_type = guess_mime_from_ext(&ext).to_string();
+
+    if matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "svg"
+    ) {
+        let data_url = if size_bytes <= MAX_PREVIEW_IMAGE_BYTES {
+            let raw_bytes = fs::read(&resolved)
+                .map_err(|e| format!("No se pudo leer la imagen: {e}"))?;
+            let encoded = encode_base64_std(&raw_bytes);
+            Some(format!("data:{mime_type};base64,{encoded}"))
+        } else {
+            None
+        };
+        return Ok(WorkspaceBinaryPreview {
+            relative_path: clean_rel_str,
+            name,
+            kind: "image".to_string(),
+            mime_type,
+            size_bytes,
+            data_url,
+            pdf_summary: None,
+            openable: true,
+        });
+    }
+
+    if ext == "pdf" {
+        let app_clone = app.clone();
+        let root_str = root.to_string_lossy().to_string();
+        let rel_for_py = clean_rel_str.clone();
+        let summary_opt = tauri::async_runtime::spawn_blocking(move || {
+            let script = crate::ai_vault::find_sidecar_script(&app_clone).ok()?;
+            crate::ai_vault::call_python_sidecar(
+                &script,
+                "inspect_pdf",
+                serde_json::json!({
+                    "workspace_root": root_str,
+                    "path": rel_for_py,
+                    "summary_only": true,
+                }),
+            )
+            .ok()
+        })
+        .await
+        .ok()
+        .flatten();
+
+        return Ok(WorkspaceBinaryPreview {
+            relative_path: clean_rel_str,
+            name,
+            kind: "pdf".to_string(),
+            mime_type,
+            size_bytes,
+            data_url: None,
+            pdf_summary: summary_opt,
+            openable: true,
+        });
+    }
+
+    Ok(WorkspaceBinaryPreview {
+        relative_path: clean_rel_str,
+        name,
+        kind: "binary".to_string(),
+        mime_type,
+        size_bytes,
+        data_url: None,
+        pdf_summary: None,
+        openable: true,
+    })
+}
+
+#[tauri::command]
+pub async fn export_canvas_pdf<R: Runtime>(
+    app: AppHandle<R>,
+    spec: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let (_, active) = ensure_active_workspace(&app)?;
+    let root = PathBuf::from(&active.root_path);
+    let script = crate::ai_vault::find_sidecar_script(&app)?;
+
+    let root_str = root.to_string_lossy().to_string();
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::ai_vault::call_python_sidecar(
+            &script,
+            "generate_pdf",
+            serde_json::json!({
+                "workspace_root": root_str,
+                "spec": spec,
+            }),
+        )
+    })
+    .await
+    .map_err(|e| format!("Error interno al exportar PDF: {e}"))??;
+
+    if res.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        let msg = res
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("No se pudo generar el PDF.");
+        return Err(msg.to_string());
+    }
+
+    let rel_path = res
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("agente/reportes/")
+        .to_string();
+    let _ = app.emit(
+        crate::slices::task_ledger::commands::WORKSPACE_UPDATED_EVENT,
+        serde_json::json!({ "path": rel_path, "action": "create_pdf" }),
+    );
+    crate::slices::task_ledger::store::try_record_audit_event_for_root(
+        &root,
+        "user",
+        "pdf_exported",
+        &rel_path,
+        "agente",
+        res.get("page_count")
+            .and_then(|v| v.as_u64())
+            .map(|p| format!("{p} página(s)"))
+            .as_deref(),
+    );
+
+    Ok(res)
+}
+
+#[tauri::command]
+pub async fn render_pdf_preview<R: Runtime>(
+    app: AppHandle<R>,
+    relative_path: String,
+    start_page: Option<u32>,
+    max_pages: Option<u32>,
+    scale: Option<f64>,
+) -> Result<serde_json::Value, String> {
+    let (_, active) = ensure_active_workspace(&app)?;
+    let root = PathBuf::from(&active.root_path);
+    let (resolved, clean_rel, zone) = resolve_inside_workspace(&root, &relative_path, false)?;
+    if zone.is_protected_system() {
+        return Err("No está permitido leer rutas reservadas del sistema.".to_string());
+    }
+    if !resolved.is_file() {
+        return Err(format!("Archivo PDF no encontrado: {relative_path}"));
+    }
+    let ext = resolved
+        .extension()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if ext != "pdf" {
+        return Err(format!("El archivo no es un PDF válido: {relative_path}"));
+    }
+
+    let script = crate::ai_vault::find_sidecar_script(&app)?;
+    let root_str = root.to_string_lossy().to_string();
+    let clean_rel_str = clean_rel.to_string_lossy().replace('\\', "/");
+    let s_page = start_page.unwrap_or(1).max(1);
+    let m_pages = max_pages.unwrap_or(8).clamp(1, 24);
+    let r_scale = scale.unwrap_or(1.65).clamp(0.75, 2.5);
+
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::ai_vault::call_python_sidecar(
+            &script,
+            "render_pdf_preview",
+            serde_json::json!({
+                "workspace_root": root_str,
+                "path": clean_rel_str,
+                "start_page": s_page,
+                "max_pages": m_pages,
+                "scale": r_scale,
+            }),
+        )
+    })
+    .await
+    .map_err(|e| format!("Error interno al renderizar vista previa del PDF: {e}"))??;
+
+    if res.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        let msg = res
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("No se pudo renderizar la vista previa del PDF.");
+        return Err(msg.to_string());
+    }
+
+    Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_roundtrip_and_data_url() {
+        let sample = b"XOOK PDF \x00\x01\xfe\xff Engine!";
+        let encoded = encode_base64_std(sample);
+        let decoded = decode_base64_clean(&encoded).expect("decode plain base64");
+        assert_eq!(decoded, sample);
+
+        let wrapped = format!("data:image/png;base64,{encoded}\n");
+        let decoded_wrapped = decode_base64_clean(&wrapped).expect("decode data url");
+        assert_eq!(decoded_wrapped, sample);
+    }
+
+    #[test]
+    fn sanitize_attachment_name_prevents_traversal() {
+        assert_eq!(
+            sanitize_attachment_filename("../../Mi Reporte Final (v2).PDF"),
+            "Mi_Reporte_Final__v2.pdf"
+        );
+        assert_eq!(sanitize_attachment_filename("..."), "adjunto.bin");
+        assert_eq!(sanitize_attachment_filename("portada.PNG"), "portada.png");
+    }
 }

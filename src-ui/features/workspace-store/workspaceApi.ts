@@ -120,6 +120,82 @@ export async function openWorkspaceFolder(relativePath?: string): Promise<void> 
   });
 }
 
+export interface StagedAttachmentResult {
+  relativePath: string;
+  fileName: string;
+  sizeBytes: number;
+  mimeType: string;
+}
+
+export interface PdfSummaryInfo {
+  ok?: boolean;
+  path?: string;
+  file_name?: string;
+  size_bytes?: number;
+  page_count?: number;
+  title?: string | null;
+  author?: string | null;
+  has_selectable_text?: boolean;
+}
+
+export interface WorkspaceBinaryPreview {
+  relativePath: string;
+  name: string;
+  kind: "image" | "pdf" | "binary";
+  mimeType: string;
+  sizeBytes: number;
+  dataUrl?: string | null;
+  pdfSummary?: PdfSummaryInfo | null;
+  openable: boolean;
+}
+
+export interface GeneratedPdfResult {
+  ok?: boolean;
+  path: string;
+  filename: string;
+  title: string;
+  page_count: number;
+  size_bytes: number;
+  images_embedded?: number;
+  tables_count?: number;
+  has_cover?: boolean;
+  theme?: string;
+  warnings?: string[];
+}
+
+export async function stageWorkspaceAttachment(
+  fileName: string,
+  dataBase64: string,
+  subDir?: string
+): Promise<StagedAttachmentResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<StagedAttachmentResult>("stage_workspace_attachment", {
+    fileName,
+    dataBase64,
+    subDir: subDir ?? null,
+  });
+}
+
+export async function openWorkspaceFile(relativePath: string): Promise<void> {
+  if (!isWorkspaceTauriRuntime()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("open_workspace_file", { relativePath });
+}
+
+export async function readWorkspaceBinaryPreview(
+  relativePath: string
+): Promise<WorkspaceBinaryPreview> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<WorkspaceBinaryPreview>("read_workspace_binary_preview", { relativePath });
+}
+
+export async function exportCanvasToPdf(
+  spec: Record<string, unknown>
+): Promise<GeneratedPdfResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<GeneratedPdfResult>("export_canvas_pdf", { spec });
+}
+
 export async function recordWorkspaceDecision(payload: {
   cardId: string;
   title?: string;
@@ -186,23 +262,47 @@ export interface CommandPermissionRequestEvent {
   requestId: string;
   streamId?: string | null;
   commandId: string;
+  kind?:
+    | "command"
+    | "open_app"
+    | "os_notes_read"
+    | "os_notes_write"
+    | "os_calendar_read"
+    | "os_calendar_write"
+    | string;
   purpose: string;
   command: string;
   cwdRel: string;
   riskLevel: "low" | "medium" | "high" | "blocked" | string;
   program: string;
   patternSuggestion: string;
+  appName?: string | null;
+  bundleId?: string | null;
+  appPath?: string | null;
+  detailPreview?: string | null;
 }
 
 export interface CommandFinishedEvent {
   requestId: string;
   streamId?: string | null;
   commandId?: string;
+  kind?:
+    | "command"
+    | "open_app"
+    | "os_notes_read"
+    | "os_notes_write"
+    | "os_calendar_read"
+    | "os_calendar_write"
+    | string;
   purpose?: string;
   command?: string;
   cwdRel?: string;
   riskLevel?: string;
   status?: string;
+  appName?: string | null;
+  bundleId?: string | null;
+  appPath?: string | null;
+  detailPreview?: string | null;
   result?: CommandExecutionResult;
   error?: string;
 }
@@ -268,6 +368,65 @@ export async function resolveCommandPermission(
   if (!isWorkspaceTauriRuntime()) return;
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("resolve_command_permission", { requestId, decision });
+}
+
+export interface PdfPreviewPage {
+  page: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+}
+
+export interface PdfRenderPreviewResult {
+  ok: boolean;
+  path?: string;
+  filename?: string;
+  pageCount: number;
+  startPage: number;
+  renderedCount: number;
+  hasMore: boolean;
+  pages: PdfPreviewPage[];
+  error?: string;
+}
+
+export async function renderPdfPreview(
+  relativePath: string,
+  options?: { startPage?: number; maxPages?: number; scale?: number }
+): Promise<PdfRenderPreviewResult | null> {
+  if (!isWorkspaceTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  const raw = await invoke<Record<string, unknown>>("render_pdf_preview", {
+    relativePath,
+    startPage: options?.startPage,
+    maxPages: options?.maxPages,
+    scale: options?.scale,
+  });
+  const rawPages = Array.isArray(raw?.pages) ? raw.pages : [];
+  const pages: PdfPreviewPage[] = rawPages
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const obj = item as Record<string, unknown>;
+      const dataUrl = String(obj.dataUrl ?? obj.data_url ?? "").trim();
+      if (!dataUrl) return null;
+      return {
+        page: Number(obj.page ?? 1),
+        width: Number(obj.width ?? 0),
+        height: Number(obj.height ?? 0),
+        dataUrl,
+      };
+    })
+    .filter((p): p is PdfPreviewPage => p !== null);
+  return {
+    ok: Boolean(raw?.ok ?? true),
+    path: typeof raw?.path === "string" ? raw.path : relativePath,
+    filename: typeof raw?.filename === "string" ? raw.filename : undefined,
+    pageCount: Number(raw?.pageCount ?? raw?.page_count ?? pages.length),
+    startPage: Number(raw?.startPage ?? raw?.start_page ?? options?.startPage ?? 1),
+    renderedCount: Number(raw?.renderedCount ?? raw?.rendered_count ?? pages.length),
+    hasMore: Boolean(raw?.hasMore ?? raw?.has_more),
+    pages,
+    error: typeof raw?.error === "string" ? raw.error : undefined,
+  };
 }
 
 export function subscribeWorkspaceUpdated(

@@ -205,12 +205,153 @@ export interface ChatTurnMessage {
   content: string;
 }
 
+export interface AttachedContextItem {
+  name: string;
+  type: string;
+  content: string;
+  kind?: "text" | "pdf" | "image" | "binary";
+  workspacePath?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  width?: number;
+  height?: number;
+  imageDataUrl?: string;
+}
+
+export interface GeneratedPdfArtifact {
+  path: string;
+  filename: string;
+  title: string;
+  pageCount: number;
+  sizeBytes: number;
+  hasCover?: boolean;
+  imagesEmbedded?: number;
+  tablesCount?: number;
+  theme?: string;
+  previewPages?: Array<{
+    page: number;
+    width: number;
+    height: number;
+    dataUrl: string;
+  }>;
+  previewHasMore?: boolean;
+}
+
+export interface PdfDraftPreviewBlock {
+  type: string;
+  level?: number;
+  text?: string;
+  title?: string;
+  tone?: string;
+  language?: string;
+  items?: string[];
+  totalItems?: number;
+  columns?: string[];
+  rows?: string[][];
+  totalRows?: number;
+  path?: string;
+  caption?: string;
+  metrics?: Array<{ label: string; value: string }>;
+  streaming?: boolean;
+}
+
+export interface PdfDraftCoverPreview {
+  enabled: boolean;
+  layout?: string;
+  eyebrow?: string;
+  imagePath?: string;
+  footerNote?: string;
+}
+
+export interface PdfDraftProgressEvent {
+  stage:
+    | "composing"
+    | "preparing"
+    | "building_cover"
+    | "building_blocks"
+    | "rendering_pdf"
+    | "rendering_preview";
+  stepLabel: string;
+  progress: number;
+  title: string;
+  subtitle?: string;
+  theme?: string;
+  author?: string;
+  date?: string;
+  hasCover?: boolean;
+  cover?: PdfDraftCoverPreview | null;
+  blocks: PdfDraftPreviewBlock[];
+  totalBlocks?: number;
+  completedBlocks?: number;
+  path?: string;
+}
+
+export function sanitizeGeneratedPdfArtifact(raw: unknown): GeneratedPdfArtifact | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const path = typeof obj.path === "string" ? obj.path.trim() : "";
+  if (!path) return null;
+  const filename =
+    typeof obj.filename === "string" && obj.filename.trim()
+      ? obj.filename.trim()
+      : path.split("/").pop() || "documento.pdf";
+  const title =
+    typeof obj.title === "string" && obj.title.trim() ? obj.title.trim() : filename;
+  const pageCountRaw = obj.pageCount ?? obj.page_count;
+  const sizeBytesRaw = obj.sizeBytes ?? obj.size_bytes;
+  const rawPreviewPages = obj.previewPages ?? obj.preview_pages;
+  const previewPages = Array.isArray(rawPreviewPages)
+    ? rawPreviewPages
+        .map((p) => {
+          if (!p || typeof p !== "object") return null;
+          const po = p as Record<string, unknown>;
+          const dataUrl = String(po.dataUrl ?? po.data_url ?? "").trim();
+          if (!dataUrl) return null;
+          return {
+            page: Number(po.page ?? 1),
+            width: Number(po.width ?? 0),
+            height: Number(po.height ?? 0),
+            dataUrl,
+          };
+        })
+        .filter((p): p is { page: number; width: number; height: number; dataUrl: string } => p !== null)
+    : undefined;
+  return {
+    path,
+    filename,
+    title,
+    pageCount: typeof pageCountRaw === "number" && Number.isFinite(pageCountRaw) ? pageCountRaw : 1,
+    sizeBytes: typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) ? sizeBytesRaw : 0,
+    hasCover: Boolean(obj.hasCover ?? obj.has_cover),
+    imagesEmbedded:
+      typeof (obj.imagesEmbedded ?? obj.images_embedded) === "number"
+        ? Number(obj.imagesEmbedded ?? obj.images_embedded)
+        : undefined,
+    tablesCount:
+      typeof (obj.tablesCount ?? obj.tables_count) === "number"
+        ? Number(obj.tablesCount ?? obj.tables_count)
+        : undefined,
+    theme: typeof obj.theme === "string" ? obj.theme : undefined,
+    ...(previewPages && previewPages.length > 0 ? { previewPages } : {}),
+    ...(obj.previewHasMore !== undefined || obj.preview_has_more !== undefined
+      ? { previewHasMore: Boolean(obj.previewHasMore ?? obj.preview_has_more) }
+      : {}),
+  };
+}
+
+export function sanitizeGeneratedPdfList(raw: unknown): GeneratedPdfArtifact[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map(sanitizeGeneratedPdfArtifact)
+    .filter((item): item is GeneratedPdfArtifact => item !== null);
+}
+
 export interface XoxAiChatRequest {
   message: string;
   history: ChatTurnMessage[];
   currentTasks: TaskProposal[];
   agendaItems: AgendaItem[];
-  attachedContext: Array<{ name: string; type: string; content: string }>;
+  attachedContext: AttachedContextItem[];
   modelOverride?: string;
   /** Perfil local activo para contextualizar el saludo y rol */
   userProfile?: { name: string; storeName?: string; role?: string } | null;
@@ -237,6 +378,7 @@ export interface XoxAiChatResponse {
   tasks: TaskProposal[];
   canvas?: CanvasArtifact;
   clarification?: ClarificationSpec;
+  generatedPdfs?: GeneratedPdfArtifact[];
   modelUsed: string;
   latencyMs: number;
   usage?: XoxTokenUsage;
@@ -251,6 +393,8 @@ export interface XoxStreamCallbacks {
   onReasoningReset?: () => void;
   onReplyDelta?: (delta: string) => void;
   onCanvas?: (canvas: CanvasArtifact) => void;
+  onPdfDraftProgress?: (draft: PdfDraftProgressEvent) => void;
+  onPdfGenerated?: (pdf: GeneratedPdfArtifact) => void;
 }
 
 export interface WorkspaceContextSource {
@@ -1174,6 +1318,7 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       tasks?: TaskProposal[];
       canvas?: unknown;
       clarification?: unknown;
+      generated_pdfs?: unknown[];
       model_used?: string;
       latency_ms?: number;
       usage?: {
@@ -1213,6 +1358,7 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       tasks: (res.tasks ?? []).map(sanitizeTaskProposal),
       canvas: res.canvas ? sanitizeCanvasArtifact(res.canvas) ?? undefined : undefined,
       clarification: safeClarification,
+      generatedPdfs: sanitizeGeneratedPdfList(res.generated_pdfs),
       modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
       latencyMs: res.latency_ms ?? 0,
       usage,
@@ -1225,8 +1371,8 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
 class BrowserStreamTagRouter {
   private static readonly OPEN_ANALYSIS = ["<analisis>", "<analysis>"];
   private static readonly CLOSE_ANALYSIS = ["</analisis>", "</analysis>"];
-  private static readonly OPEN_REPLY = ["<respuesta>", "<response>"];
-  private static readonly CLOSE_REPLY = ["</respuesta>", "</response>"];
+  private static readonly OPEN_REPLY = ["<respuesta>", "<response>", "<posta>", "<reply>", "<resp>"];
+  private static readonly CLOSE_REPLY = ["</respuesta>", "</response>", "</posta>", "</reply>", "</resp>"];
   private static readonly OPEN_CANVAS = ["<canvas>", "<lienzo>"];
   private static readonly CLOSE_CANVAS = ["</canvas>", "</lienzo>"];
   private static readonly OPEN_ACTIONS = ["<acciones>", "<actions>"];
@@ -1279,28 +1425,53 @@ class BrowserStreamTagRouter {
     }
   }
 
+  private static readonly PREFIX_RE = /^<\s*(?:\/\s*)?[a-z]*\s*$/i;
+  private static tagRegexCache = new Map<string, RegExp>();
+
+  private static canonicalTag(raw: string): string {
+    return raw.replace(/\s+/g, "").toLowerCase();
+  }
+
+  private static compileTagRegex(tags: string[], anchored = false): RegExp {
+    const key = `${anchored ? "^" : ""}${tags.join("|")}`;
+    let cached = BrowserStreamTagRouter.tagRegexCache.get(key);
+    if (!cached) {
+      const parts = tags.map((tag) => {
+        const isClose = tag.startsWith("</");
+        const name = isClose ? tag.slice(2, -1) : tag.slice(1, -1);
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return `<\\s*${isClose ? "/\\s*" : ""}${escaped}\\s*>`;
+      });
+      cached = new RegExp(`${anchored ? "^(?:" : "(?:"}${parts.join("|")})`, "i");
+      BrowserStreamTagRouter.tagRegexCache.set(key, cached);
+    }
+    return cached;
+  }
+
   private partialSplit(s: string, tags: string[]): [string, string] {
     const idx = s.lastIndexOf("<");
     if (idx === -1) return [s, ""];
-    const tail = s.slice(idx).toLowerCase();
-    if (!tail.includes(">") && tags.some((t) => t.startsWith(tail))) {
-      return [s.slice(0, idx), s.slice(idx)];
+    const tail = s.slice(idx);
+    if (!tail.includes(">") && BrowserStreamTagRouter.PREFIX_RE.test(tail)) {
+      const normalized = BrowserStreamTagRouter.canonicalTag(tail);
+      if (tags.some((t) => t.startsWith(normalized))) {
+        return [s.slice(0, idx), s.slice(idx)];
+      }
     }
     return [s, ""];
   }
 
-  private findFirstTag(s: string, tags: string[]): { idx: number; tag: string } | null {
-    const lower = s.toLowerCase();
-    let bestIdx = -1;
-    let bestTag = "";
-    for (const tag of tags) {
-      const idx = lower.indexOf(tag);
-      if (idx !== -1 && (bestIdx === -1 || idx < bestIdx)) {
-        bestIdx = idx;
-        bestTag = tag;
-      }
-    }
-    return bestIdx === -1 ? null : { idx: bestIdx, tag: bestTag };
+  private findFirstTag(
+    s: string,
+    tags: string[]
+  ): { idx: number; rawLength: number; canonical: string } | null {
+    const match = BrowserStreamTagRouter.compileTagRegex(tags, false).exec(s);
+    if (!match || match.index === undefined) return null;
+    return {
+      idx: match.index,
+      rawLength: match[0].length,
+      canonical: BrowserStreamTagRouter.canonicalTag(match[0]),
+    };
   }
 
   private tryMatchNextSection(allowFallbackReply: boolean): boolean {
@@ -1310,7 +1481,6 @@ class BrowserStreamTagRouter {
       return false;
     }
     this.buf = trimmed;
-    const lower = trimmed.toLowerCase();
     const matchers: Array<{ tags: string[]; target: "analysis" | "reply" | "canvas" | "actions" }> = [
       { tags: BrowserStreamTagRouter.OPEN_ANALYSIS, target: "analysis" },
       { tags: BrowserStreamTagRouter.OPEN_REPLY, target: "reply" },
@@ -1318,9 +1488,9 @@ class BrowserStreamTagRouter {
       { tags: BrowserStreamTagRouter.OPEN_ACTIONS, target: "actions" },
     ];
     for (const { tags, target } of matchers) {
-      const matched = tags.find((t) => lower.startsWith(t));
-      if (matched) {
-        this.buf = trimmed.slice(matched.length).replace(/^\r?\n/, "");
+      const match = BrowserStreamTagRouter.compileTagRegex(tags, true).exec(trimmed);
+      if (match) {
+        this.buf = trimmed.slice(match[0].length).replace(/^\r?\n/, "");
         if (target === "analysis") {
           this.mode = "analysis";
           this.onPhase("thinking");
@@ -1335,8 +1505,11 @@ class BrowserStreamTagRouter {
         return true;
       }
     }
-    if (BrowserStreamTagRouter.ALL_OPEN.some((t) => t.startsWith(lower))) {
-      return false;
+    if (BrowserStreamTagRouter.PREFIX_RE.test(trimmed)) {
+      const normalized = BrowserStreamTagRouter.canonicalTag(trimmed);
+      if (BrowserStreamTagRouter.ALL_OPEN.some((t) => t.startsWith(normalized))) {
+        return false;
+      }
     }
     if (allowFallbackReply) {
       this.mode = "reply";
@@ -1365,7 +1538,7 @@ class BrowserStreamTagRouter {
         const found = this.findFirstTag(this.buf, BrowserStreamTagRouter.CLOSE_ANALYSIS);
         if (found) {
           if (found.idx > 0) this.onReasoning(this.buf.slice(0, found.idx));
-          this.buf = this.buf.slice(found.idx + found.tag.length);
+          this.buf = this.buf.slice(found.idx + found.rawLength);
           this.mode = "after_analysis";
           continue;
         }
@@ -1379,10 +1552,10 @@ class BrowserStreamTagRouter {
         const found = this.findFirstTag(this.buf, BrowserStreamTagRouter.STOP_REPLY);
         if (found) {
           if (found.idx > 0) this.onReply(this.buf.slice(0, found.idx));
-          this.buf = this.buf.slice(found.idx + found.tag.length);
-          if (BrowserStreamTagRouter.OPEN_CANVAS.includes(found.tag)) {
+          this.buf = this.buf.slice(found.idx + found.rawLength);
+          if (BrowserStreamTagRouter.OPEN_CANVAS.includes(found.canonical)) {
             this.enterCanvas();
-          } else if (BrowserStreamTagRouter.OPEN_ACTIONS.includes(found.tag)) {
+          } else if (BrowserStreamTagRouter.OPEN_ACTIONS.includes(found.canonical)) {
             this.mode = "actions";
           } else {
             this.mode = "after_reply";
@@ -1399,7 +1572,7 @@ class BrowserStreamTagRouter {
         const found = this.findFirstTag(this.buf, BrowserStreamTagRouter.CLOSE_CANVAS);
         if (found) {
           this.canvasBuf += this.buf.slice(0, found.idx);
-          this.buf = this.buf.slice(found.idx + found.tag.length);
+          this.buf = this.buf.slice(found.idx + found.rawLength);
           this.mode = "after_canvas";
           continue;
         }
@@ -1427,7 +1600,9 @@ class BrowserStreamTagRouter {
   flush() {
     if (!this.buf) return;
     if (this.mode === "detect" || this.mode === "after_analysis") {
-      const trimmed = this.buf.trimStart();
+      const trimmed = this.buf
+        .trimStart()
+        .replace(/<\s*\/?\s*(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions|posta|reply|resp)\s*(?:>|$)/gi, "");
       if (trimmed) {
         this.enterReply();
         this.onReply(trimmed);
@@ -1435,11 +1610,15 @@ class BrowserStreamTagRouter {
     } else if (this.mode === "analysis") {
       this.onReasoning(this.buf);
     } else if (this.mode === "reply") {
-      this.onReply(this.buf);
+      const cleaned = this.buf.replace(
+        /<\s*\/?\s*(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions|posta|reply|resp)\s*(?:>|$)/gi,
+        ""
+      );
+      if (cleaned) this.onReply(cleaned);
     } else if (this.mode === "canvas") {
-      this.canvasBuf += this.buf.replace(/<\/?(?:canvas|lienzo)>/gi, "");
+      this.canvasBuf += this.buf.replace(/<\s*\/?\s*(?:canvas|lienzo)\s*>/gi, "");
     } else if (this.mode === "actions") {
-      this.actionsBuf += this.buf.replace(/<\/?(?:acciones|actions)>/gi, "");
+      this.actionsBuf += this.buf.replace(/<\s*\/?\s*(?:acciones|actions)\s*>/gi, "");
     }
     this.buf = "";
   }
@@ -1500,22 +1679,21 @@ FECHA Y HORA LOCAL ACTUAL DEL SISTEMA: ${nowLabel}
 CAPACIDADES:
 - Puedes responder preguntas generales de uso diario (qué hora es, qué día es hoy, cálculos, dudas generales, explicaciones o charla casual) de forma directa y natural usando la fecha y hora local actual cuando aplique, SIN desviar la conversación hacia inventario si el usuario no lo pidió.
 - Cuando el usuario trate temas de su operación, tienda, inventario, proveedores, agenda o tareas, apoya usando su contexto operativo, reglamento y memoria.
-- Si el usuario pide crear o mostrar una TABLA, tabla comparativa, desglose, matriz de opciones o presupuesto: usa la herramienta \`create_canvas\` (preferida) pasando columnas en texto simple y TODAS las filas completas en \`rows\`, o incluye <canvas>{"title":"Título","subtitle":"Contexto","kind":"comparison","summary":"Conclusión","columns":["Criterio","Opción A"],"rows":[["Precio","$100"]],"recommended_row":0}</canvas>. NUNCA escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en <respuesta>; escribe únicamente español claro sin duplicar la tabla en HTML.
+- Si el usuario pide crear o mostrar una TABLA, tabla comparativa, desglose, matriz de opciones o presupuesto: usa la herramienta \`create_canvas\` (preferida; evita emitir bloques \`<canvas>\` manualmente) pasando columnas en texto simple y TODAS las filas completas en \`rows\`. NUNCA escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en tu mensaje al usuario; escribe libremente tu explicación o conclusión sin duplicar la tabla en HTML ni usar etiquetas XML.
 - Aclaraciones (\`ask_clarification\`): analiza primero qué ya especificó el usuario. Si ya dio evento/acción + fecha/hora (ej. "cita para mañana a las 10 pm"), NO pidas aclaraciones y genera la tarjeta directo (solo avisa si choca con AGENDA ACTIVA). Úsala únicamente si falta un dato esencial (como en "agenda algo" o "haz una cita mañana" sin hora), preguntando SOLO lo que falta y nunca datos que ya indicó.
 - Agenda vs Reloj: para recordatorios o entregas con fecha/hora del reloj (ej. "mañana 18:00", "viernes 13 a las 19:00", "1 hora antes") usa SIEMPRE \`intent.type="schedule_event"\` y \`schedule.mode="alarm"\` (NUNCA \`start_timer\`). Usa \`start_timer\` solo para temporizadores cortos que arrancan ahora con \`paramValues.duration_min\` explícito.
 ${req.businessContextSnapshot ? `\nCONTEXTO DEL NEGOCIO:\n${req.businessContextSnapshot}\n` : ""}${opLine}${canvasLine}
 TAREAS PENDIENTES:\n${JSON.stringify(compactTasks)}
 AGENDA ACTIVA:\n${JSON.stringify(req.agendaItems.slice(0, 6))}
-${req.attachedContext.length ? `CONTEXTO ADJUNTO:\n${JSON.stringify(req.attachedContext)}` : ""}`;
+${req.attachedContext.length ? `CONTEXTO ADJUNTO:\n${JSON.stringify(req.attachedContext.map(({ imageDataUrl: _ignored, ...rest }) => rest))}` : ""}`;
 
   if (streamMode) {
     return `${header}
 
-FORMATO DE RESPUESTA EN VIVO (OBLIGATORIO):
-1. <analisis> 2 a 4 viñetas breves en español explicando qué revisaste y tu criterio. </analisis>
-2. <respuesta> Tu respuesta clara, natural y humana sin emojis ni iconos. </respuesta>
-3. <canvas> {} </canvas> (opcional: JSON del Canvas solo si generaste una tabla sin llamar create_canvas)
-4. <acciones>{"xox_mood":"talking","operation":"none","tasks":[],"clarification":null}</acciones>`;
+ESTILO DE RESPUESTA Y LIBERTAD:
+Responde directamente en español (o en el idioma que pida el usuario) usando Markdown natural y limpio, con plena libertad expresiva para escribir todo lo que necesites y elegir el tono, estructura, encabezados, listas, bloques de código, tablas Markdown o extensión que mejor ayuden al usuario.
+- NUNCA envuelvas tu respuesta en etiquetas XML o pseudo-HTML como \`<respuesta>\`, \`<analisis>\`, \`<posta>\`, \`<reply>\`, \`<canvas>\` o \`<acciones>\`. Escribe directamente al usuario.
+- Usa herramientas nativas como \`create_canvas\`, \`propose_tasks\`, \`ask_clarification\` o \`pdf_generate\` únicamente cuando la petición requiera una tabla interactiva, tareas/recordatorios en XOOK, aclaración estructurada o PDF.`;
   }
 
   return `${header}
@@ -1551,6 +1729,8 @@ export async function runXoxAiChatStream(
         steps?: ThinkingStep[];
         delta?: string;
         canvas?: unknown;
+        pdf?: unknown;
+        [key: string]: unknown;
       };
     }>("xox-chat-stream", (ev) => {
       const payload = ev.payload;
@@ -1569,6 +1749,77 @@ export async function runXoxAiChatStream(
       } else if (evt.type === "canvas" && evt.canvas) {
         const parsedCanvas = sanitizeCanvasArtifact(evt.canvas);
         if (parsedCanvas) callbacks?.onCanvas?.(parsedCanvas);
+      } else if (evt.type === "pdf_draft_progress") {
+        const rawBlocks = Array.isArray(evt.blocks) ? evt.blocks : [];
+        const blocks: PdfDraftPreviewBlock[] = rawBlocks
+          .filter((b): b is Record<string, unknown> => Boolean(b && typeof b === "object"))
+          .map((b) => ({
+            type: String(b.type ?? "paragraph"),
+            level: typeof b.level === "number" ? b.level : undefined,
+            text: typeof b.text === "string" ? b.text : undefined,
+            title: typeof b.title === "string" ? b.title : undefined,
+            tone: typeof b.tone === "string" ? b.tone : undefined,
+            language: typeof b.language === "string" ? b.language : undefined,
+            items: Array.isArray(b.items) ? b.items.map(String) : undefined,
+            totalItems: typeof b.total_items === "number" ? b.total_items : undefined,
+            columns: Array.isArray(b.columns) ? b.columns.map(String) : undefined,
+            rows: Array.isArray(b.rows)
+              ? b.rows.map((r) => (Array.isArray(r) ? r.map(String) : []))
+              : undefined,
+            totalRows: typeof b.total_rows === "number" ? b.total_rows : undefined,
+            path: typeof b.path === "string" ? b.path : undefined,
+            caption: typeof b.caption === "string" ? b.caption : undefined,
+            metrics: Array.isArray(b.metrics)
+              ? b.metrics
+                  .filter((m): m is Record<string, unknown> => Boolean(m && typeof m === "object"))
+                  .map((m) => ({
+                    label: String(m.label ?? ""),
+                    value: String(m.value ?? ""),
+                  }))
+              : undefined,
+            streaming: Boolean(b.streaming),
+          }));
+        const rawCov =
+          evt.cover && typeof evt.cover === "object"
+            ? (evt.cover as Record<string, unknown>)
+            : null;
+        callbacks?.onPdfDraftProgress?.({
+          stage: (typeof evt.stage === "string" ? evt.stage : "composing") as PdfDraftProgressEvent["stage"],
+          stepLabel: String(evt.step_label ?? evt.stepLabel ?? "Generando documento PDF..."),
+          progress: typeof evt.progress === "number" ? evt.progress : 0.15,
+          title: String(evt.title ?? ""),
+          subtitle: typeof evt.subtitle === "string" ? evt.subtitle : undefined,
+          theme: typeof evt.theme === "string" ? evt.theme : undefined,
+          author: typeof evt.author === "string" ? evt.author : undefined,
+          date: typeof evt.date === "string" ? evt.date : undefined,
+          hasCover: Boolean(evt.has_cover ?? evt.hasCover ?? rawCov?.enabled),
+          cover: rawCov
+            ? {
+                enabled: Boolean(rawCov.enabled ?? true),
+                layout: typeof rawCov.layout === "string" ? rawCov.layout : undefined,
+                eyebrow: typeof rawCov.eyebrow === "string" ? rawCov.eyebrow : undefined,
+                imagePath:
+                  typeof (rawCov.image_path ?? rawCov.imagePath) === "string"
+                    ? String(rawCov.image_path ?? rawCov.imagePath)
+                    : undefined,
+                footerNote:
+                  typeof (rawCov.footer_note ?? rawCov.footerNote) === "string"
+                    ? String(rawCov.footer_note ?? rawCov.footerNote)
+                    : undefined,
+              }
+            : null,
+          blocks,
+          totalBlocks: typeof (evt.total_blocks ?? evt.totalBlocks) === "number"
+            ? Number(evt.total_blocks ?? evt.totalBlocks)
+            : blocks.length,
+          completedBlocks: typeof (evt.completed_blocks ?? evt.completedBlocks) === "number"
+            ? Number(evt.completed_blocks ?? evt.completedBlocks)
+            : blocks.length,
+          path: typeof evt.path === "string" ? evt.path : undefined,
+        });
+      } else if (evt.type === "pdf_generated" && evt.pdf) {
+        const parsedPdf = sanitizeGeneratedPdfArtifact(evt.pdf);
+        if (parsedPdf) callbacks?.onPdfGenerated?.(parsedPdf);
       }
     });
 
@@ -1583,6 +1834,7 @@ export async function runXoxAiChatStream(
         tasks?: TaskProposal[];
         canvas?: unknown;
         clarification?: unknown;
+        generated_pdfs?: unknown[];
         model_used?: string;
         latency_ms?: number;
         workspace_mutated?: boolean;
@@ -1642,6 +1894,7 @@ export async function runXoxAiChatStream(
         tasks: (res.tasks ?? []).map(sanitizeTaskProposal),
         canvas: safeCanvas,
         clarification: safeClarification,
+        generatedPdfs: sanitizeGeneratedPdfList(res.generated_pdfs),
         modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
         latencyMs: res.latency_ms ?? 0,
         usage,
@@ -1969,13 +2222,13 @@ export async function runXoxAiChatStream(
         columns: canvasArtifact.columns.length,
         rows: canvasArtifact.rows.length,
         instruction:
-          "La tabla ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves de conclusión en español dentro de <respuesta>. NO repitas la tabla ni escribas HTML.",
+          "La tabla ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves de conclusión en español directamente en Markdown (sin etiquetas XML). NO repitas la tabla ni escribas HTML.",
       });
       try {
         await runBrowserStreamPass(
           [
             ...(messages as Array<Record<string, unknown>>),
-            { role: "assistant", content: null, tool_calls: toolCallsList },
+            { role: "assistant", content: "", tool_calls: toolCallsList },
             ...toolCallsList.map((tc, i) => ({
               role: "tool",
               tool_call_id: tc.id || `call_${i}`,

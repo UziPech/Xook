@@ -20,6 +20,7 @@ import {
   Code2,
   Copy,
   Download,
+  FileText,
   Plus,
   Search,
   Sparkles,
@@ -53,6 +54,7 @@ interface CanvasPanelProps {
   visible?: boolean;
   onUpdateCanvas: (updated: CanvasArtifact) => void;
   onAskXoxEdit?: (canvas: CanvasArtifact) => void;
+  onExportPdf?: (canvas: CanvasArtifact) => Promise<void> | void;
   onClose: () => void;
 }
 
@@ -92,6 +94,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
   visible = true,
   onUpdateCanvas,
   onAskXoxEdit,
+  onExportPdf,
   onClose,
 }) => {
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -104,6 +107,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(canvas.title);
   const [copiedMd, setCopiedMd] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   // Al cambiar de artefacto Canvas, reinicia filtros, edición y modo de vista
   useEffect(() => {
@@ -224,6 +228,16 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const handleExportPdf = async () => {
+    if (!onExportPdf || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      await onExportPdf(canvas);
+    } finally {
+      setExportingPdf(false);
+    }
   };
 
   const columns = useMemo(
@@ -461,6 +475,19 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                 className="quick-liquid-btn w-7 h-7 rounded-xl flex items-center justify-center text-white/85 hover:text-white cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {onExportPdf && (
+              <button
+                type="button"
+                onClick={() => void handleExportPdf()}
+                disabled={exportingPdf}
+                title="Exportar a PDF profesional"
+                className="quick-liquid-btn h-7 px-2.5 rounded-xl inline-flex items-center gap-1 text-[11px] font-medium text-white/90 hover:text-white cursor-pointer disabled:opacity-50"
+              >
+                <FileText className="w-3.5 h-3.5 text-rose-200/90" />
+                <span>{exportingPdf ? "PDF..." : "PDF"}</span>
               </button>
             )}
 

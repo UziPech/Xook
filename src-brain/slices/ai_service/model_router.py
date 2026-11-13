@@ -38,6 +38,7 @@ class TaskProfile:
     needs_canvas: bool
     min_context: int
     reason_es: str
+    needs_vision: bool = False
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,43 @@ def classify_task_intent(
     has_active_canvas: bool = False,
     tools_available: bool = True,
     history: Optional[List[Dict[str, Any]]] = None,
+    has_attachments: bool = False,
+    has_images: bool = False,
+) -> TaskProfile:
+    base = _classify_task_intent_base(
+        user_message,
+        has_workspace=has_workspace,
+        has_active_canvas=has_active_canvas,
+        tools_available=tools_available,
+        history=history,
+        skip_casual=bool(has_attachments or has_images),
+    )
+    if not (has_attachments or has_images):
+        return base
+    upgrade_from_fast = base.task_kind == "fast_chat" and tools_available
+    return TaskProfile(
+        task_kind="agent_execution" if upgrade_from_fast else base.task_kind,
+        needs_tools=True if (tools_available and (has_workspace or has_attachments)) else base.needs_tools,
+        needs_reasoning=base.needs_reasoning,
+        needs_canvas=base.needs_canvas,
+        min_context=max(base.min_context, 32000),
+        reason_es=(
+            "Adjuntos (PDF/imagen): requiere herramientas e inspección del espacio"
+            if upgrade_from_fast
+            else base.reason_es
+        ),
+        needs_vision=bool(has_images),
+    )
+
+
+def _classify_task_intent_base(
+    user_message: str,
+    *,
+    has_workspace: bool = False,
+    has_active_canvas: bool = False,
+    tools_available: bool = True,
+    history: Optional[List[Dict[str, Any]]] = None,
+    skip_casual: bool = False,
 ) -> TaskProfile:
     text = (user_message or "").strip().lower()
     _ = history  # Evitar contaminar el enrutamiento actual con palabras clave de turnos pasados
@@ -97,8 +135,13 @@ def classify_task_intent(
     explicit_action_re = re.compile(
         r"\b(carpeta|directorio|archivo|borrador|crea|crear|creame|edita|escribe|guardar?|guarda|"
         r"elimina|borra|mueve|archiva|ejecuta|corre|lista|lee|busca|revision|revisi[oó]n|"
+        r"abre|abrir|abreme|[áa]breme|inicia|iniciar|lanza|lanzar|arranca|"
+        r"app|apps|aplicaci[oó]n|aplicaciones|nota|notas|apunta|apuntar|apuntame|ap[úu]ntame|"
+        r"calendario|evento|eventos|reuni[oó]n|cita|junta|disponibilidad|hueco|"
+        r"recordatorios|calculadora|safari|finder|"
         r"datos/|empresa/|agente/|habilidades/|comando|consola|terminal|script|"
-        r"agenda|agendar|programa|programar|automatiza\w*|temporizador|reloj|alarma|recordatorio|"
+        r"agenda|agendar|agendame|ag[ée]ndame|programa|programar|automatiza\w*|temporizador|reloj|alarma|recordatorio|"
+        r"pdf|documento|informe|reporte|portada|factura|cotizaci[oó]n|contrato|cat[aá]logo|resumir|resume|extraer|imagen|foto|logo|generar?|exportar?|"
         r"orden\s+de\s+compra|reponer|csv|json)\b"
     )
     domain_ops_re = re.compile(
@@ -119,7 +162,7 @@ def classify_task_intent(
         r"ok+|perfecto|listo|qu[eé]\s+tal|c[oó]mo\s+est[aá]s)[\s!?.]*$"
     )
 
-    if casual_re.match(text) and not has_active_canvas:
+    if casual_re.match(text) and not has_active_canvas and not skip_casual:
         return TaskProfile(
             task_kind="fast_chat",
             needs_tools=False,
@@ -320,6 +363,8 @@ def score_model_for_task(model_entry: Dict[str, Any], task: TaskProfile) -> floa
         or ("structured_outputs" in supp_set)
         or ("response_format" in supp_set)
     )
+    supports_vision = bool(model_entry.get("supports_vision"))
+    has_vision_meta = "supports_vision" in model_entry
 
     score = _score_family_prior(mid, task)
 
@@ -329,6 +374,12 @@ def score_model_for_task(model_entry: Dict[str, Any], task: TaskProfile) -> floa
         elif has_meta:
             # Catálogo en vivo confirmó que NO soporta herramientas
             score -= 400.0
+
+    if task.needs_vision:
+        if supports_vision:
+            score += 65.0
+        elif has_vision_meta:
+            score -= 120.0
 
     if task.task_kind in ("agent_execution", "canvas_tabular") and supports_structured:
         score += 22.0
@@ -405,6 +456,8 @@ def select_best_models_for_task(
     catalog_models: Optional[List[Dict[str, Any]]] = None,
     fetch_catalog_fn: Optional[Callable[[], Dict[str, Any]]] = None,
     max_concrete_candidates: int = 2,
+    has_attachments: bool = False,
+    has_images: bool = False,
 ) -> RoutingPlan:
     req = (requested_model or AUTO_FREE_ID).strip() or AUTO_FREE_ID
     profile = classify_task_intent(
@@ -413,6 +466,8 @@ def select_best_models_for_task(
         has_active_canvas=has_active_canvas,
         tools_available=tools_available,
         history=history,
+        has_attachments=has_attachments,
+        has_images=has_images,
     )
 
     if not is_auto_model_id(req):

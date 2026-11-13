@@ -180,10 +180,26 @@ export function cleanVisibleReply(
 
   out = out.replace(/<table\b[^>]*>[\s\S]*?<\/table>/gi, replaceHtml);
   out = out.replace(/(?:<tr\b[^>]*>[\s\S]*?<\/tr>\s*)+(?:\s*<\/table>)?/gi, replaceHtml);
+  const codeStash: string[] = [];
+  out = out.replace(/```[\s\S]*?```|`[^`\n]+`/g, (match) => {
+    codeStash.push(match);
+    return `\x00CODEBLOCK${codeStash.length - 1}\x00`;
+  });
   out = out.replace(
-    /<\/?(?:pdf|doc|document|response|respuesta|analysis|analisis|canvas|lienzo|acciones|actions|table|thead|tbody|tfoot|tr|th|td)\b[^>]*>/gi,
+    /<\s*(?:\/\s*)?(?:pdf|doc|document|response|respuesta|analysis|analisis|canvas|lienzo|acciones|actions|posta|reply|resp|table|thead|tbody|tfoot|tr|th|td)\b[^>]*>/gi,
     ""
   );
+  out = out.replace(
+    /(?:^\s*<\s*(?:res|answer|output|final)\s*>|<\s*\/\s*(?:res|answer|output|final)\s*>\s*$|(?:^|\n)[ \t]*<\s*(?:\/\s*)?(?:res|answer|output|final)\s*>[ \t]*(?=\n|$))/gi,
+    (match) => (match.startsWith("\n") ? "\n" : "")
+  );
+  out = out.replace(
+    /<\s*\/\s*(?:pdf|doc|document|response|respuesta|analysis|analisis|canvas|lienzo|acciones|actions|posta|reply|resp|res|answer|output|final)\s*$/gi,
+    ""
+  );
+  if (codeStash.length > 0) {
+    out = out.replace(/\x00CODEBLOCK(\d+)\x00/g, (_m, idx) => codeStash[Number(idx)] ?? "");
+  }
   if (stripTables) {
     out = stripMarkdownTablesFromText(out);
   }

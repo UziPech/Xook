@@ -8,8 +8,12 @@ import {
   Check,
   Copy,
   ExternalLink,
+  FileText,
+  FolderOpen,
   HelpCircle,
+  Image as ImageIcon,
   KeyRound,
+  Paperclip,
   RotateCcw,
   Sparkles,
   Table2,
@@ -26,15 +30,24 @@ import {
 } from "../canvas/canvasSchema";
 import {
   ClarificationSpec,
+  GeneratedPdfArtifact,
   OpenRouterModelOption,
   ThinkingStep,
   formatModelDisplay,
 } from "./aiClient";
 
+export interface UiChatAttachment {
+  name: string;
+  kind?: "text" | "pdf" | "image" | "binary";
+  previewUrl?: string;
+  workspacePath?: string;
+}
+
 export interface UiChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  attachments?: UiChatAttachment[];
   reasoning?: string;
   reasoningDurationMs?: number;
   thinkingSteps?: ThinkingStep[];
@@ -46,6 +59,7 @@ export interface UiChatMessage {
   tokensUsed?: number;
   generatedTaskCount?: number;
   canvas?: CanvasArtifact;
+  generatedPdfs?: GeneratedPdfArtifact[];
   isError?: boolean;
   actionButton?: {
     label: string;
@@ -65,6 +79,9 @@ interface ChatMessageListProps {
   greetingLeaving?: boolean;
   activeCanvasId?: string | null;
   onOpenCanvas?: (canvas: CanvasArtifact) => void;
+  onPreviewPdf?: (pdf: GeneratedPdfArtifact) => void;
+  onOpenPdf?: (relativePath: string) => void;
+  onRevealPdfFolder?: (relativePath: string) => void;
   onXoxClick?: () => void;
   onAction: (action: NonNullable<UiChatMessage["actionButton"]>) => void;
   onOpenTasksTab: () => void;
@@ -316,6 +333,9 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   greetingLeaving = false,
   activeCanvasId = null,
   onOpenCanvas,
+  onPreviewPdf,
+  onOpenPdf,
+  onRevealPdfFolder,
   onXoxClick,
   onAction,
   onOpenTasksTab,
@@ -352,10 +372,36 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
     <div className="@container space-y-6">
       {messages.map((msg, idx) => {
         if (msg.role === "user") {
+          const attList = msg.attachments ?? [];
           return (
             <div key={msg.id} className="flex justify-end">
-              <div className="max-w-[86%] @lg:max-w-[70%] rounded-2xl rounded-tr-sm px-4 py-2.5 bg-white/[0.075] border border-white/[0.1] text-[13.5px] text-zinc-100 leading-relaxed select-text">
-                {msg.content}
+              <div className="max-w-[86%] @lg:max-w-[70%] rounded-2xl rounded-tr-sm px-4 py-2.5 bg-white/[0.075] border border-white/[0.1] text-[13.5px] text-zinc-100 leading-relaxed select-text space-y-2">
+                {attList.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {attList.map((att, aIdx) => (
+                      <div
+                        key={`${att.name}-${aIdx}`}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-black/35 border border-white/[0.09] px-2 py-1 text-[11px] text-zinc-200 max-w-[230px]"
+                      >
+                        {att.kind === "image" && att.previewUrl ? (
+                          <img
+                            src={att.previewUrl}
+                            alt={att.name}
+                            className="w-5 h-5 rounded object-cover shrink-0 border border-white/10"
+                          />
+                        ) : att.kind === "pdf" ? (
+                          <FileText className="w-3.5 h-3.5 text-rose-300 shrink-0" />
+                        ) : att.kind === "image" ? (
+                          <ImageIcon className="w-3.5 h-3.5 text-sky-300 shrink-0" />
+                        ) : (
+                          <Paperclip className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                        )}
+                        <span className="truncate">{att.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {msg.content && <div>{msg.content}</div>}
               </div>
             </div>
           );
@@ -396,7 +442,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
             : null;
 
         const cleanReasoning = (msg.reasoning ?? "")
-          .replace(/<\/?(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions)\s*>/gi, "")
+          .replace(/<\s*(?:\/\s*)?(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions|posta|reply|resp)\s*(?:>|$)/gi, "")
           .trim();
 
         return (
@@ -689,6 +735,92 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                   </button>
                 );
               })()}
+
+              {/* Tarjetas compactas para PDFs generados */}
+              {msg.generatedPdfs && msg.generatedPdfs.length > 0 && (
+                <div className="space-y-2">
+                  {msg.generatedPdfs.map((pdf) => {
+                    const kb = Math.max(1, Math.round((pdf.sizeBytes || 0) / 1024));
+                    return (
+                      <div
+                        key={pdf.path}
+                        style={{
+                          boxShadow:
+                            "inset 0 1px 1px rgba(255,255,255,0.10), 0 12px 26px -18px rgba(0,0,0,0.82)",
+                        }}
+                        className="relative overflow-hidden w-full max-w-[490px] rounded-2xl border border-rose-200/20 bg-gradient-to-b from-white/[0.055] via-[#17121b]/82 to-[#0b090f]/90 p-3.5"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-2.5 min-w-0">
+                            <div className="w-8 h-8 rounded-xl bg-rose-500/15 border border-rose-300/25 flex items-center justify-center shrink-0 mt-0.5">
+                              <FileText className="w-4 h-4 text-rose-200" />
+                            </div>
+                            <div className="min-w-0 space-y-0.5">
+                              <h4 className="text-[13px] font-semibold text-white leading-snug line-clamp-1">
+                                {pdf.title || pdf.filename}
+                              </h4>
+                              <p className="text-[11px] font-mono text-zinc-400 truncate">
+                                {pdf.path}
+                              </p>
+                              <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[10.5px] text-zinc-300/85">
+                                <span className="px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.08]">
+                                  {pdf.pageCount} {pdf.pageCount === 1 ? "página" : "páginas"}
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.08]">
+                                  {kb} KB
+                                </span>
+                                {pdf.hasCover && (
+                                  <span className="px-1.5 py-0.5 rounded-md bg-sky-500/10 border border-sky-300/20 text-sky-200">
+                                    Con portada
+                                  </span>
+                                )}
+                                {(pdf.imagesEmbedded ?? 0) > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.08]">
+                                    {pdf.imagesEmbedded} img
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {onPreviewPdf && (
+                            <button
+                              type="button"
+                              onClick={() => onPreviewPdf(pdf)}
+                              className="quick-liquid-btn inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium text-white cursor-pointer"
+                            >
+                              <FileText className="w-3 h-3 text-rose-200" />
+                              <span>Ver documento</span>
+                            </button>
+                          )}
+                          {onOpenPdf && (
+                            <button
+                              type="button"
+                              onClick={() => onOpenPdf(pdf.path)}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-zinc-200 transition-colors cursor-pointer"
+                            >
+                              <ExternalLink className="w-3 h-3 text-zinc-300" />
+                              <span>Abrir externo</span>
+                            </button>
+                          )}
+                          {onRevealPdfFolder && (
+                            <button
+                              type="button"
+                              onClick={() => onRevealPdfFolder(pdf.path)}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-zinc-200 transition-colors cursor-pointer"
+                            >
+                              <FolderOpen className="w-3 h-3 text-zinc-400" />
+                              <span>Carpeta</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
               {/* Enlace a tarjetas generadas */}
               {(msg.generatedTaskCount ?? 0) > 0 && (

@@ -1080,10 +1080,897 @@ def test_task_aware_model_router_and_failover():
     print("✅ Evaluador/enrutador inteligente y failover verificados.")
 
 
+def test_desktop_app_launcher_tools_and_routing():
+    import tempfile
+    from slices.agent_tools.toolkit import AGENT_TOOL_DEFS, WorkspaceToolExecutor
+    from slices.ai_service.model_router import classify_task_intent
+
+    tool_names = {t["function"]["name"] for t in AGENT_TOOL_DEFS}
+    assert "list_desktop_apps" in tool_names
+    assert "open_desktop_app" in tool_names
+
+    for prompt in [
+        "Abre Notas",
+        "Ábreme la app de Calendario",
+        "¿Qué aplicaciones tengo?",
+        "Por favor abre Recordatorios",
+        "Apúntame una nota para comprar café",
+        "¿Qué juntas tengo mañana en mi calendario?",
+        "Agéndame una cita con Luis mañana a las 3pm",
+    ]:
+        intent = classify_task_intent(prompt, has_workspace=True, tools_available=True)
+        assert intent.needs_tools is True, f"expected tools for {prompt!r}: {intent}"
+        assert intent.task_kind == "agent_execution", intent
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        captured = []
+
+        def fake_bridge(payload):
+            captured.append(payload)
+            cb = payload.get("rpc_callback")
+            if cb == "list_installed_apps":
+                return {
+                    "ok": True,
+                    "apps": [{"displayName": "Notas", "bundleId": "com.apple.Notes"}],
+                }
+            if cb == "open_desktop_app":
+                return {
+                    "ok": True,
+                    "status": "finished",
+                    "app": {"displayName": "Notas", "bundleId": "com.apple.Notes"},
+                    "message": "Se abrió Notas.",
+                }
+            if cb == "os_notes_list":
+                return {"ok": True, "folders": ["Notas"], "notes": []}
+            if cb == "os_notes_create":
+                return {"ok": True, "title": payload.get("title"), "folder": "Notas"}
+            if cb == "os_calendar_list":
+                return {"ok": True, "calendars": [{"name": "Trabajo", "writable": True}], "events": []}
+            if cb == "os_calendar_create_event":
+                return {"ok": True, "title": payload.get("title"), "calendar": "Trabajo"}
+            return {"ok": False, "error": "unexpected callback"}
+
+        executor = WorkspaceToolExecutor(ws, command_bridge=fake_bridge)
+        for req_name in ["os_list_notes", "os_create_note", "os_list_calendar_events", "os_create_calendar_event"]:
+            assert req_name in tool_names
+
+        listed = executor.execute("list_desktop_apps", {"query": "notas", "limit": 5})
+        assert listed["ok"] is True
+        assert captured[-1]["rpc_callback"] == "list_installed_apps"
+
+        opened = executor.execute("open_desktop_app", {"app_name": "Notas"})
+        assert opened["ok"] is True
+        assert captured[-1]["rpc_callback"] == "open_desktop_app"
+
+        n_list = executor.execute("os_list_notes", {"query": "café", "folder": "Compras", "limit": 10})
+        assert n_list["ok"] is True
+        assert captured[-1]["rpc_callback"] == "os_notes_list"
+        assert captured[-1]["query"] == "café"
+        assert captured[-1]["folder"] == "Compras"
+
+        n_create = executor.execute(
+            "os_create_note",
+            {"title": "Compras", "body": "- Café\n- Filtros", "open_after": True},
+        )
+        assert n_create["ok"] is True
+        assert captured[-1]["rpc_callback"] == "os_notes_create"
+        assert captured[-1]["title"] == "Compras"
+        assert captured[-1]["open_after"] is True
+        assert executor.execute("os_create_note", {"title": "", "body": "x"})["ok"] is False
+
+        c_list = executor.execute(
+            "os_list_calendar_events",
+            {"start_iso": "2026-11-13", "end_iso": "2026-11-14", "calendar_name": "Trabajo"},
+        )
+        assert c_list["ok"] is True
+        assert captured[-1]["rpc_callback"] == "os_calendar_list"
+        assert captured[-1]["start_iso"] == "2026-11-13"
+
+        c_create = executor.execute(
+            "os_create_calendar_event",
+            {
+                "title": "Junta con Luis",
+                "start_iso": "2026-11-14T15:00:00",
+                "reminder_minutes_before": 15,
+                "location": "Oficina",
+            },
+        )
+        assert c_create["ok"] is True
+        assert captured[-1]["rpc_callback"] == "os_calendar_create_event"
+        assert captured[-1]["reminder_minutes_before"] == 15
+        assert executor.execute("os_create_calendar_event", {"title": "Sin fecha"})["ok"] is False
+
+        invalid = executor.execute("open_desktop_app", {"app_name": ""})
+        assert invalid["ok"] is False
+
+    print("✅ Herramientas OS (apps, Notas, Calendario) y routing verificados.")
+
+
+def test_pdf_engine_and_multimodal_pipeline():
+    import os
+    import platform
+    import subprocess
+    import sys
+    import tempfile
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+    from pypdf import PdfWriter
+    from slices.agent_tools.toolkit import (
+        AGENT_TOOL_DEFS,
+        AUTONOMOUS_WRITE_ROOTS,
+        WorkspaceToolExecutor,
+        resolve_workspace_path,
+    )
+    from slices.ai_service.model_router import classify_task_intent, score_model_for_task
+    from slices.ai_service.openrouter_client import (
+        _extract_attached_flags,
+        _format_model_entry,
+        _messages_have_images,
+        _sanitize_attached_context_for_prompt,
+        _strip_image_parts,
+    )
+    from slices.pdf_engine import (
+        generate_pdf_document,
+        inspect_pdf_summary,
+        read_pdf_document,
+    )
+
+    tool_names = {t["function"]["name"] for t in AGENT_TOOL_DEFS}
+    assert "pdf_read" in tool_names
+    assert "pdf_generate" in tool_names
+
+    with tempfile.TemporaryDirectory(prefix="xook_pdf_test_") as tmp:
+        ws = Path(tmp)
+        for rel in ("empresa", "datos/documentos", "memoria", "habilidades", "agente/adjuntos", "agente/reportes"):
+            (ws / rel).mkdir(parents=True, exist_ok=True)
+
+        # Crear imágenes de prueba: hero horizontal + logo RGBA con transparencia + JPEG con EXIF orientación
+        hero_path = ws / "agente/adjuntos/portada_tienda.jpg"
+        hero_img = PILImage.new("RGB", (1200, 720), color=(28, 78, 148))
+        draw_hero = ImageDraw.Draw(hero_img)
+        draw_hero.rectangle([60, 60, 1140, 660], outline=(240, 180, 70), width=8)
+        hero_img.save(hero_path, format="JPEG", quality=90)
+
+        logo_path = ws / "agente/adjuntos/logo_marca.png"
+        logo_img = PILImage.new("RGBA", (320, 320), color=(0, 0, 0, 0))
+        draw_logo = ImageDraw.Draw(logo_img)
+        draw_logo.ellipse([24, 24, 296, 296], fill=(16, 185, 129, 255))
+        logo_img.save(logo_path, format="PNG")
+
+        # JPEG vertical rotado por EXIF (tag 274 = 6)
+        exif_path = ws / "agente/adjuntos/foto_exif.jpg"
+        exif_img = PILImage.new("RGB", (400, 220), color=(180, 60, 60))
+        exif = exif_img.getexif()
+        exif[274] = 6
+        exif_img.save(exif_path, format="JPEG", exif=exif.tobytes())
+
+        # 1. Generar PDF completo con portada full_bleed + resolución inteligente por nombre + acentos + KPIs + tabla + imagen inline
+        gen_full = generate_pdf_document(
+            {
+                "title": "Diagnóstico Operativo Café Central",
+                "subtitle": "Análisis trimestral de rotación, márgenes y reposición — México",
+                "author": "XOOK Copiloto",
+                "theme": "executive",
+                "output_path": "empresa/no_debe_escribir_aqui.pdf",  # debe redirigirse a agente/reportes/
+                "cover": {
+                    "enabled": True,
+                    "image_path": "portada_tienda.jpg",  # búsqueda inteligente por nombre
+                    "layout": "full_bleed",
+                    "eyebrow": "REPORTE EJECUTIVO",
+                },
+                "blocks": [
+                    {
+                        "type": "kpi_strip",
+                        "metrics": [
+                            {"label": "Ventas Q3", "value": "$482,900", "detail": "+14.2% anual"},
+                            {"label": "Margen bruto", "value": "38.5%", "detail": "Óptimo"},
+                            {"label": "SKUs críticos", "value": "4", "detail": "Reponer hoy"},
+                        ],
+                    },
+                    {"type": "heading", "level": 1, "text": "1. Resumen estratégico"},
+                    {"type": "heading", "level": 2, "text": "1.1 Hallazgos clave en sucursales"},
+                    {
+                        "type": "paragraph",
+                        "text": "Se evaluaron **42 productos** clave con actualización de precios y costos en Español: café, té, cacao y empaques.",
+                    },
+                    {
+                        "type": "bullets",
+                        "items": [
+                            "**Café Chiapas**: mayor contribución marginal.",
+                            "Filtros V60: cobertura menor a 4 días.",
+                        ],
+                    },
+                    {
+                        "type": "table",
+                        "headers": ["SKU", "Producto", "Stock", "Estado"],
+                        "rows": [
+                            ["CAF-01", "Café en grano 1kg", "18", "Óptimo"],
+                            ["FLT-04", "Filtros V60 x100", "3", "Crítico"],
+                        ],
+                        "caption": "Tabla 1: Inventario verificado.",
+                    },
+                    {
+                        "type": "image",
+                        "path": "agente/adjuntos/foto_exif.jpg",
+                        "size": "medium",
+                        "caption": "Evidencia visual con orientación EXIF corregida.",
+                    },
+                    {
+                        "type": "callout",
+                        "tone": "warning",
+                        "title": "Acción inmediata",
+                        "text": "Emitir orden de compra para Filtros V60 antes del viernes.",
+                    },
+                ],
+            },
+            workspace_root=ws,
+            resolve_path_fn=resolve_workspace_path,
+            autonomous_roots=AUTONOMOUS_WRITE_ROOTS,
+        )
+        assert gen_full["ok"] is True
+        assert gen_full["path"].startswith("agente/reportes/")
+        assert not (ws / "empresa/no_debe_escribir_aqui.pdf").exists()
+        assert gen_full["has_cover"] is True
+        assert gen_full["page_count"] >= 2
+        assert gen_full["tables_count"] == 1
+        assert gen_full["images_embedded"] == 2
+        assert gen_full["size_bytes"] > 5000
+
+        # Probar layouts centered (auto RGBA), hero_top, split y markdown directo sin portada
+        for layout_name, img_rel, out_rel in [
+            ("auto", "agente/adjuntos/logo_marca.png", "agente/reportes/auto_logo.pdf"),
+            ("hero_top", "agente/adjuntos/portada_tienda.jpg", "agente/reportes/hero.pdf"),
+            ("split", "agente/adjuntos/portada_tienda.jpg", "agente/reportes/split.pdf"),
+        ]:
+            g = generate_pdf_document(
+                {
+                    "title": f"Prueba {layout_name}",
+                    "output_path": out_rel,
+                    "cover": {"enabled": True, "image_path": img_rel, "layout": layout_name},
+                    "blocks": [{"type": "paragraph", "text": "Contenido de verificación."}],
+                },
+                workspace_root=ws,
+                resolve_path_fn=resolve_workspace_path,
+                autonomous_roots=AUTONOMOUS_WRITE_ROOTS,
+            )
+            assert g["ok"] is True
+            assert g["page_count"] >= 2
+
+        g_md = generate_pdf_document(
+            {
+                "title": "Minuta rápida",
+                "output_path": "agente/reportes/minuta.pdf",
+                "cover": {"enabled": False},
+                "markdown": "# Acuerdos\n## Próximos pasos\n- Confirmar entrega\n\n| Área | Responsable |\n| --- | --- |\n| Compras | Ana |",
+            },
+            workspace_root=ws,
+            resolve_path_fn=resolve_workspace_path,
+            autonomous_roots=AUTONOMOUS_WRITE_ROOTS,
+        )
+        assert g_md["ok"] is True
+        assert g_md["tables_count"] == 1
+
+        # 2. Leer PDF generado y verificar texto + tablas + paginación + inspect_pdf_summary
+        pdf_abs = ws / gen_full["path"]
+        summary = inspect_pdf_summary(pdf_abs)
+        assert summary["page_count"] >= 2
+        assert summary["has_selectable_text"] is True
+
+        read_p1 = read_pdf_document(pdf_abs, start_page=1, end_page=1)
+        assert read_p1["ok"] is True
+        assert read_p1["has_more_pages"] is True
+        assert read_p1["next_start_page"] == 2
+        assert "Diagnóstico" in read_p1["pages"][0]["text"] or "XOOK" in read_p1["pages"][0]["text"]
+
+        read_all = read_pdf_document(pdf_abs, start_page=1, end_page=5)
+        combined_text = "\n".join(p["text"] for p in read_all["pages"])
+        assert "Resumen estratégico" in combined_text
+        assert "Café" in combined_text
+        all_tables = [tbl for p in read_all["pages"] for tbl in p["tables"]]
+        assert len(all_tables) >= 1
+        assert any("Filtros V60 x100" in str(tbl) for tbl in all_tables)
+
+        # PDF cifrado -> error amigable
+        enc_pdf = ws / "datos/documentos/protegido.pdf"
+        writer = PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        writer.encrypt("clave123")
+        with open(enc_pdf, "wb") as f:
+            writer.write(f)
+        enc_res = read_pdf_document(enc_pdf)
+        assert enc_res["ok"] is False
+        assert "contraseña" in enc_res["error"].lower() or "cifrado" in enc_res["error"].lower()
+
+        # OCR fallback en PDF escaneado (en macOS con Swift Vision disponible)
+        if platform.system() == "Darwin" and Path("/usr/bin/swift").is_file():
+            scan_canvas = PILImage.new("RGB", (900, 320), color=(255, 255, 255))
+            d_scan = ImageDraw.Draw(scan_canvas)
+            try:
+                f_ocr = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 52)
+            except Exception:
+                f_ocr = ImageFont.load_default()
+            d_scan.text((48, 110), "XOOK OCR 2026 FACTURA", fill=(0, 0, 0), font=f_ocr)
+            scan_pdf = ws / "datos/documentos/escaneado.pdf"
+            scan_canvas.save(scan_pdf, "PDF", resolution=150.0)
+            ocr_res = read_pdf_document(scan_pdf, start_page=1, end_page=1, enable_ocr_fallback=True)
+            assert ocr_res["ok"] is True
+            assert ocr_res["pages"][0]["source"] == "ocr"
+            assert "XOOK" in ocr_res["pages"][0]["text"].upper() or "2026" in ocr_res["pages"][0]["text"]
+
+        # 3. Integración con WorkspaceToolExecutor (pdf_read, pdf_generate, workspace_read sobre PDF e imagen)
+        events: List[Dict[str, Any]] = []
+        executor = WorkspaceToolExecutor(ws, emit_event=events.append)
+
+        exec_gen = executor.execute(
+            "pdf_generate",
+            {
+                "title": "Informe desde Executor",
+                "blocks": [{"type": "heading", "level": 1, "text": "Prueba Executor"}],
+            },
+        )
+        assert exec_gen["ok"] is True
+        assert executor.workspace_mutated is True
+        assert len(executor.generated_pdfs) == 1
+        assert any(e.get("type") == "pdf_generated" for e in events)
+        assert any(e.get("type") == "workspace_changed" for e in events)
+
+        exec_read_pdf = executor.execute("pdf_read", {"path": exec_gen["path"]})
+        assert exec_read_pdf["ok"] is True
+        assert "Prueba Executor" in "\n".join(p["text"] for p in exec_read_pdf["pages"])
+
+        ws_read_pdf = executor.execute("workspace_read", {"path": exec_gen["path"]})
+        assert ws_read_pdf["ok"] is True and "pages" in ws_read_pdf
+
+        ws_read_img = executor.execute("workspace_read", {"path": "agente/adjuntos/logo_marca.png"})
+        assert ws_read_img["ok"] is True
+        assert ws_read_img["kind"] == "image"
+        assert ws_read_img["width"] == 320 and ws_read_img["height"] == 320
+        assert ws_read_img["has_alpha"] is True
+
+        blocked_pdf = executor.execute("pdf_read", {"path": ".xook/oculto.pdf"})
+        assert blocked_pdf["ok"] is False
+
+        # 4. Router y helpers multimodales
+        vis_profile = classify_task_intent(
+            "mira esto",
+            has_workspace=True,
+            has_attachments=True,
+            has_images=True,
+        )
+        assert vis_profile.task_kind == "agent_execution"
+        assert vis_profile.needs_tools is True
+        assert vis_profile.needs_vision is True
+
+        m_vis = _format_model_entry({
+            "id": "google/gemini-2.5-flash",
+            "name": "Gemini 2.5 Flash",
+            "context_length": 1000000,
+            "pricing": {"prompt": "0", "completion": "0"},
+            "supported_parameters": ["tools", "structured_outputs"],
+            "architecture": {"input_modalities": ["text", "image"]},
+        })
+        m_txt = _format_model_entry({
+            "id": "qwen/qwen3-coder:free",
+            "name": "Qwen3 Coder",
+            "context_length": 128000,
+            "pricing": {"prompt": "0", "completion": "0"},
+            "supported_parameters": ["tools", "structured_outputs"],
+            "architecture": {"input_modalities": ["text"]},
+        })
+        assert m_vis is not None and m_vis["supports_vision"] is True
+        assert m_txt is not None and m_txt["supports_vision"] is False
+        assert score_model_for_task(m_vis, vis_profile) > score_model_for_task(m_txt, vis_profile)
+
+        sample_att = [
+            {
+                "name": "logo.png",
+                "type": "image/png",
+                "kind": "image",
+                "workspacePath": "agente/adjuntos/logo_marca.png",
+                "imageDataUrl": "data:image/png;base64,AAAA",
+            }
+        ]
+        has_att, img_parts = _extract_attached_flags(sample_att)
+        assert has_att is True and len(img_parts) == 1
+        sanitized_prompt_att = _sanitize_attached_context_for_prompt(sample_att)
+        assert "imageDataUrl" not in sanitized_prompt_att[0]
+        assert sanitized_prompt_att[0]["hasInlineImage"] is True
+
+        mm_msgs = [{"role": "user", "content": [{"type": "text", "text": "Hola"}, *img_parts]}]
+        assert _messages_have_images(mm_msgs) is True
+        stripped_msgs = _strip_image_parts(mm_msgs)
+        assert _messages_have_images(stripped_msgs) is False
+        assert isinstance(stripped_msgs[0]["content"], str) and "Hola" in stripped_msgs[0]["content"]
+
+        # 5. Subproceso RPC JSON-RPC completo en main_sidecar.py (generate_pdf + inspect_pdf)
+        sidecar_script = Path(__file__).resolve().parent / "main_sidecar.py"
+        rpc_req = json.dumps({
+            "id": 91,
+            "method": "generate_pdf",
+            "params": {
+                "workspace_root": str(ws),
+                "spec": {
+                    "title": "PDF por RPC",
+                    "output_path": "agente/reportes/rpc_doc.pdf",
+                    "blocks": [{"type": "heading", "level": 1, "text": "Generado vía JSON-RPC"}],
+                },
+            },
+        }) + "\n"
+        proc = subprocess.run(
+            [sys.executable, str(sidecar_script)],
+            input=rpc_req,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        rpc_resp = json.loads(proc.stdout.strip().splitlines()[0])
+        assert rpc_resp["result"]["ok"] is True
+        assert rpc_resp["result"]["path"] == "agente/reportes/rpc_doc.pdf"
+
+        rpc_inspect_req = json.dumps({
+            "id": 92,
+            "method": "inspect_pdf",
+            "params": {
+                "workspace_root": str(ws),
+                "path": "agente/reportes/rpc_doc.pdf",
+                "summary_only": True,
+            },
+        }) + "\n"
+        proc2 = subprocess.run(
+            [sys.executable, str(sidecar_script)],
+            input=rpc_inspect_req,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        rpc_resp2 = json.loads(proc2.stdout.strip().splitlines()[0])
+        assert rpc_resp2["result"]["ok"] is True
+        assert rpc_resp2["result"]["page_count"] == 1
+
+    print("✅ Motor PDF (lectura, generación, OCR, portada/imágenes, vision router y JSON-RPC) verificado.")
+
+
+def test_spaced_xml_tags_and_live_pdf_preview():
+    import subprocess
+    import tempfile
+    from slices.agent_tools.toolkit import resolve_workspace_path
+    from slices.ai_service.openrouter_client import _StreamTagRouter, _extract_partial_pdf_draft
+    from slices.pdf_engine import generate_pdf_document, render_pdf_preview
+    from slices.task_ui.schemas import clean_visible_reply
+
+    # 1. Etiquetas XML con espacios internos fragmentadas entre chunks en _StreamTagRouter
+    reasonings: list[str] = []
+    replies: list[str] = []
+    phases: list[str] = []
+    router = _StreamTagRouter(reasonings.append, replies.append, phases.append)
+    chunks = [
+        "< analisis >Rev",
+        "isando",
+        "</ analisis>",
+        "< respuesta >¿Cómo te ayudo",
+        " de esta manera?\n</",
+        " respuesta>",
+        "< canvas >{\"title\":\"T\",\"columns\":[\"A\"],\"rows\":[[\"1\"]]}< / canvas >",
+        "< acciones >{\"operation\":\"none\",\"tasks\":[]}< / acciones >",
+    ]
+    for ch in chunks:
+        router.feed(ch)
+    router.flush()
+
+    joined_reply = "".join(replies)
+    joined_reason = "".join(reasonings)
+    assert "Revisando" in joined_reason
+    assert "manera?" in joined_reply
+    assert "respuesta" not in joined_reply.lower()
+    assert "</" not in joined_reply
+    assert '"T"' in router.canvas_buf
+    assert '"operation"' in router.actions_buf
+
+    # También debe preservar operadores matemáticos normales y limpiar clean_visible_reply
+    assert "a < 50" in clean_visible_reply("a < 50\n</ respuesta>")
+    assert "</" not in clean_visible_reply("Hola\n< / respuesta >\n</ analisis>")
+    assert clean_visible_reply("Listo\n</ respuesta") == "Listo"
+
+    # 2. Parser de borrador parcial en vivo de pdf_generate durante tool_call streaming
+    partial_cover_only = (
+        '{"title": "Reporte Parcial", "cover": {"enabled": true, "image_path": "agente/adjuntos/logo.png"'
+    )
+    draft_cov = _extract_partial_pdf_draft(partial_cover_only)
+    assert draft_cov is not None
+    assert draft_cov["title"] == "Reporte Parcial"
+    assert draft_cov["has_cover"] is True
+    assert draft_cov["cover"]["image_path"] == "agente/adjuntos/logo.png"
+
+    partial_with_blocks = (
+        '{"title": "Reporte Mensual", "subtitle": "Resumen Q2", "theme": "modern", '
+        '"cover": {"enabled": true, "image_path": "agente/adjuntos/logo.png"}, '
+        '"blocks": [{"type": "heading", "level": 1, "text": "Panorama {clave}"}, '
+        '{"type": "paragraph", "text": "El margen subió'
+    )
+    draft = _extract_partial_pdf_draft(partial_with_blocks)
+    assert draft is not None
+    assert draft["title"] == "Reporte Mensual"
+    assert draft["has_cover"] is True
+    assert draft["cover"]["image_path"] == "agente/adjuntos/logo.png"
+    assert len(draft["blocks"]) == 2
+    assert draft["blocks"][0]["type"] == "heading" and "{clave}" in draft["blocks"][0]["text"]
+    assert draft["blocks"][1]["type"] == "paragraph" and draft["blocks"][1].get("streaming") is True
+
+    # 3. progress_callback + render_pdf_preview (pypdfium2) + RPC render_pdf_preview
+    with tempfile.TemporaryDirectory(prefix="xox_pdf_prev_") as tmp:
+        ws = Path(tmp)
+        (ws / "agente/reportes").mkdir(parents=True, exist_ok=True)
+        progress_events: list[dict] = []
+        gen = generate_pdf_document(
+            {
+                "title": "Documento con Vista Previa",
+                "output_path": "agente/reportes/preview_test.pdf",
+                "cover": {"enabled": True, "eyebrow": "XOOK LIVE"},
+                "blocks": [
+                    {"type": "heading", "level": 1, "text": "Sección Uno"},
+                    {"type": "paragraph", "text": "Contenido verificado para vista previa."},
+                ],
+            },
+            workspace_root=ws,
+            resolve_path_fn=resolve_workspace_path,
+            progress_callback=progress_events.append,
+        )
+        assert gen["ok"] is True and gen["page_count"] == 2
+        stages = [e.get("stage") for e in progress_events]
+        assert "building_cover" in stages
+        assert "building_blocks" in stages
+        assert "rendering_pdf" in stages
+
+        pdf_abs = ws / "agente/reportes/preview_test.pdf"
+        prev1 = render_pdf_preview(pdf_abs, start_page=1, max_pages=1)
+        assert prev1["ok"] is True
+        assert prev1["page_count"] == 2
+        assert prev1["rendered_count"] == 1
+        assert prev1["has_more"] is True
+        assert prev1["pages"][0]["data_url"].startswith("data:image/jpeg;base64,")
+
+        sidecar_script = Path(__file__).resolve().parent / "main_sidecar.py"
+        rpc_req = json.dumps({
+            "id": 93,
+            "method": "render_pdf_preview",
+            "params": {
+                "workspace_root": str(ws),
+                "path": "agente/reportes/preview_test.pdf",
+                "start_page": 1,
+                "max_pages": 4,
+            },
+        }) + "\n"
+        proc = subprocess.run(
+            [sys.executable, str(sidecar_script)],
+            input=rpc_req,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        rpc_resp = json.loads(proc.stdout.strip().splitlines()[0])
+        assert rpc_resp["result"]["ok"] is True
+        assert rpc_resp["result"]["rendered_count"] == 2
+        assert rpc_resp["result"]["has_more"] is False
+
+    print("✅ Etiquetas XML espaciadas, streaming draft PDF y render_pdf_preview verificados.")
+
+
+def test_ready_cover_full_page_and_content_enforcement() -> None:
+    import tempfile
+    from PIL import Image, ImageDraw
+    from slices.agent_tools.toolkit import WorkspaceToolExecutor
+    from slices.ai_service.openrouter_client import _extract_partial_pdf_draft, _parse_tool_args
+    from slices.pdf_engine import read_pdf_document, render_pdf_preview
+
+    # 1. Recuperación y detección explícita de errores JSON en _parse_tool_args
+    assert _parse_tool_args("") == {}
+    assert _parse_tool_args(None) == {}
+    recovered = _parse_tool_args('```json\n{"title": "POO", "blocks": [],}\n```')
+    assert recovered.get("title") == "POO"
+    broken = _parse_tool_args('{"title": "POO", "blocks": [{"type": "heading"')
+    assert "__parse_error__" in broken
+
+    # 2. Preview parser soporta bullet_list, bullets y code
+    partial_code = _extract_partial_pdf_draft(
+        '{"title": "Guía POO", "blocks": [{"type": "bullet_list", "items": ["Abstracción"]}, {"type": "code", "language": "python", "code": "class Perro:\\n    pass"}]}'
+    )
+    assert partial_code is not None
+    assert partial_code["blocks"][0]["type"] == "bullet_list"
+    assert partial_code["blocks"][1]["type"] == "code"
+    assert partial_code["blocks"][1]["language"] == "python"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "agente/adjuntos").mkdir(parents=True, exist_ok=True)
+        (ws / "agente/reportes").mkdir(parents=True, exist_ok=True)
+
+        # Imagen tipo portada/carátula universitaria (642x912 RGBA opaca, fondo blanco + marco/trazos oscuros)
+        cover_path = ws / "agente/adjuntos/portada_utm.png"
+        cov = Image.new("RGBA", (642, 912), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(cov)
+        draw.rectangle([28, 28, 614, 884], outline=(20, 20, 20, 255), width=4)
+        draw.rectangle([420, 24, 610, 76], fill=(16, 125, 78, 255))
+        for y in (120, 210, 320, 560, 620, 740):
+            draw.rectangle([120, y, 520, y + 24], fill=(25, 25, 25, 255))
+        cov.save(cover_path, format="PNG")
+
+        events: list[dict] = []
+        executor = WorkspaceToolExecutor(ws, emit_event=events.append)
+
+        # 3. Rechazar PDF con portada y blocks vacío (no guardar 1 página vacía)
+        empty_res = executor.execute(
+            "pdf_generate",
+            {
+                "title": "Programación Orientada a Objetos (POO)",
+                "output_path": "agente/reportes/vacio_fallido.pdf",
+                "cover": {
+                    "enabled": True,
+                    "image_path": "agente/adjuntos/portada_utm.png",
+                    "layout": "full_bleed",
+                },
+            },
+        )
+        assert empty_res["ok"] is False
+        assert not (ws / "agente/reportes/vacio_fallido.pdf").exists()
+        assert not any(e.get("type") == "pdf_generated" for e in events)
+
+        # 3b. También rechazar stub mínimo de 1 sola línea cuando hay portada
+        stub_res = executor.execute(
+            "pdf_generate",
+            {
+                "title": "Solo Portada con Stub",
+                "output_path": "agente/reportes/stub_fallido.pdf",
+                "cover": {
+                    "enabled": True,
+                    "image_path": "agente/adjuntos/portada_utm.png",
+                },
+                "blocks": [{"type": "paragraph", "text": "Resumen corto."}],
+            },
+        )
+        assert stub_res["ok"] is False
+        assert not (ws / "agente/reportes/stub_fallido.pdf").exists()
+
+        # 4. Generar PDF completo con bullet_list + code y layout='full_bleed' autopromovido a 'full_page'
+        full_res = executor.execute(
+            "pdf_generate",
+            {
+                "title": "Programación Orientada a Objetos (POO)",
+                "subtitle": "Fundamentos y ejemplos prácticos",
+                "output_path": "agente/reportes/poo_completo.pdf",
+                "cover": {
+                    "enabled": True,
+                    "image_path": "agente/adjuntos/portada_utm.png",
+                    "layout": "full_bleed",
+                },
+                "blocks": [
+                    {"type": "heading", "level": 1, "text": "1. ¿Qué es la POO?"},
+                    {
+                        "type": "paragraph",
+                        "text": "La Programación Orientada a Objetos organiza el código alrededor de clases y objetos que encapsulan estado y comportamiento.",
+                    },
+                    {
+                        "type": "bullet_list",
+                        "items": [
+                            "Encapsulamiento: protege el estado interno",
+                            "Abstracción: expone solo la interfaz esencial",
+                            "Herencia: reutiliza y especializa comportamiento",
+                            "Polimorfismo: una misma interfaz, distintas formas",
+                        ],
+                    },
+                    {"type": "heading", "level": 2, "text": "Ejemplo en Python"},
+                    {
+                        "type": "code",
+                        "language": "python",
+                        "caption": "Definición básica de clase",
+                        "code": "class CuentaBancaria:\n    def __init__(self, titular: str, saldo: float = 0.0):\n        self.titular = titular\n        self._saldo = saldo",
+                    },
+                ],
+            },
+        )
+        assert full_res["ok"] is True, full_res
+        assert full_res["cover_layout"] == "full_page", full_res
+        assert full_res["page_count"] >= 2
+        assert any(e.get("type") == "pdf_generated" for e in events)
+
+        pdf_abs = ws / "agente/reportes/poo_completo.pdf"
+        read_p1 = read_pdf_document(pdf_abs, start_page=1, end_page=1, enable_ocr_fallback=False)
+        assert "Programación Orientada a Objetos" not in read_p1["pages"][0]["text"]
+
+        read_p2 = read_pdf_document(pdf_abs, start_page=2, end_page=2, enable_ocr_fallback=False)
+        p2_text = read_p2["pages"][0]["text"]
+        assert "¿Qué es la POO?" in p2_text
+        assert "Encapsulamiento" in p2_text
+        assert "CuentaBancaria" in p2_text
+
+        # Verificar que página 1 renderizada se mantiene blanca/luminosa (sin velo gris 0.86)
+        import base64, io as pyio
+        prev = render_pdf_preview(pdf_abs, start_page=1, max_pages=1)
+        b64 = prev["pages"][0]["data_url"].split(",", 1)[1]
+        rendered_p1 = Image.open(pyio.BytesIO(base64.b64decode(b64))).convert("RGB")
+        rw, rh = rendered_p1.size
+        sample_px = rendered_p1.getpixel((rw // 2, rh - 10))
+        assert min(sample_px) >= 235, f"Se esperaba fondo claro sin oscurecer, got {sample_px}"
+
+        # 5. overlay_text=True permite conservar full_bleed si se solicita explícitamente
+        overlay_res = executor.execute(
+            "pdf_generate",
+            {
+                "title": "Con texto superpuesto",
+                "output_path": "agente/reportes/overlay.pdf",
+                "cover": {
+                    "enabled": True,
+                    "image_path": "agente/adjuntos/portada_utm.png",
+                    "layout": "full_bleed",
+                    "overlay_text": True,
+                },
+                "blocks": [
+                    {"type": "heading", "level": 1, "text": "Sección de desarrollo"},
+                    {
+                        "type": "paragraph",
+                        "text": "Documento de prueba con portada full_bleed intencional solicitada mediante overlay_text=True y desarrollo suficiente.",
+                    },
+                ],
+            },
+        )
+        assert overlay_res["ok"] is True
+        assert overlay_res["cover_layout"] == "full_bleed"
+
+        # 6. cover_only=True permite explícitamente generar solo portada
+        cover_only_res = executor.execute(
+            "pdf_generate",
+            {
+                "title": "Solo Portada",
+                "output_path": "agente/reportes/solo_portada.pdf",
+                "cover_only": True,
+                "cover": {
+                    "enabled": True,
+                    "image_path": "agente/adjuntos/portada_utm.png",
+                    "layout": "full_page",
+                },
+                "blocks": [],
+            },
+        )
+        assert cover_only_res["ok"] is True
+        assert cover_only_res["page_count"] == 1
+
+        # 7. Rescate de `blocks` stringificado/truncado sin imprimir JSON literal en el PDF
+        from slices.ai_service.openrouter_client import (
+            _collapse_tool_history_to_text,
+            _is_recoverable_candidate_error,
+            _sanitize_tool_calls_for_history,
+        )
+        from slices.pdf_engine.generator import _coerce_block_list_value
+
+        broken_str_blocks = (
+            '[{"type": "heading", "level": 1, "text": "Qué es la POO"}, '
+            '{"type": "paragraph", "text": "La Programación Orientada a Objetos modela entidades reales."}, '
+            '{"type": "bullet_list", "items": ["Encapsulamiento", "Herencia"]}, '
+            '{"type": "paragraph", "text": "Texto truncado sin cerrar'
+        )
+        rescued = _coerce_block_list_value(broken_str_blocks)
+        assert isinstance(rescued, list) and len(rescued) == 3
+        assert rescued[0]["text"] == "Qué es la POO"
+
+        unrecoverable_json_str = '[{"type": "heading", "text": "sin cerrar'
+        assert _coerce_block_list_value(unrecoverable_json_str) == []
+
+        str_blocks_res = executor.execute(
+            "pdf_generate",
+            {
+                "title": "POO Rescatado",
+                "output_path": "agente/reportes/poo_rescatado.pdf",
+                "cover": {"enabled": False},
+                "blocks": broken_str_blocks,
+            },
+        )
+        assert str_blocks_res["ok"] is True
+        read_rescued = read_pdf_document(
+            ws / "agente/reportes/poo_rescatado.pdf",
+            start_page=1,
+            end_page=2,
+            enable_ocr_fallback=False,
+        )
+        rescued_txt = read_rescued["pages"][0]["text"]
+        assert "Qué es la POO" in rescued_txt
+        assert '"type":' not in rescued_txt and "[{" not in rescued_txt
+
+        # 8. Preview parcial con `blocks` stringificado
+        draft_from_str = _extract_partial_pdf_draft(
+            json.dumps({
+                "title": "POO Stream",
+                "blocks": '[{"type": "heading", "level": 1, "text": "Sección Uno"}, {"type": "paragraph", "text": "Hola"}]',
+            })
+        )
+        assert draft_from_str is not None and len(draft_from_str["blocks"]) == 2
+
+        # 9. Blindaje HTTP 400: sanitización de tool_calls rotos y colapso multi-turno
+        raw_tcs = [
+            {"id": "call_bad", "type": "function", "function": {"name": "pdf_generate", "arguments": '{"title": "POO", "blocks": [INCOMPLETO'}}
+        ]
+        sanitized_tcs, all_failed = _sanitize_tool_calls_for_history(
+            raw_tcs,
+            [{"__parse_error__": "truncado"}],
+        )
+        assert all_failed is True
+        assert json.loads(sanitized_tcs[0]["function"]["arguments"]) == {}
+        assert _is_recoverable_candidate_error("HTTP 400: Provider returned error") is True
+
+        collapsed = _collapse_tool_history_to_text([
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "haz pdf"},
+            {"role": "assistant", "content": "", "tool_calls": sanitized_tcs},
+            {"role": "tool", "tool_call_id": "call_bad", "content": '{"ok": true}'},
+        ])
+        assert all(m["role"] in ("system", "user", "assistant") for m in collapsed)
+        assert not any("tool_calls" in m for m in collapsed)
+
+    print("✅ Portada íntegra full_page, rescate JSON y blindaje HTTP 400 verificados.")
+
+
+def test_free_form_response_and_stray_tag_cleanup() -> None:
+    from pathlib import Path
+    import tempfile
+    from slices.ai_service.openrouter_client import _StreamTagRouter, _build_system_prompt
+    from slices.task_ui.schemas import clean_visible_reply
+
+    with tempfile.TemporaryDirectory() as tmp:
+        prompt = _build_system_prompt(Path(tmp) / "ctx", Path(tmp) / "skills", [], [], [], stream_mode=True)
+        assert "plena libertad expresiva" in prompt
+        assert "NUNCA envuelvas tu respuesta en etiquetas XML" in prompt
+        assert "FORMATO DE RESPUESTA EN VIVO (OBLIGATORIO)" not in prompt
+        assert "NO uses emojis" not in prompt
+
+    # 1. Respuesta libre en Markdown puro (sin <analisis>/<respuesta>) con código HTML y comparaciones matemáticas
+    free_md = (
+        "# Portada Académica UTM 📄\n\n"
+        "- **Alumno:** Uziel Isaac Pech Balam\n"
+        "- Condición: a < 50 y b > 10\n\n"
+        "```html\n<output>42</output>\n```\n\n"
+        "Etiqueta `<answer>` explicada sin censura."
+    )
+    replies_free: list[str] = []
+    router_free = _StreamTagRouter(
+        on_reasoning=lambda _s: None,
+        on_reply=replies_free.append,
+        on_phase=lambda _p: None,
+    )
+    for i in range(0, len(free_md), 7):
+        router_free.feed(free_md[i : i + 7])
+    router_free.flush()
+    streamed_free = clean_visible_reply("".join(replies_free))
+    assert streamed_free == free_md, f"Se alteró Markdown libre: {streamed_free!r}"
+
+    # 2. Etiquetas alucinadas como <posta>...</posta> o < / posta > deben eliminarse por completo
+    replies_posta: list[str] = []
+    router_posta = _StreamTagRouter(
+        on_reasoning=lambda _s: None,
+        on_reply=replies_posta.append,
+        on_phase=lambda _p: None,
+    )
+    for chunk in ("<po", "sta>\nLa imagen es", " de UTM.\n< / ", "posta>"):
+        router_posta.feed(chunk)
+    router_posta.flush()
+    streamed_posta = clean_visible_reply("".join(replies_posta)).strip()
+    assert streamed_posta == "La imagen es de UTM.", f"Fuga <posta>: {streamed_posta!r}"
+
+    # 3. Limpieza de wrappers genéricos sin dañar bloques de código ni inline code
+    assert clean_visible_reply("<reply>Hola mundo</reply>") == "Hola mundo"
+    assert clean_visible_reply("<output>\nContenido libre\n</output>") == "Contenido libre"
+    html_snippet = "Usa `<output>` en HTML:\n```html\n<output>ok</output>\n```"
+    assert clean_visible_reply(html_snippet) == html_snippet
+
+    print("✅ Respuesta libre Markdown y limpieza de etiquetas residuales (<posta>) verificadas.")
+
+
 if __name__ == "__main__":
     test_sidecar_ping_and_inventory()
     test_canvas_schema_and_stream_router()
     test_task_normalization_and_clarification()
     test_review_engine_and_agent_tools()
     test_task_aware_model_router_and_failover()
+    test_desktop_app_launcher_tools_and_routing()
+    test_pdf_engine_and_multimodal_pipeline()
+    test_spaced_xml_tags_and_live_pdf_preview()
+    test_ready_cover_full_page_and_content_enforcement()
+    test_free_form_response_and_stray_tag_cleanup()
 

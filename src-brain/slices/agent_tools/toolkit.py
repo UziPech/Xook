@@ -25,6 +25,7 @@ from slices.task_ui.schemas import sanitize_task_proposal
 AUTONOMOUS_WRITE_ROOTS = ("agente", "memoria")
 PROTECTED_HITL_ROOTS = ("empresa", "datos", "habilidades")
 READ_SEARCH_EXCLUDED_ROOTS = {".xook", ".git", "__pycache__", "node_modules"}
+IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif", ".heic"}
 MAX_READ_BYTES = 24 * 1024
 MAX_SEARCH_MATCHES = 40
 
@@ -317,6 +318,355 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_desktop_apps",
+            "description": (
+                "Consulta de solo lectura las aplicaciones de escritorio instaladas en el equipo "
+                "(por ejemplo Notas, Calendario, Calculadora, Safari o editores). Úsala si hay duda sobre "
+                "el nombre exacto instalado antes de abrirla."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Filtro opcional por nombre parcial o idioma (ej. 'notas', 'calendario', 'office')."},
+                    "limit": {"type": "integer", "description": "Máximo de resultados (por defecto 25, máximo 60)."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_desktop_app",
+            "description": (
+                "Solicita al Guardián de Rust abrir una aplicación de escritorio instalada en el equipo del usuario "
+                "(como Notas, Calendario, Recordatorios, Calculadora, Safari o Finder). "
+                "Siempre solicita autorización al usuario con una tarjeta interactiva salvo que ya exista permiso permanente."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "app_name": {"type": "string", "description": "Nombre de la aplicación a abrir (ej. 'Notas', 'Calendario', 'Safari') o bundle ID."},
+                    "purpose": {"type": "string", "description": "Propósito claro en español para mostrar al usuario en la tarjeta de autorización."},
+                },
+                "required": ["app_name", "purpose"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "os_list_notes",
+            "description": (
+                "Consulta notas y carpetas reales de la aplicación Notas del sistema (macOS). "
+                "Úsala cuando el usuario quiera revisar, buscar o retomar notas guardadas en su Mac."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Texto opcional para filtrar por título o contenido."},
+                    "folder": {"type": "string", "description": "Carpeta opcional dentro de Notas (ej. 'Notas', 'Trabajo')."},
+                    "limit": {"type": "integer", "description": "Máximo de notas a devolver (por defecto 15, máximo 30)."},
+                    "purpose": {"type": "string", "description": "Motivo breve en español para mostrar al usuario."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "os_create_note",
+            "description": (
+                "Crea una nota real en la aplicación Notas de macOS del usuario. "
+                "Solicita autorización al usuario mediante tarjeta interactiva salvo que ya tenga permiso permanente."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Título claro de la nota."},
+                    "body": {"type": "string", "description": "Contenido en texto plano con saltos de línea (sin etiquetas HTML)."},
+                    "folder": {"type": "string", "description": "Carpeta destino opcional dentro de Notas (por defecto usa la carpeta principal)."},
+                    "open_after": {"type": "boolean", "description": "Opcional: true para abrir y mostrar la nota creada en pantalla."},
+                    "purpose": {"type": "string", "description": "Propósito claro en español para la tarjeta de autorización."},
+                },
+                "required": ["title", "body"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "os_list_calendar_events",
+            "description": (
+                "Consulta los calendarios disponibles y los eventos reales en un rango de fechas dentro "
+                "de la app Calendario de macOS. Úsala antes de agendar si necesitas verificar disponibilidad, "
+                "huecos libres o resumir la agenda real del usuario."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_iso": {"type": "string", "description": "Inicio del rango en formato ISO local (ej. '2026-11-13' o '2026-11-13T00:00:00'). Si se omite, inicia hoy."},
+                    "end_iso": {"type": "string", "description": "Fin del rango en formato ISO local (ej. '2026-11-15' o '2026-11-15T23:59:59'). Si se omite, cubre 7 días."},
+                    "calendar_name": {"type": "string", "description": "Nombre opcional de un calendario específico (ej. 'Trabajo', 'Personal')."},
+                    "limit": {"type": "integer", "description": "Máximo de eventos a devolver (por defecto 40, máximo 100)."},
+                    "purpose": {"type": "string", "description": "Motivo breve en español para mostrar al usuario."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "os_create_calendar_event",
+            "description": (
+                "Agenda un evento real en la aplicación Calendario de macOS del usuario. "
+                "Usa la fecha y hora local actual del sistema para calcular fechas ISO exactas y solicita "
+                "autorización mediante tarjeta interactiva con vista previa antes de crearlo."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Título del evento o reunión."},
+                    "start_iso": {"type": "string", "description": "Fecha/hora de inicio en formato ISO local exacto (ej. '2026-11-14T15:00:00' o '2026-11-14' si es todo el día)."},
+                    "end_iso": {"type": "string", "description": "Fecha/hora de fin opcional en ISO local (por defecto +1 hora para eventos con hora)."},
+                    "all_day": {"type": "boolean", "description": "true si el evento dura todo el día."},
+                    "calendar_name": {"type": "string", "description": "Nombre opcional del calendario editable destino (si se omite, usa el calendario principal)."},
+                    "location": {"type": "string", "description": "Lugar o enlace opcional de la reunión."},
+                    "description": {"type": "string", "description": "Notas o detalles adicionales del evento."},
+                    "reminder_minutes_before": {"type": "integer", "description": "Minutos antes para alerta opcional (ej. 15)."},
+                    "open_after": {"type": "boolean", "description": "Opcional: true para abrir Calendario mostrando el evento agendado."},
+                    "purpose": {"type": "string", "description": "Propósito claro en español para la tarjeta de autorización."},
+                },
+                "required": ["title", "start_iso"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pdf_read",
+            "description": (
+                "Lee y extrae información estructurada de un archivo PDF del workspace: metadatos, "
+                "índice/marcadores, texto por página y tablas estructuradas. Si alguna página es "
+                "escaneada sin capa de texto, intenta OCR local automático."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Ruta relativa del archivo PDF dentro del workspace (ej. 'datos/documentos/factura.pdf' o 'agente/adjuntos/reporte.pdf').",
+                    },
+                    "start_page": {
+                        "type": "integer",
+                        "description": "Página inicial (1-based). Por defecto 1.",
+                    },
+                    "end_page": {
+                        "type": "integer",
+                        "description": "Página final (1-based, máximo 20 páginas por llamada).",
+                    },
+                    "include_tables": {
+                        "type": "boolean",
+                        "description": "Si true (default), extrae tablas detectadas en las páginas.",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Presupuesto máximo de caracteres a devolver (default 24000).",
+                    },
+                    "enable_ocr_fallback": {
+                        "type": "boolean",
+                        "description": "Si true (default), aplica OCR local automático a páginas escaneadas sin texto.",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pdf_generate",
+            "description": (
+                "Genera un documento PDF profesional y estructurado en 'agente/reportes/' (o ruta dentro de 'agente/'). "
+                "Estructura base con títulos, subtítulos, párrafos, listas, tablas, tarjetas métricas (kpi_strip), "
+                "callouts, portada opcional e imágenes del workspace. Interpreta libremente la intención del usuario "
+                "sobre dónde y cómo usar cada imagen o si requiere portada (full_bleed, hero_top, centered, split, minimal o auto)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Título principal del documento PDF.",
+                    },
+                    "subtitle": {
+                        "type": "string",
+                        "description": "Subtítulo o bajada descriptiva opcional del documento.",
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Ruta de salida opcional dentro de 'agente/' (ej. 'agente/reportes/analisis.pdf'). Si se omite se crea automáticamente con fecha.",
+                    },
+                    "author": {
+                        "type": "string",
+                        "description": "Autor, área o nombre de la empresa emisora.",
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "Fecha visible en portada y pie de página (por defecto hoy).",
+                    },
+                    "theme": {
+                        "type": "string",
+                        "enum": ["executive", "minimal", "emerald", "warm", "midnight"],
+                        "description": "Paleta visual del PDF (por defecto 'executive').",
+                    },
+                    "page_size": {
+                        "type": "string",
+                        "enum": ["letter", "a4"],
+                        "description": "Tamaño de página (por defecto 'letter').",
+                    },
+                    "cover": {
+                        "type": "object",
+                        "description": "Portada dedicada opcional. Úsala cuando el documento la amerite o el usuario pida portada o imagen de portada.",
+                        "properties": {
+                            "enabled": {"type": "boolean"},
+                            "image_path": {
+                                "type": "string",
+                                "description": "Ruta o nombre de imagen del workspace para portada (ej. 'agente/adjuntos/portada.png').",
+                            },
+                            "layout": {
+                                "type": "string",
+                                "enum": ["auto", "full_page", "hero_top", "full_bleed", "centered", "split", "minimal", "none"],
+                                "description": "Disposición de portada. Usa 'full_page' cuando el usuario adjunte una portada o carátula ya diseñada (con texto/logos propios) para insertarla íntegra sin oscurecer ni encimar texto encima; 'auto' detecta carátulas, fotos o logos automáticamente.",
+                            },
+                            "overlay_text": {
+                                "type": "boolean",
+                                "description": "Solo pon true si deseas estampar título/autor encima de la imagen de portada aunque parezca carátula.",
+                            },
+                            "eyebrow": {"type": "string", "description": "Etiqueta superior corta en portada."},
+                            "title": {"type": "string", "description": "Título alternativo para portada."},
+                            "subtitle": {"type": "string", "description": "Subtítulo alternativo para portada."},
+                            "meta": {"type": "string", "description": "Texto breve de autor/fecha en portada."},
+                        },
+                    },
+                    "cover_only": {
+                        "type": "boolean",
+                        "description": "Déjalo en false salvo que el usuario haya pedido explícitamente un PDF de una sola página con únicamente la portada sin desarrollo.",
+                    },
+                    "blocks": {
+                        "type": "array",
+                        "description": "Arreglo JSON NATIVO (NO stringificado) con los bloques ordenados del documento (títulos, subtítulos, párrafos, listas, código, tablas, métricas, callouts, imágenes). Obligatorio incluir contenido desarrollado en 'blocks' o en 'markdown' (salvo cover_only=true).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "heading",
+                                        "paragraph",
+                                        "bullets",
+                                        "bullet_list",
+                                        "numbered_list",
+                                        "code",
+                                        "table",
+                                        "image",
+                                        "callout",
+                                        "kpi_strip",
+                                        "divider",
+                                        "spacer",
+                                        "page_break",
+                                    ],
+                                },
+                                "level": {
+                                    "type": "integer",
+                                    "description": "Nivel para 'heading': 1=Título de sección, 2=Subtítulo, 3=Sub-subtítulo.",
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "description": "Texto para 'heading', 'paragraph' o 'callout' (soporta **negritas**, *cursiva* y `código`).",
+                                },
+                                "code": {
+                                    "type": "string",
+                                    "description": "Código fuente literal para bloque 'code'.",
+                                },
+                                "language": {
+                                    "type": "string",
+                                    "description": "Lenguaje de programación para bloque 'code' (ej. 'python', 'typescript', 'sql').",
+                                },
+                                "title": {
+                                    "type": "string",
+                                    "description": "Título opcional para 'callout' o 'section'.",
+                                },
+                                "tone": {
+                                    "type": "string",
+                                    "enum": ["info", "success", "warning", "critical"],
+                                    "description": "Tono visual para 'callout'.",
+                                },
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Elementos de texto para 'bullets' o 'numbered_list'.",
+                                },
+                                "metrics": {
+                                    "type": "array",
+                                    "description": "Tarjetas numéricas (máximo 4) para 'kpi_strip'.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {"type": "string"},
+                                            "value": {"type": "string"},
+                                            "detail": {"type": "string"},
+                                        },
+                                    },
+                                },
+                                "headers": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Encabezados de columna para 'table'.",
+                                },
+                                "rows": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                    "description": "Filas de celdas para 'table'.",
+                                },
+                                "path": {
+                                    "type": "string",
+                                    "description": "Ruta o nombre de archivo en workspace para bloque 'image'.",
+                                },
+                                "caption": {
+                                    "type": "string",
+                                    "description": "Pie de figura o tabla.",
+                                },
+                                "size": {
+                                    "type": "string",
+                                    "enum": ["small", "medium", "large", "full"],
+                                    "description": "Ancho relativo para bloque 'image'.",
+                                },
+                                "align": {
+                                    "type": "string",
+                                    "enum": ["left", "center", "right"],
+                                    "description": "Alineación para bloque 'image'.",
+                                },
+                            },
+                        },
+                    },
+                    "markdown": {
+                        "type": "string",
+                        "description": "Recomendado para documentos extensos (8+, 12+ páginas) o guías largas: contenido completo en Markdown estructurado (#, ##, ###, listas, > callouts, | tablas | y ```lenguaje```). Más compacto y confiable que decenas de objetos JSON.",
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+    },
 ]
 
 
@@ -333,6 +683,7 @@ class WorkspaceToolExecutor:
         self.emit_event = emit_event
         self.command_bridge = command_bridge
         self.staged_tasks: List[Dict[str, Any]] = []
+        self.generated_pdfs: List[Dict[str, Any]] = []
         self.workspace_mutated = False
 
     def _emit_workspace_changed(self, path: str, action: str) -> None:
@@ -358,6 +709,14 @@ class WorkspaceToolExecutor:
             "propose_schedule_automation": self._tool_propose_schedule_automation,
             "propose_tasks": self._tool_propose_tasks,
             "run_workspace_command": self._tool_run_workspace_command,
+            "list_desktop_apps": self._tool_list_desktop_apps,
+            "open_desktop_app": self._tool_open_desktop_app,
+            "os_list_notes": self._tool_os_list_notes,
+            "os_create_note": self._tool_os_create_note,
+            "os_list_calendar_events": self._tool_os_list_calendar_events,
+            "os_create_calendar_event": self._tool_os_create_calendar_event,
+            "pdf_read": self._tool_pdf_read,
+            "pdf_generate": self._tool_pdf_generate,
         }.get(name)
         if not handler:
             return {"ok": False, "error": f"Herramienta desconocida: {name}"}
@@ -394,9 +753,25 @@ class WorkspaceToolExecutor:
         raw_path = args.get("path")
         if not raw_path:
             return {"ok": False, "error": "Falta el parámetro 'path'."}
-        target, clean_rel, _ = resolve_workspace_path(self.workspace_root, str(raw_path))
+        target, clean_rel, top_zone = resolve_workspace_path(self.workspace_root, str(raw_path))
+        if top_zone in READ_SEARCH_EXCLUDED_ROOTS:
+            return {"ok": False, "error": f"Ruta reservada no accesible: {clean_rel}"}
         if not target.is_file():
             return {"ok": False, "error": f"Archivo no encontrado: {clean_rel}"}
+
+        ext = target.suffix.lower()
+        if ext == ".pdf":
+            pdf_res = self._tool_pdf_read({"path": clean_rel})
+            if pdf_res.get("ok"):
+                pdf_res["note"] = (
+                    "Archivo PDF leído mediante lector estructurado "
+                    "(usa 'pdf_read' con start_page/end_page si necesitas leer más páginas)."
+                )
+            return pdf_res
+
+        if ext in IMAGE_FILE_EXTENSIONS:
+            return self._inspect_image_file(target, clean_rel)
+
         limit = max(256, min(MAX_READ_BYTES, int(args.get("max_bytes") or 16000)))
         data = target.read_bytes()
         truncated = len(data) > limit
@@ -408,6 +783,213 @@ class WorkspaceToolExecutor:
             "truncated": truncated,
             "content": text,
         }
+
+    def _inspect_image_file(self, target: Path, clean_rel: str) -> Dict[str, Any]:
+        size_bytes = target.stat().st_size
+        width: Optional[int] = None
+        height: Optional[int] = None
+        img_format: Optional[str] = None
+        mode: Optional[str] = None
+        has_alpha = False
+        try:
+            from PIL import Image as PILImage, ImageOps
+
+            with PILImage.open(target) as im:
+                img_format = im.format
+                mode = im.mode
+                has_alpha = "A" in im.getbands()
+                im_t = ImageOps.exif_transpose(im)
+                width, height = im_t.size
+        except Exception:
+            pass
+
+        ocr_text = ""
+        try:
+            from slices.pdf_engine.ocr import extract_text_from_images_macos
+
+            ocr_map = extract_text_from_images_macos([target])
+            ocr_text = (ocr_map.get(str(target)) or "").strip()
+        except Exception:
+            ocr_text = ""
+
+        out: Dict[str, Any] = {
+            "ok": True,
+            "path": clean_rel,
+            "kind": "image",
+            "format": img_format or target.suffix.lstrip(".").upper(),
+            "mode": mode,
+            "has_alpha": has_alpha,
+            "width": width,
+            "height": height,
+            "size_bytes": size_bytes,
+            "note": (
+                "Archivo de imagen binario dentro del workspace. "
+                "Puedes pasarlo a 'pdf_generate' en 'cover.image_path' o en un bloque {type: 'image', path}."
+            ),
+        }
+        if ocr_text:
+            out["ocr_text"] = ocr_text[:4000]
+        return out
+
+    def _tool_pdf_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        raw_path = args.get("path")
+        if not raw_path:
+            return {"ok": False, "error": "Falta el parámetro 'path' del PDF."}
+        target, clean_rel, top_zone = resolve_workspace_path(self.workspace_root, str(raw_path))
+        if top_zone in READ_SEARCH_EXCLUDED_ROOTS:
+            return {"ok": False, "error": f"Ruta reservada no accesible: {clean_rel}"}
+        if not target.is_file():
+            return {"ok": False, "error": f"Archivo PDF no encontrado: {clean_rel}"}
+        if target.suffix.lower() != ".pdf":
+            return {"ok": False, "error": f"El archivo no es PDF ({target.suffix or 'sin extensión'}): {clean_rel}"}
+
+        try:
+            from slices.pdf_engine import read_pdf_document
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": f"Motor PDF no disponible en este entorno Python: {exc}",
+            }
+
+        try:
+            start_page = int(args.get("start_page") or 1)
+        except Exception:
+            start_page = 1
+        end_page_raw = args.get("end_page")
+        try:
+            end_page = int(end_page_raw) if end_page_raw is not None else None
+        except Exception:
+            end_page = None
+        include_tables = args.get("include_tables")
+        include_tables_bool = True if include_tables is None else bool(include_tables)
+        enable_ocr = args.get("enable_ocr_fallback")
+        enable_ocr_bool = True if enable_ocr is None else bool(enable_ocr)
+        try:
+            max_chars = int(args.get("max_chars") or 24000)
+        except Exception:
+            max_chars = 24000
+
+        try:
+            res = read_pdf_document(
+                target,
+                start_page=start_page,
+                end_page=end_page,
+                include_tables=include_tables_bool,
+                max_chars=max_chars,
+                enable_ocr_fallback=enable_ocr_bool,
+            )
+            res["path"] = clean_rel
+            return res
+        except Exception as exc:
+            return {"ok": False, "error": f"Error leyendo PDF {clean_rel}: {exc}"}
+
+    def _tool_pdf_generate(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(args, dict):
+            return {"ok": False, "error": "Parámetros inválidos para generar PDF."}
+        title = str(args.get("title") or "").strip()
+        if not title:
+            return {"ok": False, "error": "Falta el título ('title') del documento PDF."}
+
+        try:
+            from slices.pdf_engine import generate_pdf_document, render_pdf_preview
+            from slices.pdf_engine.generator import (
+                _count_substantive_blocks,
+                _normalize_blocks_input,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": f"Motor de generación PDF no disponible en este entorno Python: {exc}",
+            }
+
+        cover_only = bool(args.get("cover_only"))
+        normalized_blocks, _ = _normalize_blocks_input(args)
+        substantive_count = _count_substantive_blocks(normalized_blocks)
+        if substantive_count == 0 and not cover_only:
+            return {
+                "ok": False,
+                "error": (
+                    "El PDF NO se generó porque faltan los bloques de contenido del documento (`blocks`, `sections` o `markdown`). "
+                    "No generes solo una portada cuando el usuario pidió desarrollar un tema o informe. "
+                    "Vuelve a llamar a `pdf_generate` incluyendo `title`, `cover` (con `layout: 'full_page'` si la imagen adjunta ya es una carátula diseñada) "
+                    "y el arreglo `blocks` completo con títulos (`heading`), párrafos explicativos (`paragraph`), listas (`bullets`/`bullet_list`), código (`code`) o tablas (`table`)."
+                ),
+            }
+
+        raw_cover = args.get("cover")
+        has_cover_requested = (
+            (isinstance(raw_cover, bool) and raw_cover)
+            or (
+                isinstance(raw_cover, dict)
+                and (
+                    raw_cover.get("enabled")
+                    or raw_cover.get("image_path")
+                    or raw_cover.get("image")
+                    or raw_cover.get("path")
+                    or raw_cover.get("logo_path")
+                )
+            )
+            or bool(args.get("cover_image") or args.get("coverImage") or args.get("portada_imagen"))
+        )
+        if has_cover_requested and not cover_only:
+            has_structured = any(
+                str(b.get("type") or "").lower() in ("table", "code", "kpi_strip", "image")
+                for b in normalized_blocks
+            )
+            body_chars = sum(
+                len(str(b.get("text") or b.get("code") or ""))
+                + sum(len(str(x)) for x in (b.get("items") or []))
+                for b in normalized_blocks
+            )
+            if substantive_count < 2 and body_chars < 90 and not has_structured:
+                return {
+                    "ok": False,
+                    "error": (
+                        "El PDF con portada requiere contenido desarrollado en las páginas siguientes (`blocks`). "
+                        "Agrega varias secciones desarrolladas (headings, párrafos explicativos, listas, ejemplos o tablas) "
+                        "dentro de `blocks` en lugar de escribir el desarrollo solo en el chat, y vuelve a llamar a `pdf_generate`."
+                    ),
+                }
+
+        def _on_progress(evt: Dict[str, Any]) -> None:
+            if self.emit_event:
+                self.emit_event({"type": "pdf_draft_progress", **evt})
+
+        try:
+            out = generate_pdf_document(
+                args,
+                workspace_root=self.workspace_root,
+                resolve_path_fn=resolve_workspace_path,
+                autonomous_roots=AUTONOMOUS_WRITE_ROOTS,
+                progress_callback=_on_progress if self.emit_event else None,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"No se pudo generar el PDF: {exc}"}
+
+        if out.get("ok") and out.get("path"):
+            self.generated_pdfs.append(out)
+            self._emit_workspace_changed(str(out["path"]), "create_pdf")
+            if self.emit_event:
+                pdf_event_payload = dict(out)
+                try:
+                    _on_progress({
+                        "stage": "rendering_preview",
+                        "step_label": "Renderizando vista previa de páginas...",
+                        "progress": 0.94,
+                        "title": out.get("title") or title,
+                        "theme": out.get("theme") or "executive",
+                        "has_cover": bool(out.get("has_cover")),
+                        "path": str(out["path"]),
+                    })
+                    out_abs, _, _ = resolve_workspace_path(self.workspace_root, str(out["path"]))
+                    preview = render_pdf_preview(out_abs, start_page=1, max_pages=8)
+                    if preview.get("ok"):
+                        pdf_event_payload["preview_pages"] = preview.get("pages") or []
+                        pdf_event_payload["preview_has_more"] = bool(preview.get("has_more"))
+                except Exception:
+                    pass
+                self.emit_event({"type": "pdf_generated", "pdf": pdf_event_payload})
+        return out
 
     def _tool_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
         query = str(args.get("query") or "").strip()
@@ -761,4 +1343,147 @@ class WorkspaceToolExecutor:
             "cwd": cwd,
             "timeout_sec": timeout_sec,
         })
+
+    def _require_bridge(
+        self,
+        rpc_callback: str,
+        prefix: str,
+        payload: Dict[str, Any],
+        unavailable_msg: str,
+    ) -> Dict[str, Any]:
+        if self.command_bridge is None:
+            return {"ok": False, "error": unavailable_msg}
+        req_id = f"{prefix}_{uuid.uuid4().hex[:12]}"
+        return self.command_bridge({
+            "rpc_callback": rpc_callback,
+            "request_id": req_id,
+            **payload,
+        })
+
+    def _tool_list_desktop_apps(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        query = str(args.get("query") or "").strip()
+        try:
+            limit = max(1, min(60, int(args.get("limit") or 25)))
+        except (TypeError, ValueError):
+            limit = 25
+        return self._require_bridge(
+            "list_installed_apps",
+            "apps",
+            {"query": query, "limit": limit},
+            "La consulta de aplicaciones instaladas requiere la sesión de escritorio activa.",
+        )
+
+    def _tool_open_desktop_app(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        app_name = str(args.get("app_name") or "").strip()
+        purpose = str(args.get("purpose") or "").strip()
+        if not app_name:
+            return {"ok": False, "error": "Falta 'app_name' con el nombre de la aplicación a abrir."}
+        if not purpose:
+            purpose = f"Abrir la aplicación {app_name} a solicitud del usuario."
+        return self._require_bridge(
+            "open_desktop_app",
+            "app",
+            {"app_name": app_name, "purpose": purpose},
+            "Abrir aplicaciones requiere la sesión de escritorio con Guardián activo.",
+        )
+
+    def _tool_os_list_notes(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        query = str(args.get("query") or "").strip()
+        folder = str(args.get("folder") or "").strip() or None
+        purpose = str(args.get("purpose") or "").strip() or "Consultar notas en la aplicación Notas."
+        try:
+            limit = max(1, min(30, int(args.get("limit") or 15)))
+        except (TypeError, ValueError):
+            limit = 15
+        return self._require_bridge(
+            "os_notes_list",
+            "notes_ls",
+            {"query": query, "folder": folder, "limit": limit, "purpose": purpose},
+            "Consultar Notas del sistema requiere la sesión de escritorio con Guardián activo.",
+        )
+
+    def _tool_os_create_note(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        title = str(args.get("title") or "").strip()
+        body = str(args.get("body") or "").strip()
+        folder = str(args.get("folder") or "").strip() or None
+        open_after = bool(args.get("open_after", False))
+        purpose = str(args.get("purpose") or "").strip()
+        if not title:
+            return {"ok": False, "error": "Falta 'title' con el título de la nota."}
+        if not body:
+            body = title
+        if not purpose:
+            purpose = f"Crear nota '{title}' en la app Notas."
+        return self._require_bridge(
+            "os_notes_create",
+            "notes_new",
+            {
+                "title": title,
+                "body": body,
+                "folder": folder,
+                "open_after": open_after,
+                "purpose": purpose,
+            },
+            "Crear notas en el sistema requiere la sesión de escritorio con Guardián activo.",
+        )
+
+    def _tool_os_list_calendar_events(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        start_iso = str(args.get("start_iso") or "").strip() or None
+        end_iso = str(args.get("end_iso") or "").strip() or None
+        calendar_name = str(args.get("calendar_name") or "").strip() or None
+        purpose = str(args.get("purpose") or "").strip() or "Consultar eventos en el Calendario del sistema."
+        try:
+            limit = max(1, min(100, int(args.get("limit") or 40)))
+        except (TypeError, ValueError):
+            limit = 40
+        return self._require_bridge(
+            "os_calendar_list",
+            "cal_ls",
+            {
+                "start_iso": start_iso,
+                "end_iso": end_iso,
+                "calendar_name": calendar_name,
+                "limit": limit,
+                "purpose": purpose,
+            },
+            "Consultar Calendario del sistema requiere la sesión de escritorio con Guardián activo.",
+        )
+
+    def _tool_os_create_calendar_event(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        title = str(args.get("title") or "").strip()
+        start_iso = str(args.get("start_iso") or "").strip()
+        end_iso = str(args.get("end_iso") or "").strip() or None
+        all_day = bool(args.get("all_day", False))
+        calendar_name = str(args.get("calendar_name") or "").strip() or None
+        location = str(args.get("location") or "").strip() or None
+        description = str(args.get("description") or "").strip() or None
+        open_after = bool(args.get("open_after", False))
+        reminder_raw = args.get("reminder_minutes_before")
+        reminder_minutes = None
+        if reminder_raw is not None and reminder_raw != "":
+            try:
+                reminder_minutes = max(0, min(10080, int(reminder_raw)))
+            except (TypeError, ValueError):
+                reminder_minutes = None
+        if not title or not start_iso:
+            return {"ok": False, "error": "Faltan 'title' o 'start_iso' para agendar el evento."}
+        purpose = str(args.get("purpose") or "").strip() or f"Agendar '{title}' en Calendario ({start_iso})."
+        return self._require_bridge(
+            "os_calendar_create_event",
+            "cal_new",
+            {
+                "title": title,
+                "start_iso": start_iso,
+                "end_iso": end_iso,
+                "all_day": all_day,
+                "calendar_name": calendar_name,
+                "location": location,
+                "description": description,
+                "reminder_minutes_before": reminder_minutes,
+                "open_after": open_after,
+                "purpose": purpose,
+            },
+            "Crear eventos en el Calendario requiere la sesión de escritorio con Guardián activo.",
+        )
+
 

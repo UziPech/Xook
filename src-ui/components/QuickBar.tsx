@@ -1447,6 +1447,12 @@ export const QuickBar: React.FC = () => {
                         <p className="text-zinc-200 font-medium truncate">
                           {previewTableCanvas.summary || previewTableCanvas.title}
                         </p>
+                      ) : permissionItems.length > 0 ? (
+                        <p className="text-zinc-300 font-medium truncate">
+                          {permissionItems.some((p) => p.state === "pending")
+                            ? "Xox espera tu autorización para continuar"
+                            : "Acción procesada con Guardián"}
+                        </p>
                       ) : null}
                     </div>
                   </div>

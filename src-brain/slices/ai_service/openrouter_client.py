@@ -48,6 +48,17 @@ def _parse_tool_args(raw_args: Any) -> Dict[str, Any]:
                 return parsed
         except Exception:
             pass
+        recovered = _parse_json_candidates(raw_args)
+        if isinstance(recovered, dict):
+            return recovered
+        return {
+            "__parse_error__": (
+                "No se pudo interpretar el JSON de argumentos de la herramienta "
+                "(posible corte por longitud o sintaxis inválida). "
+                "Vuelve a invocar la herramienta con JSON completo y válido."
+            ),
+            "__raw_preview__": raw_args.strip()[:240],
+        }
     return {}
 
 
@@ -79,7 +90,115 @@ def _tool_step_meta(fn_name: str, args: Dict[str, Any]) -> Tuple[str, str]:
         return "Preparando tarjetas de acción", f"{count} propuesta(s)" if count else ""
     if fn_name == "run_workspace_command":
         return "Ejecutando utilidad con Guardián", str(args.get("purpose") or "comando")
+    if fn_name == "list_desktop_apps":
+        return "Buscando aplicaciones instaladas", str(args.get("query") or "equipo")
+    if fn_name == "open_desktop_app":
+        return "Abriendo aplicación con Guardián", str(args.get("app_name") or args.get("purpose") or "aplicación")
+    if fn_name == "os_list_notes":
+        return "Consultando Notas de Mac", str(args.get("query") or args.get("folder") or "notas recientes")
+    if fn_name == "os_create_note":
+        return "Creando nota en Notas", str(args.get("title") or args.get("purpose") or "nueva nota")
+    if fn_name == "os_list_calendar_events":
+        return "Consultando Calendario de Mac", str(args.get("calendar_name") or args.get("start_iso") or "próximos eventos")
+    if fn_name == "os_create_calendar_event":
+        return "Agendando evento en Calendario", str(args.get("title") or args.get("start_iso") or "evento")
+    if fn_name == "pdf_read":
+        pdf_name = Path(target).name if target else "documento.pdf"
+        s_pg = args.get("start_page")
+        e_pg = args.get("end_page")
+        pg_note = f" (p. {s_pg}–{e_pg})" if (s_pg and e_pg) else (f" (desde p. {s_pg})" if s_pg else "")
+        return f"Leyendo PDF {pdf_name}{pg_note}".strip(), target
+    if fn_name == "pdf_generate":
+        doc_title = str(args.get("title") or args.get("output_path") or "documento").strip()
+        return f"Generando PDF: {doc_title[:42]}", str(args.get("output_path") or "agente/reportes/")
     return f"Herramienta: {fn_name}", target
+
+
+def _extract_attached_flags(
+    attached_context: Optional[List[Dict[str, Any]]],
+    *,
+    max_images: int = 4,
+) -> Tuple[bool, List[Dict[str, Any]]]:
+    """Devuelve `(has_attachments, multimodal_image_parts)` desde `attachedContext`."""
+    items = [it for it in (attached_context or []) if isinstance(it, dict)]
+    image_parts: List[Dict[str, Any]] = []
+    for it in items:
+        if len(image_parts) >= max_images:
+            break
+        data_url = str(it.get("imageDataUrl") or "").strip()
+        if (
+            data_url.startswith("data:image/")
+            and ";base64," in data_url
+            and len(data_url) <= 6_000_000
+        ):
+            image_parts.append({
+                "type": "image_url",
+                "image_url": {"url": data_url},
+            })
+    return bool(items), image_parts
+
+
+def _sanitize_attached_context_for_prompt(
+    attached_context: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Elimina payloads binarios base64 grandes al serializar adjuntos al system prompt."""
+    sanitized: List[Dict[str, Any]] = []
+    for it in attached_context or []:
+        if not isinstance(it, dict):
+            continue
+        clean: Dict[str, Any] = {}
+        for k, v in it.items():
+            if k == "imageDataUrl":
+                continue
+            if k == "content" and isinstance(v, str) and len(v) > 6000:
+                clean[k] = v[:6000] + "\n...[contenido truncado]"
+            else:
+                clean[k] = v
+        if it.get("imageDataUrl"):
+            clean["hasInlineImage"] = True
+        sanitized.append(clean)
+    return sanitized
+
+
+def _messages_have_images(messages: List[Dict[str, Any]]) -> bool:
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    return True
+    return False
+
+
+def _strip_image_parts(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convierte mensajes multimodales (`image_url`) a texto plano si el modelo no soporta visión."""
+    cleaned: List[Dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            cleaned.append(msg)
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            cleaned.append(msg)
+            continue
+        text_bits: List[str] = []
+        dropped_images = 0
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text" and isinstance(part.get("text"), str):
+                text_bits.append(part["text"])
+            elif part.get("type") == "image_url":
+                dropped_images += 1
+        joined = "\n".join(t for t in text_bits if t).strip()
+        if dropped_images:
+            note = (
+                f"\n[{dropped_images} imagen(es) adjunta(s) omitida(s) en visión directa; "
+                "usa `workspace_read` sobre su `workspacePath` o inspecciónala para conocer ruta, medidas y texto OCR.]"
+            )
+            joined = (joined + note).strip()
+        cleaned.append({**msg, "content": joined or "Analiza los archivos adjuntos."})
+    return cleaned
 
 
 def _merge_tasks_dedup(base: List[Dict[str, Any]], extra: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -376,6 +495,34 @@ def _format_model_entry(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         ("structured_outputs" in supp_set or "response_format" in supp_set)
         or bool(preset and preset.get("supports_structured"))
     )
+    arch = raw.get("architecture")
+    supports_vision = False
+    if isinstance(arch, dict):
+        in_mods = [str(m).strip().lower() for m in (arch.get("input_modalities") or []) if str(m).strip()]
+        modality = str(arch.get("modality") or "").strip().lower()
+        if in_mods:
+            supports_vision = "image" in in_mods
+        elif modality:
+            supports_vision = "image" in modality.split("->")[0]
+    if not supports_vision and not (isinstance(arch, dict) and (arch.get("input_modalities") or arch.get("modality"))):
+        low_id = mid.lower()
+        supports_vision = bool(preset and preset.get("supports_vision")) or any(
+            tok in low_id
+            for tok in (
+                "vision",
+                "-vl-",
+                "gemini-2",
+                "gemini-1.5",
+                "gpt-4o",
+                "gpt-4.1",
+                "claude-3",
+                "claude-sonnet-4",
+                "claude-opus-4",
+                "gemma-3",
+                "gemma-4",
+                "llama-4",
+            )
+        )
 
     return {
         "id": mid,
@@ -390,6 +537,7 @@ def _format_model_entry(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "supports_tools": supports_tools,
         "supports_reasoning": supports_reasoning,
         "supports_structured": supports_structured,
+        "supports_vision": supports_vision,
     }
 
 
@@ -665,8 +813,9 @@ def _build_system_prompt(
     ]
 
     extra_ctx = ""
-    if attached_context:
-        extra_ctx = "\nCONTEXTO ADJUNTO POR EL USUARIO:\n" + json.dumps(attached_context, ensure_ascii=False)
+    clean_attached = _sanitize_attached_context_for_prompt(attached_context)
+    if clean_attached:
+        extra_ctx = "\nCONTEXTO ADJUNTO POR EL USUARIO:\n" + json.dumps(clean_attached, ensure_ascii=False)
 
     operator_ctx = ""
     if user_profile and user_profile.get("name"):
@@ -692,10 +841,10 @@ def _build_system_prompt(
 
     canvas_hint = """USO DE CANVAS PARA TABLAS Y COMPARATIVAS (IMPORTANTE):
 Cuando el usuario pida o convenga mostrar una TABLA, tabla comparativa, desglose, matriz de opciones o presupuesto:
-- Usa la herramienta `create_canvas` (preferida) pasando columnas en texto simple y TODAS las filas completas en `rows`, O incluye una sección `<canvas>{...}</canvas>` con:
+- Usa la herramienta `create_canvas` (preferida; evita emitir etiquetas `<canvas>` manualmente) pasando columnas en texto simple y TODAS las filas completas en `rows`, o en último caso incluye una sección `<canvas>{...}</canvas>` con:
   {"title":"Título corto","subtitle":"Criterio breve","kind":"comparison","summary":"Conclusión clave en 1 oración","columns":["Criterio","Opción A","Opción B"],"rows":[["Precio","$100","$120"],["Tiempo","2 días","5 días"]],"recommended_row":0,"recommended_badge":"Recomendado"}
-- NUNCA envíes `rows` con celdas vacías ni escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en `<respuesta>`.
-- En `<respuesta>` escribe únicamente una explicación clara en español o la conclusión clave sin duplicar tablas HTML."""
+- NUNCA envíes `rows` con celdas vacías ni escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en tu respuesta al usuario.
+- En tu mensaje responde libremente con una explicación clara o la conclusión clave sin duplicar tablas HTML ni envolver el texto en etiquetas XML."""
 
     task_schema_hint = """ESQUEMA DE CADA TaskProposal EN "tasks":
 {
@@ -744,22 +893,15 @@ Antes de pedir aclaraciones, ANALIZA lo que el usuario ya dijo y lo que hay en A
      `{"title":"...","subtitle":"...","questions":[{"id":"dato_1","prompt":"<pregunta puntual sobre lo que realmente falta>","kind":"choice_or_text","options":["..."],"required":true}]}`."""
 
     if stream_mode:
-        output_rules = f"""FORMATO DE RESPUESTA EN VIVO (OBLIGATORIO):
-Responde usando estas secciones en orden (sin texto fuera de las etiquetas; opcionalmente incluye <canvas> si generas una tabla sin usar tool call):
-<analisis>
-- Explica en 2 a 4 viñetas breves en español humano qué revisaste (contexto del negocio, reglas aplicables, estado actual o intención del mensaje) y tu criterio antes de responder.
-</analisis>
-<respuesta>
-Tu respuesta clara, directa y humana en español para el usuario (párrafos cortos o viñetas simples; nunca pongas JSON aquí).
-</respuesta>
-<canvas>
-{{}} // Opcional: solo si generas una tabla/comparativa y no llamaste a la herramienta create_canvas
-</canvas>
-<acciones>
-{{"xox_mood": "talking", "operation": "none", "tasks": []}}
-</acciones>
-
-En <acciones>: si el usuario pide analizar stock, reponer, agendar, crear un reloj/temporizador, nota o consolidar tarjetas con datos suficientes, incluye 1 a 3 objetos TaskProposal dentro de "tasks" con "operation": "add_tasks" o "replace_tasks" y "xox_mood": "success". Si faltan datos clave y es ambiguo, usa `ask_clarification` o "operation": "ask_clarification". Si es conversación normal, deja "tasks": [] y "operation": "none".
+        output_rules = f"""ESTILO DE RESPUESTA Y HERRAMIENTAS DE XOOK:
+Responde directamente al usuario en español (o en el idioma que pida) usando Markdown natural y limpio, con plena libertad expresiva para escribir todo lo que necesites y elegir el tono, estructura, encabezados, listas, tablas Markdown, código o extensión que mejor ayuden al usuario.
+- NUNCA envuelvas tu respuesta en etiquetas XML o pseudo-HTML como `<respuesta>`, `<analisis>`, `<posta>`, `<reply>`, `<canvas>` o `<acciones>`. Escribe texto directo y humano.
+- Usa las herramientas nativas de XOOK solo cuando realmente aplique:
+  * `propose_tasks`: cuando el usuario pida analizar stock con plan accionable, agendar tareas operativas, crear cronómetros/temporizadores o recordatorios internos de XOOK (`operation`: `"add_tasks"` o `"replace_tasks"`).
+  * `ask_clarification`: si faltan datos críticos en una petición operativa ambigua y conviene preguntar con opciones interactivas.
+  * `create_canvas`: para abrir tablas comparativas o reportes tabulares interactivos en el panel Canvas.
+  * `pdf_generate` / `pdf_read`: para generar o leer archivos PDF.
+- En preguntas generales, análisis de imágenes, lectura de documentos, programación, redacción o charla cotidiana, responde directamente en Markdown libre sin forzar tareas ni Canvas.
 
 {clarification_rule}
 
@@ -804,7 +946,16 @@ HERRAMIENTAS DEL ESPACIO DE TRABAJO (OBLIGATORIO CUANDO OPERES SOBRE ARCHIVOS O 
 - Cuando el usuario pida analizar stock, inventario o buscar alertas reales, ejecuta `run_business_review` en lugar de inventar números o productos ficticios.
 - NUNCA respondas diciendo "reviso qué hay en el workspace" o "voy a consultar primero" sin emitir en ese mismo turno la llamada real a herramienta (`tool_calls`). Si necesitas consultar archivos, llama a `workspace_list`/`workspace_read` de inmediato; si ya tienes los datos o es análisis estratégico, entrega la respuesta completa de una vez.
 - Para proponer cambios en `empresa/`, `datos/` o `habilidades/`, usa SIEMPRE `propose_company_file_edit` (prepara borrador y tarjeta HITL).
-- Si necesitas correr un comando de consola dentro del workspace (por ejemplo revisar líneas/conteos o ejecutar un script de validación), usa `run_workspace_command` explicando claramente `purpose` para el usuario."""
+- Si necesitas correr un comando de consola dentro del workspace (por ejemplo revisar líneas/conteos o ejecutar un script de validación), usa `run_workspace_command` explicando claramente `purpose` para el usuario.
+- Cuando el usuario pida abrir, iniciar o lanzar una aplicación externa de su equipo (por ejemplo Notas, Calendario, Recordatorios, Calculadora, Safari, Finder, etc.), usa SIEMPRE `open_desktop_app` (y `list_desktop_apps` si necesitas verificar el nombre exacto instalado). No sustituyas "abrir Notas" o "abrir Calendario" creando tarjetas/tareas internas de XOOK a menos que el usuario pida explícitamente guardar una nota o agendar un evento aquí.
+- Cuando el usuario pida crear, apuntar o consultar notas reales de su Mac (app Notas), usa `os_create_note` u `os_list_notes` (solo usa `workspace_write_file` o `propose_tasks` si pidió guardarlo específicamente dentro del espacio de trabajo de XOOK).
+- Cuando el usuario pida revisar su Calendario, ver qué tiene agendado, buscar horarios disponibles, hacer una agenda desde su calendario o agendar un evento/cita/reunión real en Calendario, usa `os_list_calendar_events` y/o `os_create_calendar_event` calculando fechas ISO exactas a partir de la FECHA Y HORA LOCAL ACTUAL. Si falta un dato indispensable para agendar (por ejemplo falta el día o la hora), usa `ask_clarification` antes de invocar `os_create_calendar_event`.
+- DOCUMENTOS PDF E IMÁGENES:
+  - Si el usuario adjunta o menciona un PDF (en `agente/adjuntos/`, `datos/`, etc.), llama a `pdf_read` para extraer texto, tablas y páginas escaneadas con OCR antes de responder (pagina con `start_page`/`end_page` si tiene muchas páginas).
+  - Si el usuario pide generar, redactar, convertir o exportar un informe/documento en PDF, llama a `pdf_generate` (escribe en `agente/reportes/`). **REGLA CRÍTICA**: incluye SIEMPRE todo el desarrollo completo en un arreglo JSON nativo `blocks` (NUNCA serialices `blocks` como string JSON) o, si el documento es muy extenso (8+, 12+ páginas o con código largo), usa preferentemente el campo `markdown` estructurado (`#`, `##`, `###`, listas, `> callouts`, tablas y ```` ```lenguaje ````) porque es más compacto y evita cortes. NUNCA generes un PDF sin desarrollo poniendo la explicación solo en el chat; en el chat solo confirma brevemente el resultado, archivo y páginas.
+  - Si el usuario adjunta imágenes o las menciona desde el workspace e indica cómo integrarlas (por ejemplo como portada, logo, fondo visual o figuras dentro de secciones), interpreta libremente su intención:
+    - Cuando la imagen adjunta YA sea una portada o carátula diseñada (ej. hoja institucional/académica o imagen con su propio texto/título/escudo), usa `cover: {{"enabled": true, "image_path": "...", "layout": "full_page"}}` para insertarla íntegra y nítida en la página 1 sin oscurecerla ni encimar texto blanco encima (y desarrolla el tema completo desde la página 2 en `blocks`).
+    - Cuando sea una foto limpia, ilustración o logotipo donde sí corresponda diseñar portada tipográfica encima o al lado, usa `layout` entre `auto`, `hero_top`, `split`, `centered`, `full_bleed` o `minimal`."""
 
     return f"""Eres Xox, el asistente inteligente y copiloto operativo de XOOK (Enterprise Agentic Orchestrator).
 Hablas SIEMPRE en español claro, humano, directo y útil.
@@ -832,11 +983,37 @@ AGENDA Y RELOJES ACTIVOS:
 {output_rules}
 
 REGLAS CRÍTICAS:
-- NO uses emojis (como 👋, ✨, 📦, 🚀) ni iconos decorativos en <respuesta> ni en <analisis>; escribe español claro, natural y limpio.
-- Si el usuario hace una pregunta general o cotidiana (ej. "¿qué hora es?", "¿qué día es hoy?", dudas generales, matemáticas, charla o conocimiento general), respóndele directa y útilmente usando tu conocimiento y la fecha/hora local arriba, sin forzar temas de inventario; deja "operation": "none" y "tasks": [].
+- Tienes plena libertad expresiva y de formato: adapta el tono, la estructura, la extensión y el nivel de detalle a lo que pida el usuario, sin envolver el texto en etiquetas XML.
+- Si el usuario hace una pregunta general o cotidiana (ej. "¿qué hora es?", "¿qué día es hoy?", análisis de imágenes, dudas técnicas, matemáticas, redacción, charla o conocimiento general), respóndele directa y útilmente usando tu conocimiento y la fecha/hora local arriba, sin forzar temas de inventario ni crear tareas innecesarias.
 - Nunca inventes ventas, stock ni pagos: usa archivos reales del workspace o señala claramente si falta cargar inventario.
-- Si es una pregunta conversacional simple sobre el negocio (ej. "¿cómo ves el stock?", "¿por qué 20 unidades?"), responde en conversación normal con "operation": "none" y "tasks": [].
-- Si el usuario pide crear una tarea, reloj/temporizador, recordatorio, auto-agenda, nota, análisis de compra o consolidar tarjetas, genera las "tasks" correspondientes con bloques claros."""
+- Si es una pregunta conversacional simple sobre el negocio (ej. "¿cómo ves el stock?", "¿por qué 20 unidades?"), responde en conversación normal sin generar tarjetas.
+- Si el usuario pide crear una tarea operativa del negocio dentro de XOOK, reloj/temporizador, o recordatorio explícitamente interno de XOOK, usa `propose_tasks` (o `"tasks"` en modo JSON); si pide crear una nota o evento/agenda en las apps Notas o Calendario de su Mac, usa directamente las herramientas `os_create_note` / `os_create_calendar_event`."""
+
+
+_PROTOCOL_TAG_PREFIX_RE = re.compile(r"^<\s*(?:/\s*)?[a-z]*\s*$", re.IGNORECASE)
+_TAG_REGEX_CACHE: Dict[Tuple[Tuple[str, ...], bool], re.Pattern[str]] = {}
+
+
+def _compile_tag_pattern(tags: Tuple[str, ...], anchored: bool = False) -> re.Pattern[str]:
+    key = (tags, anchored)
+    cached = _TAG_REGEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+    parts: List[str] = []
+    for tag in tags:
+        is_close = tag.startswith("</")
+        name = tag[2:-1] if is_close else tag[1:-1]
+        slash = r"/\s*" if is_close else ""
+        parts.append(rf"<\s*{slash}{re.escape(name)}\s*>")
+    joined = "|".join(parts)
+    pattern = rf"^(?:{joined})" if anchored else joined
+    compiled = re.compile(pattern, re.IGNORECASE)
+    _TAG_REGEX_CACHE[key] = compiled
+    return compiled
+
+
+def _canonical_tag(raw_tag: str) -> str:
+    return re.sub(r"\s+", "", raw_tag).lower()
 
 
 def _partial_tag_split(buf: str, tags: Tuple[str, ...]) -> Tuple[str, str]:
@@ -844,24 +1021,20 @@ def _partial_tag_split(buf: str, tags: Tuple[str, ...]) -> Tuple[str, str]:
     last_lt = buf.rfind("<")
     if last_lt == -1:
         return buf, ""
-    tail = buf[last_lt:].lower()
-    if ">" not in tail and any(tag.startswith(tail) for tag in tags):
-        return buf[:last_lt], buf[last_lt:]
+    tail = buf[last_lt:]
+    if ">" not in tail and _PROTOCOL_TAG_PREFIX_RE.fullmatch(tail):
+        normalized = _canonical_tag(tail)
+        if any(tag.startswith(normalized) for tag in tags):
+            return buf[:last_lt], buf[last_lt:]
     return buf, ""
 
 
-def _find_first_tag(buf: str, tags: Tuple[str, ...]) -> Optional[Tuple[int, str]]:
-    lower = buf.lower()
-    best_idx = -1
-    best_tag = ""
-    for tag in tags:
-        idx = lower.find(tag)
-        if idx != -1 and (best_idx == -1 or idx < best_idx):
-            best_idx = idx
-            best_tag = tag
-    if best_idx == -1:
+def _find_first_tag(buf: str, tags: Tuple[str, ...]) -> Optional[Tuple[int, str, str]]:
+    m = _compile_tag_pattern(tags, anchored=False).search(buf)
+    if not m:
         return None
-    return best_idx, best_tag
+    raw = m.group(0)
+    return m.start(), raw, _canonical_tag(raw)
 
 
 class _StreamTagRouter:
@@ -869,8 +1042,8 @@ class _StreamTagRouter:
 
     OPEN_ANALYSIS = ("<analisis>", "<analysis>")
     CLOSE_ANALYSIS = ("</analisis>", "</analysis>")
-    OPEN_REPLY = ("<respuesta>", "<response>")
-    CLOSE_REPLY = ("</respuesta>", "</response>")
+    OPEN_REPLY = ("<respuesta>", "<response>", "<posta>", "<reply>", "<resp>")
+    CLOSE_REPLY = ("</respuesta>", "</response>", "</posta>", "</reply>", "</resp>")
     OPEN_CANVAS = ("<canvas>", "<lienzo>")
     CLOSE_CANVAS = ("</canvas>", "</lienzo>")
     OPEN_ACTIONS = ("<acciones>", "<actions>")
@@ -912,16 +1085,15 @@ class _StreamTagRouter:
             self.buf = ""
             return False
         self.buf = trimmed
-        lower = trimmed.lower()
         for tags, target in (
             (self.OPEN_ANALYSIS, "analysis"),
             (self.OPEN_REPLY, "reply"),
             (self.OPEN_CANVAS, "canvas"),
             (self.OPEN_ACTIONS, "actions"),
         ):
-            matched = next((t for t in tags if lower.startswith(t)), None)
-            if matched:
-                self.buf = trimmed[len(matched) :].lstrip("\r\n")
+            m = _compile_tag_pattern(tags, anchored=True).match(trimmed)
+            if m:
+                self.buf = trimmed[m.end() :].lstrip("\r\n")
                 if target == "analysis":
                     self.mode = "analysis"
                     self.on_phase("thinking")
@@ -933,8 +1105,10 @@ class _StreamTagRouter:
                 else:
                     self.mode = "actions"
                 return True
-        if any(t.startswith(lower) for t in self.ALL_OPEN):
-            return False
+        if _PROTOCOL_TAG_PREFIX_RE.fullmatch(trimmed):
+            normalized = _canonical_tag(trimmed)
+            if any(t.startswith(normalized) for t in self.ALL_OPEN):
+                return False
         if allow_fallback_reply:
             self.mode = "reply"
             self._enter_reply()
@@ -965,10 +1139,10 @@ class _StreamTagRouter:
             if self.mode == "analysis":
                 found = _find_first_tag(self.buf, self.CLOSE_ANALYSIS)
                 if found:
-                    idx, tag = found
+                    idx, raw_tag, _ = found
                     if idx > 0:
                         self.on_reasoning(self.buf[:idx])
-                    self.buf = self.buf[idx + len(tag) :]
+                    self.buf = self.buf[idx + len(raw_tag) :]
                     self.mode = "after_analysis"
                     continue
                 safe, rem = _partial_tag_split(self.buf, self.CLOSE_ANALYSIS)
@@ -980,13 +1154,13 @@ class _StreamTagRouter:
             if self.mode == "reply":
                 found = _find_first_tag(self.buf, self.STOP_REPLY)
                 if found:
-                    idx, tag = found
+                    idx, raw_tag, canonical = found
                     if idx > 0:
                         self.on_reply(self.buf[:idx])
-                    self.buf = self.buf[idx + len(tag) :]
-                    if tag in self.OPEN_CANVAS:
+                    self.buf = self.buf[idx + len(raw_tag) :]
+                    if canonical in self.OPEN_CANVAS:
                         self._enter_canvas()
-                    elif tag in self.OPEN_ACTIONS:
+                    elif canonical in self.OPEN_ACTIONS:
                         self.mode = "actions"
                     else:
                         self.mode = "after_reply"
@@ -1000,9 +1174,9 @@ class _StreamTagRouter:
             if self.mode == "canvas":
                 found = _find_first_tag(self.buf, self.CLOSE_CANVAS)
                 if found:
-                    idx, tag = found
+                    idx, raw_tag, _ = found
                     self.canvas_buf += self.buf[:idx]
-                    self.buf = self.buf[idx + len(tag) :]
+                    self.buf = self.buf[idx + len(raw_tag) :]
                     self.mode = "after_canvas"
                     continue
                 safe, rem = _partial_tag_split(self.buf, self.CLOSE_CANVAS)
@@ -1013,7 +1187,7 @@ class _StreamTagRouter:
             if self.mode == "actions":
                 found = _find_first_tag(self.buf, self.CLOSE_ACTIONS)
                 if found:
-                    idx, _ = found
+                    idx, _, _ = found
                     self.actions_buf += self.buf[:idx]
                     self.buf = ""
                     return
@@ -1026,21 +1200,406 @@ class _StreamTagRouter:
         if not self.buf:
             return
         if self.mode in ("detect", "after_analysis"):
-            trimmed = self.buf.lstrip()
+            trimmed = re.sub(
+                r"<\s*/?\s*(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions|posta|reply|resp)\s*(?:>|$)",
+                "",
+                self.buf.lstrip(),
+                flags=re.IGNORECASE,
+            )
             if trimmed:
                 self._enter_reply()
                 self.on_reply(trimmed)
         elif self.mode == "analysis":
             self.on_reasoning(self.buf)
         elif self.mode == "reply":
-            self.on_reply(self.buf)
+            cleaned = re.sub(
+                r"<\s*/?\s*(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions|posta|reply|resp)\s*(?:>|$)",
+                "",
+                self.buf,
+                flags=re.IGNORECASE,
+            )
+            if cleaned:
+                self.on_reply(cleaned)
         elif self.mode == "canvas":
-            cleaned = re.sub(r"</?(?:canvas|lienzo)>", "", self.buf, flags=re.IGNORECASE)
+            cleaned = re.sub(r"<\s*/?\s*(?:canvas|lienzo)\s*>", "", self.buf, flags=re.IGNORECASE)
             self.canvas_buf += cleaned
         elif self.mode == "actions":
-            cleaned = re.sub(r"</?(?:acciones|actions)>", "", self.buf, flags=re.IGNORECASE)
+            cleaned = re.sub(r"<\s*/?\s*(?:acciones|actions)\s*>", "", self.buf, flags=re.IGNORECASE)
             self.actions_buf += cleaned
         self.buf = ""
+
+
+def _decode_partial_json_string(raw_inner: str) -> str:
+    """Decodifica contenido interno parcial de un string JSON sin requerir comilla de cierre."""
+    cleaned = raw_inner
+    if cleaned.endswith("\\"):
+        cleaned = cleaned[:-1]
+    try:
+        return str(json.loads(f'"{cleaned}"'))
+    except Exception:
+        return (
+            cleaned.replace("\\n", "\n")
+            .replace("\\r", "")
+            .replace("\\t", " ")
+            .replace('\\"', '"')
+            .replace("\\\\", "\\")
+        )
+
+
+def _markdown_to_preview_blocks(md_text: str, limit: int = 18) -> List[Dict[str, Any]]:
+    blocks: List[Dict[str, Any]] = []
+    para_lines: List[str] = []
+
+    def _flush_para() -> None:
+        if para_lines:
+            blocks.append({"type": "paragraph", "text": " ".join(para_lines)[:240]})
+            para_lines.clear()
+
+    for line in (md_text or "").splitlines():
+        s = line.strip()
+        if not s:
+            _flush_para()
+            continue
+        if s.startswith("### "):
+            _flush_para()
+            blocks.append({"type": "heading", "level": 3, "text": s[4:].strip()[:160]})
+        elif s.startswith("## "):
+            _flush_para()
+            blocks.append({"type": "heading", "level": 2, "text": s[3:].strip()[:160]})
+        elif s.startswith("# "):
+            _flush_para()
+            blocks.append({"type": "heading", "level": 1, "text": s[2:].strip()[:160]})
+        elif s.startswith(("- ", "* ")):
+            _flush_para()
+            if blocks and blocks[-1].get("type") == "bullet_list":
+                blocks[-1]["items"].append(s[2:].strip()[:110])
+            else:
+                blocks.append({"type": "bullet_list", "items": [s[2:].strip()[:110]]})
+        else:
+            para_lines.append(s)
+        if len(blocks) >= limit:
+            break
+    if len(blocks) < limit:
+        _flush_para()
+    return blocks[:limit]
+
+
+def _summarize_pdf_preview_block(blk: Dict[str, Any]) -> Dict[str, Any]:
+    bt = str(blk.get("type") or "").lower()
+    out_b: Dict[str, Any] = {"type": bt or "paragraph"}
+    if bt == "heading":
+        out_b["level"] = int(blk.get("level") or 1)
+        out_b["text"] = str(blk.get("text") or blk.get("title") or "")[:160]
+    elif bt in ("paragraph", "callout", "summary", "quote"):
+        if blk.get("title"):
+            out_b["title"] = str(blk.get("title"))[:120]
+        if blk.get("tone"):
+            out_b["tone"] = str(blk.get("tone"))[:24]
+        out_b["text"] = str(blk.get("text") or blk.get("content") or "")[:240]
+    elif bt in ("bullets", "bullet_list", "unordered_list", "ul", "list", "numbered_list", "ordered_list", "ol"):
+        out_b["type"] = "numbered_list" if bt in ("numbered_list", "ordered_list", "ol") else "bullet_list"
+        items = blk.get("items") or []
+        out_b["items"] = [str(x)[:110] for x in items[:5]] if isinstance(items, list) else []
+    elif bt in ("code", "code_block", "pre"):
+        out_b["type"] = "code"
+        lang = str(blk.get("language") or blk.get("lang") or "").strip()
+        if lang:
+            out_b["language"] = lang[:30]
+        out_b["text"] = str(blk.get("code") or blk.get("text") or blk.get("content") or "")[:320]
+    elif bt == "table":
+        cols = blk.get("headers") or blk.get("columns") or []
+        rows = blk.get("rows") or []
+        out_b["columns"] = [str(c)[:40] for c in cols[:6]] if isinstance(cols, list) else []
+        out_b["rows"] = [
+            [str(c)[:40] for c in r[:6]]
+            for r in (rows[:4] if isinstance(rows, list) else [])
+            if isinstance(r, list)
+        ]
+    elif bt == "image":
+        out_b["path"] = str(blk.get("path") or blk.get("image_path") or blk.get("src") or "")
+        out_b["caption"] = str(blk.get("caption") or "")[:100]
+    elif bt == "kpi_strip":
+        cards = blk.get("metrics") or blk.get("items") or []
+        out_b["metrics"] = [
+            {"label": str(c.get("label") or "")[:40], "value": str(c.get("value") or "")[:40]}
+            for c in (cards[:4] if isinstance(cards, list) else [])
+            if isinstance(c, dict)
+        ]
+    return out_b
+
+
+def _extract_partial_pdf_draft(raw_args: str) -> Optional[Dict[str, Any]]:
+    """
+    Extrae metadatos y bloques ya formados (más el bloque activo en redacción)
+    de los argumentos JSON mientras el modelo hace streaming de `pdf_generate`.
+    """
+    text = (raw_args or "").strip()
+    start = text.find("{")
+    if start == -1:
+        return None
+    src = text[start:]
+
+    try:
+        full = json.loads(src)
+        if isinstance(full, dict):
+            raw_cov = full.get("cover")
+            cov_dict = dict(raw_cov) if isinstance(raw_cov, dict) else {}
+            cov_img = str(
+                cov_dict.get("image_path")
+                or cov_dict.get("image")
+                or cov_dict.get("path")
+                or full.get("cover_image")
+                or full.get("coverImage")
+                or full.get("portada_imagen")
+                or ""
+            ).strip()
+            has_cov = bool(raw_cov is True or cov_dict.get("enabled") or cov_img)
+            raw_blks = full.get("blocks") or full.get("sections") or []
+            if isinstance(raw_blks, str):
+                from slices.pdf_engine.generator import _recover_json_block_objects
+
+                raw_blks = _recover_json_block_objects(raw_blks)
+            blocks_out = (
+                [_summarize_pdf_preview_block(b) for b in raw_blks[:20] if isinstance(b, dict)]
+                if isinstance(raw_blks, list) and raw_blks
+                else _markdown_to_preview_blocks(str(full.get("markdown") or ""))
+            )
+            return {
+                "title": str(full.get("title") or "").strip(),
+                "subtitle": str(full.get("subtitle") or "").strip(),
+                "theme": str(full.get("theme") or "executive").strip().lower(),
+                "author": str(full.get("author") or full.get("company") or "").strip(),
+                "has_cover": has_cov,
+                "cover": {
+                    "enabled": has_cov,
+                    "layout": str(cov_dict.get("layout") or "auto"),
+                    "eyebrow": str(cov_dict.get("eyebrow") or cov_dict.get("badge") or cov_dict.get("kicker") or ""),
+                    "image_path": cov_img,
+                } if has_cov else None,
+                "blocks": blocks_out,
+                "total_blocks": len(blocks_out),
+            }
+    except Exception:
+        pass
+
+    n = len(src)
+
+    def _skip_ws(pos: int) -> int:
+        while pos < n and src[pos] in " \t\r\n,":
+            pos += 1
+        return pos
+
+    def _read_str(pos: int) -> Tuple[str, int, bool]:
+        if pos >= n or src[pos] != '"':
+            return "", pos, False
+        j = pos + 1
+        esc = False
+        while j < n:
+            ch = src[j]
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                raw_slice = src[pos : j + 1]
+                try:
+                    return str(json.loads(raw_slice)), j + 1, True
+                except Exception:
+                    return _decode_partial_json_string(src[pos + 1 : j]), j + 1, True
+            j += 1
+        return _decode_partial_json_string(src[pos + 1 :]), n, False
+
+    def _scan_balanced(pos: int, open_ch: str, close_ch: str) -> Tuple[str, int, bool]:
+        j = pos
+        depth = 0
+        in_str = False
+        esc = False
+        while j < n:
+            ch = src[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch == open_ch:
+                    depth += 1
+                elif ch == close_ch:
+                    depth -= 1
+                    if depth == 0:
+                        return src[pos : j + 1], j + 1, True
+            j += 1
+        return src[pos:], n, False
+
+    scalars: Dict[str, Any] = {}
+    cover_raw = ""
+    cover_closed = False
+    blocks_slice = ""
+    i = 1
+    while i < n:
+        i = _skip_ws(i)
+        if i >= n or src[i] == "}":
+            break
+        if src[i] != '"':
+            i += 1
+            continue
+        key, next_i, k_closed = _read_str(i)
+        if not k_closed:
+            break
+        i = next_i
+        while i < n and src[i] in " \t\r\n":
+            i += 1
+        if i >= n or src[i] != ":":
+            break
+        i += 1
+        while i < n and src[i] in " \t\r\n":
+            i += 1
+        if i >= n:
+            break
+        ch = src[i]
+        if ch == '"':
+            val_str, next_v, v_closed = _read_str(i)
+            if key in ("blocks", "sections") and val_str.lstrip().startswith("["):
+                blocks_slice = val_str
+            else:
+                scalars[key] = val_str
+            i = next_v
+            if not v_closed:
+                break
+        elif ch == "{":
+            obj_raw, next_v, o_closed = _scan_balanced(i, "{", "}")
+            if key == "cover":
+                cover_raw = obj_raw
+                cover_closed = o_closed
+            i = next_v
+            if not o_closed:
+                break
+        elif ch == "[":
+            arr_raw, next_v, a_closed = _scan_balanced(i, "[", "]")
+            if key in ("blocks", "sections"):
+                blocks_slice = arr_raw
+            i = next_v
+            if not a_closed:
+                break
+        else:
+            j = i
+            while j < n and src[j] not in ",}":
+                j += 1
+            tok = src[i:j].strip().lower()
+            if tok == "true":
+                scalars[key] = True
+            elif tok == "false":
+                scalars[key] = False
+            i = j
+
+    blocks_out: List[Dict[str, Any]] = []
+    if blocks_slice:
+        bn = len(blocks_slice)
+        bi = 1
+        b_depth = 0
+        b_str = False
+        b_esc = False
+        obj_start = -1
+        while bi < bn and len(blocks_out) < 20:
+            c = blocks_slice[bi]
+            if b_str:
+                if b_esc:
+                    b_esc = False
+                elif c == "\\":
+                    b_esc = True
+                elif c == '"':
+                    b_str = False
+            else:
+                if c == '"':
+                    b_str = True
+                elif c == "{":
+                    if b_depth == 0:
+                        obj_start = bi
+                    b_depth += 1
+                elif c == "}":
+                    if b_depth > 0:
+                        b_depth -= 1
+                        if b_depth == 0 and obj_start != -1:
+                            try:
+                                blk_obj = json.loads(blocks_slice[obj_start : bi + 1])
+                                if isinstance(blk_obj, dict):
+                                    blocks_out.append(_summarize_pdf_preview_block(blk_obj))
+                            except Exception:
+                                pass
+                            obj_start = -1
+            bi += 1
+        if obj_start != -1 and len(blocks_out) < 20:
+            open_obj = blocks_slice[obj_start:]
+            m_type = re.search(r'"type"\s*:\s*"([^"]+)"', open_obj)
+            if m_type:
+                btype = m_type.group(1).strip().lower()
+                partial_blk: Dict[str, Any] = {"type": btype, "streaming": True}
+                m_lvl = re.search(r'"level"\s*:\s*(\d+)', open_obj)
+                if m_lvl:
+                    partial_blk["level"] = int(m_lvl.group(1))
+                m_txt = re.search(r'"(?:text|content|code)"\s*:\s*"((?:[^"\\]|\\.)*)', open_obj)
+                if m_txt:
+                    partial_blk["text"] = _decode_partial_json_string(m_txt.group(1))[:260]
+                m_lang = re.search(r'"(?:language|lang)"\s*:\s*"((?:[^"\\]|\\.)*)', open_obj)
+                if m_lang:
+                    partial_blk["language"] = _decode_partial_json_string(m_lang.group(1))[:30]
+                m_ttl = re.search(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)', open_obj)
+                if m_ttl:
+                    partial_blk["title"] = _decode_partial_json_string(m_ttl.group(1))[:120]
+                blocks_out.append(partial_blk)
+    elif isinstance(scalars.get("markdown"), str) and scalars["markdown"]:
+        blocks_out = _markdown_to_preview_blocks(scalars["markdown"])
+
+    cov_dict: Dict[str, Any] = {}
+    if cover_raw:
+        if cover_closed:
+            try:
+                parsed_cov = json.loads(cover_raw)
+                if isinstance(parsed_cov, dict):
+                    cov_dict = parsed_cov
+            except Exception:
+                pass
+        else:
+            if re.search(r'"enabled"\s*:\s*true', cover_raw, re.IGNORECASE):
+                cov_dict["enabled"] = True
+            for ck in ("image_path", "image", "path", "eyebrow", "badge", "kicker", "layout", "footer_note"):
+                cm = re.search(rf'"{ck}"\s*:\s*"((?:[^"\\]|\\.)*)"', cover_raw)
+                if cm:
+                    cov_dict[ck] = _decode_partial_json_string(cm.group(1))
+
+    cov_img = str(
+        cov_dict.get("image_path")
+        or cov_dict.get("image")
+        or cov_dict.get("path")
+        or scalars.get("cover_image")
+        or scalars.get("coverImage")
+        or scalars.get("portada_imagen")
+        or ""
+    ).strip()
+    has_cov = bool(scalars.get("cover") is True or cov_dict.get("enabled") or cov_img)
+
+    if not scalars and not blocks_out and not cov_dict:
+        return None
+
+    return {
+        "title": str(scalars.get("title") or "").strip(),
+        "subtitle": str(scalars.get("subtitle") or "").strip(),
+        "theme": str(scalars.get("theme") or "executive").strip().lower(),
+        "author": str(scalars.get("author") or scalars.get("company") or "").strip(),
+        "has_cover": has_cov,
+        "cover": {
+            "enabled": has_cov,
+            "layout": str(cov_dict.get("layout") or "auto"),
+            "eyebrow": str(cov_dict.get("eyebrow") or cov_dict.get("badge") or cov_dict.get("kicker") or ""),
+            "image_path": cov_img,
+        } if has_cov else None,
+        "blocks": blocks_out,
+        "total_blocks": len(blocks_out),
+    }
 
 
 def _parse_json_candidates(raw_text: str) -> Optional[Dict[str, Any]]:
@@ -1326,7 +1885,19 @@ def _validate_and_build_messages(
         content = msg.get("content")
         if role in ("user", "assistant") and isinstance(content, str) and content.strip():
             messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": user_message})
+    _, image_parts = _extract_attached_flags(attached_context)
+    clean_user_text = (user_message or "").strip()
+    if image_parts:
+        prompt_txt = clean_user_text or "Analiza las imágenes y archivos adjuntos."
+        final_user_content: Any = [
+            {"type": "text", "text": prompt_txt},
+            *image_parts,
+        ]
+    else:
+        final_user_content = clean_user_text or (
+            "Analiza los archivos adjuntos." if attached_context else user_message
+        )
+    messages.append({"role": "user", "content": final_user_content})
     return key, chosen_model, messages
 
 
@@ -1394,6 +1965,12 @@ def _is_recoverable_candidate_error(err_msg: str) -> bool:
             "502",
             "503",
             "504",
+            "provider returned error",
+            "bad gateway",
+            "overloaded",
+            "context length",
+            "maximum context",
+            "max_tokens",
             "rate limit",
             "no endpoints",
             "insufficient credits",
@@ -1408,6 +1985,113 @@ def _is_recoverable_candidate_error(err_msg: str) -> bool:
             "empty",
         )
     )
+
+
+def _messages_have_tool_history(messages: List[Dict[str, Any]]) -> bool:
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "tool" or msg.get("tool_calls"):
+            return True
+    return False
+
+
+def _sanitize_tool_calls_for_history(
+    tool_calls: List[Dict[str, Any]],
+    parsed_args_list: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """
+    Asegura que todo `tool_call` guardado en el historial tenga JSON válido en `function.arguments`
+    (si un argumento quedó truncado/inválido al reenviarlo causaría HTTP 400 en OpenRouter).
+    Retorna `(sanitized_calls, all_failed_parse)`.
+    """
+    sanitized: List[Dict[str, Any]] = []
+    failed_count = 0
+    for idx, tc in enumerate(tool_calls):
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+        fn_name = str(fn.get("name") or "").strip() or f"tool_{idx}"
+        tc_id = str(tc.get("id") or f"call_hist_{idx}").strip()
+        raw_args = fn.get("arguments")
+        parsed = parsed_args_list[idx] if idx < len(parsed_args_list) else {}
+
+        if isinstance(parsed, dict) and "__parse_error__" in parsed:
+            failed_count += 1
+            safe_args_str = "{}"
+        else:
+            valid_raw = False
+            if isinstance(raw_args, str) and raw_args.strip():
+                try:
+                    loaded = json.loads(raw_args)
+                    if isinstance(loaded, dict):
+                        valid_raw = True
+                except Exception:
+                    valid_raw = False
+            if valid_raw:
+                safe_args_str = str(raw_args)
+            elif isinstance(parsed, dict):
+                safe_args_str = json.dumps(parsed, ensure_ascii=False)
+            else:
+                safe_args_str = "{}"
+
+        sanitized.append({
+            "id": tc_id,
+            "type": "function",
+            "function": {
+                "name": fn_name,
+                "arguments": safe_args_str,
+            },
+        })
+    all_failed = bool(tool_calls) and failed_count >= len(tool_calls)
+    return sanitized, all_failed
+
+
+def _collapse_tool_history_to_text(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Convierte rondas previas de `assistant(tool_calls)` + `role=tool` en mensajes planos
+    cuando un proveedor upstream rechaza mensajes multi-turno con rol `tool` (HTTP 400).
+    """
+    collapsed: List[Dict[str, Any]] = []
+    tool_summaries: List[str] = []
+
+    def _flush_tools() -> None:
+        if not tool_summaries:
+            return
+        collapsed.append({
+            "role": "assistant",
+            "content": "Ya ejecuté las herramientas solicitadas:\n" + "\n".join(tool_summaries),
+        })
+        collapsed.append({
+            "role": "user",
+            "content": "Continúa y responde al usuario con base en esos resultados (si faltó completar algo o corregir un parámetro, hazlo ahora).",
+        })
+        tool_summaries.clear()
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            txt = str(msg.get("content") or "").strip()
+            if txt:
+                tool_summaries.append(f"- Nota previa: {txt[:300]}")
+            for tc in msg.get("tool_calls") or []:
+                fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+                fname = str(fn.get("name") or "herramienta")
+                tool_summaries.append(f"- Invocación: `{fname}`")
+            continue
+        if role == "tool":
+            res_raw = str(msg.get("content") or "").strip()
+            if len(res_raw) > 1800:
+                res_raw = res_raw[:1800] + "... [truncado]"
+            tool_summaries.append(f"- Resultado: {res_raw}")
+            continue
+        _flush_tools()
+        collapsed.append(msg)
+
+    _flush_tools()
+    return collapsed
 
 
 def _needs_agent_continuation(
@@ -1434,7 +2118,7 @@ def _needs_agent_continuation(
         return (
             "Redactando conclusión tras análisis",
             "Completaste un razonamiento previo, pero no emitiste respuesta final ni ejecutaste herramientas. "
-            "Si necesitas consultar el workspace invoca ahora las herramientas reales; de lo contrario entrega ya tu respuesta completa dentro de <respuesta>.",
+            "Si necesitas consultar el workspace invoca ahora las herramientas reales; de lo contrario entrega ya tu respuesta completa directamente en Markdown (sin etiquetas XML).",
         )
     if clean_rep and len(clean_rep) <= 340:
         low = clean_rep.lower()
@@ -1506,6 +2190,7 @@ def run_agent_completion(
     if executor is not None:
         active_tools = [*AGENT_TOOL_DEFS, *active_tools]
 
+    has_attachments, image_parts = _extract_attached_flags(attached_context)
     routing_plan = select_best_models_for_task(
         chosen_model,
         user_message,
@@ -1514,6 +2199,8 @@ def run_agent_completion(
         tools_available=True,
         history=history,
         fetch_catalog_fn=lambda: list_openrouter_models(api_key=key, free_only=False),
+        has_attachments=has_attachments,
+        has_images=bool(image_parts),
     )
     candidate_models = list(routing_plan.candidates or [chosen_model])
 
@@ -1531,6 +2218,14 @@ def run_agent_completion(
                 )
             except RuntimeError as err:
                 err_lower = str(err).lower()
+                if (
+                    _messages_have_images(cur_payload.get("messages") or [])
+                    and any(tok in err_lower for tok in ("image", "vision", "multimodal", "image_url"))
+                ):
+                    if not allow_tool_downgrade:
+                        raise _CandidateFailoverError(str(err)) from err
+                    cur_payload["messages"] = _strip_image_parts(cur_payload.get("messages") or [])
+                    continue
                 if "tools" in cur_payload and any(
                     tok in err_lower for tok in ("400", "404", "tool", "function", "endpoints", "unsupported")
                 ):
@@ -1543,6 +2238,11 @@ def run_agent_completion(
                     tok in err_lower for tok in ("400", "404", "response_format", "json_object", "structured")
                 ):
                     cur_payload.pop("response_format", None)
+                    continue
+                if "400" in err_lower and _messages_have_tool_history(cur_payload.get("messages") or []):
+                    cur_payload["messages"] = _collapse_tool_history_to_text(
+                        _strip_image_parts(cur_payload.get("messages") or [])
+                    )
                     continue
                 if not allow_tool_downgrade and _is_recoverable_candidate_error(err_lower):
                     raise _CandidateFailoverError(str(err)) from err
@@ -1566,10 +2266,15 @@ def run_agent_completion(
         all_ui_tool_calls = []
         use_response_format = True
         tools_supported = True
+        vision_supported = True
         continuations_used = 0
         target_max_tokens = (
             8192
-            if (routing_plan.task_profile.needs_reasoning or routing_plan.task_profile.needs_canvas)
+            if (
+                routing_plan.task_profile.needs_reasoning
+                or routing_plan.task_profile.needs_canvas
+                or bool(active_tools)
+            )
             else 6144
         )
 
@@ -1577,9 +2282,10 @@ def run_agent_completion(
             for round_idx in range(MAX_AGENT_STEPS):
                 allow_tools_now = tools_supported and (round_idx < MAX_AGENT_STEPS - 1 or executor is None)
                 allow_downgrade_now = not (has_next_candidate and round_idx == 0)
+                round_messages = loop_messages if vision_supported else _strip_image_parts(loop_messages)
                 payload: Dict[str, Any] = {
                     "model": cand_model,
-                    "messages": loop_messages,
+                    "messages": round_messages,
                     "temperature": 0.3,
                     "max_tokens": target_max_tokens,
                 }
@@ -1594,6 +2300,9 @@ def run_agent_completion(
                     tools_supported = False
                 if "response_format" not in payload:
                     use_response_format = False
+                if vision_supported and not _messages_have_images(payload.get("messages") or []):
+                    vision_supported = False
+                    loop_messages = _strip_image_parts(loop_messages)
 
                 choices = res.get("choices") or []
                 message_obj = (choices[0].get("message") or {}) if choices else {}
@@ -1648,25 +2357,49 @@ def run_agent_completion(
                 if not exec_calls or executor is None:
                     break
 
-                loop_messages.append({
-                    "role": "assistant",
-                    "content": raw_content or None,
-                    "tool_calls": tool_calls,
-                })
+                parsed_nonstream_args: List[Dict[str, Any]] = []
+                tool_results_nonstream: List[Tuple[str, Dict[str, Any]]] = []
                 for idx, tc in enumerate(tool_calls):
                     fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
                     fn_name = str(fn.get("name") or "")
                     tc_id = str(tc.get("id") or f"call_{round_idx}_{idx}")
                     if fn_name in ui_names:
-                        tool_out = {"ok": True, "recorded": fn_name}
+                        parsed_nonstream_args.append({})
+                        tool_results_nonstream.append((tc_id, {"ok": True, "recorded": fn_name}))
                     else:
                         args = _parse_tool_args(fn.get("arguments"))
-                        tool_out = executor.execute(fn_name, args)
+                        parsed_nonstream_args.append(args)
+                        if isinstance(args, dict) and args.get("__parse_error__"):
+                            tool_out = {"ok": False, "error": str(args["__parse_error__"])}
+                        else:
+                            tool_out = executor.execute(fn_name, args)
+                        tool_results_nonstream.append((tc_id, tool_out))
+
+                hist_tcs, all_failed_parse = _sanitize_tool_calls_for_history(tool_calls, parsed_nonstream_args)
+                if all_failed_parse:
                     loop_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": json.dumps(tool_out, ensure_ascii=False),
+                        "role": "assistant",
+                        "content": raw_content or "Intenté preparar la llamada a herramienta, pero quedó incompleta.",
                     })
+                    loop_messages.append({
+                        "role": "user",
+                        "content": (
+                            "Tu llamada anterior quedó truncada o con JSON inválido. Reintenta con JSON válido; "
+                            "para PDFs extensos usa el campo `markdown` estructurado (más compacto) o `blocks` como arreglo JSON real."
+                        ),
+                    })
+                else:
+                    loop_messages.append({
+                        "role": "assistant",
+                        "content": raw_content or "",
+                        "tool_calls": hist_tcs,
+                    })
+                    for tc_id, tool_out in tool_results_nonstream:
+                        loop_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": json.dumps(tool_out, ensure_ascii=False),
+                        })
 
             has_staged = bool(executor is not None and executor.staged_tasks)
             if not raw_content.strip() and not all_ui_tool_calls and not has_staged and has_next_candidate:
@@ -1761,6 +2494,7 @@ def run_agent_completion(
         "xox_mood": mood,
         "operation": operation,
         "tasks": safe_tasks,
+        "generated_pdfs": list(executor.generated_pdfs) if executor else [],
         "model_used": res.get("model") or active_model,
         "usage": res.get("usage") or {},
         "latency_ms": latency_ms,
@@ -1854,6 +2588,7 @@ def stream_agent_completion(
     if executor is not None:
         active_tools = [*AGENT_TOOL_DEFS, *active_tools]
 
+    has_attachments, image_parts = _extract_attached_flags(attached_context)
     routing_plan = select_best_models_for_task(
         chosen_model,
         user_message,
@@ -1862,6 +2597,8 @@ def stream_agent_completion(
         tools_available=True,
         history=history,
         fetch_catalog_fn=lambda: list_openrouter_models(api_key=key, free_only=False),
+        has_attachments=has_attachments,
+        has_images=bool(image_parts),
     )
     candidate_models = list(routing_plan.candidates or [chosen_model])
     active_model = candidate_models[0]
@@ -1977,12 +2714,18 @@ def stream_agent_completion(
         include_usage: bool,
         include_tools: bool,
         timeout_sec: int = 60,
+        max_tokens_override: Optional[int] = None,
     ) -> Any:
-        target_max_tokens = (
-            8192
-            if (routing_plan.task_profile.needs_reasoning or routing_plan.task_profile.needs_canvas)
-            else 6144
-        )
+        if max_tokens_override is not None:
+            target_max_tokens = int(max_tokens_override)
+        elif (
+            routing_plan.task_profile.needs_reasoning
+            or routing_plan.task_profile.needs_canvas
+            or include_tools
+        ):
+            target_max_tokens = 8192
+        else:
+            target_max_tokens = 6144
         payload: Dict[str, Any] = {
             "model": active_model,
             "messages": req_messages,
@@ -2004,6 +2747,7 @@ def stream_agent_completion(
         return urllib.request.urlopen(req, timeout=timeout_sec, context=_ssl_context())
 
     tools_supported = True
+    vision_supported = True
 
     def _run_stream_pass(
         req_messages: List[Dict[str, Any]],
@@ -2013,17 +2757,21 @@ def stream_agent_completion(
         pass_meta: Optional[Dict[str, str]] = None,
         timeout_sec: int = 60,
     ) -> List[Dict[str, Any]]:
-        nonlocal actual_model, usage_data, tools_supported
+        nonlocal actual_model, usage_data, tools_supported, vision_supported
         include_usage = True
         include_tools = allow_tools and tools_supported
+        active_msgs = req_messages if vision_supported else _strip_image_parts(req_messages)
         resp = None
-        for _attempt in range(3):
+        cur_max_tokens: Optional[int] = None
+        collapsed_tool_history = False
+        for _attempt in range(5):
             try:
                 resp = _open_stream(
-                    req_messages,
+                    active_msgs,
                     include_usage=include_usage,
                     include_tools=include_tools,
                     timeout_sec=timeout_sec,
+                    max_tokens_override=cur_max_tokens,
                 )
                 break
             except urllib.error.HTTPError as err:
@@ -2031,6 +2779,23 @@ def stream_agent_completion(
                 lower_msg = detail_msg.lower()
                 if include_usage and err.code == 400 and "stream_options" in lower_msg:
                     include_usage = False
+                    continue
+                if (
+                    _messages_have_images(active_msgs)
+                    and err.code in (400, 404, 422)
+                    and (
+                        any(tok in lower_msg for tok in ("image", "vision", "multimodal", "image_url"))
+                        or _messages_have_tool_history(active_msgs)
+                    )
+                ):
+                    if (
+                        fail_fast_on_candidate
+                        and not _messages_have_tool_history(active_msgs)
+                        and any(tok in lower_msg for tok in ("image", "vision", "multimodal", "image_url"))
+                    ):
+                        raise _CandidateFailoverError(detail_msg) from err
+                    vision_supported = False
+                    active_msgs = _strip_image_parts(active_msgs)
                     continue
                 if include_tools and err.code in (400, 404) and any(
                     tok in lower_msg for tok in ("tool", "function", "endpoints", "unsupported")
@@ -2040,6 +2805,19 @@ def stream_agent_completion(
                     include_tools = False
                     tools_supported = False
                     continue
+                if err.code in (400, 422):
+                    if include_usage:
+                        include_usage = False
+                        continue
+                    if _messages_have_tool_history(active_msgs) and not collapsed_tool_history:
+                        collapsed_tool_history = True
+                        active_msgs = _collapse_tool_history_to_text(active_msgs)
+                        if executor is not None and (executor.generated_pdfs or executor.staged_tasks):
+                            include_tools = False
+                        continue
+                    if cur_max_tokens is None or cur_max_tokens > 4096:
+                        cur_max_tokens = 4096
+                        continue
                 if fail_fast_on_candidate and (
                     err.code in (402, 404, 429, 500, 502, 503, 504)
                     or _is_recoverable_candidate_error(lower_msg)
@@ -2052,6 +2830,7 @@ def stream_agent_completion(
 
         tc_acc: Dict[int, Dict[str, Any]] = {}
         notified_canvas_tc = False
+        last_pdf_draft_emit: Dict[int, Tuple[float, int, str]] = {}
         with resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace").strip()
@@ -2137,6 +2916,31 @@ def stream_agent_completion(
                         if not notified_canvas_tc and "create_canvas" in entry["function"]["name"].lower():
                             notified_canvas_tc = True
                             on_phase_change("canvas")
+                        if "pdf_generate" in entry["function"]["name"].lower():
+                            now_m = time.monotonic()
+                            raw_tc_args = entry["function"]["arguments"]
+                            prev_t, prev_len, prev_sig = last_pdf_draft_emit.get(idx, (0.0, 0, ""))
+                            if prev_t == 0.0 or (len(raw_tc_args) - prev_len >= 70) or (now_m - prev_t >= 0.22):
+                                draft = _extract_partial_pdf_draft(raw_tc_args) or {}
+                                blocks_d = draft.get("blocks") or []
+                                sig = f"{draft.get('title', '')}|{len(blocks_d)}|{draft.get('has_cover')}"
+                                if prev_t == 0.0 or sig != prev_sig or (now_m - prev_t >= 0.25):
+                                    last_pdf_draft_emit[idx] = (now_m, len(raw_tc_args), sig)
+                                    emit_event({
+                                        "type": "pdf_draft_progress",
+                                        "stage": "composing",
+                                        "step_label": (
+                                            f"Redactando sección {len(blocks_d)}..."
+                                            if blocks_d
+                                            else (
+                                                "Definiendo portada del documento..."
+                                                if draft.get("has_cover")
+                                                else "Estructurando documento PDF..."
+                                            )
+                                        ),
+                                        "progress": round(min(0.22, 0.04 + 0.015 * len(blocks_d)), 3),
+                                        **draft,
+                                    })
                 c_chunk = delta.get("content")
                 if isinstance(c_chunk, str) and c_chunk:
                     tag_router.feed(c_chunk)
@@ -2155,6 +2959,7 @@ def stream_agent_completion(
         active_model = cand_model
         actual_model = cand_model
         tools_supported = True
+        vision_supported = True
         loop_messages = list(messages)
         tool_calls_list = []
         all_ui_tool_calls = []
@@ -2262,41 +3067,68 @@ def stream_agent_completion(
                     break
 
                 _set_think_step(status="done")
-                loop_messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": pass_tool_calls,
-                })
+                parsed_pass_args: List[Dict[str, Any]] = []
+                pass_tool_results: List[Tuple[str, Dict[str, Any]]] = []
 
                 for idx, tc in enumerate(pass_tool_calls):
                     fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
                     fn_name = str(fn.get("name") or "")
                     tc_id = str(tc.get("id") or f"call_{round_idx}_{idx}")
                     if fn_name in ui_tool_names:
-                        tool_res: Dict[str, Any] = {"ok": True, "recorded": fn_name}
+                        parsed_pass_args.append({})
+                        pass_tool_results.append((tc_id, {"ok": True, "recorded": fn_name}))
                     else:
                         args = _parse_tool_args(fn.get("arguments"))
+                        parsed_pass_args.append(args)
                         step_id = f"tool_{round_idx}_{idx}_{fn_name}"
-                        label, detail = _tool_step_meta(fn_name, args)
-                        _upsert_step(step_id, label, "running", detail=detail or None)
-                        phase_state = "reading" if fn_name in ("workspace_list", "workspace_read", "workspace_search") else "syncing"
-                        emit_event({"type": "phase", "xox_state": phase_state, "label": f"{label}..."})
-                        emit_event({"type": "steps", "steps": steps})
+                        if isinstance(args, dict) and args.get("__parse_error__"):
+                            label, _ = _tool_step_meta(fn_name, {})
+                            _upsert_step(step_id, label, "error", detail="Argumentos inválidos o incompletos")
+                            emit_event({"type": "steps", "steps": steps})
+                            tool_res = {"ok": False, "error": str(args["__parse_error__"])}
+                        else:
+                            label, detail = _tool_step_meta(fn_name, args)
+                            _upsert_step(step_id, label, "running", detail=detail or None)
+                            phase_state = "reading" if fn_name in ("workspace_list", "workspace_read", "workspace_search", "pdf_read", "list_desktop_apps", "os_list_notes", "os_list_calendar_events") else "syncing"
+                            emit_event({"type": "phase", "xox_state": phase_state, "label": f"{label}..."})
+                            emit_event({"type": "steps", "steps": steps})
 
-                        tool_res = executor.execute(fn_name, args)
-                        _upsert_step(
-                            step_id,
-                            label,
-                            "done" if tool_res.get("ok") else "error",
-                            detail=detail or None,
-                        )
-                        emit_event({"type": "steps", "steps": steps})
+                            tool_res = executor.execute(fn_name, args)
+                            _upsert_step(
+                                step_id,
+                                label,
+                                "done" if tool_res.get("ok") else "error",
+                                detail=detail or None,
+                            )
+                            emit_event({"type": "steps", "steps": steps})
+                        pass_tool_results.append((tc_id, tool_res))
 
+                hist_tcs, all_failed_parse = _sanitize_tool_calls_for_history(pass_tool_calls, parsed_pass_args)
+                if all_failed_parse:
+                    # Evitar mandar JSON roto dentro de `assistant.tool_calls` (causaría HTTP 400 en OpenRouter)
                     loop_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": json.dumps(tool_res, ensure_ascii=False),
+                        "role": "assistant",
+                        "content": "".join(round_reply_chunks).strip() or "Intenté preparar la llamada a herramienta, pero se truncó el JSON.",
                     })
+                    loop_messages.append({
+                        "role": "user",
+                        "content": (
+                            "Tu llamada anterior quedó truncada o con JSON inválido. Vuelve a enviarla completa y válida; "
+                            "si es un PDF extenso, utiliza el campo `markdown` estructurado (mucho más compacto) o `blocks` como arreglo JSON real."
+                        ),
+                    })
+                else:
+                    loop_messages.append({
+                        "role": "assistant",
+                        "content": "".join(round_reply_chunks).strip() or "",
+                        "tool_calls": hist_tcs,
+                    })
+                    for tc_id, tool_res in pass_tool_results:
+                        loop_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": json.dumps(tool_res, ensure_ascii=False),
+                        })
 
             has_staged = bool(executor is not None and executor.staged_tasks)
             if (
@@ -2323,6 +3155,8 @@ def stream_agent_completion(
                 mark_model_temporarily_unhealthy(cand_model, detail_msg)
                 _reset_partial_reasoning()
                 continue
+            if executor is not None and (executor.generated_pdfs or executor.staged_tasks):
+                break
             raise _friendly_http_error(RuntimeError(detail_msg)) from err
         except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as err:
             reason_txt = str(getattr(err, "reason", None) or err or "conexión interrumpida")
@@ -2330,12 +3164,16 @@ def stream_agent_completion(
                 mark_model_temporarily_unhealthy(cand_model, reason_txt)
                 _reset_partial_reasoning()
                 continue
+            if executor is not None and (executor.generated_pdfs or executor.staged_tasks):
+                break
             raise RuntimeError(f"Error de red al conectar con OpenRouter: {reason_txt}") from err
         except RuntimeError as err:
             if _can_failover_candidate(has_next_candidate) and _is_recoverable_candidate_error(str(err)):
                 mark_model_temporarily_unhealthy(cand_model, str(err))
                 _reset_partial_reasoning()
                 continue
+            if executor is not None and (executor.generated_pdfs or executor.staged_tasks):
+                break
             raise _friendly_http_error(err) from err
 
     latency_ms = int((time.time() - started) * 1000)
@@ -2375,14 +3213,14 @@ def stream_agent_completion(
                     "rows": len(canvas_obj["rows"]),
                     "instruction": (
                         "La tabla ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves "
-                        "de conclusión en español dentro de <respuesta>. NO repitas la tabla ni escribas HTML."
+                        "de conclusión en español directamente en Markdown (sin etiquetas XML). NO repitas la tabla ni escribas HTML."
                     ),
                 },
                 ensure_ascii=False,
             )
             followup_messages = [
                 *loop_messages,
-                {"role": "assistant", "content": None, "tool_calls": tool_calls_list},
+                {"role": "assistant", "content": "", "tool_calls": tool_calls_list},
                 *[
                     {
                         "role": "tool",
@@ -2434,7 +3272,21 @@ def stream_agent_completion(
         mood = "success"
 
     if not full_reply and clarification_obj is None:
-        if executor is not None and executor.staged_tasks:
+        if executor is not None and executor.generated_pdfs:
+            last_pdf = executor.generated_pdfs[-1]
+            pdf_lines = "\n".join(
+                f"- `{p.get('path')}` ({p.get('page_count', '?')} página(s))"
+                for p in executor.generated_pdfs
+            )
+            fallback_pdf_msg = (
+                f"He generado el documento PDF **{last_pdf.get('title') or last_pdf.get('filename') or 'Documento'}**:\n\n"
+                f"{pdf_lines}\n\n"
+                "Puedes revisarlo directamente en el panel **Documento PDF**."
+            )
+            on_reply_delta(fallback_pdf_msg)
+            full_reply = fallback_pdf_msg
+            mood = "success"
+        elif executor is not None and executor.staged_tasks:
             fallback_msg = f"Listo, completé el trabajo en el espacio de trabajo y preparé {len(executor.staged_tasks)} tarjeta(s) para tu revisión."
             on_reply_delta(fallback_msg)
             full_reply = fallback_msg
@@ -2493,6 +3345,7 @@ def stream_agent_completion(
         "xox_mood": mood,
         "operation": operation,
         "tasks": safe_tasks,
+        "generated_pdfs": list(executor.generated_pdfs) if executor else [],
         "model_used": actual_model,
         "usage": usage_data,
         "latency_ms": latency_ms,

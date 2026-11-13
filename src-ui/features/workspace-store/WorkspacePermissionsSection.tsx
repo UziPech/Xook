@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   History,
   Loader2,
   Lock,
@@ -177,7 +178,7 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
           )}
           <ShieldCheck className="w-3.5 h-3.5 text-sky-300 shrink-0" />
           <span className="text-[11px] font-medium text-zinc-200 truncate">
-            Permisos de comandos
+            Permisos y apps
           </span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -234,6 +235,7 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
             <div className="space-y-1 max-h-36 overflow-y-auto pr-0.5">
               {config.rules.map((rule) => {
                 const badge = ACTION_LABEL[rule.action] ?? ACTION_LABEL.ask;
+                const isExternalRule = rule.scope === "app" || rule.scope === "capability";
                 return (
                   <div
                     key={rule.id}
@@ -241,8 +243,11 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
+                        {isExternalRule && (
+                          <ExternalLink className="w-3 h-3 text-sky-300 shrink-0" />
+                        )}
                         <span className="font-mono text-zinc-100 truncate">
-                          {rule.pattern}
+                          {isExternalRule ? rule.description || rule.pattern : rule.pattern}
                         </span>
                         <span
                           className={`px-1.5 py-0.2 rounded-full border text-[9.5px] ${badge.cls}`}
@@ -250,9 +255,13 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
                           {badge.text}
                         </span>
                       </div>
-                      {rule.description && (
+                      {(isExternalRule ? rule.pattern : rule.description) && (
                         <div className="text-[10px] text-zinc-500 truncate">
-                          {rule.description}
+                          {rule.scope === "app"
+                            ? `App: ${rule.pattern}`
+                            : rule.scope === "capability"
+                            ? `Integración: ${rule.pattern}`
+                            : rule.description}
                         </div>
                       )}
                     </div>
@@ -297,20 +306,32 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
                     Aún no se han ejecutado comandos en este espacio.
                   </div>
                 ) : (
-                  history.map((item) => (
-                    <div
-                      key={item.id}
-                      className="rounded-lg bg-black/45 border border-white/[0.06] px-2 py-1 text-[10px] space-y-0.5"
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-zinc-200 truncate">{item.purpose}</span>
-                        <span className="text-zinc-500 shrink-0">{item.status}</span>
+                  history.map((item) => {
+                    const isAppHistory = item.command.startsWith("open_app:");
+                    const isNotesHistory = item.command.startsWith("os_notes:");
+                    const isCalHistory = item.command.startsWith("os_calendar:");
+                    const formattedCommand = isAppHistory
+                      ? `App · ${item.command.replace(/^open_app:\s*/, "")}`
+                      : isNotesHistory
+                      ? `Notas · ${item.command.replace(/^os_notes:\s*/, "")}`
+                      : isCalHistory
+                      ? `Calendario · ${item.command.replace(/^os_calendar:\s*/, "")}`
+                      : `$ ${item.command}`;
+                    return (
+                      <div
+                        key={item.id}
+                        className="rounded-lg bg-black/45 border border-white/[0.06] px-2 py-1 text-[10px] space-y-0.5"
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-zinc-200 truncate">{item.purpose}</span>
+                          <span className="text-zinc-500 shrink-0">{item.status}</span>
+                        </div>
+                        <div className="font-mono text-zinc-500 truncate">
+                          {formattedCommand}
+                        </div>
                       </div>
-                      <div className="font-mono text-zinc-500 truncate">
-                        $ {item.command}
-                      </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             )}

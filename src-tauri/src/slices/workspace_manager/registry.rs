@@ -142,6 +142,7 @@ pub fn scaffold_workspace_dir(
         "memoria/diario",
         "habilidades",
         "agente",
+        "agente/adjuntos",
         "agente/proyectos",
         "agente/borradores",
         "agente/reportes",

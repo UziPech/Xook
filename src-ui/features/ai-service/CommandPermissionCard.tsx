@@ -4,6 +4,7 @@ import {
   CheckCheck,
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   FolderOpen,
   Loader2,
   ShieldAlert,
@@ -22,12 +23,24 @@ export interface CommandPermissionUiItem {
   requestId: string;
   streamId?: string | null;
   commandId?: string;
+  kind?:
+    | "command"
+    | "open_app"
+    | "os_notes_read"
+    | "os_notes_write"
+    | "os_calendar_read"
+    | "os_calendar_write"
+    | string;
   purpose: string;
   command: string;
   cwdRel: string;
   riskLevel: "low" | "medium" | "high" | "blocked" | string;
   program?: string;
   patternSuggestion?: string;
+  appName?: string | null;
+  bundleId?: string | null;
+  appPath?: string | null;
+  detailPreview?: string | null;
   state: "pending" | "running" | "finished" | "denied" | "blocked" | "error";
   permissionChoice?: CommandPermissionDecisionKind;
   finished?: CommandFinishedEvent;
@@ -80,12 +93,17 @@ export function buildPermissionUiItemFromRequest(
     requestId: req.requestId,
     streamId: req.streamId,
     commandId: req.commandId,
+    kind: req.kind,
     purpose: req.purpose,
     command: req.command,
     cwdRel: req.cwdRel,
     riskLevel: req.riskLevel,
     program: req.program,
     patternSuggestion: req.patternSuggestion,
+    appName: req.appName,
+    bundleId: req.bundleId,
+    appPath: req.appPath,
+    detailPreview: req.detailPreview,
     state: "pending",
   };
 }
@@ -121,6 +139,11 @@ export function applyCommandFinishedEvent(
         : "finished";
     return {
       ...p,
+      kind: ev.kind ?? p.kind,
+      appName: ev.appName ?? p.appName,
+      bundleId: ev.bundleId ?? p.bundleId,
+      appPath: ev.appPath ?? p.appPath,
+      detailPreview: ev.detailPreview ?? p.detailPreview,
       state: nextState,
       finished: ev,
       error: ev.error ?? ev.result?.error ?? p.error,
@@ -144,6 +167,71 @@ export function applyPermissionResolution(
   );
 }
 
+interface ActionCopySpec {
+  pending: string;
+  running: string;
+  finishedOk: string;
+  finishedFail: string;
+  denied: string;
+  zone: string;
+}
+
+function resolveActionCopy(item: CommandPermissionUiItem): ActionCopySpec {
+  const targetApp = item.appName || item.program || "la aplicación";
+  const specs: Record<string, ActionCopySpec> = {
+    open_app: {
+      pending: `Xox solicita permiso para abrir ${targetApp}`,
+      running: `Abriendo ${targetApp}...`,
+      finishedOk: `Se abrió ${targetApp}`,
+      finishedFail: `No se pudo abrir ${targetApp}`,
+      denied: "Apertura rechazada",
+      zone: "Aplicación instalada en tu Mac",
+    },
+    os_notes_read: {
+      pending: "Xox solicita permiso para consultar tus notas en Notas",
+      running: "Consultando Notas de Mac...",
+      finishedOk: "Notas consultadas",
+      finishedFail: "No se pudieron consultar tus notas",
+      denied: "Consulta rechazada",
+      zone: "App Notas de tu Mac",
+    },
+    os_notes_write: {
+      pending: "Xox solicita permiso para crear una nota en Notas",
+      running: "Guardando nota en Notas de Mac...",
+      finishedOk: "Nota creada en Notas",
+      finishedFail: "No se pudo crear la nota",
+      denied: "Creación de nota rechazada",
+      zone: "App Notas de tu Mac",
+    },
+    os_calendar_read: {
+      pending: "Xox solicita permiso para consultar tu Calendario",
+      running: "Consultando Calendario de Mac...",
+      finishedOk: "Calendario consultado",
+      finishedFail: "No se pudo consultar el Calendario",
+      denied: "Consulta de calendario rechazada",
+      zone: "App Calendario de tu Mac",
+    },
+    os_calendar_write: {
+      pending: "Xox solicita permiso para agendar en tu Calendario",
+      running: "Agendando evento en Calendario de Mac...",
+      finishedOk: "Evento agendado en Calendario",
+      finishedFail: "No se pudo agendar el evento",
+      denied: "Agenda de evento rechazada",
+      zone: "App Calendario de tu Mac",
+    },
+  };
+  return (
+    specs[item.kind ?? "command"] ?? {
+      pending: "Xox solicita permiso para revisar archivos",
+      running: "Ejecutando verificación en el espacio...",
+      finishedOk: "Verificación completada",
+      finishedFail: "La verificación terminó con observaciones",
+      denied: "Acción rechazada",
+      zone: item.cwdRel === "." ? "Carpeta principal del negocio" : item.cwdRel,
+    }
+  );
+}
+
 export const CommandPermissionCard: React.FC<CommandPermissionCardProps> = ({
   item,
   compact = false,
@@ -155,12 +243,31 @@ export const CommandPermissionCard: React.FC<CommandPermissionCardProps> = ({
   const outputText = [res?.stdout?.trim(), res?.stderr?.trim()]
     .filter(Boolean)
     .join("\n--- stderr ---\n");
-  const zoneLabel = item.cwdRel === "." ? "Carpeta principal del negocio" : item.cwdRel;
+  const isExternalAction = Boolean(item.kind && item.kind !== "command");
+  const copy = resolveActionCopy(item);
+  const zoneLabel = copy.zone;
 
   const isPending = item.state === "pending";
   const isRunning = item.state === "running";
+  const headline = isPending
+    ? copy.pending
+    : isRunning
+    ? copy.running
+    : item.state === "finished"
+    ? res?.ok === false
+      ? copy.finishedFail
+      : copy.finishedOk
+    : item.state === "denied"
+    ? copy.denied
+    : item.state === "blocked"
+    ? "Bloqueado por seguridad"
+    : copy.finishedFail;
+
   const canInspectTechnical =
-    Boolean(item.command) || Boolean(outputText) || Boolean(item.error);
+    Boolean(item.command) ||
+    Boolean(item.appPath) ||
+    Boolean(outputText) ||
+    Boolean(item.error);
 
   return (
     <div
@@ -182,19 +289,7 @@ export const CommandPermissionCard: React.FC<CommandPermissionCardProps> = ({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-medium text-zinc-100 leading-snug">
-                {isPending
-                  ? "Xox solicita permiso para revisar archivos"
-                  : isRunning
-                  ? "Ejecutando verificación en el espacio..."
-                  : item.state === "finished"
-                  ? res?.ok
-                    ? "Verificación completada"
-                    : "La verificación terminó con observaciones"
-                  : item.state === "denied"
-                  ? "Acción rechazada"
-                  : item.state === "blocked"
-                  ? "Bloqueado por seguridad"
-                  : "No se pudo completar"}
+                {headline}
               </span>
               <span
                 className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${risk.badgeClass}`}
@@ -203,8 +298,17 @@ export const CommandPermissionCard: React.FC<CommandPermissionCardProps> = ({
               </span>
             </div>
             <p className="mt-1 text-zinc-300 leading-relaxed">{item.purpose}</p>
+            {item.detailPreview && (
+              <div className="mt-1.5 rounded-lg bg-white/[0.035] border border-white/[0.07] px-2.5 py-1.5 text-[11px] text-zinc-200 whitespace-pre-line leading-relaxed">
+                {item.detailPreview}
+              </div>
+            )}
             <div className="mt-1 flex items-center gap-1.5 text-[10.5px] text-zinc-400">
-              <FolderOpen className="w-3 h-3 shrink-0 text-zinc-500" />
+              {isExternalAction ? (
+                <ExternalLink className="w-3 h-3 shrink-0 text-sky-400/80" />
+              ) : (
+                <FolderOpen className="w-3 h-3 shrink-0 text-zinc-500" />
+              )}
               <span className="truncate">{zoneLabel}</span>
               {res?.durationMs != null && (
                 <span className="text-zinc-500">· {res.durationMs} ms</span>
@@ -273,15 +377,36 @@ export const CommandPermissionCard: React.FC<CommandPermissionCardProps> = ({
 
           {showTechnical && (
             <div className="panel-fade-in mt-1.5 rounded-lg bg-black/55 border border-white/[0.08] p-2 font-mono text-[10.5px] text-zinc-300 space-y-1.5 overflow-x-auto">
-              <div>
-                <span className="text-zinc-500">$ </span>
-                <span className="text-sky-200 break-all">{item.command}</span>
-              </div>
-              <div className="text-[10px] text-zinc-500">
-                Carpeta: {item.cwdRel}
-                {item.patternSuggestion ? ` · Regla sugerida: ${item.patternSuggestion}` : ""}
-                {res?.exitCode != null ? ` · Código: ${res.exitCode}` : ""}
-              </div>
+              {isExternalAction ? (
+                <>
+                  <div className="text-sky-200 break-all">
+                    {item.kind === "open_app" ? "Aplicación" : "Integración"}:{" "}
+                    {item.appName || item.program || item.command}
+                  </div>
+                  <div className="text-[10px] text-zinc-400 space-y-0.5">
+                    {item.bundleId && <div>Identificador: {item.bundleId}</div>}
+                    {item.appPath && <div className="break-all">Ruta: {item.appPath}</div>}
+                    {item.patternSuggestion && (
+                      <div>
+                        Regla sugerida: {item.patternSuggestion} (
+                        {item.kind === "open_app" ? "app" : "integración"})
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <span className="text-zinc-500">$ </span>
+                    <span className="text-sky-200 break-all">{item.command}</span>
+                  </div>
+                  <div className="text-[10px] text-zinc-500">
+                    Carpeta: {item.cwdRel}
+                    {item.patternSuggestion ? ` · Regla sugerida: ${item.patternSuggestion}` : ""}
+                    {res?.exitCode != null ? ` · Código: ${res.exitCode}` : ""}
+                  </div>
+                </>
+              )}
               {outputText && (
                 <pre className="whitespace-pre-wrap break-words text-[10px] leading-relaxed text-zinc-300 max-h-40 overflow-y-auto pt-1 border-t border-white/[0.06]">
                   {outputText}
