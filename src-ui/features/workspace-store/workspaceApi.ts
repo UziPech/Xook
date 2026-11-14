@@ -141,7 +141,7 @@ export interface PdfSummaryInfo {
 export interface WorkspaceBinaryPreview {
   relativePath: string;
   name: string;
-  kind: "image" | "pdf" | "binary";
+  kind: "image" | "pdf" | "office" | "binary";
   mimeType: string;
   sizeBytes: number;
   dataUrl?: string | null;
@@ -426,6 +426,399 @@ export async function renderPdfPreview(
     hasMore: Boolean(raw?.hasMore ?? raw?.has_more),
     pages,
     error: typeof raw?.error === "string" ? raw.error : undefined,
+  };
+}
+
+export interface PdfEditableBlock {
+  type:
+    | "heading"
+    | "paragraph"
+    | "bullets"
+    | "numbered_list"
+    | "table"
+    | "callout"
+    | "code"
+    | "divider"
+    | "image"
+    | "kpi_strip"
+    | string;
+  level?: number;
+  text?: string;
+  title?: string;
+  tone?: string;
+  items?: string[];
+  headers?: string[];
+  columns?: string[];
+  rows?: string[][];
+  code?: string;
+  language?: string;
+  path?: string;
+  caption?: string;
+  metrics?: Array<{ label: string; value: string; detail?: string }>;
+}
+
+export interface PdfPagePatch {
+  id: string;
+  page_number: number;
+  x_pct: number;
+  y_pct: number;
+  w_pct: number;
+  h_pct: number;
+  orig_x_pct?: number;
+  orig_y_pct?: number;
+  orig_w_pct?: number;
+  orig_h_pct?: number;
+  text: string;
+  original_text?: string;
+  font_size?: number;
+  font_weight?: "normal" | "bold";
+  text_color?: string;
+  bg_color?: string;
+  align?: "left" | "center" | "right";
+  deleted?: boolean;
+  is_new?: boolean;
+}
+
+export interface PdfEditableSpec {
+  ok: boolean;
+  source?: string;
+  path: string;
+  filename?: string;
+  pageCount: number;
+  title: string;
+  subtitle: string;
+  author: string;
+  date: string;
+  theme: string;
+  hasCover: boolean;
+  preserveFirstPage: boolean;
+  skipInlineTitle: boolean;
+  cover?: Record<string, unknown> | null;
+  blocks: PdfEditableBlock[];
+  markdown: string;
+  pagePatches: PdfPagePatch[];
+}
+
+export interface PdfSaveResult {
+  ok: boolean;
+  path: string;
+  filename?: string;
+  title: string;
+  theme: string;
+  pageCount: number;
+  sizeBytes: number;
+  previewPages: PdfPreviewPage[];
+  previewHasMore: boolean;
+  editableSpec?: PdfEditableSpec;
+}
+
+function normalizeEditableSpec(
+  raw: Record<string, unknown>,
+  fallbackPath: string
+): PdfEditableSpec {
+  const rawBlocks = Array.isArray(raw.blocks) ? raw.blocks : [];
+  const blocks: PdfEditableBlock[] = rawBlocks
+    .filter((b): b is Record<string, unknown> => Boolean(b && typeof b === "object"))
+    .map((b) => ({
+      type: String(b.type ?? "paragraph"),
+      level: typeof b.level === "number" ? b.level : undefined,
+      text: typeof b.text === "string" ? b.text : typeof b.content === "string" ? b.content : undefined,
+      title: typeof b.title === "string" ? b.title : undefined,
+      tone: typeof b.tone === "string" ? b.tone : undefined,
+      items: Array.isArray(b.items) ? b.items.map((x) => String(x ?? "")) : undefined,
+      headers: Array.isArray(b.headers)
+        ? b.headers.map((x) => String(x ?? ""))
+        : Array.isArray(b.columns)
+        ? b.columns.map((x) => String(x ?? ""))
+        : undefined,
+      rows: Array.isArray(b.rows)
+        ? b.rows
+            .filter((r): r is unknown[] => Array.isArray(r))
+            .map((r) => r.map((c) => String(c ?? "")))
+        : undefined,
+      code: typeof b.code === "string" ? b.code : undefined,
+      language: typeof b.language === "string" ? b.language : undefined,
+      path: typeof b.path === "string" ? b.path : undefined,
+      caption: typeof b.caption === "string" ? b.caption : undefined,
+    }));
+
+  const rawPatches = Array.isArray(raw.page_patches ?? raw.pagePatches)
+    ? ((raw.page_patches ?? raw.pagePatches) as unknown[])
+    : [];
+  const pagePatches: PdfPagePatch[] = rawPatches
+    .filter((p): p is Record<string, unknown> => Boolean(p && typeof p === "object"))
+    .map((p, idx) => {
+      const xPct = Number(p.x_pct ?? 12);
+      const yPct = Number(p.y_pct ?? 12);
+      const wPct = Number(p.w_pct ?? 28);
+      const hPct = Number(p.h_pct ?? 5);
+      const txt = String(p.text ?? "");
+      return {
+        id: String(p.id ?? `patch_${idx + 1}`),
+        page_number: Number(p.page_number ?? 1),
+        x_pct: xPct,
+        y_pct: yPct,
+        w_pct: wPct,
+        h_pct: hPct,
+        orig_x_pct: typeof p.orig_x_pct === "number" ? p.orig_x_pct : xPct,
+        orig_y_pct: typeof p.orig_y_pct === "number" ? p.orig_y_pct : yPct,
+        orig_w_pct: typeof p.orig_w_pct === "number" ? p.orig_w_pct : wPct,
+        orig_h_pct: typeof p.orig_h_pct === "number" ? p.orig_h_pct : hPct,
+        text: txt,
+        original_text:
+          typeof p.original_text === "string" ? p.original_text : txt,
+        font_size: typeof p.font_size === "number" ? p.font_size : 11,
+        font_weight: p.font_weight === "bold" ? "bold" : "normal",
+        text_color: typeof p.text_color === "string" ? p.text_color : "#0F172A",
+        bg_color: typeof p.bg_color === "string" ? p.bg_color : "#FFFFFF",
+        align:
+          p.align === "center" || p.align === "right" ? p.align : "left",
+        deleted: Boolean(p.deleted ?? false),
+        is_new: Boolean(p.is_new ?? false),
+      };
+    });
+
+  return {
+    ok: Boolean(raw.ok ?? true),
+    source: typeof raw.source === "string" ? raw.source : undefined,
+    path: typeof raw.path === "string" ? raw.path : fallbackPath,
+    filename: typeof raw.filename === "string" ? raw.filename : undefined,
+    pageCount: Number(raw.page_count ?? raw.pageCount ?? 1),
+    title: String(raw.title ?? "Documento"),
+    subtitle: String(raw.subtitle ?? ""),
+    author: String(raw.author ?? ""),
+    date: String(raw.date ?? ""),
+    theme: String(raw.theme ?? "executive"),
+    hasCover: Boolean(raw.has_cover ?? raw.hasCover ?? false),
+    preserveFirstPage: Boolean(raw.preserve_first_page ?? raw.preserveFirstPage ?? false),
+    skipInlineTitle: Boolean(raw.skip_inline_title ?? raw.skipInlineTitle ?? false),
+    cover:
+      raw.cover && typeof raw.cover === "object"
+        ? (raw.cover as Record<string, unknown>)
+        : null,
+    blocks,
+    markdown: String(raw.markdown ?? ""),
+    pagePatches,
+  };
+}
+
+export async function loadPdfEditableSpec(
+  relativePath: string
+): Promise<PdfEditableSpec | null> {
+  if (!isWorkspaceTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  const raw = await invoke<Record<string, unknown>>("load_pdf_editable_spec", {
+    relativePath,
+  });
+  if (!raw) return null;
+  return normalizeEditableSpec(raw, relativePath);
+}
+
+export async function savePdfDocument(
+  relativePath: string,
+  payload: {
+    title?: string;
+    subtitle?: string;
+    author?: string;
+    date?: string;
+    theme?: string;
+    preserve_first_page?: boolean;
+    skip_inline_title?: boolean;
+    cover?: Record<string, unknown> | null;
+    edit_mode?: "blocks" | "markdown";
+    blocks?: PdfEditableBlock[];
+    markdown?: string;
+    page_patches?: PdfPagePatch[];
+    patches_only?: boolean;
+  }
+): Promise<PdfSaveResult> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const raw = await invoke<Record<string, unknown>>("save_pdf_document", {
+    relativePath,
+    payload,
+  });
+  const rawPages = Array.isArray(raw?.preview_pages) ? raw.preview_pages : [];
+  const previewPages: PdfPreviewPage[] = rawPages
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const obj = item as Record<string, unknown>;
+      const dataUrl = String(obj.dataUrl ?? obj.data_url ?? "").trim();
+      if (!dataUrl) return null;
+      return {
+        page: Number(obj.page ?? 1),
+        width: Number(obj.width ?? 0),
+        height: Number(obj.height ?? 0),
+        dataUrl,
+      };
+    })
+    .filter((p): p is PdfPreviewPage => p !== null);
+
+  return {
+    ok: Boolean(raw?.ok ?? true),
+    path: typeof raw?.path === "string" ? raw.path : relativePath,
+    filename: typeof raw?.filename === "string" ? raw.filename : undefined,
+    title: String(raw?.title ?? payload.title ?? "Documento"),
+    theme: String(raw?.theme ?? payload.theme ?? "executive"),
+    pageCount: Number(raw?.page_count ?? previewPages.length),
+    sizeBytes: Number(raw?.size_bytes ?? 0),
+    previewPages,
+    previewHasMore: Boolean(raw?.preview_has_more),
+    editableSpec:
+      raw?.editable_spec && typeof raw.editable_spec === "object"
+        ? normalizeEditableSpec(raw.editable_spec as Record<string, unknown>, relativePath)
+        : undefined,
+  };
+}
+
+export interface DownloadWorkspaceFileResult {
+  ok: boolean;
+  path: string;
+  filename: string;
+  downloadedPath: string;
+}
+
+export interface UniversalDocumentSlide {
+  slide_number: number;
+  title: string;
+  bullets: string[];
+  tables: Array<{ headers: string[]; rows: string[][] }>;
+  notes?: string;
+}
+
+export interface UniversalDocumentSheet {
+  name: string;
+  headers: string[];
+  rows: string[][];
+  total_rows?: number;
+  truncated?: boolean;
+}
+
+export interface UniversalDocumentPayload {
+  ok: boolean;
+  path: string;
+  filename: string;
+  title: string;
+  sizeBytes: number;
+  pageCount: number;
+  docKind: "word" | "presentation" | "spreadsheet" | "markdown" | "text" | "code" | "image" | "pdf";
+  formatLabel: string;
+  blocks?: PdfEditableBlock[];
+  slides?: UniversalDocumentSlide[];
+  sheets?: UniversalDocumentSheet[];
+  markdown?: string;
+  text?: string;
+  imageDataUrl?: string;
+  error?: string;
+}
+
+export async function readUniversalDocument(
+  relativePath: string
+): Promise<UniversalDocumentPayload | null> {
+  if (!isWorkspaceTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  const raw = await invoke<Record<string, unknown>>("read_universal_document", {
+    relativePath,
+  });
+  if (!raw || raw.ok === false) return null;
+
+  const rawBlocks = Array.isArray(raw.blocks) ? raw.blocks : [];
+  const blocks: PdfEditableBlock[] = rawBlocks
+    .filter((b): b is Record<string, unknown> => Boolean(b && typeof b === "object"))
+    .map((b) => ({
+      type: String(b.type ?? "paragraph"),
+      level: typeof b.level === "number" ? b.level : undefined,
+      text: typeof b.text === "string" ? b.text : typeof b.content === "string" ? b.content : undefined,
+      title: typeof b.title === "string" ? b.title : undefined,
+      items: Array.isArray(b.items) ? b.items.map((x) => String(x ?? "")) : undefined,
+      headers: Array.isArray(b.headers) ? b.headers.map((x) => String(x ?? "")) : undefined,
+      rows: Array.isArray(b.rows)
+        ? b.rows
+            .filter((r): r is unknown[] => Array.isArray(r))
+            .map((r) => r.map((c) => String(c ?? "")))
+        : undefined,
+    }));
+
+  const slides: UniversalDocumentSlide[] = Array.isArray(raw.slides)
+    ? raw.slides
+        .filter((s): s is Record<string, unknown> => Boolean(s && typeof s === "object"))
+        .map((s, idx) => ({
+          slide_number: Number(s.slide_number ?? idx + 1),
+          title: String(s.title ?? `Diapositiva ${idx + 1}`),
+          bullets: Array.isArray(s.bullets) ? s.bullets.map((x) => String(x ?? "")) : [],
+          tables: Array.isArray(s.tables)
+            ? s.tables
+                .filter((t): t is Record<string, unknown> => Boolean(t && typeof t === "object"))
+                .map((t) => ({
+                  headers: Array.isArray(t.headers) ? t.headers.map((x) => String(x ?? "")) : [],
+                  rows: Array.isArray(t.rows)
+                    ? t.rows
+                        .filter((r): r is unknown[] => Array.isArray(r))
+                        .map((r) => r.map((c) => String(c ?? "")))
+                    : [],
+                }))
+            : [],
+          notes: typeof s.notes === "string" ? s.notes : "",
+        }))
+    : [];
+
+  const sheets: UniversalDocumentSheet[] = Array.isArray(raw.sheets)
+    ? raw.sheets
+        .filter((s): s is Record<string, unknown> => Boolean(s && typeof s === "object"))
+        .map((s, idx) => ({
+          name: String(s.name ?? `Hoja ${idx + 1}`),
+          headers: Array.isArray(s.headers) ? s.headers.map((x) => String(x ?? "")) : [],
+          rows: Array.isArray(s.rows)
+            ? s.rows
+                .filter((r): r is unknown[] => Array.isArray(r))
+                .map((r) => r.map((c) => String(c ?? "")))
+            : [],
+          total_rows: typeof s.total_rows === "number" ? s.total_rows : undefined,
+          truncated: Boolean(s.truncated),
+        }))
+    : [];
+
+  const rawKind = String(raw.doc_kind ?? "text");
+  const docKind: UniversalDocumentPayload["docKind"] =
+    rawKind === "word" ||
+    rawKind === "presentation" ||
+    rawKind === "spreadsheet" ||
+    rawKind === "markdown" ||
+    rawKind === "code"
+      ? rawKind
+      : "text";
+
+  return {
+    ok: true,
+    path: String(raw.path ?? relativePath),
+    filename: String(raw.filename ?? relativePath.split("/").pop() ?? "documento"),
+    title: String(raw.title ?? relativePath.split("/").pop() ?? "Documento"),
+    sizeBytes: Number(raw.size_bytes ?? 0),
+    pageCount: Number(raw.page_count ?? 1),
+    docKind,
+    formatLabel: String(raw.format_label ?? "DOC"),
+    blocks,
+    slides,
+    sheets,
+    markdown: typeof raw.markdown === "string" ? raw.markdown : "",
+    text: typeof raw.text === "string" ? raw.text : "",
+  };
+}
+
+export async function downloadWorkspaceFile(
+  relativePath: string,
+  preferredName?: string
+): Promise<DownloadWorkspaceFileResult | null> {
+  if (!isWorkspaceTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  const raw = await invoke<Record<string, unknown>>("download_workspace_file", {
+    relativePath,
+    preferredName: preferredName ?? null,
+  });
+  return {
+    ok: Boolean(raw?.ok ?? true),
+    path: String(raw?.path ?? relativePath),
+    filename: String(raw?.filename ?? preferredName ?? "documento.pdf"),
+    downloadedPath: String(raw?.downloadedPath ?? ""),
   };
 }
 

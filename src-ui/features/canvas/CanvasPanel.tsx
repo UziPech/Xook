@@ -72,7 +72,7 @@ function parseSortableNumeric(raw: string): number | null {
 function getBadgeTone(value: string): string {
   const lower = value.toLowerCase();
   if (/(recomend|mejor|[oó]ptim|excelent|ideal|alta\s+rent|activo|listo)/i.test(lower)) {
-    return "bg-indigo-300/[0.14] border-indigo-200/35 text-indigo-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.22)]";
+    return "bg-white/[0.1] border-white/[0.22] text-white";
   }
   if (/(cr[ií]tic|riesgo|agot|alto\s+costo|alerta|retraso)/i.test(lower)) {
     return "bg-rose-500/15 border-rose-400/35 text-rose-200";
@@ -81,6 +81,61 @@ function getBadgeTone(value: string): string {
     return "bg-amber-500/15 border-amber-400/35 text-amber-200";
   }
   return "bg-white/[0.06] border-white/[0.12] text-zinc-200";
+}
+
+function isCompactMetricCell(raw: string): boolean {
+  const trimmed = raw.replace(/^`+|`+$/g, "").trim();
+  if (!trimmed || trimmed.length > 22) return false;
+  return /^([$€£]?\s*-?\d[\d.,]*\s*(?:%|kb|mb|gb|tb|mxn|usd|eur|d[ií]as?|hrs?|h|un\.?|u\.?|pzs?|skus?)?|\d{1,4}[/-]\d{1,2}[/-]\d{1,4})$/i.test(
+    trimmed
+  );
+}
+
+function renderFormattedCellText(raw: string, isFirstCol: boolean): React.ReactNode {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return <span className="text-zinc-600 italic">—</span>;
+  }
+
+  // Si toda la celda viene envuelta en backticks (`ruta/archivo.pdf`), limpiarla y mostrarla como código legible
+  if (trimmed.startsWith("`") && trimmed.endsWith("`") && trimmed.length > 2 && !trimmed.slice(1, -1).includes("`")) {
+    const inner = trimmed.slice(1, -1).trim();
+    return (
+      <code className="inline-block px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.08] font-mono text-[11.5px] text-zinc-100 break-all leading-snug">
+        {inner}
+      </code>
+    );
+  }
+
+  // Formatear fragmentos inline `código` y **negrita**
+  const parts = trimmed.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return parts.map((part, idx) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      return (
+        <strong key={idx} className="font-semibold text-white">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
+      return (
+        <code
+          key={idx}
+          className="px-1.5 py-0.5 rounded bg-white/[0.05] border border-white/[0.08] font-mono text-[11.5px] text-zinc-100 break-all"
+        >
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    if (isFirstCol && /[\\/]/.test(part) && part.length > 18) {
+      return (
+        <span key={idx} className="font-mono text-[11.5px] text-zinc-100 break-all">
+          {part}
+        </span>
+      );
+    }
+    return <React.Fragment key={idx}>{part}</React.Fragment>;
+  });
 }
 
 function nextHighlightState(current?: CanvasRowHighlight): CanvasRowHighlight {
@@ -266,6 +321,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             return (
               <input
                 autoFocus
+                aria-label={`Editar ${col.label}`}
                 value={editDraft}
                 onChange={(e) => setEditDraft(e.target.value)}
                 onBlur={() => commitCell(r.id, col.id)}
@@ -273,7 +329,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                   if (e.key === "Enter") commitCell(r.id, col.id);
                   if (e.key === "Escape") setEditingCell(null);
                 }}
-                className="w-full min-w-[72px] px-2 py-1 rounded-md bg-black/60 border border-sky-400/50 text-[12.5px] text-white outline-none"
+                className="w-full min-w-[84px] px-2 py-1 rounded-md bg-black/75 border border-white/25 text-[12.5px] text-white outline-none"
               />
             );
           }
@@ -292,21 +348,26 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                 className="inline-flex items-center cursor-text"
               >
                 <span
-                  className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-medium ${getBadgeTone(
+                  className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[11px] font-medium whitespace-nowrap ${getBadgeTone(
                     val
                   )}`}
                 >
-                  {val}
+                  {val.replace(/^`+|`+$/g, "")}
                 </span>
               </button>
             );
           }
 
+          const compactCell =
+            col.kind === "currency" ||
+            col.kind === "number" ||
+            isCompactMetricCell(val);
+
           return (
             <div
               onClick={startEdit}
               title="Clic para editar celda"
-              className={`min-h-[22px] rounded px-1 -mx-1 py-0.5 cursor-text hover:bg-white/[0.04] transition-colors flex items-center gap-1.5 ${
+              className={`min-h-[22px] rounded px-1 -mx-1 py-0.5 cursor-text hover:bg-white/[0.04] transition-colors flex items-start gap-1.5 leading-relaxed ${
                 col.align === "right"
                   ? "justify-end text-right tabular-nums"
                   : col.align === "center"
@@ -316,20 +377,20 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             >
               <span
                 className={
-                  colIndex === 0
-                    ? "font-medium text-white"
-                    : col.kind === "currency" || col.kind === "number"
-                      ? "font-mono text-[12px] tabular-nums text-sky-100/95 font-medium"
-                      : "text-zinc-300"
+                  compactCell
+                    ? "font-mono text-[12px] tabular-nums text-zinc-100 font-medium whitespace-nowrap"
+                    : colIndex === 0
+                      ? "font-medium text-white min-w-[120px] max-w-[230px]"
+                      : "text-zinc-200 min-w-[140px]"
                 }
               >
-                {val || <span className="text-zinc-600 italic">—</span>}
+                {renderFormattedCellText(val, colIndex === 0)}
               </span>
               {colIndex === 0 && r.badge && (
                 <span
                   className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] font-medium shrink-0 ${
                     r.highlight === "recommended"
-                      ? "bg-indigo-300/[0.14] border-indigo-200/35 text-indigo-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.24)]"
+                      ? "bg-white/[0.1] border-white/[0.22] text-white"
                       : r.highlight === "warning"
                         ? "bg-amber-500/15 border-amber-400/35 text-amber-200"
                         : "bg-white/[0.06] border-white/[0.12] text-zinc-200"
@@ -396,43 +457,37 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
     <section
       style={{
         boxShadow:
-          "inset 0 1px 1px rgba(255,255,255,0.10), 0 24px 60px -28px rgba(0,0,0,0.88)",
+          "inset 0 1px 0 rgba(255,255,255,0.08), 0 24px 60px -28px rgba(0,0,0,0.88)",
       }}
-      className={`relative h-full flex flex-col rounded-2xl border border-white/[0.08] bg-gradient-to-b from-white/[0.045] via-[#0c111e]/78 to-[#070a12]/88 overflow-hidden ${
+      className={`relative h-full flex flex-col rounded-2xl border border-white/[0.08] bg-[#090a0e] overflow-hidden ${
         visible ? "panel-fade-in" : "panel-fade-out"
       }`}
     >
-      {/* Brillo ambiental superior Liquid Glass */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -top-24 -right-16 h-56 w-72 rounded-full bg-indigo-300/[0.09] blur-3xl"
-      />
-
       {/* Cabecera en dos niveles: barra de controles arriba y título amplio debajo */}
-      <header className="relative px-4 pt-3.5 pb-3 border-b border-white/[0.07] bg-white/[0.02] shrink-0 space-y-2.5">
+      <header className="relative px-4 pt-3 pb-2.5 border-b border-white/[0.07] bg-[#0c0d12] shrink-0 space-y-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <div className="quick-liquid-icon w-7 h-7 rounded-xl flex items-center justify-center shrink-0">
-              <Table2 className="w-3.5 h-3.5 text-sky-100/95" />
+              <Table2 className="w-3.5 h-3.5 text-zinc-200" />
             </div>
-            <span className="text-[11px] font-semibold tracking-[0.02em] text-white/90">
+            <span className="text-[11px] font-semibold tracking-[0.02em] text-zinc-100">
               Canvas
             </span>
-            <span className="px-2 py-0.5 rounded-full bg-white/[0.055] border border-white/[0.09] shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] text-[10px] font-medium text-indigo-100 shrink-0">
+            <span className="px-2 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.09] text-[10px] font-medium text-zinc-300 shrink-0">
               {kindLabel}
             </span>
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
             {canvas.columns.length > 0 && (
-              <div className="flex items-center rounded-xl bg-white/[0.035] border border-white/[0.08] p-0.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+              <div className="flex items-center rounded-xl bg-white/[0.035] border border-white/[0.08] p-0.5">
                 <button
                   type="button"
                   onClick={() => setViewMode("table")}
                   title="Vista interactiva"
                   className={`px-2 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer ${
                     viewMode === "table"
-                      ? "bg-white/[0.11] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]"
+                      ? "bg-white/[0.11] text-white"
                       : "text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
@@ -444,7 +499,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                   title="Vista Markdown"
                   className={`px-2 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer inline-flex items-center gap-1 ${
                     viewMode === "markdown"
-                      ? "bg-white/[0.11] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]"
+                      ? "bg-white/[0.11] text-white"
                       : "text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
@@ -457,11 +512,12 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             <button
               type="button"
               onClick={handleCopyMarkdown}
+              aria-label="Copiar tabla en formato Markdown"
               title="Copiar tabla para Docs / Notion / Excel"
-              className="quick-liquid-btn w-7 h-7 rounded-xl flex items-center justify-center text-white/85 hover:text-white cursor-pointer"
+              className="quick-liquid-btn w-7 h-7 rounded-xl flex items-center justify-center text-zinc-300 hover:text-white cursor-pointer"
             >
               {copiedMd ? (
-                <Check className="w-3.5 h-3.5 text-indigo-200" />
+                <Check className="w-3.5 h-3.5 text-white" />
               ) : (
                 <Copy className="w-3.5 h-3.5" />
               )}
@@ -471,8 +527,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
               <button
                 type="button"
                 onClick={handleDownloadCsv}
+                aria-label="Descargar CSV"
                 title="Descargar CSV (Excel)"
-                className="quick-liquid-btn w-7 h-7 rounded-xl flex items-center justify-center text-white/85 hover:text-white cursor-pointer"
+                className="quick-liquid-btn w-7 h-7 rounded-xl flex items-center justify-center text-zinc-300 hover:text-white cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
               </button>
@@ -484,9 +541,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                 onClick={() => void handleExportPdf()}
                 disabled={exportingPdf}
                 title="Exportar a PDF profesional"
-                className="quick-liquid-btn h-7 px-2.5 rounded-xl inline-flex items-center gap-1 text-[11px] font-medium text-white/90 hover:text-white cursor-pointer disabled:opacity-50"
+                className="quick-liquid-btn h-7 px-2.5 rounded-xl inline-flex items-center gap-1 text-[11px] font-medium text-zinc-200 hover:text-white cursor-pointer disabled:opacity-50"
               >
-                <FileText className="w-3.5 h-3.5 text-rose-200/90" />
+                <FileText className="w-3.5 h-3.5 text-zinc-300" />
                 <span>{exportingPdf ? "PDF..." : "PDF"}</span>
               </button>
             )}
@@ -494,8 +551,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             <button
               type="button"
               onClick={onClose}
+              aria-label="Cerrar Canvas"
               title="Cerrar Canvas"
-              className="quick-liquid-btn w-7 h-7 rounded-xl flex items-center justify-center text-zinc-200/85 hover:text-white cursor-pointer"
+              className="quick-liquid-btn w-7 h-7 rounded-xl flex items-center justify-center text-zinc-300 hover:text-white cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -506,6 +564,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
           {editingTitle ? (
             <input
               autoFocus
+              aria-label="Título de la tabla"
               value={titleDraft}
               onChange={(e) => setTitleDraft(e.target.value)}
               onBlur={commitTitle}
@@ -516,7 +575,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                   setEditingTitle(false);
                 }
               }}
-              className="w-full px-2.5 py-1 rounded-lg bg-black/60 border border-sky-400/50 text-[15px] font-semibold text-white outline-none"
+              className="w-full px-2.5 py-1 rounded-lg bg-black/70 border border-white/25 text-[14.5px] font-semibold text-white outline-none"
             />
           ) : (
             <h2
@@ -525,12 +584,12 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                 setEditingTitle(true);
               }}
               title="Clic para renombrar Canvas"
-              className="text-[15px] font-semibold tracking-[-0.015em] leading-snug text-white line-clamp-2 cursor-text hover:text-sky-200 transition-colors"
+              className="text-[14.5px] font-semibold tracking-[-0.015em] leading-snug text-white line-clamp-2 cursor-text hover:text-zinc-200 transition-colors"
             >
               {canvas.title}
             </h2>
           )}
-          <p className="text-[11.5px] text-zinc-400 mt-1 leading-snug">
+          <p className="text-[11px] text-zinc-400 mt-0.5 leading-snug">
             {canvas.columns.length > 0
               ? filteredRowCount === canvas.rows.length
                 ? `${canvas.rows.length} ${
@@ -545,14 +604,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
 
       {/* Resumen / Conclusión destacada */}
       {canvas.summary && (
-        <div className="relative mx-4 mt-3 px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-white/[0.055] via-indigo-300/[0.05] to-white/[0.025] border border-white/[0.09] flex items-stretch gap-2.5 text-[12px] text-zinc-100 shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
-          <div className="w-[2.5px] rounded-full bg-gradient-to-b from-white/70 via-indigo-200/75 to-sky-200/65 shrink-0" />
-          <div className="flex items-start gap-2 min-w-0">
-            <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0 mt-0.5">
-              <Sparkles className="w-2.5 h-2.5 text-sky-100/95" />
-            </span>
-            <p className="leading-relaxed select-text">{canvas.summary}</p>
-          </div>
+        <div className="relative mx-4 mt-3 px-3.5 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.08] flex items-stretch gap-2.5 text-[12px] text-zinc-200 shrink-0">
+          <div className="w-[2px] rounded-full bg-zinc-400 shrink-0" />
+          <p className="leading-relaxed select-text">{canvas.summary}</p>
         </div>
       )}
 
@@ -563,15 +617,17 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
+              aria-label="Filtrar filas de la tabla"
               value={globalFilter}
               onChange={(e) => setGlobalFilter(e.target.value)}
               placeholder="Filtrar filas..."
-              className="w-full pl-8 pr-7 py-1.5 rounded-xl bg-white/[0.04] border border-white/[0.08] focus:border-indigo-200/35 text-[12px] text-zinc-100 placeholder:text-zinc-500 outline-none transition-colors shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+              className="w-full pl-8 pr-7 py-1.5 rounded-xl bg-white/[0.035] border border-white/[0.08] focus:border-white/25 text-[12px] text-zinc-100 placeholder:text-zinc-500 outline-none transition-colors"
             />
             {globalFilter && (
               <button
                 type="button"
                 onClick={() => setGlobalFilter("")}
+                aria-label="Limpiar filtro"
                 title="Limpiar filtro"
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white cursor-pointer"
               >
@@ -584,16 +640,16 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
               <button
                 type="button"
                 onClick={() => onAskXoxEdit(canvas)}
-                className="quick-liquid-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-medium text-white/95 cursor-pointer"
+                className="quick-liquid-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-medium text-zinc-100 hover:text-white cursor-pointer"
               >
-                <Sparkles className="w-3 h-3 text-sky-100/90 shrink-0" />
+                <Sparkles className="w-3 h-3 text-zinc-300 shrink-0" />
                 <span>Ajustar con Xox</span>
               </button>
             )}
             <button
               type="button"
               onClick={handleAddRow}
-              className="quick-liquid-btn inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-medium text-white/90 cursor-pointer"
+              className="quick-liquid-btn inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-medium text-zinc-100 hover:text-white cursor-pointer"
             >
               <Plus className="w-3 h-3" />
               <span>Fila</span>
@@ -606,12 +662,21 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
       <div className="relative flex-1 min-h-0 overflow-auto xook-scroll px-4 pb-4">
         {viewMode === "table" && canvas.columns.length > 0 ? (
           <div className="space-y-3">
-            <div className="xook-liquid-table rounded-xl overflow-x-auto xook-scroll">
-              <table className="w-full border-separate border-spacing-0 text-[12.5px]">
+            <div
+              tabIndex={0}
+              role="region"
+              aria-label={canvas.title || "Tabla interactiva"}
+              className="xook-liquid-table rounded-xl overflow-x-auto xook-scroll focus:outline-none focus-visible:ring-1 focus-visible:ring-white/25"
+            >
+              <table className="w-full table-auto border-separate border-spacing-0 text-[12.5px]">
+                <caption className="sr-only">{canvas.title || "Tabla generada"}</caption>
                 <thead className="sticky top-0 z-10 xook-liquid-table-head">
                   {table.getHeaderGroups().map((hg) => (
                     <tr key={hg.id}>
-                      <th className="w-9 px-2.5 py-2.5 text-center text-[10px] font-semibold uppercase tracking-[0.06em] text-zinc-400">
+                      <th
+                        scope="col"
+                        className="w-8 px-2 py-2.5 text-center text-[10px] font-semibold uppercase tracking-[0.06em] text-zinc-400"
+                      >
                         ★
                       </th>
                       {hg.headers.map((header) => {
@@ -620,12 +685,13 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                         return (
                           <th
                             key={header.id}
-                            className="px-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-zinc-300/90 select-none whitespace-nowrap"
+                            scope="col"
+                            className="px-3.5 py-2.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-zinc-200 select-none whitespace-nowrap"
                           >
                             <button
                               type="button"
                               onClick={header.column.getToggleSortingHandler()}
-                              className={`w-full flex items-center gap-1.5 hover:text-indigo-200 transition-colors cursor-pointer ${
+                              className={`w-full flex items-center gap-1.5 hover:text-white transition-colors cursor-pointer ${
                                 col?.align === "right"
                                   ? "justify-end"
                                   : col?.align === "center"
@@ -637,9 +703,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                                 <table.FlexRender header={header} />
                               </span>
                               {sorted === "asc" ? (
-                                <ArrowUp className="w-3 h-3 text-indigo-200 shrink-0" />
+                                <ArrowUp className="w-3 h-3 text-white shrink-0" />
                               ) : sorted === "desc" ? (
-                                <ArrowDown className="w-3 h-3 text-indigo-200 shrink-0" />
+                                <ArrowDown className="w-3 h-3 text-white shrink-0" />
                               ) : (
                                 <ArrowUpDown className="w-3 h-3 text-zinc-500 shrink-0" />
                               )}
@@ -647,7 +713,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                           </th>
                         );
                       })}
-                      {showDeleteCol && <th className="w-8 px-2 py-2.5" aria-label="Acciones" />}
+                      {showDeleteCol && (
+                        <th scope="col" className="w-8 px-2 py-2.5" aria-label="Acciones" />
+                      )}
                     </tr>
                   ))}
                 </thead>
@@ -678,17 +746,18 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                           key={row.id}
                           className={`group/row xook-liquid-row ${rowClass}`}
                         >
-                          <td className="px-2.5 py-2.5 text-center align-middle">
+                          <td className="px-2 py-3 text-center align-top">
                             <button
                               type="button"
                               onClick={() => handleToggleRowHighlight(orig.id)}
+                              aria-label="Destacar fila"
                               title="Destacar fila (Recomendado / Atención / Normal)"
                               className={`inline-flex items-center justify-center w-6 h-6 rounded-full transition-all cursor-pointer ${
                                 isRecommended
-                                  ? "quick-liquid-icon text-indigo-100"
+                                  ? "bg-white/[0.12] border border-white/25 text-white"
                                   : isWarning
                                     ? "bg-amber-500/15 border border-amber-300/35 text-amber-200 hover:bg-amber-500/20"
-                                    : "text-zinc-500 hover:text-indigo-100 hover:bg-white/[0.08]"
+                                    : "text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.08]"
                               }`}
                             >
                               {isWarning ? (
@@ -703,15 +772,16 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                             </button>
                           </td>
                           {row.getAllCells().map((cell) => (
-                            <td key={cell.id} className="px-3 py-2.5 align-middle">
+                            <td key={cell.id} className="px-3.5 py-3 align-top">
                               <table.FlexRender cell={cell} />
                             </td>
                           ))}
                           {showDeleteCol && (
-                            <td className="px-2 py-2.5 text-center align-middle">
+                            <td className="px-2 py-3 text-center align-top">
                               <button
                                 type="button"
                                 onClick={() => handleDeleteRow(orig.id)}
+                                aria-label="Eliminar fila"
                                 title="Eliminar fila"
                                 className="p-1 rounded-md text-zinc-500 opacity-0 group-hover/row:opacity-100 hover:text-rose-300 hover:bg-rose-500/10 transition-all cursor-pointer"
                               >
@@ -728,7 +798,7 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             </div>
 
             {extraMarkdownNotes && (
-              <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+              <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3.5">
                 <p className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-zinc-400 mb-1.5">
                   Notas de contexto
                 </p>
@@ -748,10 +818,10 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
       </div>
 
       {/* Pie discreto */}
-      <footer className="relative px-4 py-2 border-t border-white/[0.06] bg-white/[0.015] flex items-center justify-between text-[10.5px] text-zinc-400 shrink-0">
+      <footer className="relative px-4 py-2 border-t border-white/[0.06] bg-[#0c0d12] flex items-center justify-between text-[10.5px] text-zinc-400 shrink-0">
         <span>Haz clic en título o celda para editar · Ordena por columna</span>
         {copiedMd && (
-          <span className="text-indigo-200 font-medium">Copiado en formato Markdown</span>
+          <span className="text-zinc-200 font-medium">Copiado en formato Markdown</span>
         )}
       </footer>
     </section>

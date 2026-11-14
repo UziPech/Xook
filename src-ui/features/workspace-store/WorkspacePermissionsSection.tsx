@@ -1,7 +1,6 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useId, useState } from "react";
 import {
   CheckCircle2,
-  ChevronDown,
   ChevronRight,
   ExternalLink,
   History,
@@ -30,16 +29,16 @@ interface WorkspacePermissionsSectionProps {
 
 const ACTION_LABEL: Record<string, { text: string; cls: string }> = {
   allow: {
-    text: "Permitir",
-    cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+    text: "Permitido",
+    cls: "bg-white/[0.08] text-zinc-100 border-white/15",
   },
   ask: {
     text: "Preguntar",
-    cls: "bg-sky-500/15 text-sky-300 border-sky-500/30",
+    cls: "bg-white/[0.04] text-zinc-300 border-white/10",
   },
   deny: {
-    text: "Bloquear",
-    cls: "bg-rose-500/15 text-rose-300 border-rose-500/30",
+    text: "Bloqueado",
+    cls: "bg-rose-500/10 text-rose-200 border-rose-400/25",
   },
 };
 
@@ -54,6 +53,7 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const panelId = useId();
 
   const refreshAll = useCallback(async () => {
     setLoading(true);
@@ -109,10 +109,10 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
       const updated = await enableReadonlyCommandPreset();
       if (updated) {
         setConfig(updated);
-        onStatusNotice?.("Perfil de lectura segura (ls, pwd, wc, head) activado.");
+        onStatusNotice?.("Lectura segura de archivos activada.");
       }
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "No se pudo activar el perfil.");
+      setErrorMsg(err instanceof Error ? err.message : "No se pudo activar la lectura segura.");
     } finally {
       setBusy(false);
     }
@@ -129,8 +129,8 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
         setConfig(updated);
         onStatusNotice?.(
           nextPolicy === "deny"
-            ? "Comandos sin regla ahora se bloquean por defecto."
-            : "Comandos nuevos pedirán confirmación."
+            ? "Acciones sin permiso ahora se bloquean por defecto."
+            : "Acciones nuevas pedirán tu confirmación."
         );
       }
     } catch (err) {
@@ -149,11 +149,11 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
       const updated = await removeCommandPermissionRule(ruleId);
       if (updated) {
         setConfig(updated);
-        onStatusNotice?.("Regla de permiso eliminada.");
+        onStatusNotice?.("Permiso eliminado.");
       }
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : "No se pudo eliminar la regla."
+        err instanceof Error ? err.message : "No se pudo eliminar el permiso."
       );
     } finally {
       setBusy(false);
@@ -164,50 +164,53 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
     config?.rules.filter((r) => r.action === "allow").length ?? 0;
 
   return (
-    <div className="border-b border-white/[0.06] bg-white/[0.015]">
+    <div className="rounded-xl border border-white/[0.08] bg-[#0b0c10] overflow-hidden">
       <button
         type="button"
+        aria-expanded={expanded}
+        aria-controls={panelId}
         onClick={() => setExpanded((prev) => !prev)}
-        className="w-full px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-white/[0.03] transition-colors cursor-pointer"
+        className="w-full min-h-[38px] px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-white/[0.03] transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:-outline-offset-2"
       >
-        <div className="flex items-center gap-1.5 min-w-0">
-          {expanded ? (
-            <ChevronDown className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-          ) : (
-            <ChevronRight className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-          )}
-          <ShieldCheck className="w-3.5 h-3.5 text-sky-300 shrink-0" />
-          <span className="text-[11px] font-medium text-zinc-200 truncate">
+        <div className="flex items-center gap-2 min-w-0">
+          <ChevronRight
+            aria-hidden="true"
+            className={`w-3.5 h-3.5 text-zinc-400 shrink-0 transition-transform duration-200 ${
+              expanded ? "rotate-90 text-zinc-200" : ""
+            }`}
+          />
+          <ShieldCheck aria-hidden="true" className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+          <span className="text-xs font-medium text-zinc-100 truncate">
             Permisos y apps
           </span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {loading && <Loader2 className="w-3 h-3 text-zinc-500 animate-spin" />}
-          <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-full bg-white/[0.07] text-zinc-300">
-            {allowRulesCount} reglas
+          {loading && <Loader2 aria-hidden="true" className="w-3 h-3 text-zinc-400 animate-spin" />}
+          <span className="text-[10.5px] tabular-nums px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/[0.08] text-zinc-300">
+            {allowRulesCount} {allowRulesCount === 1 ? "activo" : "activos"}
           </span>
         </div>
       </button>
 
       {expanded && (
-        <div className="panel-fade-in px-3 pb-3 pt-1 space-y-2.5">
-          <div className="flex items-center justify-between gap-2 rounded-lg bg-black/40 border border-white/[0.07] px-2.5 py-1.5">
+        <div id={panelId} className="panel-fade-in px-3 pb-3 pt-1.5 space-y-2.5 border-t border-white/[0.06]">
+          <div className="flex items-center justify-between gap-2 rounded-lg bg-[#07080b] border border-white/[0.07] px-2.5 py-2">
             <div className="min-w-0">
-              <div className="text-[10.5px] text-zinc-400">Comandos nuevos</div>
-              <div className="text-[11px] font-medium text-zinc-200">
+              <div className="text-[10.5px] text-zinc-400">Si Xox pide una acción nueva</div>
+              <div className="text-[11.5px] font-medium text-zinc-100">
                 {config?.defaultPolicy === "deny"
-                  ? "Bloquear si no hay regla"
-                  : "Preguntar antes de ejecutar"}
+                  ? "Bloquear automáticamente"
+                  : "Preguntar antes de actuar"}
               </div>
             </div>
             <button
               type="button"
               disabled={busy || !config}
               onClick={() => void handleToggleDefaultPolicy()}
-              className="px-2 py-1 rounded-md bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-[10.5px] text-zinc-200 disabled:opacity-40 cursor-pointer transition-colors"
+              className="min-h-[28px] px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.11] border border-white/[0.1] text-[11px] text-zinc-100 disabled:opacity-40 cursor-pointer transition-colors shrink-0 inline-flex items-center gap-1 focus-visible:outline-2 focus-visible:outline-white/60"
             >
-              <Lock className="w-3 h-3 inline mr-1 -mt-0.5 text-zinc-400" />
-              {config?.defaultPolicy === "deny" ? "Cambiar a Preguntar" : "Modo estricto"}
+              <Lock aria-hidden="true" className="w-3 h-3 text-zinc-300" />
+              <span>{config?.defaultPolicy === "deny" ? "Preguntar" : "Bloquear"}</span>
             </button>
           </div>
 
@@ -215,53 +218,58 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
             type="button"
             disabled={busy}
             onClick={() => void handleEnableReadonly()}
-            className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/30 text-[11px] font-medium text-sky-100 disabled:opacity-45 cursor-pointer transition-colors"
+            className="w-full min-h-[32px] flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-[11px] font-medium text-zinc-100 disabled:opacity-45 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-white/60"
           >
             {allowRulesCount >= 4 ? (
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+              <CheckCircle2 aria-hidden="true" className="w-3.5 h-3.5 text-zinc-200" />
             ) : (
-              <Sparkles className="w-3.5 h-3.5 text-sky-300" />
+              <Sparkles aria-hidden="true" className="w-3.5 h-3.5 text-zinc-300" />
             )}
-            Activar lectura segura (ls, pwd, wc, head)
+            <span>
+              {allowRulesCount >= 4
+                ? "Lectura segura activada"
+                : "Permitir lectura segura de archivos"}
+            </span>
           </button>
 
           {errorMsg && (
-            <div className="text-[10.5px] text-rose-300 bg-rose-500/10 border border-rose-500/25 rounded-lg px-2 py-1">
+            <div role="alert" className="text-[11px] text-rose-200 bg-rose-500/10 border border-rose-400/25 rounded-lg px-2.5 py-1.5">
               {errorMsg}
             </div>
           )}
 
           {config && config.rules.length > 0 ? (
-            <div className="space-y-1 max-h-36 overflow-y-auto pr-0.5">
+            <ul className="space-y-1 max-h-36 overflow-y-auto pr-0.5">
               {config.rules.map((rule) => {
                 const badge = ACTION_LABEL[rule.action] ?? ACTION_LABEL.ask;
                 const isExternalRule = rule.scope === "app" || rule.scope === "capability";
+                const title = isExternalRule
+                  ? rule.description || rule.pattern
+                  : rule.description || rule.pattern;
                 return (
-                  <div
+                  <li
                     key={rule.id}
-                    className="flex items-center justify-between gap-2 rounded-lg bg-black/35 border border-white/[0.06] px-2 py-1 text-[10.5px]"
+                    className="flex items-center justify-between gap-2 rounded-lg bg-[#07080b] border border-white/[0.07] px-2.5 py-1.5 text-[11px]"
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
                         {isExternalRule && (
-                          <ExternalLink className="w-3 h-3 text-sky-300 shrink-0" />
+                          <ExternalLink aria-hidden="true" className="w-3 h-3 text-zinc-300 shrink-0" />
                         )}
-                        <span className="font-mono text-zinc-100 truncate">
-                          {isExternalRule ? rule.description || rule.pattern : rule.pattern}
+                        <span className="text-zinc-100 truncate font-medium">
+                          {title}
                         </span>
                         <span
-                          className={`px-1.5 py-0.2 rounded-full border text-[9.5px] ${badge.cls}`}
+                          className={`px-1.5 py-0.2 rounded-full border text-[9.5px] shrink-0 ${badge.cls}`}
                         >
                           {badge.text}
                         </span>
                       </div>
-                      {(isExternalRule ? rule.pattern : rule.description) && (
-                        <div className="text-[10px] text-zinc-500 truncate">
+                      {isExternalRule && (
+                        <div className="text-[10px] text-zinc-400 truncate mt-0.5">
                           {rule.scope === "app"
-                            ? `App: ${rule.pattern}`
-                            : rule.scope === "capability"
-                            ? `Integración: ${rule.pattern}`
-                            : rule.description}
+                            ? `Aplicación: ${rule.pattern}`
+                            : `Integración: ${rule.pattern}`}
                         </div>
                       )}
                     </div>
@@ -269,41 +277,42 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
                       type="button"
                       disabled={busy}
                       onClick={() => void handleRemoveRule(rule.id)}
-                      title="Revocar regla"
-                      aria-label={`Eliminar regla ${rule.pattern}`}
-                      className="p-1 rounded hover:bg-rose-500/15 text-zinc-500 hover:text-rose-300 transition-colors cursor-pointer shrink-0"
+                      title="Quitar permiso"
+                      aria-label={`Quitar permiso ${title}`}
+                      className="min-w-[26px] min-h-[26px] p-1 rounded-md hover:bg-white/[0.08] text-zinc-400 hover:text-rose-200 transition-colors cursor-pointer shrink-0 flex items-center justify-center focus-visible:outline-2 focus-visible:outline-white/60"
                     >
-                      <Trash2 className="w-3 h-3" />
+                      <Trash2 aria-hidden="true" className="w-3 h-3" />
                     </button>
-                  </div>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
           ) : (
-            <div className="text-[10.5px] text-zinc-500 text-center py-1">
-              Sin reglas guardadas todavía (.xook/permissions.json).
+            <div className="text-[11px] text-zinc-400 text-center py-1">
+              Aún no hay permisos especiales guardados.
             </div>
           )}
 
-          <div className="pt-1 border-t border-white/[0.06]">
+          <div className="pt-1.5 border-t border-white/[0.06]">
             <button
               type="button"
+              aria-expanded={showHistory}
               onClick={() => setShowHistory((v) => !v)}
-              className="flex items-center gap-1.5 text-[10.5px] text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
+              className="min-h-[26px] flex items-center gap-1.5 text-[11px] text-zinc-400 hover:text-zinc-100 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 rounded"
             >
-              <History className="w-3 h-3" />
+              <History aria-hidden="true" className="w-3 h-3" />
               <span>
                 {showHistory
-                  ? "Ocultar historial de comandos"
-                  : `Historial reciente (${history.length})`}
+                  ? "Ocultar actividad reciente"
+                  : `Actividad reciente (${history.length})`}
               </span>
             </button>
 
             {showHistory && (
               <div className="panel-fade-in mt-1.5 space-y-1 max-h-36 overflow-y-auto">
                 {history.length === 0 ? (
-                  <div className="text-[10px] text-zinc-500">
-                    Aún no se han ejecutado comandos en este espacio.
+                  <div className="text-[10.5px] text-zinc-400">
+                    Todavía no hay actividad registrada.
                   </div>
                 ) : (
                   history.map((item) => {
@@ -316,17 +325,17 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
                       ? `Notas · ${item.command.replace(/^os_notes:\s*/, "")}`
                       : isCalHistory
                       ? `Calendario · ${item.command.replace(/^os_calendar:\s*/, "")}`
-                      : `$ ${item.command}`;
+                      : item.command;
                     return (
                       <div
                         key={item.id}
-                        className="rounded-lg bg-black/45 border border-white/[0.06] px-2 py-1 text-[10px] space-y-0.5"
+                        className="rounded-lg bg-[#07080b] border border-white/[0.07] px-2.5 py-1.5 text-[10.5px] space-y-0.5"
                       >
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-zinc-200 truncate">{item.purpose}</span>
-                          <span className="text-zinc-500 shrink-0">{item.status}</span>
+                          <span className="text-zinc-400 shrink-0">{item.status}</span>
                         </div>
-                        <div className="font-mono text-zinc-500 truncate">
+                        <div className="text-zinc-400 truncate">
                           {formattedCommand}
                         </div>
                       </div>
@@ -341,4 +350,3 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
     </div>
   );
 };
-

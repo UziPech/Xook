@@ -323,18 +323,18 @@ ASK_CLARIFICATION_TOOL_DEF: Dict[str, Any] = {
                             "prompt": {"type": "string", "description": "Pregunta específica al dato faltante, redactada para este caso"},
                             "kind": {
                                 "type": "string",
-                                "enum": ["choice_or_text", "single", "multi", "text"],
-                                "description": "Usa choice_or_text para mostrar chips sugeridos más campo libre",
+                                "enum": ["choice_or_text", "single", "multi"],
+                                "description": "Usa SIEMPRE choice_or_text para mostrar 2 a 4 opciones sugeridas más respuesta libre",
                             },
                             "options": {
                                 "type": "array",
                                 "items": {"type": "string"},
-                                "description": "2 a 4 opciones rápidas útiles para responder ese hueco concreto",
+                                "description": "OBLIGATORIO: al menos 2 o 3 opciones concretas y útiles para responder esta pregunta (además del campo libre automático)",
                             },
                             "placeholder": {"type": "string"},
                             "required": {"type": "boolean"},
                         },
-                        "required": ["prompt"],
+                        "required": ["prompt", "options"],
                     },
                 },
             },
@@ -912,8 +912,9 @@ Antes de pedir aclaraciones, ANALIZA lo que el usuario ya dijo y lo que hay en A
 3. PROHIBIDO repetir o volver a preguntar datos que el usuario ya mencionó, y NUNCA copies preguntas de un cuestionario genérico:
    - Si ya dijo "mañana a las 10 pm", NO preguntes día ni hora.
    - Si ya dijo "cita", NO preguntes "¿qué necesitas programar o hacer?".
-   - Redacta únicamente 1 o 2 preguntas específicas al hueco real faltante, con formato:
-     `{"title":"...","subtitle":"...","questions":[{"id":"dato_1","prompt":"<pregunta puntual sobre lo que realmente falta>","kind":"choice_or_text","options":["..."],"required":true}]}`."""
+   - Redacta de 1 a 3 preguntas específicas (se mostrarán al usuario UNA POR UNA paso a paso).
+   - OBLIGATORIO: CADA pregunta debe tener `"kind":"choice_or_text"` y AL MENOS 2 o 3 opciones concretas en `"options"` (nunca dejes `"options"` vacío ni uses `"kind":"text"` sin opciones), ya que la interfaz muestra tus 2-3 opciones sugeridas más una opción libre para que el usuario escriba su propia respuesta:
+     `{"title":"...","subtitle":"...","questions":[{"id":"dato_1","prompt":"<pregunta puntual sobre lo que realmente falta>","kind":"choice_or_text","options":["Opción A sugerida","Opción B sugerida","Opción C sugerida"],"required":true}]}`."""
 
     if stream_mode:
         output_rules = f"""ESTILO DE RESPUESTA Y HERRAMIENTAS DE XOOK:
@@ -976,9 +977,12 @@ HERRAMIENTAS DEL ESPACIO DE TRABAJO (OBLIGATORIO CUANDO OPERES SOBRE ARCHIVOS O 
 - Cuando el usuario pida abrir, iniciar o lanzar una aplicación externa de su equipo (por ejemplo Notas, Calendario, Recordatorios, Calculadora, Safari, Finder, etc.), usa SIEMPRE `open_desktop_app` (y `list_desktop_apps` si necesitas verificar el nombre exacto instalado). No sustituyas "abrir Notas" o "abrir Calendario" creando tarjetas/tareas internas de XOOK a menos que el usuario pida explícitamente guardar una nota o agendar un evento aquí.
 - Cuando el usuario pida crear, apuntar o consultar notas reales de su Mac (app Notas), usa `os_create_note` u `os_list_notes` (solo usa `workspace_write_file` o `propose_tasks` si pidió guardarlo específicamente dentro del espacio de trabajo de XOOK).
 - Cuando el usuario pida revisar su Calendario, ver qué tiene agendado, buscar horarios disponibles, hacer una agenda desde su calendario o agendar un evento/cita/reunión real en Calendario, usa `os_list_calendar_events` y/o `os_create_calendar_event` calculando fechas ISO exactas a partir de la FECHA Y HORA LOCAL ACTUAL. Si falta un dato indispensable para agendar (por ejemplo falta el día o la hora), usa `ask_clarification` antes de invocar `os_create_calendar_event`.
-- DOCUMENTOS PDF E IMÁGENES:
-  - Si el usuario adjunta o menciona un PDF (en `agente/adjuntos/`, `datos/`, etc.), llama a `pdf_read` para extraer texto, tablas y páginas escaneadas con OCR antes de responder (pagina con `start_page`/`end_page` si tiene muchas páginas).
+- DOCUMENTOS PDF, OFFICE E IMÁGENES:
+  - Si el usuario adjunta o menciona un PDF (en `agente/adjuntos/`, `datos/`, etc.), llama a `pdf_read` para extraer texto, tablas y páginas escaneadas con OCR antes de responder (pagina con `start_page`/`end_page` si tiene muchas páginas). Para documentos Office (`.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, `.xls`, `.rtf`, `.csv`), usa `workspace_read` que extrae automáticamente párrafos, diapositivas y hojas de cálculo.
   - Si el usuario pide generar, redactar, convertir o exportar un informe/documento en PDF, llama a `pdf_generate` (escribe en `agente/reportes/`). **REGLA CRÍTICA**: incluye SIEMPRE todo el desarrollo completo en un arreglo JSON nativo `blocks` (NUNCA serialices `blocks` como string JSON) o, si el documento es muy extenso (8+, 12+ páginas o con código largo), usa preferentemente el campo `markdown` estructurado (`#`, `##`, `###`, listas, `> callouts`, tablas y ```` ```lenguaje ````) porque es más compacto y evita cortes. NUNCA generes un PDF sin desarrollo poniendo la explicación solo en el chat; en el chat solo confirma brevemente el resultado, archivo y páginas.
+  - MODIFICAR O AGREGAR PÁGINAS A UN PDF EXISTENTE CONSERVANDO SU TIPOGRAFÍA Y DISEÑO:
+    - Cuando el usuario tenga un PDF abierto (en `CONTEXTO ADJUNTO POR EL USUARIO` con `activeViewerDocument: true` o mencionado en el chat) y pida **agregar más páginas**, ampliar el documento o añadir nuevas secciones al final: llama a `pdf_generate` pasando `source_pdf_path: "<ruta_del_pdf>"`, `edit_action: "append_pages"` y en `blocks` (o `markdown`) únicamente el contenido de las páginas nuevas. El motor conservará intactas todas las páginas anteriores y agregará las nuevas con la **misma tipografía, mismo `theme`, mismos encabezados/pies de página y numeración continua**.
+    - Cuando pida **modificar o corregir** el contenido de un PDF existente: llama a `pdf_generate` con `source_pdf_path: "<ruta_del_pdf>"`, `edit_action: "modify"` (incluyendo `replacements: [{{"find": "texto anterior", "replace": "texto nuevo"}}]` para cambios puntuales en cualquier página o `blocks` actualizados conservando su portada original y su misma tipografía/tema).
   - Si el usuario adjunta imágenes o las menciona desde el workspace e indica cómo integrarlas (por ejemplo como portada, logo, fondo visual o figuras dentro de secciones), interpreta libremente su intención:
     - Cuando la imagen adjunta YA sea una portada o carátula diseñada (ej. hoja institucional/académica o imagen con su propio texto/título/escudo), usa `cover: {{"enabled": true, "image_path": "...", "layout": "full_page"}}` para insertarla íntegra y nítida en la página 1 sin oscurecerla ni encimar texto blanco encima (y desarrolla el tema completo desde la página 2 en `blocks`).
     - Cuando sea una foto limpia, ilustración o logotipo donde sí corresponda diseñar portada tipográfica encima o al lado, usa `layout` entre `auto`, `hero_top`, `split`, `centered`, `full_bleed` o `minimal`."""

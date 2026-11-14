@@ -42,7 +42,7 @@ import {
 import { CanvasPanel } from "./features/canvas/CanvasPanel";
 import {
   PdfWorkspacePanel,
-  type PdfWorkspaceState,
+  type PdfWorkspacePanelState,
 } from "./features/pdf-viewer/PdfWorkspacePanel";
 import {
   AgendaItem,
@@ -85,11 +85,13 @@ import {
   WorkspaceOverview,
   createWorkspace,
   createWorkspaceFolder,
+  downloadWorkspaceFile,
   exportCanvasToPdf,
   getWorkspaceOverview,
   isWorkspaceTauriRuntime,
   openWorkspaceFile,
   openWorkspaceFolder,
+  readUniversalDocument,
   readWorkspaceBinaryPreview,
   readWorkspaceFile,
   renderPdfPreview,
@@ -111,14 +113,18 @@ import {
   UiChatMessage,
 } from "./features/ai-service/ChatMessageList";
 import {
+  CommandPermissionCard,
   applyCommandFinishedEvent,
   applyPermissionRequestItem,
   applyPermissionResolution,
   type CommandPermissionDecisionKind,
   type CommandPermissionUiItem,
 } from "./features/ai-service/CommandPermissionCard";
-import { OpenRouterSettingsModal } from "./features/ai-service/OpenRouterSettingsModal";
-import { ClarificationModal } from "./features/ai-service/ClarificationModal";
+import {
+  OpenRouterSettingsModal,
+  type OpenRouterSettingsTab,
+} from "./features/ai-service/OpenRouterSettingsModal";
+import { ClarificationInputDock } from "./features/ai-service/ClarificationModal";
 import { LocalAuthModal } from "./features/workspace-store/LocalAuthModal";
 import {
   ConversationThread,
@@ -158,6 +164,18 @@ import {
 } from "./features/ai-service/aiClient";
 
 const BINARY_IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|tiff?|heic)$/i;
+const OFFICE_DOC_EXT_SET = new Set([
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "ppt",
+  "pptx",
+  "rtf",
+  "odt",
+  "ods",
+  "odp",
+]);
 const BINARY_PREVIEW_EXT_SET = new Set([
   "pdf",
   "png",
@@ -176,6 +194,10 @@ const BINARY_PREVIEW_EXT_SET = new Set([
   "xlsx",
   "ppt",
   "pptx",
+  "rtf",
+  "odt",
+  "ods",
+  "odp",
   "zip",
 ]);
 
@@ -464,11 +486,12 @@ export default function App() {
   const [xoxState, setXoxState] = useState<XoxState>("idle");
   const [xoxMessage, setXoxMessage] = useState<string>("¿En qué puedo ayudarte?");
   
-  // Estados para paneles laterales y tareas
+  // Estados para paneles laterales, tareas y visor de documentos dedicado
   const [showLeftSidebar, setShowLeftSidebar] = useState<boolean>(true);
   const [showRightSidebar, setShowRightSidebar] = useState<boolean>(true);
-  const [rightSidebarMode, setRightSidebarMode] = useState<"tasks" | "pdf">("tasks");
-  const [pdfPanelState, setPdfPanelState] = useState<PdfWorkspaceState | null>(null);
+  const [showDocViewer, setShowDocViewer] = useState<boolean>(false);
+  const [pdfPanelState, setPdfPanelState] = useState<PdfWorkspacePanelState | null>(null);
+  const [pdfDraftProgress, setPdfDraftProgress] = useState<PdfDraftProgressEvent | null>(null);
   const [taskTab, setTaskTab] = useState<TaskPanelTab>("pending");
   const [selectedContext, setSelectedContext] = useState<ContextItem | null>(null);
 
@@ -523,6 +546,13 @@ export default function App() {
     customModels: [],
   });
   const [showAiSettings, setShowAiSettings] = useState<boolean>(false);
+  const [aiSettingsTab, setAiSettingsTab] = useState<OpenRouterSettingsTab>("models");
+  const [expandModelMenu, setExpandModelMenu] = useState<boolean>(false);
+
+  const openAiSettings = (tab: OpenRouterSettingsTab = "models") => {
+    setAiSettingsTab(tab);
+    setShowAiSettings(true);
+  };
   const [activeClarification, setActiveClarification] = useState<ClarificationSpec | null>(null);
   const [accountUsage, setAccountUsage] = useState<AiConnectionTestResult | null>(null);
   const [catalogModels, setCatalogModels] = useState<OpenRouterModelOption[]>([]);
@@ -624,9 +654,9 @@ export default function App() {
   const usageSummary = (() => {
     if (!aiConfig.hasApiKey) {
       return {
-        tierLabel: "OpenRouter",
+        tierLabel: "Conexión OpenRouter",
         headline: "Sin conectar",
-        detail: "Conecta tu clave para consultar límites y modelos",
+        detail: "Conecta tu cuenta para usar los modelos",
         pct: 0,
         connected: false,
       };
@@ -634,9 +664,9 @@ export default function App() {
 
     if (!accountUsage) {
       return {
-        tierLabel: "Límite OpenRouter",
+        tierLabel: "Plan OpenRouter",
         headline: "Consultando…",
-        detail: `${requestsToday} consultas hoy en este equipo`,
+        detail: `${requestsToday} ${requestsToday === 1 ? "consulta hoy" : "consultas hoy"}`,
         pct: 0,
         connected: true,
       };
@@ -644,22 +674,27 @@ export default function App() {
 
     if (!accountUsage.ok) {
       return {
-        tierLabel: "Límite OpenRouter",
-        headline: "Error de acceso",
-        detail: accountUsage.message || "Verifica tu clave en OpenRouter",
+        tierLabel: "Plan OpenRouter",
+        headline: "Requiere revisión",
+        detail: accountUsage.message || "Revisa tu conexión con OpenRouter",
         pct: 100,
         connected: true,
       };
     }
 
     if (accountUsage.can_use_paid_models) {
+      const dailySpent = accountUsage.usage_daily ?? 0;
+      const spentLabel =
+        dailySpent > 0 && dailySpent < 0.01 ? `$${dailySpent.toFixed(4)}` : `$${dailySpent.toFixed(2)}`;
+      const queryLabel = `${requestsToday} ${requestsToday === 1 ? "consulta" : "consultas"}`;
+
       if (accountUsage.limit != null && accountUsage.limit > 0 && accountUsage.limit_remaining != null) {
         const usedUsd = Math.max(0, accountUsage.limit - accountUsage.limit_remaining);
         const pct = Math.min(100, Math.round((usedUsd / accountUsage.limit) * 100));
         return {
-          tierLabel: "Límite OpenRouter",
+          tierLabel: "Plan OpenRouter",
           headline: `$${accountUsage.limit_remaining.toFixed(2)} / $${accountUsage.limit.toFixed(2)}`,
-          detail: `Uso hoy: $${(accountUsage.usage_daily ?? 0).toFixed(4)} USD · ${requestsToday} consultas`,
+          detail: `Hoy: ${spentLabel} USD · ${queryLabel}`,
           pct,
           connected: true,
         };
@@ -674,15 +709,15 @@ export default function App() {
         return {
           tierLabel: "Saldo OpenRouter",
           headline: `$${accountUsage.credits_remaining.toFixed(2)} USD`,
-          detail: `Gastado hoy: $${(accountUsage.usage_daily ?? 0).toFixed(4)} USD · ${requestsToday} consultas`,
+          detail: `Hoy: ${spentLabel} USD · ${queryLabel}`,
           pct,
           connected: true,
         };
       }
       return {
-        tierLabel: "Límite OpenRouter",
+        tierLabel: "Plan OpenRouter",
         headline: "Plan activo",
-        detail: `Gasto hoy: $${(accountUsage.usage_daily ?? 0).toFixed(4)} USD · ${requestsToday} consultas`,
+        detail: `Hoy: ${spentLabel} USD · ${queryLabel}`,
         pct: 0,
         connected: true,
       };
@@ -692,11 +727,12 @@ export default function App() {
     const rpmLimit = accountUsage.rpm_free_limit || 20;
     const pct = Math.min(100, Math.round((requestsToday / dailyLimit) * 100));
     return {
-      tierLabel: "Límite OpenRouter (Gratis)",
-      headline: `${requestsToday} / ${dailyLimit} hoy`,
-      detail: `${rpmLimit}/min máx. · ${
-        freeCatalogCount > 0 ? `${freeCatalogCount} modelos gratis activos` : "Solo modelos gratuitos"
-      }`,
+      tierLabel: "Plan gratuito · OpenRouter",
+      headline: `${requestsToday} de ${dailyLimit} hoy`,
+      detail:
+        freeCatalogCount > 0
+          ? `${freeCatalogCount} modelos disponibles · ${rpmLimit}/min`
+          : `Hasta ${rpmLimit} consultas por minuto`,
       pct,
       connected: true,
     };
@@ -1507,7 +1543,7 @@ export default function App() {
     action: NonNullable<UiChatMessage["actionButton"]>
   ) => {
     if (action.kind === "open_settings") {
-      setShowAiSettings(true);
+      openAiSettings("account");
       return;
     }
     if (action.kind === "open_clarification" && action.clarification) {
@@ -1806,12 +1842,43 @@ export default function App() {
           dataUrl: preview.dataUrl ?? null,
           pdfSummary: preview.pdfSummary ?? null,
         });
+        if (preview.kind === "pdf") {
+          void openPdfInRightPanel({
+            path: preview.relativePath,
+            title: preview.pdfSummary?.title || preview.name,
+            filename: preview.name,
+            pageCount: preview.pdfSummary?.page_count,
+            sizeBytes: preview.sizeBytes,
+          });
+        } else if (preview.kind === "office" || OFFICE_DOC_EXT_SET.has(ext)) {
+          void openUniversalDocInRightPanel({
+            path: preview.relativePath,
+            filename: preview.name,
+            sizeBytes: preview.sizeBytes,
+            ext,
+          });
+        } else if (preview.kind === "image" && preview.dataUrl) {
+          setPdfDraftProgress(null);
+          setPdfPanelState({
+            path: preview.relativePath,
+            filename: preview.name,
+            title: preview.name,
+            sizeBytes: preview.sizeBytes,
+            pages: [],
+            isLoadingPages: false,
+            fileKind: "image",
+            fileExtension: ext,
+            imageDataUrl: preview.dataUrl,
+            initialMode: "view",
+          });
+          setShowDocViewer(true);
+        }
         triggerReadingPulse(`Inspeccionando ${entry.name}...`, 950);
         return;
       }
 
       const f = await readWorkspaceFile(entry.relativePath);
-      setSelectedWorkspaceFile({
+      const selectedFile: SelectedWorkspaceFile = {
         relativePath: f.relativePath,
         name: f.name,
         zone: f.zone,
@@ -1821,7 +1888,32 @@ export default function App() {
         tokens: estimateTokens(f.content),
         kind: "text",
         sizeBytes: f.sizeBytes,
-      });
+      };
+      setSelectedWorkspaceFile(selectedFile);
+      if (ext === "csv" || ext === "tsv") {
+        void openUniversalDocInRightPanel({
+          path: f.relativePath,
+          filename: f.name,
+          sizeBytes: f.sizeBytes,
+          ext,
+          textContent: f.content,
+        });
+      } else {
+        setPdfDraftProgress(null);
+        setPdfPanelState({
+          path: f.relativePath,
+          filename: f.name,
+          title: f.name,
+          sizeBytes: f.sizeBytes,
+          pages: [],
+          isLoadingPages: false,
+          fileKind: "text",
+          textContent: f.content,
+          fileExtension: ext || "txt",
+          initialMode: "view",
+        });
+        setShowDocViewer(true);
+      }
       triggerReadingPulse(`Leyendo ${entry.name}...`, 1050);
     } catch (err) {
       setStatusMessage(
@@ -2309,7 +2401,7 @@ export default function App() {
     if (!aiConfig.hasApiKey) {
       const wantsSetup = isKeySetupIntent(query);
       if (wantsSetup) {
-        setShowAiSettings(true);
+        openAiSettings("account");
       }
       const nextMessages: UiChatMessage[] = [
         ...chatMessagesRef.current,
@@ -2437,6 +2529,26 @@ export default function App() {
               };
             }
 
+            const ext = file.name.split(".").pop()?.toLowerCase() || "";
+            if (OFFICE_DOC_EXT_SET.has(ext) && stagedPath) {
+              thumbByIdx.set(fIdx, { workspacePath: stagedPath });
+              void openUniversalDocInRightPanel({
+                path: stagedPath,
+                filename: file.name,
+                sizeBytes: file.size,
+                ext,
+              });
+              return {
+                name: file.name,
+                type: stagedMime,
+                kind: "binary",
+                workspacePath: stagedPath,
+                mimeType: stagedMime,
+                sizeBytes: file.size,
+                content: `Documento Office adjunto guardado en '${stagedPath}' (${Math.max(1, Math.round(file.size / 1024))} KB). Usa SIEMPRE la herramienta 'workspace_read' con path='${stagedPath}' para leer su texto, diapositivas o tablas completas.`,
+              };
+            }
+
             return {
               name: file.name,
               type: stagedMime,
@@ -2499,13 +2611,39 @@ export default function App() {
         void handleRefreshWorkspace();
       }
 
-      const activeContextSnippets = contextItems
+      const activeContextSnippets: AttachedContextItem[] = contextItems
         .filter((c) => c.pinned || selectedContext?.id === c.id)
         .map((c) => ({
           name: c.name,
           type: c.type,
           content: c.content.slice(0, 2500),
         }));
+
+      if (showDocViewer && pdfPanelState?.path) {
+        const viewerKind = pdfPanelState.fileKind || "pdf";
+        const activeDocName =
+          pdfPanelState.title || pdfPanelState.filename || pdfPanelState.path;
+        if (viewerKind === "pdf") {
+          activeContextSnippets.unshift({
+            name: activeDocName,
+            type: "application/pdf",
+            kind: "pdf",
+            workspacePath: pdfPanelState.path,
+            content:
+              `DOCUMENTO ACTIVO EN EL VISOR: '${pdfPanelState.path}' (título: '${pdfPanelState.title}', estilo/theme: '${pdfPanelState.theme || "executive"}', páginas actuales: ${pdfPanelState.pageCount || pdfPanelState.pages.length || 1}). ` +
+              `Si el usuario pide agregar más páginas a este documento, llama a 'pdf_generate' con source_pdf_path='${pdfPanelState.path}', edit_action='append_pages' y theme='${pdfPanelState.theme || "executive"}' para conservar exactamente la misma tipografía, diseño, encabezados y numeración continua. ` +
+              `Si pide modificar contenido de este PDF, usa source_pdf_path='${pdfPanelState.path}' con edit_action='modify' (y replacements=[{find, replace}] si aplica) manteniendo su misma tipografía y diseño.`,
+          });
+        } else {
+          activeContextSnippets.unshift({
+            name: activeDocName,
+            type: "document",
+            workspacePath: pdfPanelState.path,
+            content:
+              `DOCUMENTO ACTIVO EN EL VISOR: '${pdfPanelState.path}' (${viewerKind}, título: '${pdfPanelState.title}'). Usa 'workspace_read' con path='${pdfPanelState.path}' si necesitas leer su contenido completo.`,
+          });
+        }
+      }
 
       const businessContextSnapshot = [
         ...contextItems.map((c) => `- ${c.name} (${c.type}): ${c.content.slice(0, 700)}`),
@@ -2670,6 +2808,7 @@ export default function App() {
       );
 
       clearXoxPhaseTimers();
+      setPdfDraftProgress(null);
       const generatedCount = res.tasks.length;
       const finalCanvas = res.canvas
         ? { ...res.canvas, sourceMessageId: assistantMsgId }
@@ -2678,9 +2817,6 @@ export default function App() {
         setActiveCanvas(finalCanvas);
         setShowCanvas(true);
       }
-      const hasTurnPdf =
-        (res.generatedPdfs?.length ?? 0) > 0 ||
-        rightPanelAutoOpenedTurnRef.current === assistantMsgId;
       if (generatedCount > 0) {
         const replacePending = res.operation === "replace_tasks";
         if (replacePending) {
@@ -2693,9 +2829,6 @@ export default function App() {
         }
         setShowRightSidebar(true);
         setTaskTab("pending");
-        if (!hasTurnPdf) {
-          setRightSidebarMode("tasks");
-        }
         if (isTauriEnv) {
           suppressLedgerSyncUntilRef.current = Date.now() + 450;
           void upsertTasksBatch(res.tasks, replacePending);
@@ -2807,18 +2940,10 @@ export default function App() {
       clearXoxPhaseTimers();
       const recoveredTurnPdf = lastPdfByTurnRef.current[assistantMsgId];
       if (recoveredTurnPdf) {
+        setPdfDraftProgress(null);
         void openPdfInRightPanel(recoveredTurnPdf);
       } else {
-        setPdfPanelState((curr) =>
-          curr && curr.status === "generating"
-            ? {
-                ...curr,
-                status: "error",
-                loadingPreview: false,
-                error: "Se interrumpió la conexión con el modelo antes de compilar el PDF.",
-              }
-            : curr
-        );
+        setPdfDraftProgress(null);
       }
       const message = extractErrorMessage(
         err,
@@ -3046,6 +3171,10 @@ export default function App() {
   const leftPresence = useAnimatedPresence(showLeftSidebar, 270);
   const rightPresence = useAnimatedPresence(showRightSidebar, 270);
   const canvasPresence = useAnimatedPresence(showCanvas && Boolean(activeCanvas), 220);
+  const docViewerPresence = useAnimatedPresence(
+    showDocViewer && Boolean(pdfPanelState || pdfDraftProgress),
+    220
+  );
 
   const handleOpenCanvas = (canvas: CanvasArtifact) => {
     setActiveCanvas(canvas);
@@ -3072,26 +3201,27 @@ export default function App() {
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
-  const openPdfInRightPanel = async (meta: {
-    path: string;
-    title?: string;
-    filename?: string;
-    pageCount?: number;
-    sizeBytes?: number;
-    hasCover?: boolean;
-    theme?: string;
-    previewPages?: Array<{ page: number; width: number; height: number; dataUrl: string }>;
-    previewHasMore?: boolean;
-  }) => {
+  const openPdfInRightPanel = async (
+    meta: {
+      path: string;
+      title?: string;
+      filename?: string;
+      pageCount?: number;
+      sizeBytes?: number;
+      hasCover?: boolean;
+      theme?: string;
+      previewPages?: Array<{ page: number; width: number; height: number; dataUrl: string }>;
+      previewHasMore?: boolean;
+    },
+    initialMode: "view" | "edit_blocks" | "edit_page" = "view"
+  ) => {
     const reqId = (pdfPreviewReqRef.current += 1);
-    setShowRightSidebar(true);
-    setRightSidebarMode("pdf");
-    setRightWidth((w) => Math.max(w, 460));
+    setPdfDraftProgress(null);
+    setShowDocViewer(true);
 
     const cleanTitle = meta.title || meta.filename || meta.path.split("/").pop() || "Documento PDF";
     if (meta.previewPages && meta.previewPages.length > 0) {
       setPdfPanelState({
-        status: "ready",
         path: meta.path,
         filename: meta.filename || meta.path.split("/").pop(),
         title: cleanTitle,
@@ -3101,13 +3231,14 @@ export default function App() {
         theme: meta.theme,
         pages: meta.previewPages,
         hasMore: Boolean(meta.previewHasMore),
-        loadingPreview: false,
+        isLoadingPages: false,
+        fileKind: "pdf",
+        initialMode,
       });
       return;
     }
 
     setPdfPanelState((prev) => ({
-      status: "ready",
       path: meta.path,
       filename: meta.filename || meta.path.split("/").pop(),
       title: cleanTitle,
@@ -3115,11 +3246,11 @@ export default function App() {
       sizeBytes: meta.sizeBytes ?? prev?.sizeBytes,
       hasCover: meta.hasCover ?? prev?.hasCover,
       theme: meta.theme ?? prev?.theme,
-      draftBlocks: prev?.path === meta.path || prev?.status === "generating" ? prev.draftBlocks : undefined,
-      cover: prev?.path === meta.path || prev?.status === "generating" ? prev.cover : null,
       pages: [],
       hasMore: false,
-      loadingPreview: true,
+      isLoadingPages: true,
+      fileKind: "pdf",
+      initialMode,
     }));
 
     if (!isTauriEnv) return;
@@ -3131,12 +3262,11 @@ export default function App() {
           curr
             ? {
                 ...curr,
-                status: "ready",
                 pageCount: res.pageCount,
                 pages: res.pages,
                 hasMore: res.hasMore,
-                loadingPreview: false,
-                error: undefined,
+                isLoadingPages: false,
+                error: null,
               }
             : null
         );
@@ -3145,8 +3275,7 @@ export default function App() {
           curr
             ? {
                 ...curr,
-                status: "error",
-                loadingPreview: false,
+                isLoadingPages: false,
                 error: res?.error || "No se pudo generar la vista previa de páginas.",
               }
             : null
@@ -3158,8 +3287,7 @@ export default function App() {
         curr
           ? {
               ...curr,
-              status: "error",
-              loadingPreview: false,
+              isLoadingPages: false,
               error: extractErrorMessage(err, "No se pudo renderizar la vista previa del PDF."),
             }
           : null
@@ -3167,16 +3295,161 @@ export default function App() {
     }
   };
 
-  const handleLoadMorePdfPages = async () => {
+  const openUniversalDocInRightPanel = async (opts: {
+    path: string;
+    filename: string;
+    sizeBytes?: number;
+    ext?: string;
+    textContent?: string;
+    editMode?: boolean;
+  }) => {
+    const ext = (opts.ext || opts.path.split(".").pop() || "").toLowerCase();
+    const isSpreadsheetText = ext === "csv" || ext === "tsv";
+    setPdfDraftProgress(null);
+    setPdfPanelState({
+      path: opts.path,
+      filename: opts.filename,
+      title: opts.filename,
+      sizeBytes: opts.sizeBytes,
+      pages: [],
+      isLoadingPages: true,
+      fileKind: isSpreadsheetText ? "text" : "office",
+      fileExtension: ext,
+      textContent: opts.textContent,
+      initialMode: opts.editMode ? "edit_page" : "view",
+    });
+    setShowDocViewer(true);
+
+    try {
+      const doc = await readUniversalDocument(opts.path);
+      setPdfPanelState((curr) =>
+        curr && curr.path === opts.path
+          ? {
+              ...curr,
+              title: doc?.title || opts.filename,
+              sizeBytes: doc?.sizeBytes ?? opts.sizeBytes,
+              isLoadingPages: false,
+              universalDoc: doc ?? null,
+              textContent: opts.textContent ?? doc?.markdown ?? doc?.text ?? "",
+              error: doc && doc.ok === false ? doc.error || "No se pudo leer el archivo." : null,
+            }
+          : curr
+      );
+    } catch (err) {
+      setPdfPanelState((curr) =>
+        curr && curr.path === opts.path
+          ? {
+              ...curr,
+              isLoadingPages: false,
+              error: extractErrorMessage(err, "No se pudo abrir el documento en el visor."),
+            }
+          : curr
+      );
+    }
+  };
+
+  const handleOpenWorkspaceFileInViewer = (
+    file: SelectedWorkspaceFile,
+    editMode = false
+  ) => {
+    const ext = file.relativePath.split(".").pop()?.toLowerCase() || "txt";
+    if (file.kind === "pdf") {
+      void openPdfInRightPanel(
+        {
+          path: file.relativePath,
+          title: file.pdfSummary?.title || file.name,
+          filename: file.name,
+          pageCount: file.pdfSummary?.page_count,
+          sizeBytes: file.sizeBytes,
+        },
+        editMode ? "edit_page" : "view"
+      );
+      return;
+    }
+    if (file.kind === "office" || OFFICE_DOC_EXT_SET.has(ext) || ext === "csv" || ext === "tsv") {
+      void openUniversalDocInRightPanel({
+        path: file.relativePath,
+        filename: file.name,
+        sizeBytes: file.sizeBytes,
+        ext,
+        textContent: file.content || undefined,
+        editMode,
+      });
+      return;
+    }
+    if (file.kind === "image" && file.dataUrl) {
+      setPdfDraftProgress(null);
+      setPdfPanelState({
+        path: file.relativePath,
+        filename: file.name,
+        title: file.name,
+        sizeBytes: file.sizeBytes,
+        pages: [],
+        isLoadingPages: false,
+        fileKind: "image",
+        fileExtension: ext,
+        imageDataUrl: file.dataUrl,
+        initialMode: "view",
+      });
+      setShowDocViewer(true);
+      return;
+    }
+    setPdfDraftProgress(null);
+    setPdfPanelState({
+      path: file.relativePath,
+      filename: file.name,
+      title: file.name,
+      sizeBytes: file.sizeBytes,
+      pages: [],
+      isLoadingPages: false,
+      fileKind: "text",
+      textContent: file.content,
+      fileExtension: ext,
+      initialMode: editMode ? "edit_page" : "view",
+    });
+    setShowDocViewer(true);
+  };
+
+  const handleDownloadPdfFromChat = async (pdf: GeneratedPdfArtifact) => {
+    try {
+      const res = await downloadWorkspaceFile(pdf.path, pdf.filename || `${pdf.title}.pdf`);
+      if (res?.ok) {
+        setStatusMessage(`Descargado en Descargas: ${res.filename}`);
+        setTimeout(() => setStatusMessage(null), 4200);
+      }
+    } catch (err) {
+      setStatusMessage(extractErrorMessage(err, "No se pudo descargar el PDF."));
+      setTimeout(() => setStatusMessage(null), 4000);
+    }
+  };
+
+  const handleExportTextDocumentToPdf = async (title: string, markdownContent: string) => {
+    if (!isTauriEnv) return;
+    const rawRes = await exportCanvasToPdf({
+      title,
+      markdown: markdownContent,
+      theme: "executive",
+    });
+    const pdfArtifact = sanitizeGeneratedPdfArtifact(rawRes);
+    if (pdfArtifact) {
+      setStatusMessage(`PDF generado: ${pdfArtifact.filename}`);
+      setTimeout(() => setStatusMessage(null), 4000);
+      void handleRefreshWorkspace();
+      void openPdfInRightPanel(pdfArtifact);
+    }
+  };
+
+  const handleLoadMorePdfPages = async (relativePath?: string, nextStartPage?: number) => {
     const snap = pdfPanelState;
-    if (!snap || snap.status !== "ready" || !snap.path || snap.loadingMore || !isTauriEnv) {
+    const targetPath = relativePath || snap?.path;
+    if (!snap || !targetPath || snap.isLoadingPages || !isTauriEnv) {
       return;
     }
     const reqId = pdfPreviewReqRef.current;
-    const nextStart = snap.pages.length + 1;
-    setPdfPanelState((curr) => (curr ? { ...curr, loadingMore: true } : curr));
+    const nextStart = nextStartPage ?? snap.pages.length + 1;
+    setPdfPanelState((curr) => (curr ? { ...curr, isLoadingPages: true } : curr));
     try {
-      const res = await renderPdfPreview(snap.path, { startPage: nextStart, maxPages: 8 });
+      const res = await renderPdfPreview(targetPath, { startPage: nextStart, maxPages: 8 });
       if (reqId !== pdfPreviewReqRef.current) return;
       if (res && res.ok) {
         setPdfPanelState((curr) => {
@@ -3188,14 +3461,14 @@ export default function App() {
             pages: merged,
             pageCount: res.pageCount,
             hasMore: res.hasMore,
-            loadingMore: false,
+            isLoadingPages: false,
           };
         });
       } else {
-        setPdfPanelState((curr) => (curr ? { ...curr, loadingMore: false } : curr));
+        setPdfPanelState((curr) => (curr ? { ...curr, isLoadingPages: false } : curr));
       }
     } catch {
-      setPdfPanelState((curr) => (curr ? { ...curr, loadingMore: false } : curr));
+      setPdfPanelState((curr) => (curr ? { ...curr, isLoadingPages: false } : curr));
     }
   };
 
@@ -3203,37 +3476,15 @@ export default function App() {
     pdfPreviewReqRef.current += 1;
     if (rightPanelAutoOpenedTurnRef.current !== turnId) {
       rightPanelAutoOpenedTurnRef.current = turnId;
-      setShowRightSidebar(true);
-      setRightSidebarMode("pdf");
-      setRightWidth((w) => Math.max(w, 460));
+      setShowDocViewer(true);
     }
-    setPdfPanelState((prev) => ({
-      status: "generating",
-      stage: draft.stage,
-      stepLabel: draft.stepLabel || "Construyendo documento...",
-      progress: draft.progress,
-      title: draft.title || prev?.title || "Documento PDF",
-      subtitle: draft.subtitle ?? prev?.subtitle,
-      theme: draft.theme || prev?.theme || "executive",
-      author: draft.author || prev?.author,
-      date: draft.date || prev?.date,
-      hasCover: draft.hasCover ?? prev?.hasCover,
-      cover: draft.cover ?? prev?.cover ?? null,
-      draftBlocks: draft.blocks.length > 0 ? draft.blocks : prev?.draftBlocks ?? [],
-      path: draft.path || prev?.path,
-      pages: [],
-      hasMore: false,
-      loadingPreview: false,
-      error: undefined,
-    }));
+    setPdfDraftProgress(draft);
   };
 
   const handleExportCanvasPdf = async (canvas: CanvasArtifact) => {
     if (!isTauriEnv) return;
     const reqId = (pdfPreviewReqRef.current += 1);
-    setShowRightSidebar(true);
-    setRightSidebarMode("pdf");
-    setRightWidth((w) => Math.max(w, 460));
+    setShowDocViewer(true);
     const canvasPreviewBlocks: PdfDraftProgressEvent["blocks"] = [];
     if (canvas.summary?.trim()) {
       canvasPreviewBlocks.push({
@@ -3251,8 +3502,7 @@ export default function App() {
     } else if (canvas.markdown?.trim()) {
       canvasPreviewBlocks.push({ type: "paragraph", text: canvas.markdown.trim().slice(0, 240) });
     }
-    setPdfPanelState({
-      status: "generating",
+    setPdfDraftProgress({
       stage: "rendering_pdf",
       stepLabel: "Compilando Canvas en páginas PDF...",
       progress: 0.45,
@@ -3261,9 +3511,9 @@ export default function App() {
       theme: "executive",
       hasCover: false,
       cover: null,
-      draftBlocks: canvasPreviewBlocks,
-      pages: [],
-      loadingPreview: false,
+      totalBlocks: canvasPreviewBlocks.length,
+      completedBlocks: 1,
+      blocks: canvasPreviewBlocks,
     });
 
     setXoxState("syncing");
@@ -3272,6 +3522,7 @@ export default function App() {
     try {
       const rawRes = await exportCanvasToPdf(buildPdfSpecFromCanvas(canvas));
       const pdfArtifact = sanitizeGeneratedPdfArtifact(rawRes);
+      setPdfDraftProgress(null);
       if (pdfArtifact) {
         const targetMsgId = canvas.sourceMessageId;
         const hasSourceMsg = Boolean(
@@ -3311,11 +3562,12 @@ export default function App() {
         setXoxMessage("¿En qué puedo ayudarte?");
       }, 2800);
     } catch (err) {
+      setPdfDraftProgress(null);
       setXoxState("alert");
       const msg = extractErrorMessage(err, "No se pudo exportar el PDF.");
       if (reqId === pdfPreviewReqRef.current) {
         setPdfPanelState((curr) =>
-          curr ? { ...curr, status: "error", error: msg, loadingPreview: false } : curr
+          curr ? { ...curr, error: msg, isLoadingPages: false } : curr
         );
       }
       setStatusMessage(msg);
@@ -3382,19 +3634,15 @@ export default function App() {
 
         {/* Lado Derecho: Toggle de Canvas + Tareas y Decisiones */}
         <div className="flex items-center gap-2">
-          {activeCanvas && (
+          {showCanvas && activeCanvas && (
             <button
               type="button"
-              onClick={() => setShowCanvas((v) => !v)}
+              onClick={() => setShowCanvas(false)}
               aria-pressed={showCanvas}
-              title={showCanvas ? "Ocultar Canvas" : `Abrir Canvas: ${activeCanvas.title}`}
-              className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer ${
-                showCanvas
-                  ? "quick-liquid-btn text-sky-100 !bg-sky-400/[0.10]"
-                  : "quick-liquid-btn text-zinc-200 hover:text-white"
-              }`}
+              title="Ocultar Canvas"
+              className="px-2.5 py-1.5 rounded-lg border bg-white/[0.08] text-white border-white/[0.12] hover:bg-white/[0.12] flex items-center gap-1.5 transition-all cursor-pointer"
             >
-              <Table2 className="w-3.5 h-3.5 text-sky-300" />
+              <Table2 className="w-3.5 h-3.5 text-zinc-200" />
               <span className="text-[11px] font-medium hidden sm:inline max-w-[120px] truncate">
                 Canvas
               </span>
@@ -3402,22 +3650,15 @@ export default function App() {
           )}
 
           <button
-            onClick={() => {
-              if (showRightSidebar && rightSidebarMode === "pdf") {
-                setRightSidebarMode("tasks");
-              } else {
-                setRightSidebarMode("tasks");
-                setShowRightSidebar(!showRightSidebar);
-              }
-            }}
-            aria-pressed={showRightSidebar && rightSidebarMode === "tasks"}
+            onClick={() => setShowRightSidebar((v) => !v)}
+            aria-pressed={showRightSidebar}
             title={
-              showRightSidebar && rightSidebarMode === "tasks"
+              showRightSidebar
                 ? "Ocultar panel de tareas"
                 : "Mostrar panel de tareas"
             }
             className={`px-2 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
-              showRightSidebar && rightSidebarMode === "tasks"
+              showRightSidebar
                 ? "bg-white/[0.08] text-white border-white/[0.1]"
                 : "bg-transparent text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]"
             }`}
@@ -3456,125 +3697,208 @@ export default function App() {
             >
               <aside
                 style={{ width: `${leftWidth}px` }}
-                className="h-full bg-[#08090d] flex flex-col shrink-0 overflow-hidden select-none"
+                className="h-full bg-[#07080b] flex flex-col shrink-0 overflow-hidden select-none"
               >
               
               {/* Cabecera del Panel con Tabs Contexto / Chats */}
-              <div className="p-2.5 border-b border-white/[0.06] flex items-center justify-between gap-2 bg-[#0a0b10]">
-                <div className="flex items-center p-0.5 rounded-lg bg-black/50 border border-white/[0.06]">
+              <div className="px-2.5 py-2 border-b border-white/[0.06] flex items-center justify-between gap-2 bg-[#090a0e]">
+                <div
+                  role="tablist"
+                  aria-label="Secciones del panel lateral"
+                  className="flex items-center gap-1 p-0.5 rounded-lg bg-white/[0.03] border border-white/[0.07]"
+                  onKeyDown={(e) => {
+                    if (
+                      e.key === "ArrowLeft" ||
+                      e.key === "ArrowRight" ||
+                      e.key === "Home" ||
+                      e.key === "End"
+                    ) {
+                      e.preventDefault();
+                      const nextTab: "context" | "chats" =
+                        e.key === "Home"
+                          ? "context"
+                          : e.key === "End"
+                          ? "chats"
+                          : leftTab === "context"
+                          ? "chats"
+                          : "context";
+                      setLeftTab(nextTab);
+                      document
+                        .getElementById(
+                          nextTab === "context"
+                            ? "xook-sidebar-tab-context"
+                            : "xook-sidebar-tab-chats"
+                        )
+                        ?.focus();
+                    }
+                  }}
+                >
                   <button
+                    id="xook-sidebar-tab-context"
                     type="button"
+                    role="tab"
+                    aria-selected={leftTab === "context"}
+                    tabIndex={leftTab === "context" ? 0 : -1}
                     onClick={() => setLeftTab("context")}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
                       leftTab === "context"
-                        ? "bg-white/[0.09] text-white"
-                        : "text-zinc-400 hover:text-zinc-200"
+                        ? "bg-white/[0.1] text-white border border-white/[0.12]"
+                        : "border border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
                     }`}
                   >
-                    <FolderOpen className="w-3.5 h-3.5" />
+                    <FolderOpen
+                      className={`w-3.5 h-3.5 ${
+                        leftTab === "context" ? "text-zinc-200" : "text-zinc-500"
+                      }`}
+                    />
                     <span>Contexto</span>
                   </button>
                   <button
+                    id="xook-sidebar-tab-chats"
                     type="button"
+                    role="tab"
+                    aria-selected={leftTab === "chats"}
+                    tabIndex={leftTab === "chats" ? 0 : -1}
                     onClick={() => setLeftTab("chats")}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer ${
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
                       leftTab === "chats"
-                        ? "bg-white/[0.09] text-white"
-                        : "text-zinc-400 hover:text-zinc-200"
+                        ? "bg-white/[0.1] text-white border border-white/[0.12]"
+                        : "border border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
                     }`}
                   >
-                    <MessageSquare className="w-3.5 h-3.5" />
+                    <MessageSquare
+                      className={`w-3.5 h-3.5 ${
+                        leftTab === "chats" ? "text-zinc-200" : "text-zinc-500"
+                      }`}
+                    />
                     <span>Chats</span>
                     {conversations.length > 0 && (
-                      <span className="text-[10px] font-mono text-zinc-400 bg-white/[0.06] px-1 rounded">
+                      <span className="text-[10px] font-mono tabular-nums text-zinc-300 bg-white/[0.07] px-1.5 py-0.2 rounded-md">
                         {conversations.length}
                       </span>
                     )}
                   </button>
                 </div>
 
-                {leftTab === "context" ? (
-                  <span
-                    title="Tokens estimados de contexto activo vs. ventana máxima del modelo seleccionado"
-                    className="text-[10px] text-zinc-400 font-mono bg-white/[0.04] border border-white/[0.06] px-2 py-0.5 rounded shrink-0"
-                  >
-                    {formatTokenCount(totalActiveTokens)} / {formatContextLength(modelContextWindow)}
-                  </span>
-                ) : (
+                {leftTab === "chats" && (conversations.length > 0 || chatMessages.length > 0) ? (
                   <button
                     type="button"
                     onClick={handleStartNewChat}
                     disabled={isChatStreaming}
                     title="Iniciar nueva conversación"
-                    className="flex items-center gap-1 text-[11px] text-zinc-200 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] px-2 py-1 rounded-md transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                    className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-200 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.1] px-2.5 py-1 rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0 focus-visible:outline-2 focus-visible:outline-white/60"
                   >
-                    <SquarePen className="w-3 h-3" />
+                    <SquarePen className="w-3 h-3 text-zinc-300" />
                     <span>Nueva</span>
                   </button>
-                )}
+                ) : null}
               </div>
 
               {leftTab === "context" ? (
-                <>
-              {/* Estado Real de OpenRouter + Contexto del Modelo */}
-              <div className="px-3.5 py-2.5 bg-black/40 border-b border-white/[0.06] space-y-2.5">
-                {/* Consumo y límite real de OpenRouter */}
-                <div>
-                  <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-400 mb-1">
-                    <span className="flex items-center gap-1.5 text-zinc-300 font-medium truncate">
-                      <Activity className="w-3 h-3 text-emerald-400 shrink-0" />
-                      <span className="truncate">{usageSummary.tierLabel}</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => refreshModelsAndUsage(true)}
-                      title="Actualizar límites de OpenRouter y catálogo de modelos"
-                      className="flex items-center gap-1 text-[10px] font-mono text-zinc-200 hover:text-white transition-colors shrink-0 cursor-pointer"
-                    >
-                      <span>{usageSummary.headline}</span>
-                      <RefreshCw className={`w-2.5 h-2.5 text-zinc-400 ${loadingModels ? "animate-spin" : ""}`} />
-                    </button>
-                  </div>
-                  <div className="w-full bg-white/[0.06] h-1 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all ${
-                        usageSummary.pct >= 85
-                          ? "bg-amber-400"
-                          : usageSummary.connected
-                          ? "bg-emerald-400/80"
-                          : "bg-zinc-600"
-                      }`}
-                      style={{ width: `${Math.max(usageSummary.connected ? 4 : 0, usageSummary.pct)}%` }}
-                    />
-                  </div>
-                  <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-zinc-500">
-                    <span className="truncate">{usageSummary.detail}</span>
-                    <button
-                      type="button"
-                      onClick={() => setShowAiSettings(true)}
-                      className="text-sky-300/90 hover:text-sky-200 shrink-0 cursor-pointer"
-                    >
-                      {aiConfig.hasApiKey ? "Ver modelos" : "Conectar"}
-                    </button>
-                  </div>
-                </div>
+                <div
+                  id="xook-sidebar-panel-context"
+                  role="tabpanel"
+                  aria-labelledby="xook-sidebar-tab-context"
+                  className="flex-1 flex flex-col min-h-0 overflow-hidden"
+                >
+                  {/* Estado de OpenRouter + Memoria de conversación (monocromo negro/gris) */}
+                  <div className="mx-2.5 mt-2.5 mb-1.5 rounded-xl bg-[#0b0c10] border border-white/[0.08] p-2.5 space-y-2 shrink-0">
+                    {/* Consumo y límite real de OpenRouter */}
+                    <div>
+                      <div className="flex items-center justify-between gap-2 text-[11px] mb-1.5">
+                        <span className="flex items-center gap-1.5 text-zinc-100 font-medium truncate">
+                          <Activity
+                            className={`w-3.5 h-3.5 shrink-0 ${
+                              accountUsage && !accountUsage.ok
+                                ? "text-zinc-400"
+                                : usageSummary.connected
+                                ? "text-zinc-300"
+                                : "text-zinc-500"
+                            }`}
+                          />
+                          <span className="truncate">{usageSummary.tierLabel}</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => refreshModelsAndUsage(true)}
+                          title="Actualizar límites de OpenRouter y modelos disponibles"
+                          className="inline-flex items-center gap-1.5 text-[11px] font-mono text-zinc-300 hover:text-white transition-colors shrink-0 cursor-pointer rounded px-1 py-0.5 focus-visible:outline-2 focus-visible:outline-white/60"
+                        >
+                          <span className="tabular-nums">{usageSummary.headline}</span>
+                          <RefreshCw
+                            className={`w-3 h-3 text-zinc-500 ${loadingModels ? "animate-spin" : ""}`}
+                          />
+                        </button>
+                      </div>
+                      <div
+                        className="w-full bg-white/[0.07] h-1 rounded-full overflow-hidden"
+                        role="progressbar"
+                        aria-label={usageSummary.tierLabel}
+                        aria-valuenow={usageSummary.pct}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                      >
+                        <div
+                          className={`h-full rounded-full transition-all duration-300 ${
+                            accountUsage && !accountUsage.ok
+                              ? "bg-zinc-500"
+                              : usageSummary.pct >= 85
+                              ? "bg-zinc-100"
+                              : usageSummary.connected
+                              ? "bg-zinc-300"
+                              : "bg-zinc-600"
+                          }`}
+                          style={{ width: `${Math.max(usageSummary.connected ? 4 : 0, usageSummary.pct)}%` }}
+                        />
+                      </div>
+                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[10.5px] text-zinc-400">
+                        <span className="truncate">{usageSummary.detail}</span>
+                        <button
+                          type="button"
+                          onClick={() => openAiSettings(aiConfig.hasApiKey ? "models" : "account")}
+                          className="px-2 py-0.5 rounded-md bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.09] text-zinc-200 hover:text-white font-medium shrink-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-white/60"
+                        >
+                          {aiConfig.hasApiKey ? "Cambiar modelo" : "Conectar"}
+                        </button>
+                      </div>
+                    </div>
 
-                {/* Uso real de la ventana de contexto del modelo */}
-                <div className="pt-2 border-t border-white/[0.05]">
-                  <div className="flex justify-between text-[11px] text-zinc-400 mb-1">
-                    <span>Contexto activo ({activeModel.name})</span>
-                    <span className="text-zinc-200 font-mono font-medium">
-                      {contextUsagePct}% usado
-                    </span>
-                  </div>
-                  <div className="w-full bg-white/[0.06] h-1 rounded-full overflow-hidden">
+                    {/* Capacidad de memoria del chat actual */}
                     <div
-                      className="bg-zinc-300 h-full rounded-full transition-all"
-                      style={{ width: `${Math.min(100, Math.max(totalActiveTokens > 0 ? 2 : 0, contextUsagePct))}%` }}
-                    />
+                      className="pt-2 border-t border-white/[0.06]"
+                      title={`Modelo activo: ${activeModel.name} (${formatTokenCount(totalActiveTokens)} de ${formatContextLength(modelContextWindow)} tokens en uso)`}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-[11px] mb-1.5">
+                        <span className="text-zinc-300 font-medium truncate">
+                          Memoria de conversación
+                        </span>
+                        <span className="text-zinc-200 font-mono text-[10.5px] tabular-nums shrink-0">
+                          {contextUsagePct <= 1 ? "Disponible" : `${contextUsagePct}% en uso`}
+                        </span>
+                      </div>
+                      <div
+                        className="w-full bg-white/[0.07] h-1 rounded-full overflow-hidden"
+                        role="progressbar"
+                        aria-label="Memoria de conversación"
+                        aria-valuenow={contextUsagePct}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                      >
+                        <div
+                          className="h-full rounded-full transition-all duration-300 bg-zinc-300"
+                          style={{
+                            width: `${Math.min(
+                              100,
+                              Math.max(totalActiveTokens > 0 ? 3 : 0, contextUsagePct)
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[10.5px] text-zinc-500">
+                        <span className="truncate">Asistente: {activeModel.name}</span>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
 
               {/* Árbol Real del Espacio de Trabajo + Inspector/Editor */}
               <WorkspaceTreePanel
@@ -3598,6 +3922,9 @@ export default function App() {
                     sizeBytes: file.sizeBytes,
                   })
                 }
+                onOpenInDocumentViewer={(file, editMode) =>
+                  handleOpenWorkspaceFileInViewer(file, editMode)
+                }
                 onAskXoxAnalyzeFile={handleAskXoxAnalyzeFile}
                 onCreateFolder={handleCreateWorkspaceFolder}
                 onCreateWorkspace={handleCreateNewWorkspace}
@@ -3610,32 +3937,28 @@ export default function App() {
                   setTimeout(() => setStatusMessage((curr) => (curr === msg ? null : curr)), 4000);
                 }}
               />
-                </>
+                </div>
               ) : (
-                <div className="flex-1 flex flex-col overflow-hidden">
+                <div
+                  id="xook-sidebar-panel-chats"
+                  role="tabpanel"
+                  aria-labelledby="xook-sidebar-tab-chats"
+                  className="flex-1 flex flex-col overflow-hidden"
+                >
                   <div className="p-2.5 flex-1 overflow-y-auto space-y-1">
                     {conversations.length === 0 ? (
-                      <div className="h-full flex flex-col items-center justify-center text-center px-4 py-10 space-y-3">
-                        <div className="w-9 h-9 rounded-full bg-white/[0.04] border border-white/[0.06] flex items-center justify-center text-zinc-500">
+                      <div className="h-full flex flex-col items-center justify-center text-center px-5 py-10 space-y-3">
+                        <div className="w-10 h-10 rounded-full bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-300">
                           <MessageSquare className="w-4 h-4" />
                         </div>
-                        <div className="space-y-1">
-                          <p className="text-xs font-medium text-zinc-300">
-                            Sin conversaciones guardadas
+                        <div className="space-y-1.5">
+                          <p className="text-xs font-medium text-white">
+                            Aún no tienes chats guardados
                           </p>
-                          <p className="text-[11px] text-zinc-500 leading-relaxed">
-                            Tus chats con Xox se guardan automáticamente en este equipo para retomarlos cuando quieras.
+                          <p className="text-[11px] text-zinc-400 leading-relaxed">
+                            Escribe tu primera consulta abajo. Cada conversación con Xox se guarda aquí automáticamente.
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          onClick={handleStartNewChat}
-                          disabled={isChatStreaming}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] text-xs text-zinc-200 transition-colors cursor-pointer disabled:opacity-40"
-                        >
-                          <SquarePen className="w-3.5 h-3.5" />
-                          <span>Nueva conversación</span>
-                        </button>
                       </div>
                     ) : (
                       conversations.map((thread) => {
@@ -3720,34 +4043,39 @@ export default function App() {
               )}
 
               {/* Pie del Panel Lateral */}
-              <div className="p-3 border-t border-white/[0.06] bg-[#0a0b10] text-[11px] text-zinc-400 flex items-center justify-between gap-2">
+              <div className="px-3 py-2 border-t border-white/[0.06] bg-[#090a0e] text-[11px] text-zinc-400 flex items-center justify-between gap-2">
                 <button
                   type="button"
                   onClick={() => setShowLocalAuth(true)}
-                  className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors truncate cursor-pointer"
+                  className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors truncate cursor-pointer rounded focus-visible:outline-2 focus-visible:outline-white/60"
                   title="Configurar perfil de usuario local"
                 >
                   <UserCircle2
                     className={`w-3.5 h-3.5 shrink-0 ${
-                      localUser ? "text-emerald-400" : "text-zinc-500"
+                      localUser ? "text-zinc-300" : "text-zinc-500"
                     }`}
                   />
                   <span className="truncate">
                     {localUser ? localUser.name : "Sin perfil local"}
                   </span>
                 </button>
-                <span className="text-zinc-400 font-medium flex items-center gap-1 shrink-0">
-                  <Check className="w-3 h-3 text-emerald-400" />{" "}
-                  {leftTab === "context"
-                    ? (() => {
-                        const fileCount = workspaceOverview
-                          ? workspaceOverview.entries.filter((e) => e.kind === "file").length
-                          : contextItems.length;
-                        return `${fileCount} ${fileCount === 1 ? "archivo" : "archivos"}`;
-                      })()
-                    : `${conversations.length} ${
-                        conversations.length === 1 ? "chat" : "chats"
-                      }`}
+                <span className="text-zinc-400 font-medium flex items-center gap-1.5 shrink-0 truncate max-w-[140px]">
+                  <Check
+                    className={`w-3 h-3 shrink-0 ${
+                      leftTab === "context"
+                        ? workspaceOverview
+                          ? "text-zinc-300"
+                          : "text-zinc-500"
+                        : "text-zinc-300"
+                    }`}
+                  />
+                  <span className="truncate">
+                    {leftTab === "context"
+                      ? workspaceOverview?.active.name ?? "Espacio local"
+                      : `${conversations.length} ${
+                          conversations.length === 1 ? "chat" : "chats"
+                        }`}
+                  </span>
                 </span>
               </div>
               </aside>
@@ -3800,24 +4128,15 @@ export default function App() {
             </div>
           )}
 
-          {/* Barra mínima fija de conversación activa (siempre sobre el área con scroll) */}
-          {chatMessages.length > 0 && (
-            <div className="shrink-0 border-b border-white/[0.06] bg-[#060709]/95 backdrop-blur-md px-4 sm:px-6 z-10">
-              <div className="max-w-5xl mx-auto py-2.5 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span
-                    title={deriveConversationTitle(chatMessages)}
-                    className="text-sm font-medium text-white truncate"
-                  >
-                    {deriveConversationTitle(chatMessages)}
+          {/* Barra mínima fija de acciones de conversación (sin título truncado de mensaje) */}
+          {chatMessages.length > 0 && !(showLeftSidebar && leftTab === "chats") && (
+            <div className="shrink-0 bg-[#060709]/95 backdrop-blur-md px-4 sm:px-6 z-10">
+              <div className="max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto pt-2.5 pb-1 flex items-center justify-end gap-2">
+                {!activeModel.is_free && accountUsage && !accountUsage.can_use_paid_models && (
+                  <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[9px] font-medium shrink-0 mr-auto">
+                    Requiere saldo
                   </span>
-                  {!activeModel.is_free && accountUsage && !accountUsage.can_use_paid_models && (
-                    <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[9px] font-medium shrink-0">
-                      Requiere saldo
-                    </span>
-                  )}
-                </div>
-
+                )}
                 <div className="flex items-center gap-1.5 shrink-0">
                   <button
                     type="button"
@@ -3849,7 +4168,7 @@ export default function App() {
 
           {/* Área de Trabajo con Scroll: Xox Hero / Chat en vivo */}
           <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-6">
-            <div className="max-w-5xl mx-auto space-y-6">
+            <div className="max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto space-y-6">
 
               {/* ========================================================================= */}
               {/* 1. XOX DIGITAL COMPANION (HERO EN ESTADO VACÍO / COMPACTO EN CHAT)      */}
@@ -3931,7 +4250,7 @@ export default function App() {
                       ) : !aiConfig.hasApiKey ? (
                         <button
                           type="button"
-                          onClick={() => setShowAiSettings(true)}
+                          onClick={() => openAiSettings("account")}
                           className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-100 underline-offset-4 hover:underline transition-colors cursor-pointer"
                         >
                           <KeyRound className="w-3 h-3" />
@@ -3964,14 +4283,15 @@ export default function App() {
                     greetingLeaving={greetingLeaving}
                     activeCanvasId={showCanvas ? activeCanvas?.id ?? null : null}
                     onOpenCanvas={handleOpenCanvas}
-                    onPreviewPdf={(pdf) => void openPdfInRightPanel(pdf)}
+                    onPreviewPdf={(pdf) => void openPdfInRightPanel(pdf, "view")}
+                    onEditPdf={(pdf) => void openPdfInRightPanel(pdf, "edit_page")}
+                    onDownloadPdf={(pdf) => void handleDownloadPdfFromChat(pdf)}
                     onOpenPdf={(rel) => void openWorkspaceFile(rel)}
                     onRevealPdfFolder={(rel) => void openWorkspaceFolder(rel)}
                     modelCatalog={catalogModels}
                     onXoxClick={handleXoxClick}
                     onAction={handleChatAction}
                     onOpenTasksTab={() => {
-                      setRightSidebarMode("tasks");
                       setShowRightSidebar(true);
                       setTaskTab("pending");
                     }}
@@ -3986,7 +4306,13 @@ export default function App() {
               )}
 
               {/* Espaciador inferior para que el último elemento pueda scrollear sobre el input fijo */}
-              <div className="h-44 sm:h-48 shrink-0" />
+              <div
+                className={`${
+                  activeClarification || permissionItems.some((p) => p.state === "pending")
+                    ? "h-80 sm:h-96"
+                    : "h-44 sm:h-48"
+                } shrink-0 transition-all`}
+              />
               <div ref={chatEndRef} />
 
             </div>
@@ -4031,7 +4357,7 @@ export default function App() {
           {/* 4. INPUT / CHAT FIJO EN LA PARTE INFERIOR (PINNED DOCK)                    */}
           {/* ========================================================================= */}
           <div className="absolute inset-x-0 bottom-0 p-4 sm:p-6 bg-gradient-to-t from-[#060709] via-[#060709]/95 to-transparent pointer-events-none z-10">
-            <div className="@container max-w-5xl mx-auto pointer-events-auto">
+            <div className="@container max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto pointer-events-auto">
               <div
                 onDragOver={(e) => {
                   if (e.dataTransfer?.types?.includes("Files")) {
@@ -4059,17 +4385,54 @@ export default function App() {
                     setIsDraggingOverChat(false);
                   }
                 }}
-                className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-4 relative group shadow-2xl transition-all ${
+                className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-3.5 relative group shadow-2xl transition-all ${
                   inputExpanded ? "is-expanded" : ""
-                } ${isDraggingOverChat ? "ring-2 ring-sky-300/60 border-sky-300/40" : ""}`}
+                } ${isDraggingOverChat ? "ring-1 ring-white/30 border-white/25" : ""}`}
               >
                 {/* Capa de recorte para los efectos de luz (los menús desplegables pueden sobresalir) */}
                 <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
                   {/* Reflejo especular superior tenue */}
-                  <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/25 to-transparent" />
+                  <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
                   {/* Barrido de luz de encendido */}
                   <span key={summonSeq} aria-hidden="true" className="console-sweep" />
                 </div>
+
+                {/* Bandeja acoplada al input para Permisos pendientes y Preguntas abiertas (estilo Antigravity / Claude Code) */}
+                {(permissionItems.some((p) => p.state === "pending") || activeClarification) && (
+                  <div className="mb-2.5 pb-2.5 border-b border-white/[0.08] space-y-2">
+                    {permissionItems
+                      .filter((p) => p.state === "pending")
+                      .map((perm) => (
+                        <CommandPermissionCard
+                          key={perm.requestId}
+                          item={perm}
+                          docked
+                          onResolve={(reqId, decision) =>
+                            void handleResolvePermission(reqId, decision)
+                          }
+                        />
+                      ))}
+
+                    {activeClarification && (
+                      <ClarificationInputDock
+                        clarification={activeClarification}
+                        onClose={() => setActiveClarification(null)}
+                        onSubmit={(formattedReply) => {
+                          const clarificationId = activeClarification?.id;
+                          const cleanedMessages = chatMessagesRef.current.map((m) =>
+                            m.actionButton?.kind === "open_clarification" &&
+                            (!clarificationId || m.actionButton.clarification?.id === clarificationId)
+                              ? { ...m, actionButton: undefined }
+                              : m
+                          );
+                          setChatMessages(cleanedMessages);
+                          setActiveClarification(null);
+                          void runPromptQuery(formattedReply, cleanedMessages);
+                        }}
+                      />
+                    )}
+                  </div>
+                )}
 
                 {/* Formulario Principal de Entrada */}
                 <form onSubmit={handlePromptSubmit} className="space-y-2.5">
@@ -4199,36 +4562,56 @@ export default function App() {
                           }
                           className={`xook-liquid-menu ${
                             showModelMenu ? "menu-in" : "menu-out pointer-events-none"
-                          } absolute right-0 bottom-full mb-2 w-72 p-1.5 rounded-2xl z-30`}
+                          } absolute right-0 bottom-full mb-2 w-80 overflow-hidden p-1.5 rounded-2xl z-30`}
                         >
                           <LiquidGlassBackdrop variant="menu" />
 
                           <div className="relative z-[1]">
-                            <div className="px-2.5 py-1.5 flex items-center justify-between border-b border-white/[0.08] mb-1.5">
-                              <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-300/80">
-                                Modelos disponibles ({availableQuickModels.length})
-                              </span>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void refreshModelsAndUsage(true);
-                                }}
-                                aria-label="Actualizar catálogo y límites de OpenRouter"
-                                title="Actualizar catálogo y límites de OpenRouter"
-                                className="w-6 h-6 rounded-full flex items-center justify-center text-zinc-300/80 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
-                              >
-                                <RefreshCw className={`w-3 h-3 ${loadingModels ? "animate-spin" : ""}`} />
-                              </button>
-                            </div>
-
-                            {!canUsePaidModels && (
-                              <div className="quick-liquid-subcard mx-1 mb-1.5 px-2.5 py-1.5 rounded-xl text-[10.5px] text-zinc-300/85 leading-snug">
-                                {aiConfig.hasApiKey
-                                  ? "Mostrando solo modelos que funcionan sin saldo en tu cuenta."
-                                  : "Vista previa de modelos gratuitos disponibles en OpenRouter."}
+                            <div className="px-2.5 py-1.5 flex items-center justify-between gap-2 border-b border-white/[0.08] mb-1.5">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-300/85 truncate">
+                                  Modelos ({availableQuickModels.length})
+                                </span>
+                                {!canUsePaidModels && (
+                                  <span className="quick-liquid-chip px-1.5 py-0.5 rounded-full text-[9px] font-medium text-zinc-300/90 shrink-0">
+                                    {aiConfig.hasApiKey ? "Sin saldo · gratis" : "Gratis"}
+                                  </span>
+                                )}
                               </div>
-                            )}
+                              <div className="flex items-center gap-1 shrink-0">
+                                {availableQuickModels.length > 4 && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setExpandModelMenu((prev) => !prev);
+                                    }}
+                                    aria-expanded={expandModelMenu}
+                                    title={expandModelMenu ? "Contraer lista de modelos" : "Ver más modelos"}
+                                    className="inline-flex items-center gap-0.5 h-6 px-2 rounded-full text-[10px] font-medium text-sky-200/85 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+                                  >
+                                    <span>{expandModelMenu ? "Menos" : "Más"}</span>
+                                    <ChevronDown
+                                      className={`w-3 h-3 transition-transform duration-200 ${
+                                        expandModelMenu ? "rotate-180" : ""
+                                      }`}
+                                    />
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void refreshModelsAndUsage(true);
+                                  }}
+                                  aria-label="Actualizar catálogo y límites de OpenRouter"
+                                  title="Actualizar catálogo y límites de OpenRouter"
+                                  className="w-6 h-6 rounded-full flex items-center justify-center text-zinc-300/80 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0"
+                                >
+                                  <RefreshCw className={`w-3 h-3 ${loadingModels ? "animate-spin" : ""}`} />
+                                </button>
+                              </div>
+                            </div>
 
                             {unavailableModelIds.size > 0 && (
                               <div className="quick-liquid-subcard mx-1 mb-1.5 px-2.5 py-1.5 rounded-xl text-[10.5px] text-zinc-200/90 leading-snug">
@@ -4236,7 +4619,11 @@ export default function App() {
                               </div>
                             )}
 
-                            <div className="max-h-56 overflow-y-auto space-y-0.5 pr-0.5">
+                            <div
+                              className={`xook-expand-list ${
+                                expandModelMenu ? "max-h-80" : "max-h-56"
+                              } overflow-y-auto space-y-0.5 pr-0.5`}
+                            >
                               {availableQuickModels.map((m) => (
                                 <button
                                   key={m.id}
@@ -4281,14 +4668,14 @@ export default function App() {
                                 type="button"
                                 onClick={() => {
                                   setShowModelMenu(false);
-                                  setShowAiSettings(true);
+                                  openAiSettings("models");
                                 }}
                                 className="quick-liquid-option w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-left text-[11px] font-medium text-zinc-100/90 hover:text-white cursor-pointer"
                               >
                                 <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
                                   <KeyRound className="w-2.5 h-2.5 text-white/85" />
                                 </span>
-                                <span>Ver límites, clave y catálogo completo…</span>
+                                <span>Ver catálogo completo y límites…</span>
                               </button>
                             </div>
                           </div>
@@ -4439,8 +4826,99 @@ export default function App() {
           </div>
         )}
 
+        {/* PANEL DEDICADO DEL VISOR Y EDITOR DE DOCUMENTOS (INDEPENDIENTE DE TAREAS) */}
+        {docViewerPresence.mounted && (pdfPanelState || pdfDraftProgress) && (
+          <div
+            className={`w-[46%] min-w-[360px] max-w-[680px] shrink-0 bg-[#060709] border-l border-white/[0.07] p-2.5 overflow-hidden transition-opacity duration-200 ${
+              docViewerPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+            }`}
+          >
+            <PdfWorkspacePanel
+              state={pdfPanelState}
+              draftProgress={pdfDraftProgress}
+              onClose={() => {
+                setShowDocViewer(false);
+                setPdfPanelState(null);
+                setPdfDraftProgress(null);
+              }}
+              onOpenExternal={(rel) => void openWorkspaceFile(rel)}
+              onRevealInFolder={(rel) => void openWorkspaceFolder(rel)}
+              onLoadMorePages={(rel, nextStart) => void handleLoadMorePdfPages(rel, nextStart)}
+              onReloadPreview={(rel) => {
+                if (pdfPanelState?.fileKind === "office") {
+                  void openUniversalDocInRightPanel({
+                    path: rel,
+                    filename: pdfPanelState.filename || rel.split("/").pop() || "Documento",
+                    sizeBytes: pdfPanelState.sizeBytes,
+                    ext: pdfPanelState.fileExtension,
+                  });
+                } else {
+                  void openPdfInRightPanel({
+                    path: rel,
+                    title: pdfPanelState?.title,
+                    filename: pdfPanelState?.filename,
+                    pageCount: pdfPanelState?.pageCount,
+                    sizeBytes: pdfPanelState?.sizeBytes,
+                    hasCover: pdfPanelState?.hasCover,
+                    theme: pdfPanelState?.theme,
+                  });
+                }
+              }}
+              onAskXoxAboutPdf={(_rel, title) => {
+                setInputPrompt((prev) =>
+                  prev.trim() ? prev : `Sobre el documento "${title}": `
+                );
+                requestAnimationFrame(() => inputRef.current?.focus());
+              }}
+              onSendXoxDocumentInstruction={(payload) => {
+                const modeDesc =
+                  payload.mode === "append_pages"
+                    ? `Agrega más páginas al final del PDF "${payload.path}" (usando pdf_generate con source_pdf_path="${payload.path}", edit_action="append_pages" y theme="${payload.theme || "executive"}" para conservar exactamente la misma tipografía, diseño, encabezados y numeración continua)`
+                    : `Modifica el documento "${payload.path}" (usando pdf_generate con source_pdf_path="${payload.path}", edit_action="modify" y theme="${payload.theme || "executive"}" conservando su misma tipografía y diseño)`;
+                void runPromptQuery(`${modeDesc}: ${payload.instruction}`);
+              }}
+              onPdfUpdated={(updated) => {
+                setPdfPanelState((curr) =>
+                  curr
+                    ? {
+                        ...curr,
+                        path: updated.path,
+                        title: updated.title,
+                        theme: updated.theme,
+                        pageCount: updated.pageCount,
+                        sizeBytes: updated.sizeBytes,
+                        pages: updated.pages,
+                        hasMore: updated.hasMore,
+                        isLoadingPages: false,
+                        error: null,
+                      }
+                    : null
+                );
+                void handleRefreshWorkspace();
+              }}
+              onSaveTextFile={async (rel, newContent) => {
+                await handleSaveWorkspaceFile(rel, newContent);
+                setPdfPanelState((curr) =>
+                  curr
+                    ? {
+                        ...curr,
+                        textContent: newContent,
+                        sizeBytes: new Blob([newContent]).size,
+                      }
+                    : null
+                );
+              }}
+              onExportTextToPdf={handleExportTextDocumentToPdf}
+              onStatusNotice={(msg) => {
+                setStatusMessage(msg);
+                setTimeout(() => setStatusMessage((curr) => (curr === msg ? null : curr)), 4000);
+              }}
+            />
+          </div>
+        )}
+
         {/* ========================================================================= */}
-        {/* COLUMNA 3: TAREAS Y DECISIONES DEL LADO DERECHO (POR ACEPTAR Y HECHAS)    */}
+        {/* COLUMNA 3: TAREAS Y DECISIONES DEL LADO DERECHO (EXCLUSIVA PARA TAREAS)   */}
         {/* ========================================================================= */}
         {rightPresence.mounted && (
           <>
@@ -4450,9 +4928,7 @@ export default function App() {
                 e.preventDefault();
                 setIsResizingRight(true);
               }}
-              onDoubleClick={() =>
-                setRightWidth(rightSidebarMode === "pdf" && pdfPanelState ? 460 : 340)
-              }
+              onDoubleClick={() => setRightWidth(340)}
               className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""} ${
                 rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
               }`}
@@ -4469,118 +4945,39 @@ export default function App() {
                 isResizingRight ? "is-resizing" : ""
               } ${rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
             >
-              {pdfPanelState && (
-                <div className="px-3 py-2 border-b border-white/[0.06] bg-[#0a0b10] flex items-center gap-1.5 shrink-0 select-none">
-                  <button
-                    type="button"
-                    onClick={() => setRightSidebarMode("pdf")}
-                    className={`flex-1 min-w-0 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer ${
-                      rightSidebarMode === "pdf"
-                        ? "bg-rose-500/15 border-rose-400/35 text-rose-100"
-                        : "bg-white/[0.03] border-white/[0.06] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06]"
-                    }`}
-                  >
-                    {pdfPanelState.status === "generating" ? (
-                      <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse shrink-0" />
-                    ) : (
-                      <FileText className="w-3.5 h-3.5 text-rose-300 shrink-0" />
-                    )}
-                    <span className="truncate">
-                      {pdfPanelState.status === "generating" ? "Generando PDF" : "Documento PDF"}
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setRightSidebarMode("tasks")}
-                    className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors cursor-pointer ${
-                      rightSidebarMode === "tasks"
-                        ? "bg-white/[0.1] border-white/20 text-white"
-                        : "bg-white/[0.03] border-white/[0.06] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06]"
-                    }`}
-                  >
-                    <ListTodo className="w-3.5 h-3.5 shrink-0" />
-                    <span>Tareas</span>
-                    {pendingCount > 0 && (
-                      <span className="px-1.5 rounded-full bg-rose-500/20 text-rose-200 text-[10px] font-mono tabular-nums">
-                        {pendingCount}
-                      </span>
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    title="Cerrar vista del documento"
-                    onClick={() => {
-                      pdfPreviewReqRef.current += 1;
-                      setPdfPanelState(null);
-                      setRightSidebarMode("tasks");
-                    }}
-                    className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.06] transition-colors cursor-pointer shrink-0"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              )}
-
               <div className="flex-1 min-h-0 flex">
-                {pdfPanelState && rightSidebarMode === "pdf" ? (
-                  <PdfWorkspacePanel
-                    width={rightWidth}
-                    state={pdfPanelState}
-                    isTauriEnv={isTauriEnv}
-                    onOpenExternal={(rel) => void openWorkspaceFile(rel)}
-                    onRevealFolder={(rel) => void openWorkspaceFolder(rel)}
-                    onLoadMorePages={() => void handleLoadMorePdfPages()}
-                    onRetryPreview={
-                      pdfPanelState.path
-                        ? () =>
-                            void openPdfInRightPanel({
-                              path: pdfPanelState.path!,
-                              title: pdfPanelState.title,
-                              filename: pdfPanelState.filename,
-                              pageCount: pdfPanelState.pageCount,
-                              sizeBytes: pdfPanelState.sizeBytes,
-                              hasCover: pdfPanelState.hasCover,
-                              theme: pdfPanelState.theme,
-                            })
-                        : undefined
-                    }
-                  />
-                ) : (
-                  <TaskDecisionsPanel
-                    width={rightWidth}
-                    tasks={tasks}
-                    agendaItems={agendaItems}
-                    historyItems={historyItems}
-                    maxBudgetLimit={workspaceOverview?.profile.maxBudgetPerOrder ?? 25000}
-                    currency={workspaceOverview?.profile.currency ?? "MXN"}
-                    activeTab={taskTab}
-                    onTabChange={setTaskTab}
-                    onUpdateParam={handleUpdateTaskParam}
-                    onToggleTaskChecklist={handleToggleTaskChecklist}
-                    onApproveTask={handleApproveTask}
-                    onDiscardTask={handleDiscardTask}
-                    onAskXox={handleAskXoxAboutTask}
-                    onToggleTimer={handleToggleTimer}
-                    onResetTimer={handleResetTimer}
-                    onCompleteAgendaItem={handleCompleteAgendaItem}
-                    onRemoveAgendaItem={handleRemoveAgendaItem}
-                    onToggleAgendaChecklist={handleToggleAgendaChecklist}
-                    onToggleAgendaAuto={handleToggleAgendaAuto}
-                    onCreateQuickTimer={handleCreateQuickTimer}
-                    onCreateQuickNote={handleCreateQuickNote}
-                    onCreateScheduledEvent={handleCreateScheduledEvent}
-                    onTriggerXoxReconstruct={() =>
-                      runPromptQuery("Consolida y agrupa las órdenes de inventario")
-                    }
-                    inventoryCount={inventoryItems.length}
-                    latestReview={latestReview}
-                    isReviewRunning={isReviewRunning}
-                    onRunBusinessReview={() => void handleRunBusinessReview("manual")}
-                    onImportInventoryFile={handleImportInventoryFile}
-                  />
-                )}
+                <TaskDecisionsPanel
+                  width={rightWidth}
+                  tasks={tasks}
+                  agendaItems={agendaItems}
+                  historyItems={historyItems}
+                  maxBudgetLimit={workspaceOverview?.profile.maxBudgetPerOrder ?? 25000}
+                  currency={workspaceOverview?.profile.currency ?? "MXN"}
+                  activeTab={taskTab}
+                  onTabChange={setTaskTab}
+                  onUpdateParam={handleUpdateTaskParam}
+                  onToggleTaskChecklist={handleToggleTaskChecklist}
+                  onApproveTask={handleApproveTask}
+                  onDiscardTask={handleDiscardTask}
+                  onAskXox={handleAskXoxAboutTask}
+                  onToggleTimer={handleToggleTimer}
+                  onResetTimer={handleResetTimer}
+                  onCompleteAgendaItem={handleCompleteAgendaItem}
+                  onRemoveAgendaItem={handleRemoveAgendaItem}
+                  onToggleAgendaChecklist={handleToggleAgendaChecklist}
+                  onToggleAgendaAuto={handleToggleAgendaAuto}
+                  onCreateQuickTimer={handleCreateQuickTimer}
+                  onCreateQuickNote={handleCreateQuickNote}
+                  onCreateScheduledEvent={handleCreateScheduledEvent}
+                  onTriggerXoxReconstruct={() =>
+                    runPromptQuery("Consolida y agrupa las órdenes de inventario")
+                  }
+                  inventoryCount={inventoryItems.length}
+                  latestReview={latestReview}
+                  isReviewRunning={isReviewRunning}
+                  onRunBusinessReview={() => void handleRunBusinessReview("manual")}
+                  onImportInventoryFile={handleImportInventoryFile}
+                />
               </div>
             </div>
           </>
@@ -4588,26 +4985,9 @@ export default function App() {
 
       </div>
 
-      <ClarificationModal
-        isOpen={Boolean(activeClarification)}
-        clarification={activeClarification}
-        onClose={() => setActiveClarification(null)}
-        onSubmit={(formattedReply) => {
-          const clarificationId = activeClarification?.id;
-          const cleanedMessages = chatMessagesRef.current.map((m) =>
-            m.actionButton?.kind === "open_clarification" &&
-            (!clarificationId || m.actionButton.clarification?.id === clarificationId)
-              ? { ...m, actionButton: undefined }
-              : m
-          );
-          setChatMessages(cleanedMessages);
-          setActiveClarification(null);
-          void runPromptQuery(formattedReply, cleanedMessages);
-        }}
-      />
-
       <OpenRouterSettingsModal
         isOpen={showAiSettings}
+        initialTab={aiSettingsTab}
         config={aiConfig}
         accountUsage={accountUsage}
         catalogModels={catalogModels}

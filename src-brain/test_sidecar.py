@@ -339,7 +339,9 @@ def test_task_normalization_and_clarification():
     })
     assert clar is not None
     assert clar["questions"][0]["kind"] == "choice_or_text"
-    assert clar["questions"][1]["kind"] == "text"
+    assert len(clar["questions"][0]["options"]) == 2
+    assert clar["questions"][1]["kind"] == "choice_or_text"
+    assert len(clar["questions"][1]["options"]) >= 2
 
     tasks_out, op, _mood, clar_out = _normalize_agent_actions(
         {"tasks": [{"cardId": "x"}], "operation": "add_tasks"},

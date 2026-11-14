@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 const MAX_READ_BYTES: u64 = 512 * 1024;
 const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
@@ -572,7 +572,18 @@ fn guess_mime_from_ext(ext: &str) -> &'static str {
         "bmp" => "image/bmp",
         "svg" => "image/svg+xml",
         "pdf" => "application/pdf",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc" => "application/msword",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls" => "application/vnd.ms-excel",
+        "rtf" => "application/rtf",
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" => "application/vnd.oasis.opendocument.presentation",
         "csv" => "text/csv",
+        "tsv" => "text/tab-separated-values",
         "json" => "application/json",
         "md" => "text/markdown",
         "txt" => "text/plain",
@@ -941,6 +952,41 @@ pub async fn read_workspace_binary_preview<R: Runtime>(
         });
     }
 
+    if matches!(
+        ext.as_str(),
+        "docx" | "doc" | "pptx" | "ppt" | "xlsx" | "xls" | "rtf" | "odt" | "ods" | "odp"
+    ) {
+        let app_clone = app.clone();
+        let root_str = root.to_string_lossy().to_string();
+        let rel_for_py = clean_rel_str.clone();
+        let office_doc = tauri::async_runtime::spawn_blocking(move || {
+            let script = crate::ai_vault::find_sidecar_script(&app_clone).ok()?;
+            crate::ai_vault::call_python_sidecar(
+                &script,
+                "read_universal_document",
+                serde_json::json!({
+                    "workspace_root": root_str,
+                    "path": rel_for_py,
+                }),
+            )
+            .ok()
+        })
+        .await
+        .ok()
+        .flatten();
+
+        return Ok(WorkspaceBinaryPreview {
+            relative_path: clean_rel_str,
+            name,
+            kind: "office".to_string(),
+            mime_type,
+            size_bytes,
+            data_url: None,
+            pdf_summary: office_doc,
+            openable: true,
+        });
+    }
+
     Ok(WorkspaceBinaryPreview {
         relative_path: clean_rel_str,
         name,
@@ -951,6 +997,49 @@ pub async fn read_workspace_binary_preview<R: Runtime>(
         pdf_summary: None,
         openable: true,
     })
+}
+
+#[tauri::command]
+pub async fn read_universal_document<R: Runtime>(
+    app: AppHandle<R>,
+    relative_path: String,
+) -> Result<serde_json::Value, String> {
+    let (_, active) = ensure_active_workspace(&app)?;
+    let root = PathBuf::from(&active.root_path);
+    let (resolved, clean_rel, zone) = resolve_inside_workspace(&root, &relative_path, false)?;
+    if zone.is_protected_system() {
+        return Err("No está permitido leer rutas reservadas del sistema.".to_string());
+    }
+    if !resolved.is_file() {
+        return Err(format!("Archivo no encontrado: {relative_path}"));
+    }
+
+    let script = crate::ai_vault::find_sidecar_script(&app)?;
+    let root_str = root.to_string_lossy().to_string();
+    let clean_rel_str = clean_rel.to_string_lossy().replace('\\', "/");
+
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::ai_vault::call_python_sidecar(
+            &script,
+            "read_universal_document",
+            serde_json::json!({
+                "workspace_root": root_str,
+                "path": clean_rel_str,
+            }),
+        )
+    })
+    .await
+    .map_err(|e| format!("Error interno al leer documento: {e}"))??;
+
+    if res.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        let msg = res
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("No se pudo leer el documento.");
+        return Err(msg.to_string());
+    }
+
+    Ok(res)
 }
 
 #[tauri::command]
@@ -1065,6 +1154,192 @@ pub async fn render_pdf_preview<R: Runtime>(
     }
 
     Ok(res)
+}
+
+#[tauri::command]
+pub async fn load_pdf_editable_spec<R: Runtime>(
+    app: AppHandle<R>,
+    relative_path: String,
+) -> Result<serde_json::Value, String> {
+    let (_, active) = ensure_active_workspace(&app)?;
+    let root = PathBuf::from(&active.root_path);
+    let (resolved, clean_rel, zone) = resolve_inside_workspace(&root, &relative_path, false)?;
+    if zone.is_protected_system() {
+        return Err("No está permitido leer rutas reservadas del sistema.".to_string());
+    }
+    if !resolved.is_file() {
+        return Err(format!("Archivo PDF no encontrado: {relative_path}"));
+    }
+
+    let script = crate::ai_vault::find_sidecar_script(&app)?;
+    let root_str = root.to_string_lossy().to_string();
+    let clean_rel_str = clean_rel.to_string_lossy().replace('\\', "/");
+
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::ai_vault::call_python_sidecar(
+            &script,
+            "load_pdf_editable_spec",
+            serde_json::json!({
+                "workspace_root": root_str,
+                "path": clean_rel_str,
+            }),
+        )
+    })
+    .await
+    .map_err(|e| format!("Error interno al cargar estructura editable del PDF: {e}"))??;
+
+    if res.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        let msg = res
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("No se pudo cargar la estructura editable del PDF.");
+        return Err(msg.to_string());
+    }
+
+    Ok(res)
+}
+
+#[tauri::command]
+pub async fn save_pdf_document<R: Runtime>(
+    app: AppHandle<R>,
+    relative_path: String,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let (_, active) = ensure_active_workspace(&app)?;
+    let root = PathBuf::from(&active.root_path);
+    let (_resolved, clean_rel, zone) = resolve_inside_workspace(&root, &relative_path, false)?;
+    if zone.is_protected_system() {
+        return Err("No está permitido modificar rutas reservadas del sistema.".to_string());
+    }
+
+    let script = crate::ai_vault::find_sidecar_script(&app)?;
+    let root_str = root.to_string_lossy().to_string();
+    let clean_rel_str = clean_rel.to_string_lossy().replace('\\', "/");
+    let clean_rel_for_emit = clean_rel_str.clone();
+
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        crate::ai_vault::call_python_sidecar(
+            &script,
+            "save_pdf_document",
+            serde_json::json!({
+                "workspace_root": root_str,
+                "path": clean_rel_str,
+                "payload": payload,
+            }),
+        )
+    })
+    .await
+    .map_err(|e| format!("Error interno al guardar cambios en el PDF: {e}"))??;
+
+    if res.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        let msg = res
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("No se pudieron guardar los cambios en el PDF.");
+        return Err(msg.to_string());
+    }
+
+    let _ = app.emit(
+        crate::slices::task_ledger::commands::WORKSPACE_UPDATED_EVENT,
+        serde_json::json!({ "path": clean_rel_for_emit, "action": "update_pdf" }),
+    );
+    crate::slices::task_ledger::store::try_record_audit_event_for_root(
+        &root,
+        "user",
+        "pdf_edited",
+        &clean_rel_for_emit,
+        zone.as_str(),
+        res.get("page_count")
+            .and_then(|v| v.as_u64())
+            .map(|p| format!("{p} página(s)"))
+            .as_deref(),
+    );
+
+    Ok(res)
+}
+
+#[tauri::command]
+pub fn download_workspace_file<R: Runtime>(
+    app: AppHandle<R>,
+    relative_path: String,
+    preferred_name: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let (_, active) = ensure_active_workspace(&app)?;
+    let root = PathBuf::from(&active.root_path);
+    let (resolved, clean_rel, zone) = resolve_inside_workspace(&root, &relative_path, false)?;
+    if zone.is_protected_system() {
+        return Err("No está permitido exportar rutas reservadas del sistema.".to_string());
+    }
+    if !resolved.is_file() {
+        return Err(format!("Archivo no encontrado: {relative_path}"));
+    }
+
+    let downloads_dir = app
+        .path()
+        .download_dir()
+        .ok()
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join("Downloads"))
+        })
+        .unwrap_or_else(|| root.clone());
+
+    fs::create_dir_all(&downloads_dir)
+        .map_err(|e| format!("No se pudo acceder a la carpeta de Descargas: {e}"))?;
+
+    let raw_name = preferred_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            resolved
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "documento.pdf".to_string());
+
+    let safe_name = sanitize_attachment_filename(&raw_name);
+    let safe_path = Path::new(&safe_name);
+    let stem = safe_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("documento");
+    let ext = safe_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    let mut dest_path = downloads_dir.join(&safe_name);
+    let mut counter = 1u32;
+    while dest_path.exists() && counter < 200 {
+        let candidate = if ext.is_empty() {
+            format!("{stem} ({counter})")
+        } else {
+            format!("{stem} ({counter}).{ext}")
+        };
+        dest_path = downloads_dir.join(candidate);
+        counter += 1;
+    }
+
+    fs::copy(&resolved, &dest_path)
+        .map_err(|e| format!("No se pudo copiar el archivo a Descargas: {e}"))?;
+
+    let final_name = dest_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&safe_name)
+        .to_string();
+    let rel_str = clean_rel.to_string_lossy().replace('\\', "/");
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "path": rel_str,
+        "filename": final_name,
+        "downloadedPath": dest_path.to_string_lossy().to_string(),
+    }))
 }
 
 #[cfg(test)]

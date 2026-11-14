@@ -302,6 +302,39 @@ def sanitize_task_proposal(raw: Dict[str, Any]) -> Dict[str, Any]:
 ALLOWED_QUESTION_KINDS = frozenset({"choice_or_text", "single", "multi", "text"})
 
 
+def _infer_fallback_options(prompt: str) -> List[str]:
+    low = (prompt or "").lower()
+    if any(k in low for k in ("hora", "horario", "cuándo", "cuando", "día", "dia", "fecha")):
+        return [
+            "Hoy más tarde",
+            "Mañana a las 9:00 AM",
+            "Esta semana (sugerir horario)",
+        ]
+    if any(k in low for k in ("actividad", "evento", "incluir", "agenda", "tarea", "pendiente", "reunión", "reunion")):
+        return [
+            "Revisión de inventario y pedidos",
+            "Seguimiento a proveedores y pendientes",
+            "Agenda operativa sugerida por Xox",
+        ]
+    if any(k in low for k in ("formato", "tipo", "dónde", "donde", "canal", "medio")):
+        return [
+            "En XOOK (Tareas y Agenda)",
+            "En Calendario / Notas de Mac",
+            "En un documento o tabla",
+        ]
+    if any(k in low for k in ("proveedor", "compra", "stock", "producto", "inventario", "orden")):
+        return [
+            "Productos con stock crítico",
+            "Proveedor principal habitual",
+            "Comparar opciones disponibles",
+        ]
+    return [
+        "Opción recomendada por Xox",
+        "Versión rápida y directa",
+        "Detallar paso a paso",
+    ]
+
+
 def sanitize_clarification(raw: Any) -> Optional[Dict[str, Any]]:
     """Valida una solicitud estructurada de preguntas abiertas (Open Question) para aclaración HITL."""
     if not isinstance(raw, dict):
@@ -329,11 +362,18 @@ def sanitize_clarification(raw: Any) -> Optional[Dict[str, Any]]:
                 if s and s not in clean_opts:
                     clean_opts.append(s)
 
-        if q_kind not in ALLOWED_QUESTION_KINDS:
-            q_kind = "choice_or_text" if clean_opts else "text"
+        if len(clean_opts) < 2:
+            for fallback_opt in _infer_fallback_options(prompt):
+                if fallback_opt not in clean_opts:
+                    clean_opts.append(fallback_opt)
+                if len(clean_opts) >= 3:
+                    break
+
+        if q_kind != "multi":
+            q_kind = "choice_or_text"
 
         q_id = _as_str(q.get("id")) or f"q_{idx + 1}"
-        placeholder = _as_str(q.get("placeholder")) or "Escribe tu respuesta..."
+        placeholder = _as_str(q.get("placeholder")) or "Escribe tu propia respuesta..."
         clean_questions.append({
             "id": q_id,
             "prompt": prompt,

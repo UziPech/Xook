@@ -50,6 +50,7 @@ export interface CommandPermissionUiItem {
 interface CommandPermissionCardProps {
   item: CommandPermissionUiItem;
   compact?: boolean;
+  docked?: boolean;
   surfaceVariant?: "default" | "liquid";
   onResolve: (requestId: string, decision: CommandPermissionDecisionKind) => void;
 }
@@ -63,26 +64,26 @@ function getRiskMeta(riskLevel: string): {
     case "blocked":
       return {
         label: "Bloqueado",
-        badgeClass: "bg-rose-500/15 text-rose-300 border-rose-500/35",
-        borderClass: "border-rose-500/30",
+        badgeClass: "bg-white/[0.05] text-zinc-300 border-white/[0.14]",
+        borderClass: "border-white/[0.12]",
       };
     case "high":
       return {
-        label: "Alto",
-        badgeClass: "bg-amber-500/15 text-amber-300 border-amber-500/35",
-        borderClass: "border-amber-500/30",
+        label: "Confirmación",
+        badgeClass: "bg-white/[0.06] text-zinc-200 border-white/[0.14]",
+        borderClass: "border-white/[0.11]",
       };
     case "medium":
       return {
-        label: "Medio",
-        badgeClass: "bg-sky-500/15 text-sky-300 border-sky-500/30",
-        borderClass: "border-sky-500/25",
+        label: "Escritura",
+        badgeClass: "bg-white/[0.05] text-zinc-300 border-white/[0.11]",
+        borderClass: "border-white/[0.09]",
       };
     default:
       return {
         label: "Solo lectura",
-        badgeClass: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-        borderClass: "border-white/[0.1]",
+        badgeClass: "bg-white/[0.035] text-zinc-400 border-white/[0.08]",
+        borderClass: "border-white/[0.08]",
       };
   }
 }
@@ -236,6 +237,7 @@ function resolveActionCopy(item: CommandPermissionUiItem): ActionCopySpec {
 export const CommandPermissionCard: React.FC<CommandPermissionCardProps> = ({
   item,
   compact = false,
+  docked = false,
   surfaceVariant = "default",
   onResolve,
 }) => {
@@ -251,6 +253,8 @@ export const CommandPermissionCard: React.FC<CommandPermissionCardProps> = ({
 
   const isPending = item.state === "pending";
   const isRunning = item.state === "running";
+  const isFault =
+    item.state === "blocked" || item.state === "error" || item.state === "denied";
   const headline = isPending
     ? copy.pending
     : isRunning
@@ -273,155 +277,216 @@ export const CommandPermissionCard: React.FC<CommandPermissionCardProps> = ({
 
   const isLiquid = surfaceVariant === "liquid";
 
+  const technicalBlock = showTechnical && canInspectTechnical && (
+    <div className="panel-fade-in mt-2 rounded-lg bg-[#07080b] border border-white/[0.08] p-2 font-mono text-[10.5px] text-zinc-300 space-y-1 overflow-x-auto">
+      {isExternalAction ? (
+        <>
+          <div className="text-zinc-200 break-all">
+            {item.kind === "open_app" ? "Aplicación" : "Integración"}:{" "}
+            {item.appName || item.program || item.command}
+          </div>
+          <div className="text-[10px] text-zinc-500 space-y-0.5">
+            {item.bundleId && <div>Identificador: {item.bundleId}</div>}
+            {item.appPath && <div className="break-all">Ruta: {item.appPath}</div>}
+            {item.patternSuggestion && (
+              <div>
+                Regla sugerida: {item.patternSuggestion} (
+                {item.kind === "open_app" ? "app" : "integración"})
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          <div>
+            <span className="text-zinc-500">$ </span>
+            <span className="text-zinc-200 break-all">{item.command}</span>
+          </div>
+          <div className="text-[10px] text-zinc-500">
+            Carpeta: {item.cwdRel}
+            {item.patternSuggestion ? ` · Regla sugerida: ${item.patternSuggestion}` : ""}
+            {res?.exitCode != null ? ` · Código: ${res.exitCode}` : ""}
+          </div>
+        </>
+      )}
+      {outputText && (
+        <pre className="whitespace-pre-wrap break-words text-[10px] leading-relaxed text-zinc-300 max-h-36 overflow-y-auto pt-1 border-t border-white/[0.06]">
+          {outputText}
+        </pre>
+      )}
+    </div>
+  );
+
+  // Vista compacta de 1 línea para acciones ya resueltas o en ejecución dentro del historial de chat
+  if (!isPending && !docked && !isLiquid) {
+    return (
+      <div className="panel-fade-in rounded-xl border border-white/[0.07] bg-[#0b0c10] px-3 py-2 text-[11.5px] transition-colors">
+        <div className="flex items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="shrink-0 w-5 h-5 rounded-md bg-white/[0.04] border border-white/[0.08] flex items-center justify-center">
+              {isRunning ? (
+                <Loader2 className="w-3 h-3 text-zinc-300 animate-spin" />
+              ) : isFault ? (
+                <ShieldAlert className="w-3 h-3 text-zinc-400" />
+              ) : (
+                <Check className="w-3 h-3 text-zinc-300" />
+              )}
+            </div>
+            <span className="font-medium text-zinc-200 shrink-0">{headline}</span>
+            {item.purpose && (
+              <span className="text-zinc-500 truncate hidden sm:inline">
+                · {item.purpose}
+              </span>
+            )}
+            {res?.durationMs != null && (
+              <span className="text-[10.5px] font-mono text-zinc-500 shrink-0">
+                · {res.durationMs} ms
+              </span>
+            )}
+          </div>
+
+          {canInspectTechnical && (
+            <button
+              type="button"
+              onClick={() => setShowTechnical((v) => !v)}
+              className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10.5px] text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.04] transition-colors cursor-pointer"
+            >
+              <Terminal className="w-2.5 h-2.5" />
+              <span>{showTechnical ? "Ocultar" : "Detalle"}</span>
+              {showTechnical ? (
+                <ChevronDown className="w-2.5 h-2.5" />
+              ) : (
+                <ChevronRight className="w-2.5 h-2.5" />
+              )}
+            </button>
+          )}
+        </div>
+
+        {item.error && (
+          <div className="mt-1.5 rounded-lg bg-white/[0.03] border border-white/[0.08] px-2.5 py-1 text-[11px] text-zinc-300">
+            {item.error}
+          </div>
+        )}
+        {technicalBlock}
+      </div>
+    );
+  }
+
+  // Vista acoplada en la consola de entrada (Input Dock) o QuickBar
   return (
     <div
       className={`panel-fade-in rounded-xl border ${risk.borderClass} ${
         isLiquid
           ? "quick-liquid-subcard quick-liquid-permission [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]"
-          : "bg-[#0d111a]/90 backdrop-blur-md"
-      } transition-colors ${compact ? "p-2.5 text-[11.5px]" : "p-3 text-[12px]"}`}
+          : docked
+          ? "bg-[#0a0b0f] border-white/[0.08]"
+          : "bg-[#0b0c10] border-white/[0.08]"
+      } transition-colors ${compact || docked ? "px-3 py-2.5 text-[11.5px]" : "p-3 text-[12px]"}`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-start gap-2 min-w-0">
-          <div className="mt-0.5 shrink-0 w-6 h-6 rounded-lg bg-white/[0.05] border border-white/[0.08] flex items-center justify-center">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <div className="shrink-0 w-5 h-5 rounded-md bg-white/[0.05] border border-white/[0.09] flex items-center justify-center">
             {isRunning ? (
-              <Loader2 className="w-3.5 h-3.5 text-sky-300 animate-spin" />
-            ) : item.state === "blocked" || item.state === "error" || item.state === "denied" ? (
-              <ShieldAlert className="w-3.5 h-3.5 text-amber-300" />
+              <Loader2 className="w-3 h-3 text-zinc-200 animate-spin" />
+            ) : isFault ? (
+              <ShieldAlert className="w-3 h-3 text-zinc-400" />
             ) : (
-              <ShieldCheck className="w-3.5 h-3.5 text-sky-300" />
+              <ShieldCheck className="w-3 h-3 text-zinc-200" />
             )}
           </div>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="font-medium text-zinc-100 leading-snug">
-                {headline}
-              </span>
-              <span
-                className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${risk.badgeClass}`}
-              >
-                {risk.label}
-              </span>
-            </div>
-            <p className="mt-1 text-zinc-300 leading-relaxed">{item.purpose}</p>
-            {item.detailPreview && (
-              <div className="mt-1.5 rounded-lg bg-white/[0.035] border border-white/[0.07] px-2.5 py-1.5 text-[11px] text-zinc-200 whitespace-pre-line leading-relaxed">
-                {item.detailPreview}
-              </div>
-            )}
-            <div className="mt-1 flex items-center gap-1.5 text-[10.5px] text-zinc-400">
-              {isExternalAction ? (
-                <ExternalLink className="w-3 h-3 shrink-0 text-sky-400/80" />
-              ) : (
-                <FolderOpen className="w-3 h-3 shrink-0 text-zinc-500" />
-              )}
-              <span className="truncate">{zoneLabel}</span>
-              {res?.durationMs != null && (
-                <span className="text-zinc-500">· {res.durationMs} ms</span>
-              )}
-            </div>
+          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+            <span className="font-medium text-zinc-100 leading-snug">
+              {headline}
+            </span>
+            <span
+              className={`px-1.5 py-0.5 rounded-md text-[10px] font-medium border ${risk.badgeClass}`}
+            >
+              {risk.label}
+            </span>
           </div>
         </div>
+
+        {isPending && (
+          <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => onResolve(item.requestId, "allow_once")}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-zinc-100 hover:bg-white text-zinc-950 text-[11px] font-semibold transition-colors cursor-pointer"
+            >
+              <Check className="w-3 h-3 stroke-[2.25]" />
+              <span>Permitir una vez</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onResolve(item.requestId, "allow_always")}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.11] border border-white/[0.12] text-zinc-200 hover:text-white text-[11px] font-medium transition-colors cursor-pointer"
+            >
+              <CheckCheck className="w-3 h-3" />
+              <span>Permitir siempre</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onResolve(item.requestId, "deny")}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-transparent hover:bg-white/[0.06] border border-white/[0.08] text-zinc-400 hover:text-zinc-200 text-[11px] font-medium transition-colors cursor-pointer"
+            >
+              <X className="w-3 h-3" />
+              <span>Rechazar</span>
+            </button>
+          </div>
+        )}
       </div>
 
-      {isPending && (
-        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => onResolve(item.requestId, "allow_once")}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/35 text-sky-100 text-[11px] font-medium transition-colors"
-          >
-            <Check className="w-3 h-3" />
-            Permitir una vez
-          </button>
-          <button
-            type="button"
-            onClick={() => onResolve(item.requestId, "allow_always")}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-400/30 text-emerald-100 text-[11px] font-medium transition-colors"
-          >
-            <CheckCheck className="w-3 h-3" />
-            Permitir siempre
-          </button>
-          <button
-            type="button"
-            onClick={() => onResolve(item.requestId, "deny")}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/15 border border-white/[0.08] hover:border-rose-500/30 text-zinc-300 hover:text-rose-200 text-[11px] font-medium transition-colors"
-          >
-            <X className="w-3 h-3" />
-            Rechazar
-          </button>
+      <div className="mt-1.5 pl-7 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 text-[11px] text-zinc-400">
+          {item.purpose && (
+            <span className="text-zinc-300 leading-snug">{item.purpose}</span>
+          )}
+          {item.detailPreview && (
+            <span className="inline-flex items-center rounded-md bg-white/[0.035] border border-white/[0.08] px-2 py-0.5 font-mono text-[10.5px] text-zinc-300 max-w-full truncate">
+              {item.detailPreview.replace(/\s+/g, " ").trim()}
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1 text-[10.5px] text-zinc-500">
+            {isExternalAction ? (
+              <ExternalLink className="w-2.5 h-2.5 shrink-0 text-zinc-500" />
+            ) : (
+              <FolderOpen className="w-2.5 h-2.5 shrink-0 text-zinc-500" />
+            )}
+            <span className="truncate">{zoneLabel}</span>
+            {res?.durationMs != null && <span>· {res.durationMs} ms</span>}
+          </span>
         </div>
-      )}
 
-      {!isPending && item.error && (
-        <div className="mt-2 rounded-lg bg-rose-500/10 border border-rose-500/25 px-2.5 py-1.5 text-[11px] text-rose-200">
-          {item.error}
-        </div>
-      )}
-
-      {!isPending && res?.logPath && (
-        <div className="mt-2 text-[10.5px] text-zinc-400">
-          Salida completa guardada en <span className="text-zinc-200">{res.logPath}</span>
-        </div>
-      )}
-
-      {canInspectTechnical && (
-        <div className="mt-2 pt-1.5 border-t border-white/[0.06]">
+        {canInspectTechnical && (
           <button
             type="button"
             onClick={() => setShowTechnical((v) => !v)}
-            className="inline-flex items-center gap-1 text-[10.5px] text-zinc-400 hover:text-zinc-200 transition-colors"
+            className="inline-flex items-center gap-1 text-[10.5px] text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer shrink-0"
           >
             {showTechnical ? (
               <ChevronDown className="w-3 h-3" />
             ) : (
               <ChevronRight className="w-3 h-3" />
             )}
-            <Terminal className="w-3 h-3 text-zinc-500" />
-            Ver detalle técnico y salida
+            <Terminal className="w-2.5 h-2.5 text-zinc-500" />
+            <span>Detalle técnico</span>
           </button>
+        )}
+      </div>
 
-          {showTechnical && (
-            <div className="panel-fade-in mt-1.5 rounded-lg bg-black/55 border border-white/[0.08] p-2 font-mono text-[10.5px] text-zinc-300 space-y-1.5 overflow-x-auto">
-              {isExternalAction ? (
-                <>
-                  <div className="text-sky-200 break-all">
-                    {item.kind === "open_app" ? "Aplicación" : "Integración"}:{" "}
-                    {item.appName || item.program || item.command}
-                  </div>
-                  <div className="text-[10px] text-zinc-400 space-y-0.5">
-                    {item.bundleId && <div>Identificador: {item.bundleId}</div>}
-                    {item.appPath && <div className="break-all">Ruta: {item.appPath}</div>}
-                    {item.patternSuggestion && (
-                      <div>
-                        Regla sugerida: {item.patternSuggestion} (
-                        {item.kind === "open_app" ? "app" : "integración"})
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div>
-                    <span className="text-zinc-500">$ </span>
-                    <span className="text-sky-200 break-all">{item.command}</span>
-                  </div>
-                  <div className="text-[10px] text-zinc-500">
-                    Carpeta: {item.cwdRel}
-                    {item.patternSuggestion ? ` · Regla sugerida: ${item.patternSuggestion}` : ""}
-                    {res?.exitCode != null ? ` · Código: ${res.exitCode}` : ""}
-                  </div>
-                </>
-              )}
-              {outputText && (
-                <pre className="whitespace-pre-wrap break-words text-[10px] leading-relaxed text-zinc-300 max-h-40 overflow-y-auto pt-1 border-t border-white/[0.06]">
-                  {outputText}
-                </pre>
-              )}
-            </div>
-          )}
+      {!isPending && item.error && (
+        <div className="mt-2 ml-7 rounded-lg bg-white/[0.03] border border-white/[0.08] px-2.5 py-1.5 text-[11px] text-zinc-300">
+          {item.error}
         </div>
       )}
+
+      {!isPending && res?.logPath && (
+        <div className="mt-1.5 ml-7 text-[10.5px] text-zinc-500">
+          Salida completa guardada en <span className="text-zinc-300">{res.logPath}</span>
+        </div>
+      )}
+
+      {technicalBlock && <div className="ml-7">{technicalBlock}</div>}
     </div>
   );
 };

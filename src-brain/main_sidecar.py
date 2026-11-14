@@ -357,6 +357,61 @@ def handle_rpc_request(request_line):
                     preview["path"] = clean_rel
                     preview["filename"] = target.name
                     result = preview
+        elif method == "load_pdf_editable_spec":
+            from slices.agent_tools.toolkit import READ_SEARCH_EXCLUDED_ROOTS, resolve_workspace_path
+            from slices.pdf_engine import load_pdf_editable_spec
+
+            ws_root = Path(params.get("workspace_root") or str(BASE_DIR)).resolve()
+            raw_path = str(params.get("path") or "").strip()
+            if not raw_path:
+                result = {"ok": False, "error": "Falta el parámetro 'path' del PDF."}
+            else:
+                target, clean_rel, top_zone = resolve_workspace_path(ws_root, raw_path)
+                if top_zone in READ_SEARCH_EXCLUDED_ROOTS:
+                    result = {"ok": False, "error": f"Ruta reservada no accesible: {clean_rel}"}
+                elif not target.is_file():
+                    result = {"ok": False, "error": f"Archivo PDF no encontrado: {clean_rel}"}
+                elif target.suffix.lower() != ".pdf":
+                    result = {"ok": False, "error": f"El archivo no es un PDF válido: {clean_rel}"}
+                else:
+                    result = load_pdf_editable_spec(ws_root, target, clean_rel)
+        elif method == "save_pdf_document":
+            from slices.agent_tools.toolkit import READ_SEARCH_EXCLUDED_ROOTS, resolve_workspace_path
+            from slices.pdf_engine import save_edited_pdf_document
+
+            ws_root = Path(params.get("workspace_root") or str(BASE_DIR)).resolve()
+            raw_path = str(params.get("path") or "").strip()
+            if not raw_path:
+                result = {"ok": False, "error": "Falta el parámetro 'path' del PDF."}
+            else:
+                target, clean_rel, top_zone = resolve_workspace_path(ws_root, raw_path)
+                if top_zone in READ_SEARCH_EXCLUDED_ROOTS:
+                    result = {"ok": False, "error": f"Ruta reservada no accesible: {clean_rel}"}
+                else:
+                    payload = params.get("payload") if isinstance(params.get("payload"), dict) else params
+                    result = save_edited_pdf_document(
+                        ws_root,
+                        target,
+                        clean_rel,
+                        payload,
+                        resolve_workspace_path,
+                    )
+        elif method == "read_universal_document":
+            from slices.agent_tools.toolkit import READ_SEARCH_EXCLUDED_ROOTS, resolve_workspace_path
+            from slices.pdf_engine import read_universal_document
+
+            ws_root = Path(params.get("workspace_root") or str(BASE_DIR)).resolve()
+            raw_path = str(params.get("path") or "").strip()
+            if not raw_path:
+                result = {"ok": False, "error": "Falta el parámetro 'path' del documento."}
+            else:
+                target, clean_rel, top_zone = resolve_workspace_path(ws_root, raw_path)
+                if top_zone in READ_SEARCH_EXCLUDED_ROOTS:
+                    result = {"ok": False, "error": f"Ruta reservada no accesible: {clean_rel}"}
+                elif not target.is_file():
+                    result = {"ok": False, "error": f"Archivo no encontrado: {clean_rel}"}
+                else:
+                    result = read_universal_document(target, clean_rel)
         elif method == "ping":
             result = {"status": "pong"}
         else:

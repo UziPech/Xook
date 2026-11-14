@@ -29,6 +29,43 @@ function readStr(val: unknown): string {
   return typeof val === "string" ? val.trim() : "";
 }
 
+function inferFallbackOptionsForPrompt(prompt: string): string[] {
+  const low = prompt.toLowerCase();
+  if (/(hora|horario|cuándo|cuando|día|dia|fecha)/.test(low)) {
+    return [
+      "Hoy más tarde",
+      "Mañana a las 9:00 AM",
+      "Esta semana (sugerir horario)",
+    ];
+  }
+  if (/(actividad|evento|incluir|agenda|tarea|pendiente|reunión|reunion)/.test(low)) {
+    return [
+      "Revisión de inventario y pedidos",
+      "Seguimiento a proveedores y pendientes",
+      "Agenda operativa sugerida por Xox",
+    ];
+  }
+  if (/(formato|tipo|dónde|donde|canal|medio)/.test(low)) {
+    return [
+      "En XOOK (Tareas y Agenda)",
+      "En Calendario / Notas de Mac",
+      "En un documento o tabla",
+    ];
+  }
+  if (/(proveedor|compra|stock|producto|inventario|orden)/.test(low)) {
+    return [
+      "Productos con stock crítico",
+      "Proveedor principal habitual",
+      "Comparar opciones disponibles",
+    ];
+  }
+  return [
+    "Opción recomendada por Xox",
+    "Versión rápida y directa",
+    "Detallar paso a paso",
+  ];
+}
+
 export function sanitizeClarificationSpec(raw: unknown): ClarificationSpec | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
@@ -70,19 +107,27 @@ export function sanitizeClarificationSpec(raw: unknown): ClarificationSpec | nul
       }
     }
 
+    if (options.length < 2) {
+      for (const fallbackOpt of inferFallbackOptionsForPrompt(prompt)) {
+        if (!options.includes(fallbackOpt)) {
+          options.push(fallbackOpt);
+        }
+        if (options.length >= 3) break;
+      }
+    }
+
     const rawKind = readStr(qObj.kind || qObj.type).toLowerCase() as ClarificationQuestionKind;
-    const kind: ClarificationQuestionKind = ALLOWED_KINDS.has(rawKind)
-      ? rawKind
-      : options.length > 0
-      ? "choice_or_text"
-      : "text";
+    const kind: ClarificationQuestionKind =
+      ALLOWED_KINDS.has(rawKind) && rawKind === "multi"
+        ? "multi"
+        : "choice_or_text";
 
     cleanQuestions.push({
       id: readStr(qObj.id) || `q_${idx + 1}`,
       prompt,
       kind,
       options,
-      placeholder: readStr(qObj.placeholder) || "Escribe tu respuesta...",
+      placeholder: readStr(qObj.placeholder) || "Escribe tu propia respuesta...",
       required: qObj.required === undefined ? true : Boolean(qObj.required),
     });
   }

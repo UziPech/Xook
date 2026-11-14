@@ -370,79 +370,79 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
       className="quick-liquid-canvas absolute inset-0 w-full h-full pointer-events-none"
     >
       <defs>
-        {/* Reflejo curvo superior/inferior del vidrio */}
+        {/* Menisco fino en el borde (gota de agua transparente sin velo blanco interno) */}
         <linearGradient id={ids.meniscus} x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.16" />
-          <stop offset="22%" stopColor="#E0F2FE" stopOpacity="0.05" />
-          <stop offset="48%" stopColor="#E0F2FE" stopOpacity="0" />
-          <stop offset="86%" stopColor="#7DD3FC" stopOpacity="0.03" />
-          <stop offset="100%" stopColor="#BAE6FD" stopOpacity="0.09" />
+          <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.09" />
+          <stop offset="8%" stopColor="#E0F2FE" stopOpacity="0.025" />
+          <stop offset="22%" stopColor="#E0F2FE" stopOpacity="0" />
+          <stop offset="88%" stopColor="#7DD3FC" stopOpacity="0.015" />
+          <stop offset="100%" stopColor="#BAE6FD" stopOpacity="0.05" />
         </linearGradient>
 
-        {/* Gradientes líquidos multi-stop puros (funden a su propio matiz con opacidad 0) */}
+        {/* Gradientes líquidos cristalinos multi-stop */}
         <radialGradient id={ids.poolCyan} cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#7DD3FC" stopOpacity="0.28" />
-          <stop offset="42%" stopColor="#38BDF8" stopOpacity="0.12" />
-          <stop offset="76%" stopColor="#38BDF8" stopOpacity="0.03" />
+          <stop offset="0%" stopColor="#7DD3FC" stopOpacity="0.20" />
+          <stop offset="42%" stopColor="#38BDF8" stopOpacity="0.08" />
+          <stop offset="76%" stopColor="#38BDF8" stopOpacity="0.02" />
           <stop offset="100%" stopColor="#38BDF8" stopOpacity="0" />
         </radialGradient>
 
         <radialGradient id={ids.poolAqua} cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#5EEAD4" stopOpacity="0.22" />
-          <stop offset="45%" stopColor="#2DD4BF" stopOpacity="0.09" />
-          <stop offset="78%" stopColor="#2DD4BF" stopOpacity="0.02" />
+          <stop offset="0%" stopColor="#5EEAD4" stopOpacity="0.16" />
+          <stop offset="45%" stopColor="#2DD4BF" stopOpacity="0.06" />
+          <stop offset="78%" stopColor="#2DD4BF" stopOpacity="0.015" />
           <stop offset="100%" stopColor="#2DD4BF" stopOpacity="0" />
         </radialGradient>
 
         <radialGradient id={ids.poolViolet} cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#A78BFA" stopOpacity="0.20" />
-          <stop offset="45%" stopColor="#818CF8" stopOpacity="0.08" />
-          <stop offset="78%" stopColor="#7DD3FC" stopOpacity="0.02" />
+          <stop offset="0%" stopColor="#A78BFA" stopOpacity="0.15" />
+          <stop offset="45%" stopColor="#818CF8" stopOpacity="0.055" />
+          <stop offset="78%" stopColor="#7DD3FC" stopOpacity="0.015" />
           <stop offset="100%" stopColor="#7DD3FC" stopOpacity="0" />
         </radialGradient>
 
-        {/* Matiz sutil de aurora boreal (rojo-coral / magenta tenue) */}
+        {/* Matiz sutil de aurora boreal */}
         <radialGradient id={ids.poolMagenta} cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="#FB7185" stopOpacity="0.14" />
-          <stop offset="42%" stopColor="#F472B6" stopOpacity="0.08" />
-          <stop offset="76%" stopColor="#E879F9" stopOpacity="0.02" />
+          <stop offset="0%" stopColor="#FB7185" stopOpacity="0.10" />
+          <stop offset="42%" stopColor="#F472B6" stopOpacity="0.05" />
+          <stop offset="76%" stopColor="#E879F9" stopOpacity="0.015" />
           <stop offset="100%" stopColor="#E879F9" stopOpacity="0" />
         </radialGradient>
 
         <linearGradient id={ids.waveB} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#34D399" stopOpacity="0.14" />
-          <stop offset="38%" stopColor="#38BDF8" stopOpacity="0.11" />
-          <stop offset="72%" stopColor="#F472B6" stopOpacity="0.13" />
-          <stop offset="100%" stopColor="#A78BFA" stopOpacity="0.14" />
+          <stop offset="0%" stopColor="#34D399" stopOpacity="0.09" />
+          <stop offset="38%" stopColor="#38BDF8" stopOpacity="0.07" />
+          <stop offset="72%" stopColor="#F472B6" stopOpacity="0.08" />
+          <stop offset="100%" stopColor="#A78BFA" stopOpacity="0.09" />
         </linearGradient>
 
         <linearGradient id={ids.waveA} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#E0F2FE" stopOpacity="0.16" />
-          <stop offset="40%" stopColor="#7DD3FC" stopOpacity="0.15" />
-          <stop offset="74%" stopColor="#C084FC" stopOpacity="0.11" />
-          <stop offset="100%" stopColor="#FB7185" stopOpacity="0.08" />
+          <stop offset="0%" stopColor="#BAE6FD" stopOpacity="0.09" />
+          <stop offset="40%" stopColor="#7DD3FC" stopOpacity="0.09" />
+          <stop offset="74%" stopColor="#C084FC" stopOpacity="0.07" />
+          <stop offset="100%" stopColor="#FB7185" stopOpacity="0.05" />
         </linearGradient>
 
         <linearGradient id={ids.crestA} x1="0%" y1="0%" x2="100%" y2="0%">
           <stop offset="0%" stopColor="#7DD3FC" stopOpacity="0.02" />
-          <stop offset="16%" stopColor="#E0F2FE" stopOpacity="0.26" />
-          <stop offset="56%" stopColor="#BAE6FD" stopOpacity="0.24" />
-          <stop offset="80%" stopColor="#FBCFE8" stopOpacity="0.18" />
+          <stop offset="16%" stopColor="#E0F2FE" stopOpacity="0.24" />
+          <stop offset="56%" stopColor="#BAE6FD" stopOpacity="0.20" />
+          <stop offset="80%" stopColor="#FBCFE8" stopOpacity="0.14" />
           <stop offset="100%" stopColor="#A78BFA" stopOpacity="0.04" />
         </linearGradient>
 
         <linearGradient id={ids.causticLine} x1="0%" y1="0%" x2="100%" y2="0%">
           <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0" />
-          <stop offset="18%" stopColor="#E0F2FE" stopOpacity="0.18" />
-          <stop offset="54%" stopColor="#5EEAD4" stopOpacity="0.16" />
-          <stop offset="78%" stopColor="#F9A8D4" stopOpacity="0.13" />
+          <stop offset="18%" stopColor="#E0F2FE" stopOpacity="0.16" />
+          <stop offset="54%" stopColor="#5EEAD4" stopOpacity="0.14" />
+          <stop offset="78%" stopColor="#F9A8D4" stopOpacity="0.11" />
           <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
         </linearGradient>
 
         <linearGradient id={ids.glare} x1="0%" y1="0%" x2="100%" y2="0%">
           <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0" />
-          <stop offset="45%" stopColor="#FFFFFF" stopOpacity="0.12" />
-          <stop offset="55%" stopColor="#E0F2FE" stopOpacity="0.09" />
+          <stop offset="45%" stopColor="#E0F2FE" stopOpacity="0.06" />
+          <stop offset="55%" stopColor="#7DD3FC" stopOpacity="0.04" />
           <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
         </linearGradient>
       </defs>
@@ -458,7 +458,7 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         rx="148"
         ry="56"
         fill={`url(#${ids.poolCyan})`}
-        opacity="0.72"
+        opacity="0.54"
       />
       <ellipse
         ref={poolAquaRef}
@@ -467,7 +467,7 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         rx="165"
         ry="58"
         fill={`url(#${ids.poolAqua})`}
-        opacity="0.64"
+        opacity="0.48"
       />
       <ellipse
         ref={poolVioletRef}
@@ -476,7 +476,7 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         rx="142"
         ry="54"
         fill={`url(#${ids.poolViolet})`}
-        opacity="0.62"
+        opacity="0.46"
       />
       <ellipse
         ref={poolMagentaRef}
@@ -485,7 +485,7 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         rx="118"
         ry="46"
         fill={`url(#${ids.poolMagenta})`}
-        opacity="0.58"
+        opacity="0.44"
       />
 
       {/* 3. Onda líquida trasera + principal + cresta cáustica */}
@@ -493,13 +493,13 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         ref={waveBFillRef}
         d={initialGeometry.waveB.fillPath}
         fill={`url(#${ids.waveB})`}
-        opacity="0.64"
+        opacity="0.48"
       />
       <path
         ref={waveAFillRef}
         d={initialGeometry.waveA.fillPath}
         fill={`url(#${ids.waveA})`}
-        opacity="0.72"
+        opacity="0.52"
       />
       <path
         ref={waveACrestRef}
@@ -507,7 +507,7 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         fill="none"
         stroke={`url(#${ids.crestA})`}
         strokeWidth="1"
-        opacity="0.38"
+        opacity="0.34"
       />
 
       {/* 4. Filamento cáustico superior */}
@@ -529,7 +529,7 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         height={VIEW_H + 20}
         transform="translate(220 0) skewX(-24)"
         fill={`url(#${ids.glare})`}
-        opacity="0.34"
+        opacity="0.22"
       />
     </svg>
   );

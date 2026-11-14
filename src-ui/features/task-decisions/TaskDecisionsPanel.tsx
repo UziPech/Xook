@@ -241,8 +241,9 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
             <button
               type="button"
               onClick={onTriggerXoxReconstruct}
+              aria-label="Pedir a Xox reconstruir y agrupar órdenes"
               title="Pedir a Xox reconstruir y agrupar órdenes"
-              className="p-1.5 rounded-lg text-zinc-400 hover:text-sky-200 bg-white/[0.03] hover:bg-sky-500/10 border border-white/[0.06] hover:border-sky-400/25 transition-colors cursor-pointer"
+              className="p-1.5 rounded-lg text-zinc-400 hover:text-white bg-white/[0.03] hover:bg-white/[0.08] border border-white/[0.07] transition-colors cursor-pointer"
             >
               <Sparkles className="w-3.5 h-3.5" />
             </button>
@@ -269,9 +270,9 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
           </button>
           <span
             title="Modo Seguro HITL · Zero-Trust: ninguna mutación se ejecuta sin tu aprobación"
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-500/[0.07] border border-emerald-400/20 text-[10px] font-mono text-emerald-300"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white/[0.04] border border-white/[0.1] text-[10px] font-mono text-zinc-300"
           >
-            <ShieldCheck className="w-3 h-3" />
+            <ShieldCheck className="w-3 h-3 text-zinc-400" />
             <span>HITL</span>
           </span>
         </div>
@@ -293,7 +294,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
                   : "text-zinc-400 hover:text-zinc-200"
               }`}
             >
-              <CalendarClock className="w-3 h-3 text-sky-300" />
+              <CalendarClock className="w-3 h-3 text-zinc-300" />
               <span>Agendar</span>
             </button>
             <button
@@ -305,7 +306,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
                   : "text-zinc-400 hover:text-zinc-200"
               }`}
             >
-              <Clock className="w-3 h-3 text-cyan-300" />
+              <Clock className="w-3 h-3 text-zinc-300" />
               <span>Reloj</span>
             </button>
             <button
@@ -317,7 +318,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
                   : "text-zinc-400 hover:text-zinc-200"
               }`}
             >
-              <StickyNote className="w-3 h-3 text-violet-300" />
+              <StickyNote className="w-3 h-3 text-zinc-300" />
               <span>Nota</span>
             </button>
           </div>
@@ -504,11 +505,11 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
               : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]"
           }`}
         >
-          <CalendarClock className="w-3 h-3 text-sky-300 hidden @[315px]:inline shrink-0" />
+          <CalendarClock className="w-3 h-3 text-zinc-400 hidden @[315px]:inline shrink-0" />
           <span className="truncate">Agenda</span>
           <span className="inline-flex items-center gap-1 text-[10px] font-mono tabular-nums px-1.5 rounded-full bg-white/[0.08] text-zinc-200">
             {hasRunningTimer && (
-              <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-200 animate-pulse" />
             )}
             {agendaItems.length}
           </span>
@@ -523,7 +524,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
               : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]"
           }`}
         >
-          <CheckCheck className="w-3 h-3 text-emerald-400 hidden @[315px]:inline shrink-0" />
+          <CheckCheck className="w-3 h-3 text-zinc-400 hidden @[315px]:inline shrink-0" />
           <span className="truncate">Hechas</span>
           <span className="text-[10px] font-mono tabular-nums px-1.5 rounded-full bg-white/[0.08] text-zinc-200">
             {historyItems.length}
@@ -533,24 +534,24 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
 
       {/* Cinta discreta cuando hay un reloj corriendo mientras ves otra pestaña */}
       {runningTimer && activeTab !== "agenda" && (
-        <div className="px-3 py-1.5 border-b border-sky-400/15 bg-sky-500/[0.06] flex items-center justify-between gap-2 text-[11px]">
+        <div className="px-3 py-1.5 border-b border-white/[0.08] bg-white/[0.03] flex items-center justify-between gap-2 text-[11px]">
           <button
             type="button"
             onClick={() => onTabChange("agenda")}
-            className="flex items-center gap-1.5 min-w-0 text-sky-200 hover:text-white cursor-pointer"
+            className="flex items-center gap-1.5 min-w-0 text-zinc-200 hover:text-white cursor-pointer"
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse shrink-0" />
+            <span className="w-1.5 h-1.5 rounded-full bg-zinc-200 animate-pulse shrink-0" />
             <span className="truncate">{runningTimer.title}</span>
           </button>
           <div className="flex items-center gap-1.5 shrink-0">
-            <span className="font-mono font-semibold tabular-nums text-sky-100">
+            <span className="font-mono font-semibold tabular-nums text-white">
               {formatCountdown(runningTimer.remainingSeconds ?? 0)}
             </span>
             <button
               type="button"
               onClick={() => onToggleTimer(runningTimer.id)}
               aria-label="Pausar reloj"
-              className="p-1 rounded-md hover:bg-white/10 text-sky-200 cursor-pointer"
+              className="p-1 rounded-md hover:bg-white/10 text-zinc-200 cursor-pointer"
             >
               <Pause className="w-3 h-3" />
             </button>
@@ -591,9 +592,9 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
                   type="button"
                   onClick={() => importFileInputRef.current?.click()}
                   title="Importar archivo CSV o JSON de inventario en datos/"
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-zinc-200 transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white/[0.04] hover:bg-white/[0.09] border border-white/[0.08] text-zinc-200 transition-colors cursor-pointer"
                 >
-                  <ImportFileIcon className="w-3 h-3 text-sky-300" />
+                  <ImportFileIcon className="w-3 h-3 text-zinc-300" />
                   <span>Importar</span>
                 </button>
               </>
@@ -604,7 +605,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
                 disabled={isReviewRunning}
                 onClick={() => onRunBusinessReview()}
                 title="Ejecutar revisión real sobre datos/, empresa/ y memoria/"
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/30 text-sky-100 disabled:opacity-45 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.12] text-zinc-100 disabled:opacity-45 transition-colors cursor-pointer"
               >
                 <ReviewRefreshIcon
                   className={`w-3 h-3 ${isReviewRunning ? "animate-spin" : ""}`}
@@ -621,7 +622,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
         {activeTab === "pending" && (
           tasks.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center p-6 text-zinc-500 space-y-2.5">
-              <CheckCircle2 className="w-8 h-8 text-emerald-400/50 mb-1 xook-empty-float" />
+              <CheckCircle2 className="w-8 h-8 text-zinc-500 mb-1" />
               <p className="text-xs text-zinc-200 font-medium">Sin revisiones pendientes</p>
               <p className="text-[11px] text-zinc-500 max-w-xs leading-relaxed">
                 Aquí aparecerán solo propuestas reales cuando subas datos en tu espacio de trabajo, pidas análisis a Xox o crees notas y relojes.
@@ -646,7 +647,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
         {activeTab === "agenda" && (
           agendaItems.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center p-5 text-zinc-500 space-y-3">
-              <CalendarClock className="w-8 h-8 text-sky-400/50 mb-0.5 xook-empty-float" />
+              <CalendarClock className="w-8 h-8 text-zinc-500 mb-0.5" />
               <div className="space-y-1">
                 <p className="text-xs text-zinc-200 font-medium">Agenda despejada</p>
                 <p className="text-[11px] text-zinc-500 max-w-[230px] leading-relaxed">
@@ -667,7 +668,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
                   onClick={() => openCreatorWithMode("timer")}
                   className="px-2.5 py-1.5 rounded-xl text-[11px] font-medium bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-zinc-200 inline-flex items-center gap-1 cursor-pointer"
                 >
-                  <Clock className="w-3 h-3 text-cyan-300" />
+                  <Clock className="w-3 h-3 text-zinc-300" />
                   <span>Reloj</span>
                 </button>
                 <button
@@ -675,7 +676,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
                   onClick={() => openCreatorWithMode("note")}
                   className="px-2.5 py-1.5 rounded-xl text-[11px] font-medium bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-zinc-200 inline-flex items-center gap-1 cursor-pointer"
                 >
-                  <StickyNote className="w-3 h-3 text-violet-300" />
+                  <StickyNote className="w-3 h-3 text-zinc-300" />
                   <span>Nota</span>
                 </button>
               </div>
@@ -689,7 +690,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
                     onClick={() => openCreatorWithMode("schedule")}
                     className="flex-1 py-1.5 px-2.5 rounded-xl bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.07] text-[11px] font-medium text-zinc-200 inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
                   >
-                    <Plus className="w-3 h-3 text-sky-300" />
+                    <Plus className="w-3 h-3 text-zinc-300" />
                     <span>Agendar evento</span>
                   </button>
                   <button
@@ -697,7 +698,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
                     onClick={() => openCreatorWithMode("timer")}
                     className="py-1.5 px-2.5 rounded-xl bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.07] text-[11px] text-zinc-300 inline-flex items-center gap-1 cursor-pointer transition-colors"
                   >
-                    <Clock className="w-3 h-3 text-cyan-300" />
+                    <Clock className="w-3 h-3 text-zinc-300" />
                     <span>Reloj</span>
                   </button>
                   <button
@@ -705,7 +706,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
                     onClick={() => openCreatorWithMode("note")}
                     className="py-1.5 px-2.5 rounded-xl bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.07] text-[11px] text-zinc-300 inline-flex items-center gap-1 cursor-pointer transition-colors"
                   >
-                    <StickyNote className="w-3 h-3 text-violet-300" />
+                    <StickyNote className="w-3 h-3 text-zinc-300" />
                     <span>Nota</span>
                   </button>
                 </div>
@@ -768,7 +769,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
 
                     <div className="h-1 w-full rounded-full bg-white/[0.06] overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-gradient-to-r from-sky-400/80 to-cyan-300 transition-all duration-500"
+                        className="h-full rounded-full bg-zinc-300 transition-all duration-500"
                         style={{ width: `${progress}%` }}
                       />
                     </div>
@@ -1058,7 +1059,7 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
         </div>
         <div className="h-1 w-full rounded-full bg-white/[0.05] overflow-hidden">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-emerald-400/70 via-sky-400/70 to-amber-300/70 transition-all duration-300"
+            className="h-full rounded-full bg-zinc-300/75 transition-all duration-300"
             style={{ width: `${Math.max(budgetRatio, financialTaskCount > 0 ? 4 : 0)}%` }}
           />
         </div>

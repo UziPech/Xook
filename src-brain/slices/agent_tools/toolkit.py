@@ -662,6 +662,27 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
                         "type": "string",
                         "description": "Recomendado para documentos extensos (8+, 12+ páginas) o guías largas: contenido completo en Markdown estructurado (#, ##, ###, listas, > callouts, | tablas | y ```lenguaje```). Más compacto y confiable que decenas de objetos JSON.",
                     },
+                    "source_pdf_path": {
+                        "type": "string",
+                        "description": "Ruta del PDF existente en el workspace cuando el usuario pide modificarlo o agregarle más páginas conservando su misma tipografía, diseño y portada.",
+                    },
+                    "edit_action": {
+                        "type": "string",
+                        "enum": ["create", "append_pages", "modify"],
+                        "description": "Usa 'append_pages' para agregar más páginas al final de `source_pdf_path` conservando intactas sus páginas actuales y la misma tipografía/tema; usa 'modify' para actualizar secciones del documento conservando su portada y estilo; usa 'create' para crear un PDF nuevo.",
+                    },
+                    "replacements": {
+                        "type": "array",
+                        "description": "Lista opcional de reemplazos puntuales de texto sobre cualquier página del PDF existente (ej. [{'find': 'texto anterior', 'replace': 'texto nuevo'}]).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "find": {"type": "string"},
+                                "replace": {"type": "string"},
+                                "page_number": {"type": "integer"},
+                            },
+                        },
+                    },
                 },
                 "required": ["title"],
             },
@@ -839,6 +860,16 @@ class WorkspaceToolExecutor:
         if ext in IMAGE_FILE_EXTENSIONS:
             return self._inspect_image_file(target, clean_rel)
 
+        if ext in (".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".rtf", ".odt", ".ods", ".odp", ".csv", ".tsv"):
+            try:
+                from slices.pdf_engine import read_universal_document
+
+                uni_res = read_universal_document(target, clean_rel)
+                if uni_res.get("ok"):
+                    return uni_res
+            except Exception:
+                pass
+
         limit = max(256, min(MAX_READ_BYTES, int(args.get("max_bytes") or 16000)))
         data = target.read_bytes()
         truncated = len(data) > limit
@@ -953,12 +984,14 @@ class WorkspaceToolExecutor:
     def _tool_pdf_generate(self, args: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(args, dict):
             return {"ok": False, "error": "Parámetros inválidos para generar PDF."}
-        title = str(args.get("title") or "").strip()
-        if not title:
-            return {"ok": False, "error": "Falta el título ('title') del documento PDF."}
 
         try:
-            from slices.pdf_engine import generate_pdf_document, render_pdf_preview
+            from slices.pdf_engine import (
+                generate_pdf_document,
+                modify_or_append_pdf_by_agent,
+                render_pdf_preview,
+            )
+            from slices.pdf_engine.editor import _find_existing_pdf_in_workspace
             from slices.pdf_engine.generator import (
                 _count_substantive_blocks,
                 _normalize_blocks_input,
@@ -969,10 +1002,37 @@ class WorkspaceToolExecutor:
                 "error": f"Motor de generación PDF no disponible en este entorno Python: {exc}",
             }
 
+        source_pdf_ref = str(
+            args.get("source_pdf_path")
+            or args.get("target_pdf_path")
+            or args.get("existing_pdf_path")
+            or ""
+        ).strip()
+        edit_action = str(args.get("edit_action") or args.get("mode") or "").strip().lower()
+        replacements = args.get("replacements") if isinstance(args.get("replacements"), list) else []
+        is_edit_or_append = (
+            bool(source_pdf_ref)
+            or bool(args.get("append_pages"))
+            or bool(replacements)
+            or edit_action in ("append_pages", "add_pages", "append", "agregar_paginas", "modify", "update", "edit")
+        )
+        if not is_edit_or_append and args.get("output_path"):
+            existing_match = _find_existing_pdf_in_workspace(
+                self.workspace_root,
+                str(args.get("output_path")),
+                resolve_workspace_path,
+            )
+            if existing_match is not None and edit_action != "create":
+                is_edit_or_append = True
+
+        title = str(args.get("title") or "").strip()
+        if not title and not is_edit_or_append:
+            return {"ok": False, "error": "Falta el título ('title') del documento PDF."}
+
         cover_only = bool(args.get("cover_only"))
         normalized_blocks, _ = _normalize_blocks_input(args)
         substantive_count = _count_substantive_blocks(normalized_blocks)
-        if substantive_count == 0 and not cover_only:
+        if substantive_count == 0 and not cover_only and not replacements:
             return {
                 "ok": False,
                 "error": (
@@ -998,7 +1058,7 @@ class WorkspaceToolExecutor:
             )
             or bool(args.get("cover_image") or args.get("coverImage") or args.get("portada_imagen"))
         )
-        if has_cover_requested and not cover_only:
+        if has_cover_requested and not cover_only and not is_edit_or_append:
             has_structured = any(
                 str(b.get("type") or "").lower() in ("table", "code", "kpi_strip", "image")
                 for b in normalized_blocks
@@ -1023,15 +1083,23 @@ class WorkspaceToolExecutor:
                 self.emit_event({"type": "pdf_draft_progress", **evt})
 
         try:
-            out = generate_pdf_document(
-                args,
-                workspace_root=self.workspace_root,
-                resolve_path_fn=resolve_workspace_path,
-                autonomous_roots=AUTONOMOUS_WRITE_ROOTS,
-                progress_callback=_on_progress if self.emit_event else None,
-            )
+            if is_edit_or_append:
+                out = modify_or_append_pdf_by_agent(
+                    self.workspace_root,
+                    args,
+                    resolve_path_fn=resolve_workspace_path,
+                    progress_callback=_on_progress if self.emit_event else None,
+                )
+            else:
+                out = generate_pdf_document(
+                    args,
+                    workspace_root=self.workspace_root,
+                    resolve_path_fn=resolve_workspace_path,
+                    autonomous_roots=AUTONOMOUS_WRITE_ROOTS,
+                    progress_callback=_on_progress if self.emit_event else None,
+                )
         except Exception as exc:
-            return {"ok": False, "error": f"No se pudo generar el PDF: {exc}"}
+            return {"ok": False, "error": f"No se pudo generar o modificar el PDF: {exc}"}
 
         if out.get("ok") and out.get("path"):
             self.generated_pdfs.append(out)

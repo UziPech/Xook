@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { XoxDragMotion, XoxStar, XoxState } from "./XoxStar";
 import { QuickLiquidLayer } from "./QuickLiquidLayer";
+import { LiquidGlassBackdrop } from "./LiquidGlassBackdrop";
 import { useAnimatedPresence } from "../hooks/useAnimatedPresence";
 import {
   CanvasArtifact,
@@ -158,6 +159,7 @@ export const QuickBar: React.FC = () => {
   const [liveCatalog, setLiveCatalog] = useState<OpenRouterModelOption[]>([]);
   const [unavailableModelIds, setUnavailableModelIds] = useState<Set<string>>(() => new Set());
   const [showModels, setShowModels] = useState<boolean>(false);
+  const [expandModels, setExpandModels] = useState<boolean>(false);
   const [screenStatus, setScreenStatus] = useState<ScreenReaderStatus | null>(null);
   const [attachLiveScreen, setAttachLiveScreen] = useState<boolean>(false);
   const [showScreenMenu, setShowScreenMenu] = useState<boolean>(false);
@@ -511,14 +513,14 @@ export const QuickBar: React.FC = () => {
     }
   }, []);
 
-  // Libera el catálogo extenso cuando el menú está cerrado para reducir memoria
+  // Libera el catálogo extenso cuando la Quick Bar se oculta para reducir memoria
   useEffect(() => {
-    if (showModels || liveCatalog.length === 0) return;
+    if (isQuickVisible || showModels || liveCatalog.length === 0) return;
     const t = setTimeout(() => {
       setLiveCatalog([]);
     }, 180);
     return () => clearTimeout(t);
-  }, [showModels, liveCatalog.length]);
+  }, [isQuickVisible, showModels, liveCatalog.length]);
 
   useEffect(() => {
     const isTauriRuntime =
@@ -1200,8 +1202,8 @@ export const QuickBar: React.FC = () => {
     isStreaming || xoxState === "thinking" || xoxState === "reading" || xoxState === "syncing";
   const canSubmit = Boolean(inputPrompt.trim()) && !isStreaming;
 
-  const modelsPresence = useAnimatedPresence(showModels, 145);
-  const screenMenuPresence = useAnimatedPresence(showScreenMenu, 145);
+  const modelsPresence = useAnimatedPresence(showModels, 150);
+  const screenMenuPresence = useAnimatedPresence(showScreenMenu, 150);
   const statusPresence = useAnimatedPresence(Boolean(statusNote), 190);
   const hasQuickResult = Boolean(
     reply || quickCanvas || pendingClarification || permissionItems.length > 0
@@ -1472,9 +1474,10 @@ export const QuickBar: React.FC = () => {
                     <div
                       role="menu"
                       className={`quick-liquid-menu ${
-                        screenMenuPresence.visible ? "menu-in" : "menu-out pointer-events-none"
-                      } menu-origin-top-right absolute right-0 top-full mt-2 w-72 p-2 rounded-2xl z-30`}
+                        showScreenMenu ? "menu-in" : "menu-out pointer-events-none"
+                      } menu-origin-top-right absolute right-0 top-full mt-2 w-72 overflow-hidden p-2 rounded-2xl z-30`}
                     >
+                      <LiquidGlassBackdrop variant="menu" />
                       <div className="relative z-[1] space-y-1.5">
                         <div className="px-2 py-1 flex items-center justify-between text-[10.5px] text-zinc-200/80 border-b border-white/[0.08]">
                           <span className="inline-flex items-center gap-1.5 font-medium text-white">
@@ -1671,41 +1674,44 @@ export const QuickBar: React.FC = () => {
                     <div
                       role="listbox"
                       className={`quick-liquid-menu ${
-                        modelsPresence.visible ? "menu-in" : "menu-out pointer-events-none"
-                      } menu-origin-top-right absolute right-0 top-full mt-2 w-64 p-1.5 rounded-2xl z-30`}
+                        showModels ? "menu-in" : "menu-out pointer-events-none"
+                      } menu-origin-top-right absolute right-0 top-full mt-2 w-72 overflow-hidden p-1.5 rounded-2xl z-30`}
                     >
-                      <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
-                        <svg
-                          aria-hidden="true"
-                          viewBox="0 0 210 180"
-                          preserveAspectRatio="none"
-                          className="absolute inset-0 w-full h-full"
-                        >
-                          <defs>
-                            <radialGradient id="ql-menu-cyan" cx="20%" cy="18%" r="65%">
-                              <stop offset="0%" stopColor="#7DD3FC" stopOpacity="0.16" />
-                              <stop offset="100%" stopColor="#7DD3FC" stopOpacity="0" />
-                            </radialGradient>
-                            <radialGradient id="ql-menu-aurora" cx="85%" cy="82%" r="60%">
-                              <stop offset="0%" stopColor="#F472B6" stopOpacity="0.11" />
-                              <stop offset="55%" stopColor="#A78BFA" stopOpacity="0.06" />
-                              <stop offset="100%" stopColor="#A78BFA" stopOpacity="0" />
-                            </radialGradient>
-                          </defs>
-                          <rect width="210" height="180" fill="url(#ql-menu-cyan)" />
-                          <rect width="210" height="180" fill="url(#ql-menu-aurora)" />
-                        </svg>
-                        <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.18] to-transparent" />
-                      </div>
+                      <LiquidGlassBackdrop variant="menu" />
 
-                      <div className="relative z-[1] px-2.5 py-1 mb-1 flex items-center justify-between text-[10px] text-zinc-200/75 border-b border-white/[0.06]">
+                      <div className="relative z-[1] px-2.5 py-1 mb-1 flex items-center justify-between gap-2 text-[10px] text-zinc-200/75 border-b border-white/[0.06]">
                         <span>Disponibles ({modelOptions.length})</span>
-                        <span className="font-mono">
-                          {canUsePaidModels ? "Con saldo" : "Plan gratuito"}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono">
+                            {canUsePaidModels ? "Con saldo" : "Plan gratuito"}
+                          </span>
+                          {modelOptions.length > 4 && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandModels((prev) => !prev);
+                              }}
+                              aria-expanded={expandModels}
+                              title={expandModels ? "Contraer lista" : "Ver más modelos"}
+                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9.5px] font-medium text-sky-200/85 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+                            >
+                              <span>{expandModels ? "Menos" : "Más"}</span>
+                              <ChevronDown
+                                className={`w-2.5 h-2.5 transition-transform duration-200 ${
+                                  expandModels ? "rotate-180" : ""
+                                }`}
+                              />
+                            </button>
+                          )}
+                        </div>
                       </div>
 
-                      <div className="relative z-[1] max-h-52 overflow-y-auto space-y-0.5">
+                      <div
+                        className={`xook-expand-list relative z-[1] ${
+                          expandModels ? "max-h-[268px]" : "max-h-52"
+                        } overflow-y-auto space-y-0.5`}
+                      >
                         {modelOptions.map((m) => (
                           <button
                             key={m.id}
@@ -1986,8 +1992,8 @@ export const QuickBar: React.FC = () => {
                     data-no-drag="true"
                     className="ml-7 max-h-[215px] overflow-y-auto xook-scroll rounded-xl quick-liquid-subcard quick-liquid-clarify p-2.5 select-text [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]"
                   >
-                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-sky-200 mb-2">
-                      <HelpCircle className="w-3.5 h-3.5 text-sky-300 shrink-0" />
+                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-200 mb-2">
+                      <HelpCircle className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
                       <span className="truncate">{displayClarification.title}</span>
                     </div>
                     <ClarificationForm

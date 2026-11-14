@@ -61,30 +61,30 @@ function urgencyAccent(urgency: TaskProposal["urgency"]) {
     case "alta":
       return {
         cardClass: "xook-task-card--alta",
-        dotClass: "bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.75)]",
+        dotClass: "bg-rose-400",
         label: "Crítica",
         labelClass: "text-rose-300",
       };
     case "media":
       return {
         cardClass: "xook-task-card--media",
-        dotClass: "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.65)]",
+        dotClass: "bg-amber-400",
         label: "Media",
         labelClass: "text-amber-300",
       };
     case "baja":
       return {
         cardClass: "xook-task-card--baja",
-        dotClass: "bg-emerald-400",
+        dotClass: "bg-zinc-300",
         label: "Baja",
-        labelClass: "text-emerald-300",
+        labelClass: "text-zinc-300",
       };
     default:
       return {
         cardClass: "xook-task-card--info",
-        dotClass: "bg-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.65)]",
+        dotClass: "bg-zinc-400",
         label: "Sugerencia",
-        labelClass: "text-sky-300",
+        labelClass: "text-zinc-300",
       };
   }
 }
@@ -162,14 +162,12 @@ export const TaskCardRenderer: React.FC<TaskCardRendererProps> = ({
       }
 
       case "coverage_bar": {
-        const barGradient =
+        const barColor =
           block.tone === "critical"
-            ? "from-rose-500/85 to-rose-400"
+            ? "bg-rose-400/80"
             : block.tone === "warning"
-            ? "from-amber-500/85 to-amber-300"
-            : block.tone === "ok"
-            ? "from-emerald-500/85 to-emerald-300"
-            : "from-sky-500/85 to-cyan-300";
+            ? "bg-amber-300/80"
+            : "bg-zinc-300/80";
 
         return (
           <div key={`blk_${index}`} className="space-y-1.5">
@@ -179,13 +177,13 @@ export const TaskCardRenderer: React.FC<TaskCardRendererProps> = ({
             </div>
             <div className="relative h-1.5 w-full rounded-full bg-white/[0.07] overflow-hidden">
               <div
-                className={`h-full rounded-full bg-gradient-to-r ${barGradient} transition-all duration-300`}
+                className={`h-full rounded-full ${barColor} transition-all duration-300`}
                 style={{ width: `${Math.min(100, Math.max(6, block.ratio))}%` }}
               />
               {typeof block.markerRatio === "number" && (
                 <div
                   title={block.targetLabel}
-                  className="absolute inset-y-0 w-[2px] bg-white/85 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
+                  className="absolute inset-y-0 w-[2px] bg-white/85"
                   style={{ left: `${Math.min(98, Math.max(2, block.markerRatio))}%` }}
                 />
               )}
@@ -216,19 +214,19 @@ export const TaskCardRenderer: React.FC<TaskCardRendererProps> = ({
         return (
           <div
             key={`blk_${index}`}
-            className="rounded-xl bg-sky-500/[0.05] border border-sky-400/[0.14] p-2.5 space-y-2"
+            className="rounded-xl bg-white/[0.03] border border-white/[0.08] p-2.5 space-y-2"
           >
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
-                <div className="w-7 h-7 rounded-lg bg-sky-400/10 border border-sky-300/20 flex items-center justify-center shrink-0">
+                <div className="w-7 h-7 rounded-lg bg-white/[0.05] border border-white/[0.1] flex items-center justify-center shrink-0">
                   {block.mode === "timer" ? (
-                    <Clock className="w-3.5 h-3.5 text-sky-300" />
+                    <Clock className="w-3.5 h-3.5 text-zinc-200" />
                   ) : (
-                    <CalendarClock className="w-3.5 h-3.5 text-sky-300" />
+                    <CalendarClock className="w-3.5 h-3.5 text-zinc-200" />
                   )}
                 </div>
                 <div className="min-w-0">
-                  <div className="text-xs font-semibold font-mono tabular-nums text-sky-100">
+                  <div className="text-xs font-semibold font-mono tabular-nums text-zinc-100">
                     {displayTime}
                   </div>
                   <div className="text-[10.5px] text-zinc-400 truncate">
@@ -243,7 +241,7 @@ export const TaskCardRenderer: React.FC<TaskCardRendererProps> = ({
                   onClick={() => onUpdateParam(task.cardId, "auto_schedule", !autoActive)}
                   className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-medium border transition-colors cursor-pointer shrink-0 ${
                     autoActive
-                      ? "bg-sky-400/15 border-sky-300/35 text-sky-200"
+                      ? "bg-white/[0.12] border-white/25 text-white"
                       : "bg-white/[0.03] border-white/[0.08] text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
@@ -254,7 +252,7 @@ export const TaskCardRenderer: React.FC<TaskCardRendererProps> = ({
             </div>
 
             {block.autoTriggerLabel && (
-              <div className="text-[10.5px] text-sky-200/80 pl-9 leading-snug">
+              <div className="text-[10.5px] text-zinc-300 pl-9 leading-snug">
                 {block.autoTriggerLabel}
               </div>
             )}

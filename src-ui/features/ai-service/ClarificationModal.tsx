@@ -1,5 +1,12 @@
-import React, { useEffect, useState } from "react";
-import { Check, HelpCircle, Send, X } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  CornerDownLeft,
+  HelpCircle,
+  X,
+} from "lucide-react";
 import {
   ClarificationSpec,
   formatClarificationReply,
@@ -23,18 +30,43 @@ export const ClarificationForm: React.FC<ClarificationFormProps> = ({
   disabled = false,
 }) => {
   const [answers, setAnswers] = useState<AnswerMap>({});
+  const [stepIndex, setStepIndex] = useState(0);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const advanceTimerRef = useRef<number | null>(null);
+
+  const totalSteps = clarification.questions.length;
+  const safeStepIndex = Math.min(Math.max(0, stepIndex), Math.max(0, totalSteps - 1));
+  const currentQuestion = clarification.questions[safeStepIndex];
 
   useEffect(() => {
     setAnswers({});
+    setStepIndex(0);
     setValidationError(null);
+    return () => {
+      if (advanceTimerRef.current) {
+        window.clearTimeout(advanceTimerRef.current);
+      }
+    };
   }, [clarification.id]);
 
-  const toggleOption = (qId: string, option: string, kind: string) => {
+  if (!currentQuestion) return null;
+
+  const isQuestionAnswered = (qId: string): boolean => {
+    const ans = answers[qId];
+    return Boolean(ans && (ans.selected.length > 0 || ans.customText.trim().length > 0));
+  };
+
+  const handleSelectOption = (qId: string, option: string, kind: string) => {
+    if (disabled) return;
     setValidationError(null);
-    setAnswers((prev) => {
-      const cur = prev[qId] ?? { selected: [], customText: "" };
-      if (kind === "multi") {
+    if (advanceTimerRef.current) {
+      window.clearTimeout(advanceTimerRef.current);
+      advanceTimerRef.current = null;
+    }
+
+    if (kind === "multi") {
+      setAnswers((prev) => {
+        const cur = prev[qId] ?? { selected: [], customText: "" };
         const exists = cur.selected.includes(option);
         return {
           ...prev,
@@ -45,16 +77,27 @@ export const ClarificationForm: React.FC<ClarificationFormProps> = ({
               : [...cur.selected, option],
           },
         };
-      }
-      const already = cur.selected.length === 1 && cur.selected[0] === option;
+      });
+      return;
+    }
+
+    setAnswers((prev) => {
+      const cur = prev[qId] ?? { selected: [], customText: "" };
       return {
         ...prev,
         [qId]: {
           ...cur,
-          selected: already ? [] : [option],
+          selected: [option],
         },
       };
     });
+
+    // Avanza automáticamente a la siguiente pregunta cuando hay más preguntas
+    if (safeStepIndex < totalSteps - 1) {
+      advanceTimerRef.current = window.setTimeout(() => {
+        setStepIndex((idx) => Math.min(totalSteps - 1, idx + 1));
+      }, 140);
+    }
   };
 
   const setCustomText = (qId: string, customText: string) => {
@@ -71,22 +114,25 @@ export const ClarificationForm: React.FC<ClarificationFormProps> = ({
     });
   };
 
-  const handleSubmit = () => {
+  const handleFinalSubmit = (overrideAnswers?: AnswerMap) => {
     if (disabled) return;
+    const effective = overrideAnswers ?? answers;
 
-    const missingRequired = clarification.questions.find((q) => {
+    const missingIdx = clarification.questions.findIndex((q) => {
       if (!q.required) return false;
-      const ans = answers[q.id];
+      const ans = effective[q.id];
       return !ans || (ans.selected.length === 0 && !ans.customText.trim());
     });
 
-    if (missingRequired) {
-      setValidationError(`Falta responder: "${missingRequired.prompt}"`);
+    if (missingIdx >= 0) {
+      const missingQ = clarification.questions[missingIdx];
+      setStepIndex(missingIdx);
+      setValidationError(`Elige una opción o escribe tu respuesta para: "${missingQ.prompt}"`);
       return;
     }
 
     const hasAnyAnswer = clarification.questions.some((q) => {
-      const ans = answers[q.id];
+      const ans = effective[q.id];
       return Boolean(ans && (ans.selected.length > 0 || ans.customText.trim()));
     });
 
@@ -95,8 +141,25 @@ export const ClarificationForm: React.FC<ClarificationFormProps> = ({
       return;
     }
 
-    onSubmit(formatClarificationReply(clarification, answers));
+    onSubmit(formatClarificationReply(clarification, effective));
   };
+
+  const handleNextOrSubmit = () => {
+    if (disabled) return;
+    if ( currentQuestion.required && !isQuestionAnswered(currentQuestion.id)) {
+      setValidationError("Selecciona una de las opciones o escribe tu respuesta abajo.");
+      return;
+    }
+    setValidationError(null);
+    if (safeStepIndex < totalSteps - 1) {
+      setStepIndex(safeStepIndex + 1);
+    } else {
+      handleFinalSubmit();
+    }
+  };
+
+  const curAns = answers[currentQuestion.id] ?? { selected: [], customText: "" };
+  const isLastStep = safeStepIndex >= totalSteps - 1;
 
   return (
     <div
@@ -105,142 +168,254 @@ export const ClarificationForm: React.FC<ClarificationFormProps> = ({
         if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
           e.preventDefault();
           e.stopPropagation();
-          handleSubmit();
+          handleNextOrSubmit();
         }
       }}
-      className={compact ? "space-y-2.5" : "space-y-4"}
+      className="space-y-2.5"
     >
-      {clarification.questions.map((q, idx) => {
-        const ans = answers[q.id] ?? { selected: [], customText: "" };
-        const showOptions = q.kind !== "text" && q.options.length > 0;
-        const showInput =
-          q.kind === "text" || q.kind === "choice_or_text" || q.options.length === 0;
+      {/* Indicador de progreso paso a paso (1 por 1) */}
+      {totalSteps > 1 && (
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1">
+            {clarification.questions.map((q, idx) => {
+              const active = idx === safeStepIndex;
+              const answered = isQuestionAnswered(q.id);
+              return (
+                <button
+                  key={q.id}
+                  type="button"
+                  onClick={() => {
+                    setValidationError(null);
+                    setStepIndex(idx);
+                  }}
+                  className={`h-5 px-2 rounded-md text-[10px] font-mono inline-flex items-center gap-1 border transition-colors cursor-pointer ${
+                    active
+                      ? "bg-zinc-100 text-zinc-950 border-white font-semibold"
+                      : answered
+                      ? "bg-white/[0.07] text-zinc-200 border-white/[0.14]"
+                      : "bg-white/[0.025] text-zinc-500 border-white/[0.07] hover:text-zinc-300"
+                  }`}
+                >
+                  <span>{idx + 1}</span>
+                  {answered && !active && <Check className="w-2.5 h-2.5" />}
+                </button>
+              );
+            })}
+          </div>
+          <span className="text-[10.5px] font-mono text-zinc-500">
+            Pregunta {safeStepIndex + 1} de {totalSteps}
+          </span>
+        </div>
+      )}
 
-        return (
-          <div
-            key={q.id}
-            className={`rounded-xl border border-white/[0.08] bg-white/[0.025] ${
-              compact ? "p-2.5 space-y-2" : "p-3.5 space-y-2.5"
+      {/* Pregunta activa única + sus opciones + respuesta libre */}
+      <div key={currentQuestion.id} className="panel-fade-in space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <label
+            htmlFor={`clarify-input-${currentQuestion.id}`}
+            className={`font-medium text-zinc-100 leading-snug ${
+              compact ? "text-[12px]" : "text-[12.5px]"
             }`}
           >
-            <div className="flex items-start justify-between gap-2">
-              <label
-                htmlFor={`clarify-input-${q.id}`}
-                className={`font-medium text-zinc-100 leading-snug ${
-                  compact ? "text-[12px]" : "text-[13px]"
-                }`}
-              >
-                <span className="text-sky-400/80 mr-1.5">{idx + 1}.</span>
-                {q.prompt}
-              </label>
-              {!q.required && (
-                <span className="shrink-0 text-[10px] text-zinc-500 border border-white/[0.08] rounded-full px-2 py-0.5">
-                  Opcional
-                </span>
-              )}
-            </div>
+            {currentQuestion.prompt}
+          </label>
+          {!currentQuestion.required && (
+            <span className="shrink-0 text-[9.5px] text-zinc-500 border border-white/[0.08] rounded-md px-1.5 py-0.5">
+              Opcional
+            </span>
+          )}
+        </div>
 
-            {showOptions && (
-              <div className="flex flex-wrap gap-1.5">
-                {q.options.map((opt) => {
-                  const active = ans.selected.includes(opt);
-                  return (
-                    <button
-                      key={opt}
-                      type="button"
-                      disabled={disabled}
-                      onClick={() => toggleOption(q.id, opt, q.kind)}
-                      className={`inline-flex items-center gap-1.5 rounded-lg border text-left transition cursor-pointer ${
-                        compact ? "px-2.5 py-1 text-[11px]" : "px-3 py-1.5 text-[12px]"
-                      } ${
-                        active
-                          ? "bg-sky-500/20 border-sky-400/55 text-sky-100 shadow-[0_0_16px_-6px_rgba(56,189,248,0.45)]"
-                          : "bg-white/[0.035] border-white/[0.09] text-zinc-300 hover:bg-white/[0.08] hover:border-white/[0.18]"
-                      }`}
-                    >
-                      {active && <Check className="w-3 h-3 text-sky-300 shrink-0" />}
-                      <span>{opt}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            {showInput && (
-              <input
-                id={`clarify-input-${q.id}`}
-                type="text"
-                disabled={disabled}
-                autoFocus={idx === 0 && !showOptions}
-                value={ans.customText}
-                onChange={(e) => setCustomText(q.id, e.target.value)}
-                onKeyDown={(e) => {
-                  if (
-                    e.key === "Enter" &&
-                    !e.shiftKey &&
-                    !e.metaKey &&
-                    !e.ctrlKey &&
-                    clarification.questions.length === 1
-                  ) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    handleSubmit();
+        {/* Al menos 2-3 opciones sugeridas */}
+        {currentQuestion.options.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {currentQuestion.options.map((opt, optIdx) => {
+              const active = curAns.selected.includes(opt);
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() =>
+                    handleSelectOption(currentQuestion.id, opt, currentQuestion.kind)
                   }
-                }}
-                placeholder={
-                  q.placeholder ||
-                  (showOptions
-                    ? "O escribe otro detalle específico..."
-                    : "Escribe tu respuesta...")
-                }
-                className={`w-full rounded-lg border border-white/[0.1] bg-black/35 text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-sky-400/50 focus:bg-black/50 transition ${
-                  compact ? "px-2.5 py-1.5 text-[11.5px]" : "px-3 py-2 text-[12.5px]"
-                }`}
-              />
-            )}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                    compact
+                      ? "px-2.5 py-1 text-[11px]"
+                      : "px-2.5 py-1.5 text-[11.5px]"
+                  } ${
+                    active
+                      ? "bg-zinc-100 border-white text-zinc-950 font-medium"
+                      : "bg-white/[0.035] border-white/[0.09] text-zinc-200 hover:bg-white/[0.08] hover:border-white/[0.18] hover:text-white"
+                  }`}
+                >
+                  {active ? (
+                    <Check className="w-3 h-3 text-zinc-950 stroke-[2.25] shrink-0" />
+                  ) : (
+                    <span className="text-[10px] font-mono text-zinc-500 shrink-0">
+                      {optIdx + 1}
+                    </span>
+                  )}
+                  <span>{opt}</span>
+                </button>
+              );
+            })}
           </div>
-        );
-      })}
+        )}
+
+        {/* Opción libre siempre disponible para que el usuario escriba su propia respuesta */}
+        <div className="pt-0.5">
+          <input
+            id={`clarify-input-${currentQuestion.id}`}
+            type="text"
+            disabled={disabled}
+            value={curAns.customText}
+            onChange={(e) => setCustomText(currentQuestion.id, e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.metaKey &&
+                !e.ctrlKey
+              ) {
+                e.preventDefault();
+                e.stopPropagation();
+                handleNextOrSubmit();
+              }
+            }}
+            placeholder={
+              currentQuestion.placeholder &&
+              currentQuestion.placeholder !== "Escribe tu respuesta..."
+                ? currentQuestion.placeholder
+                : "O escribe tu propia respuesta aquí..."
+            }
+            className="w-full h-8 px-2.5 rounded-lg border border-white/[0.09] bg-[#07080b] text-[11.5px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] transition"
+          />
+        </div>
+      </div>
 
       {validationError && (
-        <p className="text-[11.5px] text-amber-300 bg-amber-500/10 border border-amber-400/25 rounded-lg px-3 py-1.5">
+        <p className="text-[11px] text-zinc-200 bg-white/[0.05] border border-white/[0.12] rounded-lg px-2.5 py-1">
           {validationError}
         </p>
       )}
 
-      <div className="flex items-center justify-between gap-2 pt-1">
-        {!compact ? (
-          <span className="text-[11px] text-zinc-500">
-            Atajo: ⌘Enter para enviar
-          </span>
-        ) : (
-          <span />
-        )}
-        <div className="flex items-center gap-2">
+      {/* Barra inferior de navegación 1 por 1 */}
+      <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-white/[0.06]">
+        <div className="flex items-center gap-1.5">
+          {safeStepIndex > 0 ? (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => {
+                setValidationError(null);
+                setStepIndex((idx) => Math.max(0, idx - 1));
+              }}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-white/[0.08] text-[11px] text-zinc-300 hover:text-white hover:bg-white/[0.05] transition-colors cursor-pointer"
+            >
+              <ArrowLeft className="w-3 h-3" />
+              <span>Anterior</span>
+            </button>
+          ) : (
+            <span className="text-[10.5px] text-zinc-500 hidden sm:inline">
+              Elige una opción o responde libremente
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5 ml-auto">
           {onCancel && (
             <button
               type="button"
               disabled={disabled}
               onClick={onCancel}
-              className={`rounded-xl border border-white/[0.1] text-zinc-300 hover:bg-white/[0.06] transition cursor-pointer ${
-                compact ? "px-2.5 py-1 text-[11px]" : "px-3.5 py-2 text-xs"
-              }`}
+              className="px-2.5 py-1 rounded-lg border border-white/[0.08] text-[11px] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05] transition-colors cursor-pointer"
             >
-              Cancelar
+              Omitir
             </button>
           )}
           <button
             type="button"
             disabled={disabled}
-            onClick={handleSubmit}
-            className={`xook-approve-btn inline-flex items-center gap-1.5 rounded-xl font-semibold cursor-pointer ${
-              compact ? "px-3 py-1.5 text-[11.5px]" : "px-4 py-2 text-xs"
-            }`}
+            onClick={handleNextOrSubmit}
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-zinc-100 hover:bg-white text-zinc-950 text-[11px] font-semibold transition-colors cursor-pointer"
           >
-            <Send className="w-3.5 h-3.5" />
-            <span>{clarification.submitLabel || "Continuar"}</span>
+            <span>
+              {isLastStep
+                ? clarification.submitLabel || "Continuar"
+                : "Siguiente"}
+            </span>
+            {isLastStep ? (
+              <CornerDownLeft className="w-3 h-3 stroke-[2.25]" />
+            ) : (
+              <ArrowRight className="w-3 h-3 stroke-[2.25]" />
+            )}
           </button>
         </div>
+      </div>
+    </div>
+  );
+};
+
+interface ClarificationInputDockProps {
+  clarification: ClarificationSpec;
+  onSubmit: (formattedReply: string) => void;
+  onClose: () => void;
+}
+
+export const ClarificationInputDock: React.FC<ClarificationInputDockProps> = ({
+  clarification,
+  onSubmit,
+  onClose,
+}) => {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  return (
+    <div
+      role="region"
+      aria-label={clarification.title || "Pregunta abierta"}
+      className="panel-fade-in rounded-xl border border-white/[0.08] bg-[#0a0b0f] px-3 py-2.5"
+    >
+      <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-white/[0.06]">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.09] text-[10px] font-medium text-zinc-300 shrink-0">
+            <HelpCircle className="w-2.5 h-2.5 text-zinc-400" />
+            <span>Pregunta</span>
+          </span>
+          <h3 className="text-[12px] font-semibold text-zinc-100 truncate">
+            {clarification.title}
+          </h3>
+          {clarification.subtitle && (
+            <span className="text-[11px] text-zinc-500 truncate hidden md:inline">
+              · {clarification.subtitle}
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Cerrar pregunta"
+          className="shrink-0 p-1 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.06] transition-colors cursor-pointer"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      <div className="max-h-[220px] overflow-y-auto xook-scroll pr-0.5">
+        <ClarificationForm
+          compact
+          clarification={clarification}
+          onSubmit={onSubmit}
+          onCancel={onClose}
+        />
       </div>
     </div>
   );
@@ -259,68 +434,12 @@ export const ClarificationModal: React.FC<ClarificationModalProps> = ({
   onSubmit,
   onClose,
 }) => {
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [isOpen, onClose]);
-
   if (!isOpen || !clarification) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-md panel-fade-in"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="clarification-modal-title"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="relative w-full max-w-[520px] max-h-[86vh] flex flex-col rounded-2xl border border-white/[0.12] bg-[#0b0e14]/95 shadow-[0_28px_80px_-16px_rgba(0,0,0,0.92)] overflow-hidden">
-        <div className="h-[1px] w-full bg-gradient-to-r from-transparent via-sky-400/60 to-transparent" />
-
-        <div className="flex items-start justify-between gap-3 px-5 pt-4 pb-3 border-b border-white/[0.07]">
-          <div className="min-w-0">
-            <div className="inline-flex items-center gap-1.5 rounded-full border border-sky-400/25 bg-sky-500/10 px-2.5 py-0.5 text-[10.5px] font-medium text-sky-300 mb-1.5">
-              <HelpCircle className="w-3 h-3" />
-              <span>Pregunta abierta</span>
-            </div>
-            <h2
-              id="clarification-modal-title"
-              className="text-[15px] font-semibold text-zinc-100 leading-snug"
-            >
-              {clarification.title}
-            </h2>
-            {clarification.subtitle && (
-              <p className="text-[12.5px] text-zinc-400 mt-1 leading-relaxed">
-                {clarification.subtitle}
-              </p>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Cerrar"
-            className="shrink-0 p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.07] transition cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="overflow-y-auto px-5 py-4">
-          <ClarificationForm
-            clarification={clarification}
-            onSubmit={onSubmit}
-            onCancel={onClose}
-          />
-        </div>
-      </div>
-    </div>
+    <ClarificationInputDock
+      clarification={clarification}
+      onSubmit={onSubmit}
+      onClose={onClose}
+    />
   );
 };

@@ -999,10 +999,11 @@ class _NumberedCanvas(rl_canvas.Canvas):
         self._startPage()
 
     def save(self) -> None:
-        total_pages = len(self._saved_page_states)
+        page_offset = int(self._page_meta.get("page_offset", 0))
+        total_pages = len(self._saved_page_states) + page_offset
         for idx, state in enumerate(self._saved_page_states):
             self.__dict__.update(state)
-            self._draw_chrome(idx + 1, total_pages)
+            self._draw_chrome(idx + 1 + page_offset, total_pages)
             super().showPage()
         super().save()
 
@@ -1063,6 +1064,10 @@ def generate_pdf_document(
     autonomous_roots: Tuple[str, ...] = ("agente", "memoria"),
     default_author: Optional[str] = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    allow_any_workspace_zone: bool = False,
+    prepend_first_page_from: Optional[Path] = None,
+    prepend_all_pages_from: Optional[Path] = None,
+    save_spec_override: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Genera un documento PDF estructurado dentro de `agente/` del workspace activo.
@@ -1080,15 +1085,29 @@ def generate_pdf_document(
 
     page_size_key = str(spec.get("page_size") or "letter").strip().lower()
     pagesize = A4 if page_size_key == "a4" else letter
+    ref_pdf_for_size = prepend_all_pages_from if (prepend_all_pages_from and prepend_all_pages_from.is_file()) else (
+        prepend_first_page_from if (prepend_first_page_from and prepend_first_page_from.is_file()) else None
+    )
+    if ref_pdf_for_size is not None:
+        try:
+            from pypdf import PdfReader as _SizePR
+            r_sz = _SizePR(str(ref_pdf_for_size))
+            if len(r_sz.pages) >= 1:
+                mb = r_sz.pages[-1].mediabox
+                pw_cand, ph_cand = float(mb.width), float(mb.height)
+                if pw_cand > 200 and ph_cand > 200:
+                    pagesize = (pw_cand, ph_cand)
+        except Exception:
+            pass
     page_w, page_h = pagesize
 
-    # Resolver ruta de salida dentro de zona autónoma
+    # Resolver ruta de salida dentro de zona autónoma (o zona del workspace si viene de edición manual)
     raw_out = str(spec.get("output_path") or "").strip()
     if raw_out:
         if not raw_out.lower().endswith(".pdf"):
             raw_out += ".pdf"
         out_abs, out_rel, top_zone = resolve_path_fn(workspace_root, raw_out)
-        if top_zone not in autonomous_roots:
+        if top_zone not in autonomous_roots and not allow_any_workspace_zone:
             # Redirigir a agente/reportes conservando el nombre para cumplir sandbox autónomo
             safe_name = Path(raw_out).name
             out_rel = f"agente/reportes/{safe_name}"
@@ -1623,7 +1642,7 @@ def generate_pdf_document(
         if blocks or not cover_only:
             story.append(NextPageTemplate("Content"))
             story.append(PageBreak())
-    else:
+    elif not spec.get("skip_inline_title"):
         # Sin portada separada: encabezado ejecutivo limpio al inicio de la página 1
         s_doc_title = ParagraphStyle(
             "DocTitle",
@@ -2011,6 +2030,18 @@ def generate_pdf_document(
         blocks=preview_blocks_cache,
     )
 
+    has_prepend_all = bool(prepend_all_pages_from and prepend_all_pages_from.is_file())
+    has_prepend_cover = bool(not has_prepend_all and prepend_first_page_from and prepend_first_page_from.is_file())
+    prepend_page_offset = 0
+    if has_prepend_all and prepend_all_pages_from is not None:
+        try:
+            from pypdf import PdfReader as _OffsetPR
+            prepend_page_offset = len(_OffsetPR(str(prepend_all_pages_from)).pages)
+        except Exception:
+            prepend_page_offset = 0
+    elif has_prepend_cover:
+        prepend_page_offset = 1
+
     try:
         doc.build(
             story,
@@ -2023,11 +2054,43 @@ def generate_pdf_document(
                     "theme": theme,
                     "has_cover": has_cover,
                     "margin_x": margin_x,
+                    "page_offset": prepend_page_offset,
                 },
                 **kwargs,
             ),
         )
-        tmp_out.replace(out_abs)
+        if has_prepend_all and prepend_all_pages_from is not None:
+            from pypdf import PdfReader as _PR, PdfWriter as _PW
+
+            merged_tmp = out_abs.with_name(f".{out_abs.name}.merged_all.tmp.{os.getpid()}")
+            prev_r = _PR(str(prepend_all_pages_from))
+            body_r = _PR(str(tmp_out))
+            writer = _PW()
+            for ep in prev_r.pages:
+                writer.add_page(ep)
+            for bp in body_r.pages:
+                writer.add_page(bp)
+            with open(merged_tmp, "wb") as mf:
+                writer.write(mf)
+            tmp_out.unlink(missing_ok=True)
+            merged_tmp.replace(out_abs)
+        elif has_prepend_cover and prepend_first_page_from is not None:
+            from pypdf import PdfReader as _PR, PdfWriter as _PW
+
+            merged_tmp = out_abs.with_name(f".{out_abs.name}.merged.tmp.{os.getpid()}")
+            cov_r = _PR(str(prepend_first_page_from))
+            body_r = _PR(str(tmp_out))
+            writer = _PW()
+            if len(cov_r.pages) >= 1:
+                writer.add_page(cov_r.pages[0])
+            for bp in body_r.pages:
+                writer.add_page(bp)
+            with open(merged_tmp, "wb") as mf:
+                writer.write(mf)
+            tmp_out.unlink(missing_ok=True)
+            merged_tmp.replace(out_abs)
+        else:
+            tmp_out.replace(out_abs)
     except Exception:
         if tmp_out.exists():
             try:
@@ -2042,6 +2105,31 @@ def generate_pdf_document(
     page_count = len(PdfReader(str(out_abs)).pages)
     size_bytes = out_abs.stat().st_size
 
+    effective_has_cover = has_cover or has_prepend_cover
+    try:
+        from slices.pdf_engine.editor import save_pdf_spec_metadata
+
+        spec_to_save = save_spec_override or {
+            "title": title,
+            "subtitle": subtitle,
+            "author": author,
+            "date": date_label,
+            "theme": theme_name,
+            "has_cover": effective_has_cover,
+            "preserve_first_page": effective_has_cover,
+            "cover": {
+                "enabled": effective_has_cover,
+                "layout": cover_layout if has_cover else ("full_page" if has_prepend_cover else "none"),
+                "eyebrow": badge_txt,
+                "image_path": cover_img_raw,
+                "footer_note": str(cover_cfg.get("footer_note") or "").strip(),
+            } if effective_has_cover else {"enabled": False, "layout": "none"},
+            "blocks": blocks,
+        }
+        save_pdf_spec_metadata(workspace_root, out_rel, spec_to_save, pdf_abs=out_abs)
+    except Exception:
+        pass
+
     out: Dict[str, Any] = {
         "ok": True,
         "path": out_rel,
@@ -2051,8 +2139,8 @@ def generate_pdf_document(
         "size_bytes": size_bytes,
         "images_embedded": images_embedded,
         "tables_count": tables_count,
-        "has_cover": has_cover,
-        "cover_layout": cover_layout if has_cover else "none",
+        "has_cover": effective_has_cover,
+        "cover_layout": cover_layout if has_cover else ("full_page" if has_prepend_cover else "none"),
         "theme": theme_name,
     }
     if warnings:

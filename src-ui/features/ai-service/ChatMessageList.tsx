@@ -7,6 +7,7 @@ import {
 import {
   Check,
   Copy,
+  Download,
   ExternalLink,
   FileText,
   FolderOpen,
@@ -14,6 +15,7 @@ import {
   Image as ImageIcon,
   KeyRound,
   Paperclip,
+  Pencil,
   RotateCcw,
   Sparkles,
   Table2,
@@ -80,6 +82,8 @@ interface ChatMessageListProps {
   activeCanvasId?: string | null;
   onOpenCanvas?: (canvas: CanvasArtifact) => void;
   onPreviewPdf?: (pdf: GeneratedPdfArtifact) => void;
+  onEditPdf?: (pdf: GeneratedPdfArtifact) => void;
+  onDownloadPdf?: (pdf: GeneratedPdfArtifact) => void;
   onOpenPdf?: (relativePath: string) => void;
   onRevealPdfFolder?: (relativePath: string) => void;
   onXoxClick?: () => void;
@@ -157,10 +161,10 @@ function FormattedReply({
             key={`tbl_${blockIdx}`}
             className="my-2 xook-liquid-table rounded-2xl overflow-hidden"
           >
-            <div className="flex items-center justify-between px-3 py-2 bg-white/[0.03] border-b border-white/[0.07] text-[11px] text-zinc-300">
-              <span className="inline-flex items-center gap-2 font-medium text-white/90">
+            <div className="flex items-center justify-between px-3 py-2 bg-[#111318] border-b border-white/[0.08] text-[11px] text-zinc-300">
+              <span className="inline-flex items-center gap-2 font-medium text-zinc-100">
                 <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
-                  <Table2 className="w-2.5 h-2.5 text-sky-100/95" />
+                  <Table2 className="w-2.5 h-2.5 text-zinc-200" />
                 </span>
                 <span>
                   {table.rows.length} {table.rows.length === 1 ? "fila" : "filas"} ·{" "}
@@ -178,21 +182,23 @@ function FormattedReply({
                       })
                     )
                   }
-                  className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-white/95 text-[10.5px] font-medium cursor-pointer"
+                  className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-zinc-100 hover:text-white text-[10.5px] font-medium cursor-pointer"
                 >
-                  <ExternalLink className="w-2.5 h-2.5 text-indigo-100" />
+                  <ExternalLink className="w-2.5 h-2.5 text-zinc-300" />
                   <span>Abrir en Canvas</span>
                 </button>
               )}
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-separate border-spacing-0 text-[12.5px]">
+            <div tabIndex={0} role="region" aria-label="Tabla de datos" className="overflow-x-auto">
+              <table className="w-full table-auto text-left border-separate border-spacing-0 text-[12.5px]">
+                <caption className="sr-only">Tabla generada</caption>
                 <thead className="xook-liquid-table-head">
                   <tr>
                     {table.headers.map((h, hIdx) => (
                       <th
                         key={hIdx}
-                        className={`px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.04em] text-zinc-200/90 whitespace-nowrap ${
+                        scope="col"
+                        className={`px-3.5 py-2.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-zinc-200 whitespace-nowrap ${
                           table.alignments[hIdx] === "right"
                             ? "text-right"
                             : table.alignments[hIdx] === "center"
@@ -214,9 +220,9 @@ function FormattedReply({
                       {row.map((cell, cIdx) => (
                         <td
                           key={cIdx}
-                          className={`px-3 py-2 text-zinc-200 ${
+                          className={`px-3.5 py-2.5 align-top text-zinc-200 ${
                             table.alignments[cIdx] === "right"
-                              ? "text-right tabular-nums text-indigo-100/95"
+                              ? "text-right tabular-nums text-zinc-100 whitespace-nowrap"
                               : table.alignments[cIdx] === "center"
                                 ? "text-center"
                                 : cIdx === 0
@@ -334,6 +340,8 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   activeCanvasId = null,
   onOpenCanvas,
   onPreviewPdf,
+  onEditPdf,
+  onDownloadPdf,
   onOpenPdf,
   onRevealPdfFolder,
   onXoxClick,
@@ -375,7 +383,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
           const attList = msg.attachments ?? [];
           return (
             <div key={msg.id} className="flex justify-end">
-              <div className="max-w-[86%] @lg:max-w-[70%] rounded-2xl rounded-tr-sm px-4 py-2.5 bg-white/[0.075] border border-white/[0.1] text-[13.5px] text-zinc-100 leading-relaxed select-text space-y-2">
+              <div className="max-w-[86%] @lg:max-w-[70%] @6xl:max-w-[62%] rounded-2xl rounded-tr-sm px-4 py-2.5 bg-white/[0.075] border border-white/[0.1] text-[13.5px] text-zinc-100 leading-relaxed select-text space-y-2">
                 {attList.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {attList.map((att, aIdx) => (
@@ -446,16 +454,16 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
           .trim();
 
         return (
-          <div key={msg.id} className="flex items-start gap-2 @md:gap-3.5 @lg:gap-4">
-            {/* Mascota Xox: carril izquierdo responsive y prominente, siempre visible */}
-            <div className="shrink-0 self-start sticky top-3 w-[72px] @sm:w-[88px] @md:w-[104px] @lg:w-[120px] @2xl:w-[136px] flex justify-center">
+          <div key={msg.id} className="flex items-start gap-2 @md:gap-3 @lg:gap-4 @5xl:gap-6">
+            {/* Mascota Xox: carril izquierdo responsive con escala fluida en pantalla completa */}
+            <div className="shrink-0 self-start sticky top-4 @md:top-5 @5xl:top-6 w-[110px] @sm:w-[130px] @md:w-[150px] @lg:w-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] flex justify-center">
               {isActiveGuideTurn ? (
-                <div className="relative -my-3 @md:-my-4 -mx-2 select-none pointer-events-none">
+                <div className="relative shrink-0 -my-1 @md:-my-2 @5xl:-my-3 select-none pointer-events-none">
                   <XoxStar
                     state={xoxState}
                     responsive
                     hitArea="star"
-                    className="w-[84px] h-[84px] @sm:w-[100px] @sm:h-[100px] @md:w-[116px] @md:h-[116px] @lg:w-[134px] @lg:h-[134px] @2xl:w-[152px] @2xl:h-[152px]"
+                    className="w-[110px] h-[110px] @sm:w-[130px] @sm:h-[130px] @md:w-[150px] @md:h-[150px] @lg:w-[174px] @lg:h-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] @2xl:h-[clamp(198px,19.5cqi,264px)]"
                     summonTrigger={summonTrigger}
                     onClick={onXoxClick}
                   />
@@ -467,8 +475,8 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                         greetingLeaving ? "is-leaving" : ""
                       }`}
                     >
-                      <div className="xox-bubble-body w-max max-w-[210px] px-3 py-1.5 rounded-[18px] text-left">
-                        <p className="xox-bubble-text relative text-[11.5px] leading-snug text-white/95 font-medium">
+                      <div className="xox-bubble-body w-max max-w-[180px] @sm:max-w-[210px] @5xl:max-w-[240px] px-3 @5xl:px-3.5 py-1.5 @5xl:py-2 rounded-[18px] @5xl:rounded-[20px] text-left">
+                        <p className="xox-bubble-text relative text-[11.5px] @5xl:text-[12.5px] leading-snug text-white/95 font-medium">
                           {greeting}
                         </p>
                       </div>
@@ -476,14 +484,14 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                   )}
                 </div>
               ) : (
-                <div className="w-9 h-9 @md:w-10 @md:h-10 rounded-full bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mt-0.5">
+                <div className="w-9 h-9 @md:w-10 @md:h-10 @5xl:w-11 @5xl:h-11 rounded-full bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mt-0.5">
                   <XoxMiniGlyph />
                 </div>
               )}
             </div>
 
             {/* Contenido de la respuesta (estilo editorial limpio sin recuadro pesado) */}
-            <div className="flex-1 min-w-0 max-w-3xl space-y-2">
+            <div className="flex-1 min-w-0 max-w-3xl @5xl:max-w-4xl @6xl:max-w-5xl space-y-2">
               {/* Cabecera sutil del turno */}
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
@@ -610,32 +618,34 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 </div>
               ) : null}
 
-              {/* Tarjetas de permiso / ejecución en espacio de trabajo */}
-              {permissionItems.length > 0 && isActiveGuideTurn && (
-                  <div className="space-y-2 my-1">
-                    {permissionItems.map((perm) => (
-                      <CommandPermissionCard
-                        key={perm.requestId}
-                        item={perm}
-                        onResolve={(reqId, decision) =>
-                          onResolvePermission?.(reqId, decision)
-                        }
-                      />
-                    ))}
+              {/* Trazas compactas de permisos ya resueltos o en ejecución (los pendientes salen en el dock del input) */}
+              {permissionItems.some((p) => p.state !== "pending") && isActiveGuideTurn && (
+                  <div className="space-y-1.5 my-1">
+                    {permissionItems
+                      .filter((p) => p.state !== "pending")
+                      .map((perm) => (
+                        <CommandPermissionCard
+                          key={perm.requestId}
+                          item={perm}
+                          onResolve={(reqId, decision) =>
+                            onResolvePermission?.(reqId, decision)
+                          }
+                        />
+                      ))}
                   </div>
                 )}
 
               {/* Indicador en vivo mientras Xox diseña Canvas */}
               {msg.isStreaming && isActiveGuideTurn && xoxState === "syncing" && !msg.canvas && (
-                <div className="rounded-2xl border border-sky-400/20 bg-sky-500/[0.05] px-3.5 py-2.5 flex items-center gap-2.5 text-[12px] text-sky-200">
-                  <Sparkles className="w-3.5 h-3.5 text-sky-300 animate-pulse shrink-0" />
+                <div className="rounded-2xl border border-white/[0.1] bg-[#0b0c10] px-3.5 py-2.5 flex items-center gap-2.5 text-[12px] text-zinc-200">
+                  <Sparkles className="w-3.5 h-3.5 text-zinc-300 animate-pulse shrink-0" />
                   <span className="xox-shimmer font-medium">
                     Construyendo tabla interactiva en Canvas…
                   </span>
                 </div>
               )}
 
-              {/* Tarjeta interactiva de Canvas estilo Gemini */}
+              {/* Tarjeta interactiva de Canvas sobria en negro/gris Liquid Glass (sin gradientes de colores) */}
               {msg.canvas && (() => {
                 const isOpen = activeCanvasId === msg.canvas.id;
                 const kindLabel =
@@ -652,27 +662,21 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     type="button"
                     onClick={() => onOpenCanvas?.(msg.canvas!)}
                     style={{
-                      boxShadow: isOpen
-                        ? "inset 0 1px 1px rgba(255,255,255,0.16), 0 14px 32px -18px rgba(196,181,253,0.40)"
-                        : "inset 0 1px 1px rgba(255,255,255,0.10), 0 12px 28px -18px rgba(0,0,0,0.82)",
+                      boxShadow:
+                        "inset 0 1px 0 rgba(255,255,255,0.08), 0 12px 28px -18px rgba(0,0,0,0.85)",
                     }}
-                    className={`group relative overflow-hidden w-full max-w-[490px] text-left rounded-2xl border p-3.5 transition-all duration-200 cursor-pointer ${
+                    className={`group relative overflow-hidden w-full max-w-[490px] @5xl:max-w-[560px] text-left rounded-2xl border p-3.5 transition-all duration-200 cursor-pointer ${
                       isOpen
-                        ? "bg-gradient-to-b from-white/[0.08] via-[#13182a]/85 to-[#0b0f1b]/90 border-indigo-200/30"
-                        : "bg-gradient-to-b from-white/[0.05] via-[#111521]/82 to-[#090c14]/88 hover:from-white/[0.075] hover:via-[#151b2b]/84 border-white/[0.08] hover:border-indigo-200/25"
+                        ? "bg-[#0e1015] border-white/[0.18]"
+                        : "bg-[#0a0b0f] hover:bg-[#0e1015] border-white/[0.09] hover:border-white/[0.16]"
                     }`}
                   >
-                    <div
-                      className={`pointer-events-none absolute -top-10 -right-10 h-24 w-36 rounded-full blur-2xl transition-opacity ${
-                        isOpen ? "bg-indigo-300/20 opacity-100" : "bg-indigo-300/12 opacity-0 group-hover:opacity-100"
-                      }`}
-                    />
                     <div className="relative flex items-center justify-between gap-2.5 mb-2.5">
                       <div className="flex items-center gap-2 min-w-0">
-                        <div className="quick-liquid-icon w-7 h-7 rounded-xl flex items-center justify-center shrink-0">
-                          <Table2 className="w-3.5 h-3.5 text-sky-100/95" />
+                        <div className="w-7 h-7 rounded-xl bg-zinc-900 border border-white/[0.12] flex items-center justify-center shrink-0">
+                          <Table2 className="w-3.5 h-3.5 text-zinc-200" />
                         </div>
-                        <span className="px-2 py-0.5 rounded-full bg-white/[0.055] border border-white/[0.09] text-[10px] font-medium text-white/90 shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]">
+                        <span className="px-2 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.09] text-[10px] font-medium text-zinc-200 shrink-0">
                           {kindLabel}
                         </span>
                         <span className="text-[11px] text-zinc-400 truncate">
@@ -687,12 +691,12 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                         className={`quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium shrink-0 ${
                           isOpen
                             ? "text-white"
-                            : "text-zinc-100 group-hover:text-white"
+                            : "text-zinc-200 group-hover:text-white"
                         }`}
                       >
-                        {isOpen && <span className="w-1.5 h-1.5 rounded-full bg-indigo-200" />}
+                        {isOpen && <span className="w-1.5 h-1.5 rounded-full bg-zinc-200" />}
                         <span>{isOpen ? "Abierto" : "Abrir"}</span>
-                        <ExternalLink className="w-3 h-3 text-indigo-100/90" />
+                        <ExternalLink className="w-3 h-3 text-zinc-300" />
                       </span>
                     </div>
 
@@ -712,7 +716,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                         {visibleColumns.map((col) => (
                           <span
                             key={col.id}
-                            className="px-2 py-0.5 rounded-md bg-white/[0.045] border border-white/[0.07] text-[10.5px] text-zinc-300"
+                            className="px-2 py-0.5 rounded-md bg-white/[0.045] border border-white/[0.08] text-[10.5px] text-zinc-300"
                           >
                             {col.label}
                           </span>
@@ -726,7 +730,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     )}
 
                     {msg.canvas.summary && (
-                      <div className="relative mt-2.5 px-2.5 py-2 rounded-xl bg-black/25 border border-white/[0.06] text-[11.5px] leading-relaxed text-zinc-300/90 line-clamp-2">
+                      <div className="relative mt-2.5 px-2.5 py-2 rounded-xl bg-black/35 border border-white/[0.06] text-[11.5px] leading-relaxed text-zinc-300 line-clamp-2">
                         {msg.canvas.summary}
                       </div>
                     )}
@@ -734,7 +738,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 );
               })()}
 
-              {/* Tarjetas compactas para PDFs generados */}
+              {/* Tarjetas Liquid Glass en negro/gris para PDFs entregados */}
               {msg.generatedPdfs && msg.generatedPdfs.length > 0 && (
                 <div className="space-y-2">
                   {msg.generatedPdfs.map((pdf) => {
@@ -744,37 +748,29 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                         key={pdf.path}
                         style={{
                           boxShadow:
-                            "inset 0 1px 1px rgba(255,255,255,0.10), 0 12px 26px -18px rgba(0,0,0,0.82)",
+                            "inset 0 1px 1px rgba(255,255,255,0.10), 0 14px 30px -18px rgba(0,0,0,0.88)",
                         }}
-                        className="relative overflow-hidden w-full max-w-[490px] rounded-2xl border border-rose-200/20 bg-gradient-to-b from-white/[0.055] via-[#17121b]/82 to-[#0b090f]/90 p-3.5"
+                        className="relative overflow-hidden w-full max-w-[490px] @5xl:max-w-[560px] rounded-2xl border border-white/[0.1] bg-gradient-to-b from-white/[0.055] via-[#0c0d12]/90 to-[#060709]/95 p-3.5"
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-start gap-2.5 min-w-0">
-                            <div className="w-8 h-8 rounded-xl bg-rose-500/15 border border-rose-300/25 flex items-center justify-center shrink-0 mt-0.5">
-                              <FileText className="w-4 h-4 text-rose-200" />
+                            <div className="w-8 h-8 rounded-xl bg-zinc-900/90 border border-white/[0.12] shadow-[inset_0_1px_0_rgba(255,255,255,0.1)] flex items-center justify-center shrink-0 mt-0.5">
+                              <FileText className="w-4 h-4 text-zinc-100" />
                             </div>
-                            <div className="min-w-0 space-y-0.5">
+                            <div className="min-w-0 space-y-1">
                               <h4 className="text-[13px] font-semibold text-white leading-snug line-clamp-1">
                                 {pdf.title || pdf.filename}
                               </h4>
-                              <p className="text-[11px] font-mono text-zinc-400 truncate">
-                                {pdf.path}
-                              </p>
-                              <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[10.5px] text-zinc-300/85">
+                              <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-zinc-300">
                                 <span className="px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.08]">
-                                  {pdf.pageCount} {pdf.pageCount === 1 ? "página" : "páginas"}
+                                  PDF · {pdf.pageCount} {pdf.pageCount === 1 ? "pág." : "págs."}
                                 </span>
                                 <span className="px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.08]">
                                   {kb} KB
                                 </span>
                                 {pdf.hasCover && (
-                                  <span className="px-1.5 py-0.5 rounded-md bg-sky-500/10 border border-sky-300/20 text-sky-200">
+                                  <span className="px-1.5 py-0.5 rounded-md bg-white/[0.06] border border-white/[0.1] text-zinc-200">
                                     Con portada
-                                  </span>
-                                )}
-                                {(pdf.imagesEmbedded ?? 0) > 0 && (
-                                  <span className="px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.08]">
-                                    {pdf.imagesEmbedded} img
                                   </span>
                                 )}
                               </div>
@@ -782,35 +778,56 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                           </div>
                         </div>
 
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <div className="mt-3 flex flex-wrap items-center gap-1.5">
                           {onPreviewPdf && (
                             <button
                               type="button"
                               onClick={() => onPreviewPdf(pdf)}
                               className="quick-liquid-btn inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium text-white cursor-pointer"
                             >
-                              <FileText className="w-3 h-3 text-rose-200" />
-                              <span>Ver documento</span>
+                              <FileText className="w-3 h-3 text-zinc-200" />
+                              <span>Ver visor</span>
+                            </button>
+                          )}
+                          {onEditPdf && (
+                            <button
+                              type="button"
+                              onClick={() => onEditPdf(pdf)}
+                              className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium text-zinc-100 hover:text-white cursor-pointer"
+                            >
+                              <Pencil className="w-3 h-3 text-zinc-300" />
+                              <span>Modificar</span>
+                            </button>
+                          )}
+                          {onDownloadPdf && (
+                            <button
+                              type="button"
+                              onClick={() => onDownloadPdf(pdf)}
+                              className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] text-zinc-200 hover:text-white cursor-pointer"
+                            >
+                              <Download className="w-3 h-3 text-zinc-300" />
+                              <span>Descargar</span>
                             </button>
                           )}
                           {onOpenPdf && (
                             <button
                               type="button"
                               onClick={() => onOpenPdf(pdf.path)}
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-zinc-200 transition-colors cursor-pointer"
+                              className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] text-zinc-300 hover:text-white cursor-pointer"
                             >
-                              <ExternalLink className="w-3 h-3 text-zinc-300" />
-                              <span>Abrir externo</span>
+                              <ExternalLink className="w-3 h-3 text-zinc-400" />
+                              <span>Abrir</span>
                             </button>
                           )}
                           {onRevealPdfFolder && (
                             <button
                               type="button"
                               onClick={() => onRevealPdfFolder(pdf.path)}
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-[11px] text-zinc-200 transition-colors cursor-pointer"
+                              aria-label="Mostrar en carpeta"
+                              title="Mostrar en Finder"
+                              className="quick-liquid-btn p-1.5 rounded-full text-zinc-300 hover:text-white inline-flex items-center justify-center cursor-pointer"
                             >
                               <FolderOpen className="w-3 h-3 text-zinc-400" />
-                              <span>Carpeta</span>
                             </button>
                           )}
                         </div>
@@ -826,7 +843,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                   <button
                     type="button"
                     onClick={onOpenTasksTab}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/10 hover:bg-sky-500/15 border border-sky-400/25 text-[11px] text-sky-200 transition-colors cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.09] text-[11px] text-zinc-200 transition-colors cursor-pointer"
                   >
                     <span>
                       {msg.generatedTaskCount}{" "}
@@ -838,18 +855,18 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 </div>
               )}
 
-              {/* Acción especial (ej. conectar clave o abrir pregunta abierta) */}
+              {/* Acción especial (ej. conectar clave o reabrir pregunta en el input) */}
               {msg.actionButton && (
                 <div>
                   <button
                     type="button"
                     onClick={() => onAction(msg.actionButton!)}
-                    className="xook-approve-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.12] text-[11.5px] font-medium text-zinc-200 hover:text-white transition-colors cursor-pointer"
                   >
                     {msg.actionButton.kind === "open_clarification" ? (
-                      <HelpCircle className="w-3.5 h-3.5" />
+                      <HelpCircle className="w-3 h-3 text-zinc-400" />
                     ) : (
-                      <KeyRound className="w-3.5 h-3.5" />
+                      <KeyRound className="w-3 h-3 text-zinc-400" />
                     )}
                     <span>{msg.actionButton.label}</span>
                   </button>
