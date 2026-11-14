@@ -1,4 +1,8 @@
-# 🦈 XOOK - Enterprise Agentic Orchestrator
+<p align="center">
+  <img src=".github/xox-pixel.svg" width="164" alt="Xox — Mascota pixel art de XOOK" />
+</p>
+
+# XOOK - Enterprise Agentic Orchestrator
 > **Significado:** Del maya *Xook* (Leer, contar, estudiar / Tiburón).  
 > **Concepto:** Middleware agéntico multiplataforma de acoplamiento cero (*Zero-Refactor*). Permite conectar modelos de IA a infraestructuras empresariales existentes (E-commerce, SaaS, ERPs, APIs REST/GraphQL) mediante autodescubrimiento de endpoints y control estricto de permisos (*Human-in-the-Loop*).
 
