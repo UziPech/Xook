@@ -14,10 +14,8 @@ import {
   PanelLeft,
   ChevronDown,
   Paperclip,
-  Cpu,
   AtSign,
   KeyRound,
-  Activity,
   RefreshCw,
   Trash2,
   MessageSquare,
@@ -135,9 +133,11 @@ import {
   listLocalConversations,
   saveLocalConversation,
 } from "./features/workspace-store/localStore";
+import { ProviderIcon } from "./features/ai-service/ProviderIcon";
 import {
   AiConfigStatus,
   AiConnectionTestResult,
+  type AiProviderId,
   type AttachedContextItem,
   ClarificationSpec,
   type GeneratedPdfArtifact,
@@ -146,17 +146,22 @@ import {
   OpenRouterModelOption,
   ThinkingStep,
   detectApiKeyInText,
+  detectKeySetupIntentWithProvider,
+  detectVaultConfigRequest,
   estimateTokens,
   extractErrorMessage,
   fetchOpenRouterModels,
   formatContextLength,
   formatModelDisplay,
+  formatPricePerMillion,
   formatTokenCount,
   getAiConfigStatus,
   getAvailableQuickModels,
   getLocalDailyRequestCount,
+  getProviderSpec,
   incrementLocalDailyRequestCount,
-  isKeySetupIntent,
+  normalizeApiKey,
+  normalizeProviderIdClient,
   runXoxAiChatStream,
   sanitizeGeneratedPdfArtifact,
   saveAiConfig,
@@ -547,10 +552,15 @@ export default function App() {
   });
   const [showAiSettings, setShowAiSettings] = useState<boolean>(false);
   const [aiSettingsTab, setAiSettingsTab] = useState<OpenRouterSettingsTab>("models");
+  const [aiSettingsProvider, setAiSettingsProvider] = useState<AiProviderId | undefined>(undefined);
   const [expandModelMenu, setExpandModelMenu] = useState<boolean>(false);
 
-  const openAiSettings = (tab: OpenRouterSettingsTab = "models") => {
+  const openAiSettings = (
+    tab: OpenRouterSettingsTab = "models",
+    provider?: AiProviderId
+  ) => {
     setAiSettingsTab(tab);
+    setAiSettingsProvider(provider ?? normalizeProviderIdClient(aiConfig.provider));
     setShowAiSettings(true);
   };
   const [activeClarification, setActiveClarification] = useState<ClarificationSpec | null>(null);
@@ -575,7 +585,9 @@ export default function App() {
   const [inputExpanded, setInputExpanded] = useState<boolean>(false);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const pendingSecretKeysRef = useRef<Map<string, string>>(new Map());
+  const pendingSecretKeysRef = useRef<
+    Map<string, { key: string; provider: AiProviderId; ambiguousProviders?: AiProviderId[] }>
+  >(new Map());
   const chatMessagesRef = useRef<UiChatMessage[]>(chatMessages);
   chatMessagesRef.current = chatMessages;
   const activeConvIdRef = useRef<string>(activeConversationId);
@@ -623,15 +635,26 @@ export default function App() {
     chatEndRef.current?.scrollIntoView({ behavior: isChatStreaming ? "auto" : "smooth", block: "end" });
   }, [chatMessages.length, lastMsgStreamLen, xoxState, isChatStreaming]);
 
-  const canUsePaidModels = Boolean(accountUsage?.can_use_paid_models);
+  const activeProvider = normalizeProviderIdClient(aiConfig.provider);
+  const activeSpec = getProviderSpec(activeProvider);
+  const configuredProviderEntries = Object.values(aiConfig.configuredProviders ?? {});
+  const configuredProvidersCount = configuredProviderEntries.filter((p) => p.hasApiKey).length;
+  const hasAnyConfiguredKey =
+    aiConfig.hasApiKey || (aiConfig.autoFailover !== false && configuredProvidersCount > 0);
+  const activeProviderCatalog =
+    catalogModels.length > 0 ? catalogModels : activeSpec.curatedModels;
+
+  const canUsePaidModels =
+    activeProvider !== "openrouter" ? true : Boolean(accountUsage?.can_use_paid_models);
   const availableQuickModels = getAvailableQuickModels(
-    catalogModels,
+    activeProviderCatalog,
     aiConfig.customModels,
     canUsePaidModels,
-    unavailableModelIds
+    unavailableModelIds,
+    activeProvider
   );
 
-  const activeModel: OpenRouterModelOption = formatModelDisplay(modelId, catalogModels);
+  const activeModel: OpenRouterModelOption = formatModelDisplay(modelId, activeProviderCatalog);
 
   // Lista de elementos reales en la Ventana de Contexto
   const [contextItems, setContextItems] = useState<ContextItem[]>([]);
@@ -649,24 +672,40 @@ export default function App() {
       ? Math.min(100, Math.round((totalActiveTokens / modelContextWindow) * 1000) / 10)
       : 0;
 
-  const freeCatalogCount = catalogModels.filter((m) => m.is_free).length;
+  const freeCatalogCount = activeProviderCatalog.filter((m) => m.is_free).length;
 
   const usageSummary = (() => {
-    if (!aiConfig.hasApiKey) {
+    const activeSlot = aiConfig.configuredProviders?.[activeProvider];
+    const backupTag =
+      configuredProvidersCount > 1
+        ? ` · ${configuredProvidersCount} provs.`
+        : "";
+
+    if (!hasAnyConfiguredKey) {
       return {
-        tierLabel: "Conexión OpenRouter",
+        tierLabel: `Conexión IA · ${activeSpec.shortName}`,
         headline: "Sin conectar",
-        detail: "Conecta tu cuenta para usar los modelos",
+        detail: "Conecta uno o varios proveedores de IA",
         pct: 0,
         connected: false,
       };
     }
 
+    if (activeSlot?.quotaStatus === "exhausted" || activeSlot?.quotaStatus === "cooldown") {
+      return {
+        tierLabel: `${activeSpec.shortName} · Límite`,
+        headline: activeSlot.quotaStatus === "exhausted" ? "Sin cuota" : "En espera",
+        detail: activeSlot.quotaReason || `Respaldo automático ${aiConfig.autoFailover !== false ? "listo" : "inactivo"}${backupTag}`,
+        pct: 100,
+        connected: true,
+      };
+    }
+
     if (!accountUsage) {
       return {
-        tierLabel: "Plan OpenRouter",
-        headline: "Consultando…",
-        detail: `${requestsToday} ${requestsToday === 1 ? "consulta hoy" : "consultas hoy"}`,
+        tierLabel: `${activeSpec.shortName}${backupTag}`,
+        headline: aiConfig.hasApiKey ? "Listo" : "Respaldo",
+        detail: `${requestsToday} ${requestsToday === 1 ? "consulta hoy" : "consultas hoy"} · ${activeSpec.tariffSummary}`,
         pct: 0,
         connected: true,
       };
@@ -674,10 +713,31 @@ export default function App() {
 
     if (!accountUsage.ok) {
       return {
-        tierLabel: "Plan OpenRouter",
+        tierLabel: `${activeSpec.shortName}${backupTag}`,
         headline: "Requiere revisión",
-        detail: accountUsage.message || "Revisa tu conexión con OpenRouter",
+        detail: accountUsage.message || `Revisa tu conexión con ${activeSpec.shortName}`,
         pct: 100,
+        connected: true,
+      };
+    }
+
+    if (activeProvider === "deepseek") {
+      const bal = accountUsage.balance_usd;
+      return {
+        tierLabel: `DeepSeek${backupTag}`,
+        headline: typeof bal === "number" ? `$${bal.toFixed(2)} USD` : "Caché $0.003/1M",
+        detail: `${requestsToday} consultas hoy · Entrada $0.15/1M`,
+        pct: 0,
+        connected: true,
+      };
+    }
+
+    if (activeProvider !== "openrouter") {
+      return {
+        tierLabel: `${activeSpec.shortName}${backupTag}`,
+        headline: activeSpec.supportsPromptCache ? "Caché activo" : activeSpec.tierBadge,
+        detail: `${requestsToday} hoy · ${activeSpec.tariffSummary}`,
+        pct: 0,
         connected: true,
       };
     }
@@ -692,7 +752,7 @@ export default function App() {
         const usedUsd = Math.max(0, accountUsage.limit - accountUsage.limit_remaining);
         const pct = Math.min(100, Math.round((usedUsd / accountUsage.limit) * 100));
         return {
-          tierLabel: "Plan OpenRouter",
+          tierLabel: `OpenRouter${backupTag}`,
           headline: `$${accountUsage.limit_remaining.toFixed(2)} / $${accountUsage.limit.toFixed(2)}`,
           detail: `Hoy: ${spentLabel} USD · ${queryLabel}`,
           pct,
@@ -707,7 +767,7 @@ export default function App() {
         const usedUsd = Math.max(0, accountUsage.credits_total - accountUsage.credits_remaining);
         const pct = Math.min(100, Math.round((usedUsd / accountUsage.credits_total) * 100));
         return {
-          tierLabel: "Saldo OpenRouter",
+          tierLabel: `OpenRouter${backupTag}`,
           headline: `$${accountUsage.credits_remaining.toFixed(2)} USD`,
           detail: `Hoy: ${spentLabel} USD · ${queryLabel}`,
           pct,
@@ -715,7 +775,7 @@ export default function App() {
         };
       }
       return {
-        tierLabel: "Plan OpenRouter",
+        tierLabel: `OpenRouter${backupTag}`,
         headline: "Plan activo",
         detail: `Hoy: ${spentLabel} USD · ${queryLabel}`,
         pct: 0,
@@ -727,7 +787,7 @@ export default function App() {
     const rpmLimit = accountUsage.rpm_free_limit || 20;
     const pct = Math.min(100, Math.round((requestsToday / dailyLimit) * 100));
     return {
-      tierLabel: "Plan gratuito · OpenRouter",
+      tierLabel: `Gratis · OpenRouter${backupTag}`,
       headline: `${requestsToday} de ${dailyLimit} hoy`,
       detail:
         freeCatalogCount > 0
@@ -741,18 +801,20 @@ export default function App() {
   async function refreshModelsAndUsage(
     forceRefresh = false,
     hasKeyOverride?: boolean,
-    maskedKeyOverride?: string | null
+    maskedKeyOverride?: string | null,
+    providerOverride?: AiProviderId
   ) {
+    const targetPid = normalizeProviderIdClient(providerOverride ?? aiConfig.provider);
     setLoadingModels(true);
-    let latestCatalog: OpenRouterModelOption[] = catalogModels;
+    let latestCatalog: OpenRouterModelOption[] = getProviderSpec(targetPid).curatedModels;
     try {
-      const res = await fetchOpenRouterModels(false, forceRefresh);
+      const res = await fetchOpenRouterModels(false, forceRefresh, targetPid);
       if (res.models.length > 0) {
         latestCatalog = res.models;
         setCatalogModels(res.models);
       }
     } catch {
-      // Mantiene catálogo previo o respaldos
+      setCatalogModels(latestCatalog);
     } finally {
       setLoadingModels(false);
     }
@@ -763,9 +825,9 @@ export default function App() {
 
     if (hasKey) {
       try {
-        const usageRes = await testAiConnection();
+        const usageRes = await testAiConnection(targetPid);
         setAccountUsage(usageRes);
-        if (usageRes.ok && !usageRes.can_use_paid_models) {
+        if (targetPid === "openrouter" && usageRes.ok && !usageRes.can_use_paid_models) {
           setModelId((curr) => {
             const info = formatModelDisplay(curr, latestCatalog);
             return info.is_free ? curr : "openrouter/free";
@@ -946,10 +1008,11 @@ export default function App() {
         if (cfg.modelId) {
           setModelId(cfg.modelId);
         }
-        await refreshModelsAndUsage(false, cfg.hasApiKey, cfg.maskedKey);
+        const cfgPid = normalizeProviderIdClient(cfg.provider);
+        await refreshModelsAndUsage(false, cfg.hasApiKey, cfg.maskedKey, cfgPid);
       } catch {
         // Mantiene valores iniciales si aún no hay bóveda
-        await refreshModelsAndUsage(false, false, null);
+        await refreshModelsAndUsage(false, false, null, "openrouter");
       }
     }
     loadData();
@@ -959,6 +1022,7 @@ export default function App() {
     if (!isTauriEnv) return;
     let disposed = false;
     let unlisten: (() => void) | null = null;
+    let unlistenAiConfig: (() => void) | null = null;
     subscribeLedgerUpdated(() => {
       if (disposed) return;
       if (Date.now() < suppressLedgerSyncUntilRef.current) return;
@@ -970,9 +1034,26 @@ export default function App() {
       })
       .catch(() => {});
 
+    import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<AiConfigStatus>("xox-ai-config-updated", (ev) => {
+          if (disposed || !ev.payload) return;
+          const next = ev.payload;
+          setAiConfig(next);
+          if (next.modelId) setModelId(next.modelId);
+          setRequestsToday(getLocalDailyRequestCount(next.maskedKey));
+        })
+      )
+      .then((fn) => {
+        if (disposed) fn();
+        else unlistenAiConfig = fn;
+      })
+      .catch(() => {});
+
     return () => {
       disposed = true;
       unlisten?.();
+      unlistenAiConfig?.();
     };
   }, [isTauriEnv]);
 
@@ -1429,16 +1510,121 @@ export default function App() {
     setShowModelMenu(false);
     inputRef.current?.focus();
     try {
-      const updated = await saveAiConfig({ modelId: nextModelId });
+      const updated = await saveAiConfig({
+        provider: activeProvider,
+        targetProvider: activeProvider,
+        modelId: nextModelId,
+      });
       setAiConfig(updated);
     } catch {
       // Mantiene selección local en caso de error temporal
     }
   };
 
+  const saveVaultKeyDirect = async (
+    targetPid: AiProviderId,
+    rawKey: string,
+    modelIdOverride?: string,
+    recordTitle?: string
+  ) => {
+    const targetSpec = getProviderSpec(targetPid);
+    const cleanedKey = normalizeApiKey(rawKey);
+    const existingSlotModel = aiConfig.configuredProviders?.[targetPid]?.modelId;
+    const chosenInitialModel =
+      modelIdOverride ||
+      existingSlotModel ||
+      (targetPid === activeProvider ? modelId : targetSpec.defaultModelId);
+
+    setXoxState("syncing");
+    setXoxMessage(`Guardando clave de ${targetSpec.shortName} en bóveda y probando conexión...`);
+    const updated = await saveAiConfig({
+      provider: targetPid,
+      targetProvider: targetPid,
+      apiKey: cleanedKey,
+      modelId: chosenInitialModel,
+      clearCooldown: true,
+    });
+    setAiConfig(updated);
+    setModelId(updated.modelId || chosenInitialModel);
+
+    const [testRes, catRes] = await Promise.all([
+      testAiConnection(targetPid),
+      fetchOpenRouterModels(false, true, targetPid).catch(() => ({
+        ok: false,
+        models: targetSpec.curatedModels,
+        source: "presets",
+      })),
+    ]);
+    setAccountUsage(testRes);
+    if (catRes.models.length > 0) {
+      setCatalogModels(catRes.models);
+    }
+    setRequestsToday(getLocalDailyRequestCount(updated.maskedKey));
+
+    let effectiveModel = updated.modelId || chosenInitialModel;
+    if (targetPid === "openrouter" && testRes.ok && !testRes.can_use_paid_models) {
+      const isFreeNow = formatModelDisplay(effectiveModel, catRes.models).is_free;
+      if (!isFreeNow) {
+        effectiveModel = "openrouter/free";
+        setModelId("openrouter/free");
+      }
+    }
+    const maskedLabel = updated.maskedKey ?? "cifrada";
+    const displayCatalog = catRes.models.length > 0 ? catRes.models : targetSpec.curatedModels;
+
+    const fallbackHistory: TaskHistoryItem = {
+      id: `hist_vault_${targetPid}_${Date.now()}`,
+      title: recordTitle ?? `Guardar clave API de ${targetSpec.shortName}`,
+      category: "boveda",
+      decision: "approved",
+      summary: `${targetSpec.shortName} (${maskedLabel})`,
+      timestampLabel: nowTimeLabel(),
+    };
+    if (isTauriEnv) {
+      suppressLedgerSyncUntilRef.current = Date.now() + 450;
+      const savedHist = await recordHistoryEntry({
+        id: fallbackHistory.id,
+        title: fallbackHistory.title,
+        category: fallbackHistory.category,
+        decision: "approved",
+        summary: fallbackHistory.summary,
+        decidedBy: localUser?.name ?? undefined,
+      }).catch(() => null);
+      setHistoryItems((prev) => [savedHist ?? fallbackHistory, ...prev]);
+    } else {
+      setHistoryItems((prev) => [fallbackHistory, ...prev]);
+    }
+
+    setStatusMessage(
+      testRes.ok
+        ? `${targetSpec.shortName} conectado (${maskedLabel}).`
+        : `Clave guardada (${maskedLabel}); revisa la conexión.`
+    );
+    setXoxState(testRes.ok ? "success" : "alert");
+    setXoxMessage(
+      testRes.ok
+        ? `¡${targetSpec.shortName} conectado y listo para trabajar!`
+        : testRes.message
+    );
+    setTimeout(() => {
+      setXoxState((s) => (s === "success" || s === "alert" ? "idle" : s));
+      setXoxMessage("¿En qué puedo ayudarte?");
+    }, 4000);
+    setTimeout(() => setStatusMessage(null), 4500);
+
+    return {
+      targetSpec,
+      updated,
+      testRes,
+      effectiveModel,
+      maskedLabel,
+      displayCatalog,
+    };
+  };
+
   const executeSavePendingKey = async (cardId: string, cardRef?: TaskProposal) => {
-    const secret = pendingSecretKeysRef.current.get(cardId);
-    if (!secret) {
+    const pending = pendingSecretKeysRef.current.get(cardId);
+    if (!pending?.key) {
       setChatMessages((prev) =>
         prev.map((m) =>
           m.actionButton?.cardId === cardId ? { ...m, actionButton: undefined } : m
@@ -1449,50 +1635,16 @@ export default function App() {
       return;
     }
 
-    setXoxState("syncing");
-    setXoxMessage("Guardando clave en bóveda segura y probando conexión...");
+    const targetPid = pending.provider;
     try {
-      const updated = await saveAiConfig({
-        provider: "openrouter",
-        apiKey: secret,
-        modelId,
-      });
+      const saved = await saveVaultKeyDirect(
+        targetPid,
+        pending.key,
+        undefined,
+        cardRef?.title
+      );
       pendingSecretKeysRef.current.delete(cardId);
-      setAiConfig(updated);
-
-      const testRes = await testAiConnection();
-      setAccountUsage(testRes);
-      setRequestsToday(getLocalDailyRequestCount(updated.maskedKey));
-      if (testRes.ok && !testRes.can_use_paid_models) {
-        setModelId((curr) =>
-          formatModelDisplay(curr, catalogModels).is_free ? curr : "openrouter/free"
-        );
-      }
-      const maskedLabel = updated.maskedKey ?? "cifrada";
-
       setTasks((prev) => prev.filter((t) => t.cardId !== cardId));
-      const fallbackHistory: TaskHistoryItem = {
-        id: `hist_${cardId}_${Date.now()}`,
-        title: cardRef?.title ?? "Guardar clave API de OpenRouter",
-        category: "boveda",
-        decision: "approved",
-        summary: `OpenRouter (${maskedLabel})`,
-        timestampLabel: nowTimeLabel(),
-      };
-      if (isTauriEnv) {
-        suppressLedgerSyncUntilRef.current = Date.now() + 450;
-        const savedHist = await recordHistoryEntry({
-          id: fallbackHistory.id,
-          title: fallbackHistory.title,
-          category: fallbackHistory.category,
-          decision: "approved",
-          summary: fallbackHistory.summary,
-          decidedBy: localUser?.name ?? undefined,
-        }).catch(() => null);
-        setHistoryItems((prev) => [savedHist ?? fallbackHistory, ...prev]);
-      } else {
-        setHistoryItems((prev) => [fallbackHistory, ...prev]);
-      }
 
       const nextMessages: UiChatMessage[] = [
         ...chatMessagesRef.current.map((m) =>
@@ -1501,34 +1653,21 @@ export default function App() {
         {
           id: `msg_a_${Date.now()}`,
           role: "assistant",
-          content: testRes.ok
-            ? `Clave guardada en bóveda segura (**${maskedLabel}**) y conexión verificada con OpenRouter.\n\n${testRes.message} Ya puedes conversar conmigo usando **${formatModelDisplay(modelId, catalogModels).name}**.`
-            : `Clave guardada en bóveda segura (**${maskedLabel}**), pero la verificación devolvió un aviso:\n${testRes.message}`,
-          isError: !testRes.ok,
-          actionButton: testRes.ok
+          content: saved.testRes.ok
+            ? `Clave de **${saved.targetSpec.name}** guardada en bóveda segura (**${saved.maskedLabel}**) y conexión verificada.\n\n${saved.testRes.message} Ya puedes conversar conmigo usando **${formatModelDisplay(saved.effectiveModel, saved.displayCatalog).name}**.`
+            : `Clave de **${saved.targetSpec.name}** guardada en bóveda segura (**${saved.maskedLabel}**), pero la verificación devolvió un aviso:\n${saved.testRes.message}`,
+          isError: !saved.testRes.ok,
+          actionButton: saved.testRes.ok
             ? undefined
-            : { label: "Revisar Ajustes OpenRouter", kind: "open_settings" },
+            : {
+                label: `Revisar Ajustes de ${saved.targetSpec.shortName}`,
+                kind: "open_settings",
+                provider: targetPid,
+              },
         },
       ];
       setChatMessages(nextMessages);
       void persistConversation(nextMessages);
-
-      setStatusMessage(
-        testRes.ok
-          ? `OpenRouter conectado (${maskedLabel}).`
-          : `Clave guardada (${maskedLabel}); revisa la conexión.`
-      );
-      setXoxState(testRes.ok ? "success" : "alert");
-      setXoxMessage(
-        testRes.ok
-          ? "¡OpenRouter conectado y listo para trabajar!"
-          : testRes.message
-      );
-      setTimeout(() => {
-        setXoxState((s) => (s === "success" || s === "alert" ? "idle" : s));
-        setXoxMessage("¿En qué puedo ayudarte?");
-      }, 4000);
-      setTimeout(() => setStatusMessage(null), 4500);
     } catch (err) {
       pendingSecretKeysRef.current.delete(cardId);
       console.error(err);
@@ -1539,11 +1678,70 @@ export default function App() {
     }
   };
 
+  const handleSaveInlineVaultKey = async (
+    msgId: string,
+    provider: AiProviderId,
+    rawKeyInput: string,
+    modelIdOverride?: string
+  ): Promise<{ ok: boolean; message: string; maskedKey?: string }> => {
+    const cleanedKey = normalizeApiKey(rawKeyInput);
+    if (!cleanedKey) {
+      return { ok: false, message: "Ingresa una API key válida antes de guardar." };
+    }
+    try {
+      const saved = await saveVaultKeyDirect(provider, cleanedKey, modelIdOverride);
+      const nextMessages: UiChatMessage[] = chatMessagesRef.current.map((m) =>
+        m.id === msgId
+          ? {
+              ...m,
+              actionButton: undefined,
+              vaultPrompt: {
+                provider,
+                intent: m.vaultPrompt?.intent ?? "prompt_key",
+                completed: true,
+                savedMaskedKey: saved.maskedLabel,
+              },
+            }
+          : m
+      );
+      const confirmMsg: UiChatMessage = {
+        id: `msg_a_${Date.now()}`,
+        role: "assistant",
+        content: saved.testRes.ok
+          ? `Listo, guardé tu clave de **${saved.targetSpec.name}** (**${saved.maskedLabel}**) en la bóveda local y verifiqué la conexión.\n\n${saved.testRes.message} Modelo activo: **${formatModelDisplay(saved.effectiveModel, saved.displayCatalog).name}**.`
+          : `Clave de **${saved.targetSpec.name}** guardada en la bóveda (**${saved.maskedLabel}**), pero la prueba devolvió un aviso:\n${saved.testRes.message}`,
+        isError: !saved.testRes.ok,
+        actionButton: saved.testRes.ok
+          ? undefined
+          : {
+              label: `Revisar Ajustes de ${saved.targetSpec.shortName}`,
+              kind: "open_settings",
+              provider,
+            },
+      };
+      const updatedThread = [...nextMessages, confirmMsg];
+      setChatMessages(updatedThread);
+      void persistConversation(updatedThread);
+      return {
+        ok: true,
+        maskedKey: saved.maskedLabel,
+        message: saved.testRes.ok
+          ? `${saved.targetSpec.shortName} conectado (${saved.maskedLabel}).`
+          : `Clave guardada (${saved.maskedLabel}). ${saved.testRes.message}`,
+      };
+    } catch (err) {
+      const errText = extractErrorMessage(err, "No se pudo guardar la clave en la bóveda.");
+      setXoxState("alert");
+      setXoxMessage(errText);
+      return { ok: false, message: errText };
+    }
+  };
+
   const handleChatAction = async (
     action: NonNullable<UiChatMessage["actionButton"]>
   ) => {
     if (action.kind === "open_settings") {
-      openAiSettings("account");
+      openAiSettings("account", action.provider ?? activeProvider);
       return;
     }
     if (action.kind === "open_clarification" && action.clarification) {
@@ -2308,15 +2506,57 @@ export default function App() {
     setInputPrompt("");
     setAttachments([]);
 
-    // 1) Zero-Trust: interceptar claves API localmente antes de cualquier llamada o historial
-    const { detectedKey, maskedKey, sanitizedText } = detectApiKeyInText(query);
+    // 1) Zero-Trust: desambiguación rápida sk- (DeepSeek vs OpenAI) si hay una clave pendiente
+    if (
+      pendingSecretKeysRef.current.size > 0 &&
+      query.length <= 48 &&
+      !/sk-|AIza|gsk_/i.test(query) &&
+      /\b(?:openai|gpt|deepseek)\b/i.test(query)
+    ) {
+      const entries = Array.from(pendingSecretKeysRef.current.entries());
+      const [latestCardId, latestEntry] = entries[entries.length - 1];
+      const chosenPid: AiProviderId = /\b(?:openai|gpt)\b/i.test(query) ? "openai" : "deepseek";
+      pendingSecretKeysRef.current.set(latestCardId, {
+        ...latestEntry,
+        provider: chosenPid,
+      });
+      const userConfirmMsg: UiChatMessage = {
+        id: `msg_u_${Date.now()}`,
+        role: "user",
+        content: query,
+      };
+      setChatMessages([...baseMessages, userConfirmMsg]);
+      const matchingCard = tasksRef.current.find((t) => t.cardId === latestCardId);
+      await executeSavePendingKey(latestCardId, matchingCard);
+      return;
+    }
+
+    // 1b) Zero-Trust: interceptar claves API localmente antes de cualquier llamada o historial
+    const {
+      detectedKey,
+      maskedKey,
+      detectedProvider,
+      ambiguousProviders,
+      sanitizedText,
+    } = detectApiKeyInText(query);
     if (detectedKey && maskedKey) {
+      const targetPid: AiProviderId = detectedProvider ?? activeProvider;
+      const targetSpec = getProviderSpec(targetPid);
       const cardId = `vault_key_${Date.now()}`;
-      pendingSecretKeysRef.current.set(cardId, detectedKey);
+      pendingSecretKeysRef.current.set(cardId, {
+        key: detectedKey,
+        provider: targetPid,
+        ambiguousProviders,
+      });
+
+      const providerDisplay =
+        ambiguousProviders.length > 1
+          ? `${targetSpec.shortName} (o OpenAI)`
+          : targetSpec.name;
 
       const vaultProposal: TaskProposal = {
         cardId,
-        title: "Guardar clave API de OpenRouter",
+        title: `Guardar clave API de ${targetSpec.shortName}`,
         subtitle: `Se detectó una clave (${maskedKey}) en tu mensaje. Aprueba para guardarla en la bóveda local sin enviarla al modelo.`,
         urgency: "media",
         category: "boveda",
@@ -2327,7 +2567,7 @@ export default function App() {
           {
             type: "kv_list",
             rows: [
-              { label: "Proveedor", value: "OpenRouter" },
+              { label: "Proveedor", value: providerDisplay },
               {
                 label: "Clave detectada",
                 value: maskedKey,
@@ -2339,7 +2579,10 @@ export default function App() {
                   ? "Bóveda local Tauri (0600)"
                   : "Almacenamiento local de sesión",
               },
-              { label: "Modelo activo", value: modelId },
+              {
+                label: "Modelo inicial",
+                value: targetPid === activeProvider ? modelId : targetSpec.defaultModelId,
+              },
             ],
           },
           {
@@ -2351,8 +2594,8 @@ export default function App() {
         ],
         intent: {
           type: "save_api_key",
-          targetLabel: `OpenRouter (${maskedKey})`,
-          primaryLabel: "Guardar en bóveda segura",
+          targetLabel: `${targetSpec.shortName} (${maskedKey})`,
+          primaryLabel: `Guardar en ${targetSpec.shortName}`,
         },
         paramValues: {},
       };
@@ -2360,15 +2603,19 @@ export default function App() {
       setTasks((prev) => [vaultProposal, ...prev]);
       setShowRightSidebar(true);
       setTaskTab("pending");
+      const ambiguityNote =
+        ambiguousProviders.length > 1
+          ? `\n\nEl prefijo \`sk-\` es compartido por **DeepSeek** y **OpenAI**. La preparé para **DeepSeek**; si corresponde a OpenAI, respóndeme *"es de openai"* y la guardo allí directo.`
+          : "";
       const nextMessages: UiChatMessage[] = [
         ...chatMessagesRef.current,
         { id: `msg_u_${Date.now()}`, role: "user", content: sanitizedText },
         {
           id: `msg_a_${Date.now() + 1}`,
           role: "assistant",
-          content: `Detecté una clave API (**${maskedKey}**) y la intercepté localmente antes de enviarla a internet.\n\nPor seguridad Zero-Trust, confírmame si quieres guardarla en la bóveda segura y probar la conexión con OpenRouter.`,
+          content: `Detecté una clave de **${targetSpec.name}** (**${maskedKey}**) y la intercepté localmente antes de enviarla a internet.${ambiguityNote}\n\nPor seguridad Zero-Trust, confírmame si quieres guardarla en tu bóveda segura y probar la conexión.`,
           actionButton: {
-            label: "Guardar clave en bóveda segura",
+            label: `Guardar en ${targetSpec.shortName}`,
             kind: "save_pending_key",
             cardId,
           },
@@ -2397,11 +2644,83 @@ export default function App() {
       ...(initialAttachmentsMeta.length > 0 ? { attachments: initialAttachmentsMeta } : {}),
     };
 
-    // 2) Sin clave configurada: informar con honestidad y abrir flujo guiado (cero respuestas mock)
-    if (!aiConfig.hasApiKey) {
-      const wantsSetup = isKeySetupIntent(query);
-      if (wantsSetup) {
-        openAiSettings("account");
+    const setupIntent = detectKeySetupIntentWithProvider(query);
+    const vaultReq = detectVaultConfigRequest(query);
+
+    if (vaultReq.isVaultRequest) {
+      const targetPid: AiProviderId = vaultReq.providerHint ?? activeProvider;
+      const targetSpec = getProviderSpec(targetPid);
+      const targetSlot = aiConfig.configuredProviders?.[targetPid];
+
+      if (vaultReq.intentKind === "switch_provider" && targetSlot?.hasApiKey) {
+        const nextModel = targetSlot.modelId || targetSpec.defaultModelId;
+        const updated = await saveAiConfig({
+          provider: targetPid,
+          modelId: nextModel,
+        });
+        setAiConfig(updated);
+        setModelId(nextModel);
+        void refreshModelsAndUsage(false, true, updated.maskedKey, targetPid);
+        const nextMessages: UiChatMessage[] = [
+          ...chatMessagesRef.current,
+          userMsg,
+          {
+            id: `msg_a_${Date.now() + 1}`,
+            role: "assistant",
+            content: `Listo, cambié el proveedor activo a **${targetSpec.name}** usando **${formatModelDisplay(nextModel, targetSpec.curatedModels).name}** (${targetSlot.maskedKey ?? "clave guardada"}).\n\nTarifa base: ${targetSpec.tariffSummary}.`,
+          },
+        ];
+        setChatMessages(nextMessages);
+        void persistConversation(nextMessages);
+        setXoxState("success");
+        setXoxMessage(`Usando ${targetSpec.shortName}.`);
+        setTimeout(() => {
+          setXoxState((s) => (s === "success" ? "idle" : s));
+          setXoxMessage("¿En qué puedo ayudarte?");
+        }, 3200);
+        return;
+      }
+
+      if (vaultReq.intentKind === "open_vault") {
+        openAiSettings("account", targetPid);
+      }
+
+      const introLine = targetSlot?.hasApiKey
+        ? `Ya tienes una clave guardada para **${targetSpec.name}** (${targetSlot.maskedKey ?? "cifrada"}). Puedes actualizarla aquí mismo en tu bóveda segura o elegir otro proveedor:`
+        : `Claro, puedo guardarla directo en tu bóveda local segura de XOOK. Ingresa aquí tu API key de **${targetSpec.name}** (${targetSpec.keyPrefixHint}) o pégala directo en el chat:`;
+
+      const nextMessages: UiChatMessage[] = [
+        ...chatMessagesRef.current,
+        userMsg,
+        {
+          id: `msg_a_${Date.now() + 1}`,
+          role: "assistant",
+          content: `${introLine}\n\n*Protección Zero-Trust:* tu clave se cifra localmente en tu equipo y nunca viaja al historial ni a ningún modelo externo.`,
+          vaultPrompt: {
+            provider: targetPid,
+            intent: vaultReq.intentKind === "open_vault" ? "open_settings" : "prompt_key",
+            note: `${targetSpec.tariffSummary} · Guardado local en bóveda`,
+          },
+          actionButton: {
+            label: `Abrir Bóveda (${targetSpec.shortName})`,
+            kind: "open_settings",
+            provider: targetPid,
+          },
+        },
+      ];
+      setChatMessages(nextMessages);
+      void persistConversation(nextMessages);
+      setXoxState("idle");
+      setXoxMessage(`Bóveda lista para ${targetSpec.shortName}.`);
+      return;
+    }
+
+    // 2) Sin ninguna clave configurada: informar con honestidad y ofrecer bóveda directa en el chat
+    if (!hasAnyConfiguredKey) {
+      const targetPid = setupIntent.providerHint ?? activeProvider;
+      const targetSpec = getProviderSpec(targetPid);
+      if (setupIntent.isSetup) {
+        openAiSettings("account", targetPid);
       }
       const nextMessages: UiChatMessage[] = [
         ...chatMessagesRef.current,
@@ -2409,23 +2728,29 @@ export default function App() {
         {
           id: `msg_a_${Date.now() + 1}`,
           role: "assistant",
-          content: wantsSetup
-            ? "Abrí los ajustes de OpenRouter para configurar tu acceso.\n\nTambién puedes pegar aquí tu clave `sk-or-v1-...` cuando quieras: la detecto localmente sin exponerla al modelo."
-            : "Aún no tengo una clave de OpenRouter conectada.\n\nConecta tu clave en los ajustes de OpenRouter o pégala en este chat para activarme (incluye modelos gratuitos).",
+          content: setupIntent.isSetup
+            ? `Preparé la bóveda para **${targetSpec.name}**. Ingresa o pega aquí tu clave \`${targetSpec.keyPrefixHint}\` para guardarla localmente.`
+            : "Aún no tienes ningún proveedor de IA conectado.\n\nConecta una clave de **OpenRouter**, **DeepSeek**, **Groq**, **Gemini**, **OpenAI** o **Anthropic** directo aquí abajo o en los ajustes de XOOK.",
+          vaultPrompt: {
+            provider: targetPid,
+            intent: "prompt_key",
+            note: `${targetSpec.tariffSummary} · Bóveda Zero-Trust`,
+          },
           actionButton: {
-            label: "Configurar OpenRouter",
+            label: setupIntent.providerHint ? `Configurar ${targetSpec.shortName}` : "Abrir Bóveda IA",
             kind: "open_settings",
+            provider: targetPid,
           },
         },
       ];
       setChatMessages(nextMessages);
       void persistConversation(nextMessages);
       setXoxState("idle");
-      setXoxMessage("Conecta OpenRouter para iniciar.");
+      setXoxMessage("Conecta un proveedor de IA para iniciar.");
       return;
     }
 
-    // 3) Inferencia real en streaming contra OpenRouter
+    // 3) Inferencia real en streaming contra el proveedor activo (con respaldo automático por cuota)
     const convId = activeConvIdRef.current;
     const assistantMsgId = `msg_a_${Date.now() + 1}`;
     const priorHistory = baseMessages
@@ -2663,6 +2988,7 @@ export default function App() {
           agendaItems,
           attachedContext: [...fileSnippets, ...activeContextSnippets],
           modelOverride: modelId,
+          providerOverride: activeProvider,
           userProfile: localUser
             ? {
                 name: localUser.name,
@@ -2676,6 +3002,18 @@ export default function App() {
         {
           onStreamStart: (sid) => {
             activeStreamIdRef.current = sid;
+          },
+          onProviderFailover: (evt) => {
+            const toSpec = getProviderSpec(evt.toProvider);
+            const label =
+              evt.notice ||
+              `Límite en ${getProviderSpec(evt.fromProvider).shortName} · cambiando a ${toSpec.shortName}...`;
+            setThinkingLabel(label);
+            setXoxMessage(label);
+            setStatusMessage(label);
+            if (evt.modelUsed) {
+              setModelId(evt.modelUsed);
+            }
           },
           onPhase: (state, label) => {
             if (hasEnteredTalking && (state === "reading" || state === "thinking")) {
@@ -2782,6 +3120,13 @@ export default function App() {
               )
             );
           },
+          onVaultAction: (vaultAction) => {
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId ? { ...m, vaultPrompt: vaultAction } : m
+              )
+            );
+          },
           onPdfDraftProgress: (draft) => {
             handlePdfDraftProgress(draft, assistantMsgId);
           },
@@ -2836,49 +3181,92 @@ export default function App() {
       }
 
       setRequestsToday(incrementLocalDailyRequestCount(aiConfig.maskedKey));
-      testAiConnection()
+      const finalPid = res.providerUsed ? normalizeProviderIdClient(res.providerUsed) : activeProvider;
+      if (res.failoverNotice || (res.failoverEvents && res.failoverEvents.length > 0)) {
+        const noticeText =
+          res.failoverNotice ||
+          `Cuota agotada en ${activeSpec.shortName}; continué automáticamente con ${getProviderSpec(finalPid).shortName}.`;
+        setStatusMessage(noticeText);
+        setTimeout(() => setStatusMessage(null), 6500);
+        void getAiConfigStatus().then((fresh) => {
+          setAiConfig(fresh);
+          if (fresh.modelId) setModelId(fresh.modelId);
+        });
+        void fetchOpenRouterModels(false, false, finalPid).then((catRes) => {
+          if (catRes.models.length > 0) setCatalogModels(catRes.models);
+        });
+      }
+      testAiConnection(finalPid)
         .then((u) => setAccountUsage(u))
         .catch(() => {});
 
       const nextClarification = res.clarification ?? null;
+      const nextVaultAction = res.vaultAction ?? undefined;
       const resPdfs = res.generatedPdfs ?? [];
-      const finalMessages = chatMessagesRef.current.map((m) =>
-        m.id === assistantMsgId
-          ? {
-              ...m,
-              content: res.reply,
-              reasoning: res.reasoning || m.reasoning,
-              reasoningDurationMs: res.reasoningDurationMs,
-              thinkingSteps: res.steps ?? m.thinkingSteps,
-              isStreaming: false,
-              isReasoningStreaming: false,
-              modelUsed: res.modelUsed,
-              latencyMs: res.latencyMs,
-              tokensUsed: res.usage?.totalTokens,
-              generatedTaskCount: generatedCount,
-              canvas: finalCanvas ?? m.canvas,
-              generatedPdfs: (() => {
-                const base = m.generatedPdfs ?? [];
-                if (resPdfs.length === 0) return base.length > 0 ? base : undefined;
-                const byPath = new Map<string, GeneratedPdfArtifact>();
-                for (const p of base) byPath.set(p.path, p);
-                for (const p of resPdfs) byPath.set(p.path, p);
-                return Array.from(byPath.values());
-              })(),
-              actionButton: nextClarification
-                ? {
-                    label: "Responder preguntas",
-                    kind: "open_clarification" as const,
-                    clarification: nextClarification,
-                  }
-                : m.actionButton,
-            }
-          : m
-      );
+      const replyWithFailover =
+        res.failoverNotice && res.reply && !res.reply.includes(res.failoverNotice)
+          ? `> *Nota de respaldo automático:* ${res.failoverNotice}\n\n${res.reply}`
+          : res.reply;
+      const finalMessages = chatMessagesRef.current.map((m) => {
+        if (m.id !== assistantMsgId) return m;
+        const resolvedVault = nextVaultAction ?? m.vaultPrompt;
+        return {
+          ...m,
+          content: replyWithFailover,
+          reasoning: res.reasoning || m.reasoning,
+          reasoningDurationMs: res.reasoningDurationMs,
+          thinkingSteps: res.steps ?? m.thinkingSteps,
+          isStreaming: false,
+          isReasoningStreaming: false,
+          modelUsed: res.modelUsed,
+          latencyMs: res.latencyMs,
+          tokensUsed: res.usage?.totalTokens,
+          generatedTaskCount: generatedCount,
+          canvas: finalCanvas ?? m.canvas,
+          vaultPrompt: resolvedVault,
+          generatedPdfs: (() => {
+            const base = m.generatedPdfs ?? [];
+            if (resPdfs.length === 0) return base.length > 0 ? base : undefined;
+            const byPath = new Map<string, GeneratedPdfArtifact>();
+            for (const p of base) byPath.set(p.path, p);
+            for (const p of resPdfs) byPath.set(p.path, p);
+            return Array.from(byPath.values());
+          })(),
+          actionButton: nextClarification
+            ? {
+                label: "Responder preguntas",
+                kind: "open_clarification" as const,
+                clarification: nextClarification,
+              }
+            : resolvedVault
+              ? {
+                  label: `Abrir Bóveda (${getProviderSpec(resolvedVault.provider).shortName})`,
+                  kind: "open_settings" as const,
+                  provider: resolvedVault.provider,
+                }
+              : m.actionButton,
+        };
+      });
       setChatMessages(finalMessages);
       void persistConversation(finalMessages, convId);
       if (nextClarification) {
         setActiveClarification(nextClarification);
+      }
+      if (nextVaultAction?.intent === "open_settings") {
+        openAiSettings("account", nextVaultAction.provider);
+      } else if (
+        nextVaultAction?.intent === "switch_provider" &&
+        aiConfig.configuredProviders?.[nextVaultAction.provider]?.hasApiKey
+      ) {
+        const targetSlot = aiConfig.configuredProviders[nextVaultAction.provider];
+        const nextModel = targetSlot?.modelId || getProviderSpec(nextVaultAction.provider).defaultModelId;
+        void saveAiConfig({
+          provider: nextVaultAction.provider,
+          modelId: nextModel,
+        }).then((updated) => {
+          setAiConfig(updated);
+          setModelId(updated.modelId || nextModel);
+        });
       }
 
       setIsChatStreaming(false);
@@ -2947,13 +3335,14 @@ export default function App() {
       }
       const message = extractErrorMessage(
         err,
-        "No se pudo completar la consulta con OpenRouter."
+        `No se pudo completar la consulta con ${activeSpec.name}.`
       );
       const lowerMsg = message.toLowerCase();
       if (
         lowerMsg.includes("402") ||
         lowerMsg.includes("saldo") ||
         lowerMsg.includes("créditos") ||
+        lowerMsg.includes("cuota") ||
         lowerMsg.includes("no está disponible") ||
         lowerMsg.includes("404")
       ) {
@@ -2963,8 +3352,13 @@ export default function App() {
           return next;
         });
       }
-      if (aiConfig.hasApiKey) {
-        testAiConnection()
+      if (hasAnyConfiguredKey) {
+        void getAiConfigStatus()
+          .then((fresh) => {
+            setAiConfig(fresh);
+            if (fresh.modelId) setModelId(fresh.modelId);
+            return testAiConnection(fresh.provider);
+          })
           .then((u) => setAccountUsage(u))
           .catch(() => {});
       }
@@ -2972,7 +3366,7 @@ export default function App() {
         m.id === assistantMsgId
           ? {
               ...m,
-              content: `Error al consultar OpenRouter: ${message}`,
+              content: `Error al consultar ${activeSpec.name}: ${message}`,
               thinkingSteps: m.thinkingSteps?.map((s) =>
                 s.status === "running" ? { ...s, status: "error" as const } : s
               ),
@@ -2980,7 +3374,7 @@ export default function App() {
               isReasoningStreaming: false,
               isError: true,
               actionButton: {
-                label: "Revisar clave y modelo",
+                label: "Revisar proveedores y claves",
                 kind: "open_settings" as const,
               },
             }
@@ -3803,16 +4197,18 @@ export default function App() {
                 >
                   {/* Estado de OpenRouter + Memoria de conversación (monocromo negro/gris) */}
                   <div className="mx-2.5 mt-2.5 mb-1.5 rounded-xl bg-[#0b0c10] border border-white/[0.08] p-2.5 space-y-2 shrink-0">
-                    {/* Consumo y límite real de OpenRouter */}
+                    {/* Consumo y estado del proveedor de IA */}
                     <div>
                       <div className="flex items-center justify-between gap-2 text-[11px] mb-1.5">
                         <span className="flex items-center gap-1.5 text-zinc-100 font-medium truncate">
-                          <Activity
-                            className={`w-3.5 h-3.5 shrink-0 ${
+                          <ProviderIcon
+                            provider={activeProvider}
+                            size={14}
+                            className={`shrink-0 ${
                               accountUsage && !accountUsage.ok
                                 ? "text-zinc-400"
                                 : usageSummary.connected
-                                ? "text-zinc-300"
+                                ? "text-zinc-200"
                                 : "text-zinc-500"
                             }`}
                           />
@@ -3821,7 +4217,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => refreshModelsAndUsage(true)}
-                          title="Actualizar límites de OpenRouter y modelos disponibles"
+                          title={`Actualizar límites y modelos de ${activeSpec.shortName}`}
                           className="inline-flex items-center gap-1.5 text-[11px] font-mono text-zinc-300 hover:text-white transition-colors shrink-0 cursor-pointer rounded px-1 py-0.5 focus-visible:outline-2 focus-visible:outline-white/60"
                         >
                           <span className="tabular-nums">{usageSummary.headline}</span>
@@ -3855,10 +4251,10 @@ export default function App() {
                         <span className="truncate">{usageSummary.detail}</span>
                         <button
                           type="button"
-                          onClick={() => openAiSettings(aiConfig.hasApiKey ? "models" : "account")}
+                          onClick={() => openAiSettings(hasAnyConfiguredKey ? "models" : "account")}
                           className="px-2 py-0.5 rounded-md bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.09] text-zinc-200 hover:text-white font-medium shrink-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-white/60"
                         >
-                          {aiConfig.hasApiKey ? "Cambiar modelo" : "Conectar"}
+                          {hasAnyConfiguredKey ? "Proveedores" : "Conectar"}
                         </button>
                       </div>
                     </div>
@@ -4247,14 +4643,14 @@ export default function App() {
                             {displayXoxStatus.message}
                           </p>
                         </div>
-                      ) : !aiConfig.hasApiKey ? (
+                      ) : !hasAnyConfiguredKey ? (
                         <button
                           type="button"
                           onClick={() => openAiSettings("account")}
                           className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-100 underline-offset-4 hover:underline transition-colors cursor-pointer"
                         >
                           <KeyRound className="w-3 h-3" />
-                          <span>Conectar clave OpenRouter</span>
+                          <span>Conectar proveedor de IA</span>
                         </button>
                       ) : conversations.length > 0 ? (
                         <button
@@ -4291,6 +4687,8 @@ export default function App() {
                     modelCatalog={catalogModels}
                     onXoxClick={handleXoxClick}
                     onAction={handleChatAction}
+                    onSaveInlineVaultKey={handleSaveInlineVaultKey}
+                    onOpenAiVaultModal={(pid) => openAiSettings("account", pid ?? activeProvider)}
                     onOpenTasksTab={() => {
                       setShowRightSidebar(true);
                       setTaskTab("pending");
@@ -4545,8 +4943,8 @@ export default function App() {
                         aria-expanded={showModelMenu}
                         className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] text-zinc-200 hover:text-white cursor-pointer"
                       >
-                        <Cpu className="w-3 h-3 text-white/80" />
-                        <span className="hidden @sm:inline">{activeModel.name}</span>
+                        <ProviderIcon provider={activeProvider} size={13} className="text-white/85 shrink-0" />
+                        <span className="hidden @sm:inline truncate max-w-[160px]">{activeModel.name}</span>
                         <ChevronDown className={`w-3 h-3 text-white/65 transition-transform ${showModelMenu ? "rotate-180" : ""}`} />
                       </button>
                       {modelMenuPresence.mounted && (
@@ -4568,11 +4966,12 @@ export default function App() {
 
                           <div className="relative z-[1]">
                             <div className="px-2.5 py-1.5 flex items-center justify-between gap-2 border-b border-white/[0.08] mb-1.5">
-                              <div className="flex items-center gap-2 min-w-0">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <ProviderIcon provider={activeProvider} size={12} className="text-zinc-200 shrink-0" />
                                 <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-300/85 truncate">
-                                  Modelos ({availableQuickModels.length})
+                                  {activeSpec.shortName} ({availableQuickModels.length})
                                 </span>
-                                {!canUsePaidModels && (
+                                {activeProvider === "openrouter" && !canUsePaidModels && (
                                   <span className="quick-liquid-chip px-1.5 py-0.5 rounded-full text-[9px] font-medium text-zinc-300/90 shrink-0">
                                     {aiConfig.hasApiKey ? "Sin saldo · gratis" : "Gratis"}
                                   </span>
@@ -4604,8 +5003,8 @@ export default function App() {
                                     e.stopPropagation();
                                     void refreshModelsAndUsage(true);
                                   }}
-                                  aria-label="Actualizar catálogo y límites de OpenRouter"
-                                  title="Actualizar catálogo y límites de OpenRouter"
+                                  aria-label={`Actualizar catálogo y estado de ${activeSpec.shortName}`}
+                                  title={`Actualizar catálogo y estado de ${activeSpec.shortName}`}
                                   className="w-6 h-6 rounded-full flex items-center justify-center text-zinc-300/80 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0"
                                 >
                                   <RefreshCw className={`w-3 h-3 ${loadingModels ? "animate-spin" : ""}`} />
@@ -4638,11 +5037,16 @@ export default function App() {
                                   <span className="min-w-0">
                                     <span className="flex items-center gap-1.5 text-xs font-medium text-white truncate [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]">
                                       <span className="truncate">{m.name}</span>
-                                      {canUsePaidModels && m.is_free && (
+                                      {m.is_free ? (
                                         <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[9px] font-medium text-zinc-200/90 shrink-0">
                                           gratis
                                         </span>
-                                      )}
+                                      ) : typeof m.prompt_price_per_million === "number" &&
+                                        m.prompt_price_per_million > 0 ? (
+                                        <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[9px] font-mono text-zinc-300/90 shrink-0 tabular-nums">
+                                          {formatPricePerMillion(m.prompt_price_per_million)}/1M
+                                        </span>
+                                      ) : null}
                                     </span>
                                     <span className="block text-[10.5px] text-zinc-300/75 truncate [text-shadow:0_1px_3px_rgba(4,8,18,0.6)]">
                                       {m.hint}
@@ -4675,7 +5079,7 @@ export default function App() {
                                 <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
                                   <KeyRound className="w-2.5 h-2.5 text-white/85" />
                                 </span>
-                                <span>Ver catálogo completo y límites…</span>
+                                <span>Proveedores, tarifas y respaldo…</span>
                               </button>
                             </div>
                           </div>
@@ -4988,6 +5392,7 @@ export default function App() {
       <OpenRouterSettingsModal
         isOpen={showAiSettings}
         initialTab={aiSettingsTab}
+        initialProvider={aiSettingsProvider}
         config={aiConfig}
         accountUsage={accountUsage}
         catalogModels={catalogModels}
@@ -5002,7 +5407,7 @@ export default function App() {
         }}
         onUsageUpdated={(usage) => {
           setAccountUsage(usage);
-          if (usage?.ok && usage.can_use_paid_models) {
+          if (usage?.ok && (usage.can_use_paid_models || normalizeProviderIdClient(aiConfig.provider) !== "openrouter")) {
             setUnavailableModelIds(new Set());
           }
         }}

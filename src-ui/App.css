@@ -1296,9 +1296,9 @@ dialog.xook-liquid-dialog {
   inset: 0;
   margin: auto;
   padding: 0;
-  width: min(44rem, calc(100vw - 2rem));
+  width: min(48rem, calc(100vw - 2rem));
   max-width: calc(100vw - 2rem);
-  height: min(39rem, 84vh);
+  height: min(43rem, 86vh);
   max-height: 88vh;
   border: none;
   border-radius: 1.375rem;

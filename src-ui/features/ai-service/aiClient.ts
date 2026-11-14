@@ -16,7 +16,12 @@ import {
   ClarificationSpec,
   sanitizeClarificationSpec,
 } from "./clarificationSchema";
-export type { ClarificationSpec };
+import {
+  AiProviderId,
+  normalizeProviderIdClient,
+} from "./ProviderIcon";
+export type { ClarificationSpec, AiProviderId };
+export { normalizeProviderIdClient };
 
 const BROWSER_CANVAS_TOOL_DEF = {
   type: "function",
@@ -98,67 +103,507 @@ const BROWSER_CLARIFICATION_TOOL_DEF = {
   },
 };
 
+const BROWSER_VAULT_CONFIG_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "configure_ai_vault",
+    description:
+      "Abre el formulario cifrado Zero-Trust dentro del chat de XOOK para guardar una API key en la bóveda local o cambiar el proveedor de IA activo (openrouter, deepseek, groq, gemini, openai, anthropic).",
+    parameters: {
+      type: "object",
+      properties: {
+        provider: {
+          type: "string",
+          enum: ["openrouter", "deepseek", "groq", "gemini", "openai", "anthropic"],
+        },
+        action: {
+          type: "string",
+          enum: ["prompt_key", "switch_provider", "open_settings"],
+        },
+        note: { type: "string" },
+      },
+      required: ["provider", "action"],
+    },
+  },
+};
+
 export interface OpenRouterModelOption {
   id: string;
   name: string;
+  provider_id?: AiProviderId | string;
   provider_name?: string;
   hint: string;
   is_free: boolean;
   context_length?: number | null;
   prompt_price_per_million?: number | null;
   completion_price_per_million?: number | null;
+  cache_price_per_million?: number | null;
 }
 
-export const OPENROUTER_PRESET_MODELS: OpenRouterModelOption[] = [
-  {
-    id: "openrouter/free",
-    name: "Automático (Gratis)",
-    provider_name: "OpenRouter",
-    hint: "Elige el mejor modelo gratuito disponible",
-    is_free: true,
-    context_length: 200000,
-  },
-  {
-    id: "openrouter/auto",
-    name: "Automático (Estándar)",
-    provider_name: "OpenRouter",
-    hint: "Enruta al mejor modelo según la tarea",
-    is_free: false,
-    context_length: 2000000,
-  },
-  {
-    id: "google/gemini-2.5-flash",
-    name: "Gemini 2.5 Flash",
-    provider_name: "Google",
-    hint: "Rápido y económico",
-    is_free: false,
-    context_length: 1000000,
-  },
-  {
-    id: "openai/gpt-4o-mini",
-    name: "GPT-4o Mini",
-    provider_name: "OpenAI",
-    hint: "Preciso y ligero",
-    is_free: false,
-    context_length: 128000,
-  },
-  {
-    id: "openai/gpt-4o",
-    name: "GPT-4o",
-    provider_name: "OpenAI",
-    hint: "Modelo insignia de OpenAI",
-    is_free: false,
-    context_length: 128000,
-  },
-  {
-    id: "anthropic/claude-3.5-sonnet",
-    name: "Claude 3.5 Sonnet",
-    provider_name: "Anthropic",
-    hint: "Razonamiento profundo",
-    is_free: false,
-    context_length: 200000,
-  },
+export interface AiProviderSpec {
+  id: AiProviderId;
+  name: string;
+  shortName: string;
+  baseUrl: string;
+  defaultModelId: string;
+  tierBadge: string;
+  tariffSummary: string;
+  inputPriceHint: string;
+  outputPriceHint: string;
+  cachePriceHint: string;
+  rateLimitNote: string;
+  keyPrefixHint: string;
+  docsUrl: string;
+  supportsPromptCache: boolean;
+  supportsFreeTier: boolean;
+  curatedModels: OpenRouterModelOption[];
+}
+
+export const DEFAULT_FAILOVER_ORDER: AiProviderId[] = [
+  "openrouter",
+  "deepseek",
+  "groq",
+  "gemini",
+  "openai",
+  "anthropic",
 ];
+
+export const AI_PROVIDERS: Record<AiProviderId, AiProviderSpec> = {
+  openrouter: {
+    id: "openrouter",
+    name: "OpenRouter",
+    shortName: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    defaultModelId: "openrouter/free",
+    tierBadge: "Gratis + $5",
+    tariffSummary: "$0 en modelos :free · Enrutamiento multi-modelo",
+    inputPriceHint: "$0.00 (free)",
+    outputPriceHint: "$0.00 (free)",
+    cachePriceHint: "Según modelo",
+    rateLimitNote: "50 req/día sin saldo (1,000/día al recargar $5+); 20 RPM.",
+    keyPrefixHint: "sk-or-v1-...",
+    docsUrl: "https://openrouter.ai/keys",
+    supportsPromptCache: false,
+    supportsFreeTier: true,
+    curatedModels: [
+      {
+        id: "openrouter/free",
+        name: "Automático (Gratis)",
+        provider_id: "openrouter",
+        provider_name: "OpenRouter",
+        hint: "Elige el mejor modelo gratuito disponible",
+        is_free: true,
+        context_length: 200000,
+        prompt_price_per_million: 0,
+        completion_price_per_million: 0,
+      },
+      {
+        id: "openrouter/auto",
+        name: "Automático (Estándar)",
+        provider_id: "openrouter",
+        provider_name: "OpenRouter",
+        hint: "Enruta al mejor modelo según la tarea",
+        is_free: false,
+        context_length: 2000000,
+      },
+      {
+        id: "google/gemini-2.5-flash",
+        name: "Gemini 2.5 Flash",
+        provider_id: "openrouter",
+        provider_name: "Google",
+        hint: "Rápido y económico vía OpenRouter",
+        is_free: false,
+        context_length: 1000000,
+        prompt_price_per_million: 0.3,
+        completion_price_per_million: 2.5,
+      },
+      {
+        id: "openai/gpt-4o-mini",
+        name: "GPT-4o Mini",
+        provider_id: "openrouter",
+        provider_name: "OpenAI",
+        hint: "Preciso y ligero",
+        is_free: false,
+        context_length: 128000,
+        prompt_price_per_million: 0.15,
+        completion_price_per_million: 0.6,
+      },
+      {
+        id: "anthropic/claude-sonnet-4-6",
+        name: "Claude Sonnet 4.6",
+        provider_id: "openrouter",
+        provider_name: "Anthropic",
+        hint: "Razonamiento profundo vía OpenRouter",
+        is_free: false,
+        context_length: 200000,
+        prompt_price_per_million: 3.0,
+        completion_price_per_million: 15.0,
+      },
+    ],
+  },
+  deepseek: {
+    id: "deepseek",
+    name: "DeepSeek Directo",
+    shortName: "DeepSeek",
+    baseUrl: "https://api.deepseek.com",
+    defaultModelId: "deepseek-flash",
+    tierBadge: "Ultra barato",
+    tariffSummary: "$0.15/1M in · Caché en disco $0.003/1M",
+    inputPriceHint: "$0.15 / 1M",
+    outputPriceHint: "$0.60 / 1M",
+    cachePriceHint: "$0.003 / 1M (automático)",
+    rateLimitNote: "Sin límite rígido por RPM; con $2 USD rinde millones de tokens.",
+    keyPrefixHint: "sk-...",
+    docsUrl: "https://platform.deepseek.com/api_keys",
+    supportsPromptCache: true,
+    supportsFreeTier: false,
+    curatedModels: [
+      {
+        id: "deepseek-flash",
+        name: "DeepSeek Flash (V4)",
+        provider_id: "deepseek",
+        provider_name: "DeepSeek",
+        hint: "Ultra costo-beneficio con caché en disco automático",
+        is_free: false,
+        context_length: 128000,
+        prompt_price_per_million: 0.15,
+        completion_price_per_million: 0.6,
+        cache_price_per_million: 0.003,
+      },
+      {
+        id: "deepseek-v4-pro",
+        name: "DeepSeek V4 Pro",
+        provider_id: "deepseek",
+        provider_name: "DeepSeek",
+        hint: "Mayor precisión analítica y agente complejo",
+        is_free: false,
+        context_length: 128000,
+        prompt_price_per_million: 0.66,
+        completion_price_per_million: 1.98,
+        cache_price_per_million: 0.066,
+      },
+      {
+        id: "deepseek-chat",
+        name: "DeepSeek Chat",
+        provider_id: "deepseek",
+        provider_name: "DeepSeek",
+        hint: "Alias directo rápido",
+        is_free: false,
+        context_length: 128000,
+        prompt_price_per_million: 0.28,
+        completion_price_per_million: 0.42,
+        cache_price_per_million: 0.028,
+      },
+      {
+        id: "deepseek-reasoner",
+        name: "DeepSeek Reasoner",
+        provider_id: "deepseek",
+        provider_name: "DeepSeek",
+        hint: "Cadena de pensamiento extendida",
+        is_free: false,
+        context_length: 128000,
+        prompt_price_per_million: 0.28,
+        completion_price_per_million: 0.42,
+        cache_price_per_million: 0.028,
+      },
+    ],
+  },
+  groq: {
+    id: "groq",
+    name: "Groq (LPUs)",
+    shortName: "Groq",
+    baseUrl: "https://api.groq.com/openai/v1",
+    defaultModelId: "openai/gpt-oss-120b",
+    tierBadge: "Gratis rápido",
+    tariffSummary: "Tier gratuito sin tarjeta · Desde $0.05/1M pago",
+    inputPriceHint: "$0 gratis · $0.05-$0.15/1M",
+    outputPriceHint: "$0 gratis · $0.08-$0.60/1M",
+    cachePriceHint: "No aplica",
+    rateLimitNote: "~30 RPM y cuota TPM gratis en hardware LPU ultra veloz.",
+    keyPrefixHint: "gsk_...",
+    docsUrl: "https://console.groq.com/keys",
+    supportsPromptCache: false,
+    supportsFreeTier: true,
+    curatedModels: [
+      {
+        id: "openai/gpt-oss-120b",
+        name: "GPT-OSS 120B (LPU)",
+        provider_id: "groq",
+        provider_name: "Groq",
+        hint: "Insignia de 120B ultra veloz con herramientas",
+        is_free: true,
+        context_length: 131072,
+        prompt_price_per_million: 0.15,
+        completion_price_per_million: 0.6,
+      },
+      {
+        id: "openai/gpt-oss-20b",
+        name: "GPT-OSS 20B (LPU)",
+        provider_id: "groq",
+        provider_name: "Groq",
+        hint: "Baja latencia e iteración de loops",
+        is_free: true,
+        context_length: 131072,
+        prompt_price_per_million: 0.075,
+        completion_price_per_million: 0.3,
+      },
+      {
+        id: "meta-llama/llama-4-scout-17b-16e-instruct",
+        name: "Llama 4 Scout 17B",
+        provider_id: "groq",
+        provider_name: "Groq",
+        hint: "Multimodal rápido con soporte de visión",
+        is_free: true,
+        context_length: 131072,
+        prompt_price_per_million: 0.11,
+        completion_price_per_million: 0.34,
+      },
+      {
+        id: "llama-3.1-8b-instant",
+        name: "Llama 3.1 8B Instant",
+        provider_id: "groq",
+        provider_name: "Groq",
+        hint: "Ultra ligero y veloz en cuota gratuita",
+        is_free: true,
+        context_length: 131072,
+        prompt_price_per_million: 0.05,
+        completion_price_per_million: 0.08,
+      },
+    ],
+  },
+  gemini: {
+    id: "gemini",
+    name: "Google Gemini",
+    shortName: "Gemini",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    defaultModelId: "gemini-2.5-flash-lite",
+    tierBadge: "Gratis limitado",
+    tariffSummary: "Free tier (tokens limitados) · Desde $0.10/1M",
+    inputPriceHint: "$0 gratis · $0.10-$1.25/1M",
+    outputPriceHint: "$0 gratis · $0.40-$10.00/1M",
+    cachePriceHint: "$0.025-$0.31/1M",
+    rateLimitNote: "Free tier con TPM/RPD acotado; Flash-Lite estira mucho la cuota.",
+    keyPrefixHint: "AIza...",
+    docsUrl: "https://aistudio.google.com/apikey",
+    supportsPromptCache: true,
+    supportsFreeTier: true,
+    curatedModels: [
+      {
+        id: "gemini-2.5-flash-lite",
+        name: "Gemini 2.5 Flash-Lite",
+        provider_id: "gemini",
+        provider_name: "Google",
+        hint: "Cuota gratuita más amplia y menor costo por token",
+        is_free: true,
+        context_length: 1000000,
+        prompt_price_per_million: 0.1,
+        completion_price_per_million: 0.4,
+        cache_price_per_million: 0.025,
+      },
+      {
+        id: "gemini-2.5-flash",
+        name: "Gemini 2.5 Flash",
+        provider_id: "gemini",
+        provider_name: "Google",
+        hint: "Multimodal equilibrado con contexto 1M",
+        is_free: true,
+        context_length: 1000000,
+        prompt_price_per_million: 0.3,
+        completion_price_per_million: 2.5,
+        cache_price_per_million: 0.075,
+      },
+      {
+        id: "gemini-2.5-pro",
+        name: "Gemini 2.5 Pro",
+        provider_id: "gemini",
+        provider_name: "Google",
+        hint: "Razonamiento complejo (menor cuota gratis)",
+        is_free: false,
+        context_length: 1000000,
+        prompt_price_per_million: 1.25,
+        completion_price_per_million: 10.0,
+        cache_price_per_million: 0.3125,
+      },
+    ],
+  },
+  openai: {
+    id: "openai",
+    name: "OpenAI Directo",
+    shortName: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    defaultModelId: "gpt-4.1-mini",
+    tierBadge: "Pro Dev",
+    tariffSummary: "Desde $0.10/1M in · Prompt caching 75%",
+    inputPriceHint: "$0.10-$2.00 / 1M",
+    outputPriceHint: "$0.40-$8.00 / 1M",
+    cachePriceHint: "75% descuento (automático)",
+    rateLimitNote: "Requiere saldo prepago; ideal para desarrolladores con clave propia.",
+    keyPrefixHint: "sk-proj-...",
+    docsUrl: "https://platform.openai.com/api-keys",
+    supportsPromptCache: true,
+    supportsFreeTier: false,
+    curatedModels: [
+      {
+        id: "gpt-4.1-mini",
+        name: "GPT-4.1 Mini",
+        provider_id: "openai",
+        provider_name: "OpenAI",
+        hint: "Rápido, preciso en JSON/tools y económico",
+        is_free: false,
+        context_length: 1000000,
+        prompt_price_per_million: 0.4,
+        completion_price_per_million: 1.6,
+        cache_price_per_million: 0.1,
+      },
+      {
+        id: "gpt-4.1-nano",
+        name: "GPT-4.1 Nano",
+        provider_id: "openai",
+        provider_name: "OpenAI",
+        hint: "Ultra bajo costo para clasificación rápida",
+        is_free: false,
+        context_length: 1000000,
+        prompt_price_per_million: 0.1,
+        completion_price_per_million: 0.4,
+        cache_price_per_million: 0.025,
+      },
+      {
+        id: "gpt-4.1",
+        name: "GPT-4.1",
+        provider_id: "openai",
+        provider_name: "OpenAI",
+        hint: "Alta capacidad en código y análisis extenso",
+        is_free: false,
+        context_length: 1000000,
+        prompt_price_per_million: 2.0,
+        completion_price_per_million: 8.0,
+        cache_price_per_million: 0.5,
+      },
+      {
+        id: "gpt-4o-mini",
+        name: "GPT-4o Mini",
+        provider_id: "openai",
+        provider_name: "OpenAI",
+        hint: "Multimodal ligero",
+        is_free: false,
+        context_length: 128000,
+        prompt_price_per_million: 0.15,
+        completion_price_per_million: 0.6,
+        cache_price_per_million: 0.075,
+      },
+      {
+        id: "o4-mini",
+        name: "o4-mini (Reasoning)",
+        provider_id: "openai",
+        provider_name: "OpenAI",
+        hint: "Razonamiento paso a paso",
+        is_free: false,
+        context_length: 200000,
+        prompt_price_per_million: 1.1,
+        completion_price_per_million: 4.4,
+        cache_price_per_million: 0.275,
+      },
+    ],
+  },
+  anthropic: {
+    id: "anthropic",
+    name: "Anthropic (Claude)",
+    shortName: "Anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    defaultModelId: "claude-sonnet-4-6",
+    tierBadge: "Pro Claude",
+    tariffSummary: "Desde $0.10–$3/1M in · Caché 90% dto.",
+    inputPriceHint: "$0.10-$3.00 / 1M",
+    outputPriceHint: "$0.50-$15.00 / 1M",
+    cachePriceHint: "$0.01-$0.30 / 1M (-90%)",
+    rateLimitNote: "API nativa /v1/messages con prompt caching explícito (-90% lecturas).",
+    keyPrefixHint: "sk-ant-...",
+    docsUrl: "https://console.anthropic.com/settings/keys",
+    supportsPromptCache: true,
+    supportsFreeTier: false,
+    curatedModels: [
+      {
+        id: "claude-sonnet-4-6",
+        name: "Claude Sonnet 4.6",
+        provider_id: "anthropic",
+        provider_name: "Anthropic",
+        hint: "Insignia de código, análisis y tool calling",
+        is_free: false,
+        context_length: 200000,
+        prompt_price_per_million: 3.0,
+        completion_price_per_million: 15.0,
+        cache_price_per_million: 0.3,
+      },
+      {
+        id: "claude-haiku-4-5",
+        name: "Claude Haiku 4.5",
+        provider_id: "anthropic",
+        provider_name: "Anthropic",
+        hint: "Claude veloz y económico",
+        is_free: false,
+        context_length: 200000,
+        prompt_price_per_million: 1.0,
+        completion_price_per_million: 5.0,
+        cache_price_per_million: 0.1,
+      },
+      {
+        id: "claude-sonnet-5-5",
+        name: "Claude Sonnet 5.5",
+        provider_id: "anthropic",
+        provider_name: "Anthropic",
+        hint: "Generación reciente equilibrada",
+        is_free: false,
+        context_length: 200000,
+        prompt_price_per_million: 2.0,
+        completion_price_per_million: 10.0,
+        cache_price_per_million: 0.2,
+      },
+      {
+        id: "claude-haiku-5-5",
+        name: "Claude Haiku 5.5",
+        provider_id: "anthropic",
+        provider_name: "Anthropic",
+        hint: "Ultra económico con caché (-90%)",
+        is_free: false,
+        context_length: 200000,
+        prompt_price_per_million: 0.1,
+        completion_price_per_million: 0.5,
+        cache_price_per_million: 0.01,
+      },
+    ],
+  },
+};
+
+export const AI_PROVIDER_LIST: AiProviderSpec[] = DEFAULT_FAILOVER_ORDER.map(
+  (id) => AI_PROVIDERS[id]
+);
+
+export function getProviderSpec(provider?: string | null): AiProviderSpec {
+  return AI_PROVIDERS[normalizeProviderIdClient(provider)];
+}
+
+export function formatPricePerMillion(usd?: number | null): string {
+  if (usd === null || usd === undefined || Number.isNaN(usd)) return "Variable";
+  if (usd <= 0) return "Gratis";
+  if (usd < 0.01) return `$${usd.toFixed(3)}`;
+  if (usd < 1) return `$${usd.toFixed(2)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+export const OPENROUTER_PRESET_MODELS: OpenRouterModelOption[] =
+  AI_PROVIDERS.openrouter.curatedModels;
+
+export interface ProviderPublicStatus {
+  provider: AiProviderId | string;
+  modelId: string;
+  hasApiKey: boolean;
+  maskedKey: string | null;
+  keySource: "vault" | "env" | "browser" | "none";
+  customModels: string[];
+  cooldownUntilMs?: number | null;
+  quotaStatus?: "ready" | "cooldown" | "exhausted" | "auth_error";
+  quotaReason?: string | null;
+}
 
 export interface AiConfigStatus {
   provider: string;
@@ -167,18 +612,26 @@ export interface AiConfigStatus {
   maskedKey: string | null;
   keySource: "vault" | "env" | "browser" | "none";
   customModels: string[];
+  autoFailover?: boolean;
+  failoverOrder?: string[];
+  configuredProviders?: Record<string, ProviderPublicStatus>;
 }
 
 export interface SaveAiConfigInput {
   provider?: string;
+  targetProvider?: string;
   modelId?: string;
   apiKey?: string;
   clearKey?: boolean;
   customModels?: string[];
+  autoFailover?: boolean;
+  failoverOrder?: string[];
+  clearCooldown?: boolean;
 }
 
 export interface AiConnectionTestResult {
   ok: boolean;
+  provider?: string;
   label?: string;
   is_free_tier?: boolean;
   limit?: number | null;
@@ -191,6 +644,9 @@ export interface AiConnectionTestResult {
   credits_total?: number | null;
   credits_usage?: number | null;
   credits_remaining?: number | null;
+  balance_usd?: number | null;
+  currency?: string | null;
+  balance_available?: boolean | null;
   can_use_paid_models?: boolean;
   daily_free_limit?: number;
   rpm_free_limit?: number;
@@ -357,6 +813,7 @@ export interface XoxAiChatRequest {
   agendaItems: AgendaItem[];
   attachedContext: AttachedContextItem[];
   modelOverride?: string;
+  providerOverride?: string;
   /** Perfil local activo para contextualizar el saludo y rol */
   userProfile?: { name: string; storeName?: string; role?: string } | null;
   /** En modo browser preview, permite leer contexto de negocio en vivo */
@@ -372,6 +829,23 @@ export interface XoxTokenUsage {
   cost?: number;
 }
 
+export interface ProviderFailoverEvent {
+  fromProvider: string;
+  toProvider: string;
+  modelUsed?: string;
+  kind?: string;
+  reason?: string;
+  notice?: string;
+}
+
+export interface VaultPromptSpec {
+  provider: AiProviderId;
+  intent: "prompt_key" | "switch_provider" | "open_settings";
+  note?: string;
+  completed?: boolean;
+  savedMaskedKey?: string;
+}
+
 export interface XoxAiChatResponse {
   reply: string;
   reasoning?: string;
@@ -382,16 +856,23 @@ export interface XoxAiChatResponse {
   tasks: TaskProposal[];
   canvas?: CanvasArtifact;
   clarification?: ClarificationSpec;
+  vaultAction?: VaultPromptSpec;
   generatedPdfs?: GeneratedPdfArtifact[];
+  providerUsed?: string;
   modelUsed: string;
   latencyMs: number;
   usage?: XoxTokenUsage;
   workspaceMutated?: boolean;
+  failoverNotice?: string;
+  exhaustedProviders?: Array<Record<string, unknown>>;
+  failoverEvents?: ProviderFailoverEvent[];
 }
 
 export interface XoxStreamCallbacks {
   onStreamStart?: (streamId: string) => void;
   onPhase?: (state: "reading" | "thinking" | "talking" | "syncing", label?: string) => void;
+  onProviderFailover?: (event: ProviderFailoverEvent) => void;
+  onVaultAction?: (action: VaultPromptSpec) => void;
   onSteps?: (steps: ThinkingStep[]) => void;
   onReasoningDelta?: (delta: string) => void;
   onReasoningReset?: () => void;
@@ -414,14 +895,29 @@ const BROWSER_VAULT_KEY = "xook_ai_vault_v1";
 const DAILY_REQUESTS_KEY = "xook_openrouter_daily_reqs_v1";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
-interface BrowserVault {
-  provider: string;
+interface BrowserProviderSlot {
   modelId: string;
   apiKey: string | null;
   customModels: string[];
+  cooldownUntilMs?: number | null;
+  quotaStatus?: "ready" | "cooldown" | "exhausted" | "auth_error";
+  quotaReason?: string | null;
 }
 
-let cachedCatalog: { fetchedAt: number; models: OpenRouterModelOption[]; source: string } | null = null;
+interface BrowserVault {
+  provider: AiProviderId;
+  modelId: string;
+  apiKey: string | null;
+  customModels: string[];
+  providers: Record<string, BrowserProviderSlot>;
+  autoFailover: boolean;
+  failoverOrder: AiProviderId[];
+}
+
+const cachedCatalogByProvider = new Map<
+  AiProviderId,
+  { fetchedAt: number; models: OpenRouterModelOption[]; source: string }
+>();
 
 export function isTauriRuntime(): boolean {
   return (
@@ -591,57 +1087,61 @@ export function getAvailableQuickModels(
   catalog: OpenRouterModelOption[],
   customModels: string[],
   canUsePaidModels: boolean,
-  unavailableModelIds: ReadonlySet<string> = new Set()
+  unavailableModelIds: ReadonlySet<string> = new Set(),
+  providerId: string = "openrouter"
 ): OpenRouterModelOption[] {
-  const baseList = catalog.length > 0 ? catalog : OPENROUTER_PRESET_MODELS;
+  const pid = normalizeProviderIdClient(providerId);
+  const spec = getProviderSpec(pid);
+  const curated = spec.curatedModels;
+  const baseList = catalog.length > 0 ? catalog : curated;
   const byId = new Map<string, OpenRouterModelOption>();
 
+  // Para proveedores directos, permitir todos sus modelos curados aunque canUsePaidModels venga en false
+  const allowAllInList = pid !== "openrouter" || canUsePaidModels;
+
   for (const m of baseList) {
-    if (!canUsePaidModels && !m.is_free) continue;
+    if (!allowAllInList && !m.is_free) continue;
     if (unavailableModelIds.has(m.id)) continue;
     byId.set(m.id, m);
   }
 
-  // Asegurar que Automático (Gratis) siempre esté arriba
-  if (!byId.has("openrouter/free")) {
-    byId.set("openrouter/free", OPENROUTER_PRESET_MODELS[0]);
+  for (const cm of curated) {
+    if (!allowAllInList && !cm.is_free) continue;
+    if (unavailableModelIds.has(cm.id)) continue;
+    if (!byId.has(cm.id)) {
+      byId.set(cm.id, cm);
+    }
+  }
+
+  if (pid === "openrouter" && !byId.has("openrouter/free")) {
+    byId.set("openrouter/free", curated[0]);
   }
 
   for (const customId of customModels) {
     if (byId.has(customId) || unavailableModelIds.has(customId)) continue;
     const formatted = formatModelDisplay(customId, baseList);
-    if (!canUsePaidModels && !formatted.is_free) continue;
-    byId.set(customId, formatted);
+    if (!allowAllInList && !formatted.is_free) continue;
+    byId.set(customId, { ...formatted, provider_id: pid });
   }
 
-  const presetIds = new Set(OPENROUTER_PRESET_MODELS.map((p) => p.id));
-  const curatedPaid = OPENROUTER_PRESET_MODELS.filter((p) => !p.is_free);
-
+  const presetIds = new Set(curated.map((p) => p.id));
   const list = Array.from(byId.values());
   list.sort((a, b) => {
-    if (a.id === "openrouter/free") return -1;
-    if (b.id === "openrouter/free") return 1;
-    if (canUsePaidModels) {
-      const aPreset = presetIds.has(a.id);
-      const bPreset = presetIds.has(b.id);
-      if (aPreset !== bPreset) return aPreset ? -1 : 1;
-      if (aPreset && bPreset) {
-        return (
-          curatedPaid.findIndex((p) => p.id === a.id) -
-          curatedPaid.findIndex((p) => p.id === b.id)
-        );
-      }
-    }
+    if (a.id === spec.defaultModelId) return -1;
+    if (b.id === spec.defaultModelId) return 1;
+    const aCurated = curated.findIndex((p) => p.id === a.id);
+    const bCurated = curated.findIndex((p) => p.id === b.id);
+    if (aCurated !== -1 && bCurated !== -1) return aCurated - bCurated;
+    if (aCurated !== -1) return -1;
+    if (bCurated !== -1) return 1;
     if (a.is_free !== b.is_free) return a.is_free ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
 
-  // Si tiene saldo, mostrar presets + modelos gratuitos reales (no saturar con 475 ítems el menú rápido)
-  if (canUsePaidModels) {
-    const pinnedAndFree = list.filter(
+  if (pid === "openrouter" && canUsePaidModels) {
+    return list.filter(
       (m) => presetIds.has(m.id) || m.is_free || customModels.includes(m.id)
     );
-    return pinnedAndFree;
   }
 
   return list;
@@ -685,60 +1185,264 @@ export function incrementLocalDailyRequestCount(keyScope?: string | null): numbe
 export function maskApiKey(key: string): string {
   const trimmed = key.trim();
   if (trimmed.length <= 8) return "••••";
-  const prefixLen = trimmed.startsWith("sk-or-v1-") && trimmed.length > 14 ? 9 : 4;
+  let prefixLen = 4;
+  if (trimmed.startsWith("sk-or-v1-") && trimmed.length > 14) {
+    prefixLen = 9;
+  } else if ((trimmed.startsWith("sk-ant-") || trimmed.startsWith("sk-proj-")) && trimmed.length > 13) {
+    prefixLen = 7;
+  }
   return `${trimmed.slice(0, prefixLen)}••••${trimmed.slice(-4)}`;
 }
 
-/**
- * Detecta localmente claves tipo OpenRouter / OpenAI antes de enviarlas a internet.
- */
-export function detectApiKeyInText(text: string): {
+const API_KEY_PATTERN =
+  /(?<![A-Za-z0-9_-])(sk-or-(?:v1-)?[A-Za-z0-9_-]{12,}|sk-ant-[A-Za-z0-9_-]{12,}|sk-proj-[A-Za-z0-9_-]{14,}|sk-svcacct-[A-Za-z0-9_-]{14,}|gsk_[A-Za-z0-9_-]{14,}|AIza[0-9A-Za-z_-]{20,}|sk-[A-Za-z0-9_-]{16,})(?![A-Za-z0-9_-])/;
+
+export interface DetectedApiKeyResult {
   detectedKey: string | null;
   maskedKey: string | null;
+  detectedProvider: AiProviderId | null;
+  ambiguousProviders: AiProviderId[];
   sanitizedText: string;
-} {
-  const regex = /\b(sk-or-(?:v1-)?[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9_-]{20,})\b/;
-  const match = text.match(regex);
+}
+
+/**
+ * Detecta localmente claves API de OpenRouter, DeepSeek, Groq, Gemini, OpenAI y Anthropic antes de enviarlas.
+ */
+export function detectApiKeyInText(text: string): DetectedApiKeyResult {
+  const match = text.match(API_KEY_PATTERN);
   if (!match) {
-    return { detectedKey: null, maskedKey: null, sanitizedText: text };
+    return {
+      detectedKey: null,
+      maskedKey: null,
+      detectedProvider: null,
+      ambiguousProviders: [],
+      sanitizedText: text,
+    };
   }
   const detectedKey = match[1];
   const maskedKey = maskApiKey(detectedKey);
   const sanitizedText = text.replace(detectedKey, maskedKey);
-  return { detectedKey, maskedKey, sanitizedText };
+
+  let detectedProvider: AiProviderId | null = null;
+  let ambiguousProviders: AiProviderId[] = [];
+
+  if (detectedKey.startsWith("sk-or-")) {
+    detectedProvider = "openrouter";
+  } else if (detectedKey.startsWith("sk-ant-")) {
+    detectedProvider = "anthropic";
+  } else if (detectedKey.startsWith("gsk_")) {
+    detectedProvider = "groq";
+  } else if (detectedKey.startsWith("AIza")) {
+    detectedProvider = "gemini";
+  } else if (detectedKey.startsWith("sk-proj-") || detectedKey.startsWith("sk-svcacct-")) {
+    detectedProvider = "openai";
+  } else if (detectedKey.startsWith("sk-")) {
+    const lower = text.toLowerCase();
+    if (lower.includes("deepseek")) {
+      detectedProvider = "deepseek";
+    } else if (lower.includes("openai") || lower.includes("openia") || lower.includes("gpt")) {
+      detectedProvider = "openai";
+    } else {
+      // sk- genérico puede ser DeepSeek o OpenAI legacy: Xox pregunta o da selector rápido
+      detectedProvider = "deepseek";
+      ambiguousProviders = ["deepseek", "openai"];
+    }
+  }
+
+  return {
+    detectedKey,
+    maskedKey,
+    detectedProvider,
+    ambiguousProviders,
+    sanitizedText,
+  };
+}
+
+export function detectKeySetupIntentWithProvider(text: string): {
+  isSetup: boolean;
+  providerHint: AiProviderId | null;
+} {
+  const lower = text.toLowerCase();
+  let providerHint: AiProviderId | null = null;
+  if (/\bdeepseek\b/i.test(lower)) providerHint = "deepseek";
+  else if (/\b(?:anthropic|antrophic|anhtropic|claude)\b/i.test(lower)) providerHint = "anthropic";
+  else if (/\bgroq\b/i.test(lower)) providerHint = "groq";
+  else if (/\b(?:gemini|google\s*ai|ai\s*studio)\b/i.test(lower)) providerHint = "gemini";
+  else if (/\b(?:openai|open\s*ia|openia|chatgpt|gpt-4|gpt4|gpt-5)\b/i.test(lower)) providerHint = "openai";
+  else if (/\bopenrouter\b/i.test(lower)) providerHint = "openrouter";
+
+  const isSetup =
+    /(api\s*key|clave\s*api|b[oó]veda|openrouter|deepseek|groq|gemini|anthropic|antrophic|openai|open\s*ia|openia|token\s*de\s*ia|configur\w*\s*(?:la\s*|el\s*|mi\s*|tu\s*)?(?:ia|clave|api|key|modelo|b[oó]veda|provedor|proveedor)|cambia\w*\s*(?:clave|proveedor|modelo)|guarda\w*\s*(?:la\s*|mi\s*)?(?:clave|api|key))/i.test(
+      text
+    );
+  return { isSetup, providerHint };
+}
+
+export interface VaultConfigRequestDetection {
+  isVaultRequest: boolean;
+  intentKind: "switch_provider" | "save_or_edit_key" | "open_vault";
+  providerHint: AiProviderId | null;
+}
+
+/**
+ * Detecta en lenguaje natural cuando el usuario pide a Xox configurar un proveedor,
+ * cambiar de proveedor o guardar una API key en la bóveda de XOOK (sin filtrar código ajeno).
+ */
+export function detectVaultConfigRequest(text: string): VaultConfigRequestDetection {
+  const trimmed = text.trim();
+  const { providerHint } = detectKeySetupIntentWithProvider(trimmed);
+  if (!trimmed || trimmed.length > 260) {
+    return { isVaultRequest: false, intentKind: "open_vault", providerHint };
+  }
+
+  const mentionsXookApp = /\b(?:xook|xox|b[oó]veda|esta\s+app|la\s+app|tus\s+ajustes|tu\s+configuraci[oó]n)\b/i.test(
+    trimmed
+  );
+  const mentionsExternalCoding =
+    /\b(?:python|node\.?js|typescript|javascript|react|rust|flask|fastapi|django|express|next\.?js|snippet|c[oó]digo\s+en|script\s+en|mi\s+proyecto|\.py|\.tsx?|\.jsx?)\b/i.test(
+      trimmed
+    );
+  if (mentionsExternalCoding && !mentionsXookApp) {
+    return { isVaultRequest: false, intentKind: "open_vault", providerHint };
+  }
+
+  const mentionsSecretOrVault =
+    /(?:\b(?:api\s*key|apikey|clave\s*(?:api|de\s+ia)?|token\s*(?:de\s+ia)?|b[oó]veda)\b|\bla\s+key\b|\bmi\s+key\b|\buna\s+key\b)/i.test(
+      trimmed
+    );
+  const hasActionVerb =
+    /\b(?:configur\w*|agreg\w*|añad\w*|anad\w*|pon(?:er|le|me|ga)?|met(?:e|er|ele|eme)?|guard\w*|conect\w*|activ\w*|cambi\w*|us(?:a|ar|emos)|seleccion\w*|abr(?:e|ir|eme)|edita\w*|actualiz\w*|ingres\w*|peg(?:a|ar)|dej\w*\s+configurar|deja\w*\s+configurar)\b/i.test(
+      trimmed
+    );
+  const mentionsProviderEntity =
+    providerHint !== null || /\b(?:provedor(?:es)?|proveedor(?:es)?|modelos?\s+de\s+ia)\b/i.test(trimmed);
+
+  // Evitar capturar preguntas meramente informativas (ej. "¿cuánto cuesta deepseek?" o "compara gemini vs groq")
+  const isPureQuestion =
+    !hasActionVerb &&
+    !/\b(?:b[oó]veda)\b/i.test(trimmed) &&
+    /\b(?:cu[aá]nto\s+cuesta|tarifas?|precios?|l[ií]mites?|compar\w*|qu[eé]\s+es|por\s+qu[eé]|conviene|mejor)\b/i.test(
+      trimmed
+    );
+
+  if (isPureQuestion) {
+    return { isVaultRequest: false, intentKind: "open_vault", providerHint };
+  }
+
+  const explicitlyWantsVaultAction =
+    (/\b(?:b[oó]veda)\b/i.test(trimmed) && (hasActionVerb || mentionsSecretOrVault || mentionsProviderEntity)) ||
+    (mentionsSecretOrVault && hasActionVerb) ||
+    (Boolean(providerHint) && hasActionVerb);
+
+  if (!explicitlyWantsVaultAction) {
+    return { isVaultRequest: false, intentKind: "open_vault", providerHint };
+  }
+
+  const isExplicitSwitch =
+    Boolean(providerHint) &&
+    !mentionsSecretOrVault &&
+    !/\b(?:configur\w*|agreg\w*|añad\w*|anad\w*|guard\w*|edita\w*|peg\w*|b[oó]veda|pon(?:er|le|me)?\s+(?:la|mi|una)\b)\b/i.test(
+      trimmed
+    ) &&
+    /\b(?:cambi\w*|us(?:a|ar|emos)|activ\w*|p[aá]sa\w*|seleccion\w*)\b/i.test(trimmed);
+
+  if (isExplicitSwitch) {
+    return { isVaultRequest: true, intentKind: "switch_provider", providerHint };
+  }
+  if (/\b(?:abr(?:e|ir|eme)|ver|muestra\w*)\b/i.test(trimmed) && !mentionsSecretOrVault && !providerHint) {
+    return { isVaultRequest: true, intentKind: "open_vault", providerHint };
+  }
+  return { isVaultRequest: true, intentKind: "save_or_edit_key", providerHint };
 }
 
 export function isKeySetupIntent(text: string): boolean {
-  return /(api\s*key|clave\s*api|openrouter|token\s*de\s*ia|configur\w*\s*(?:la\s*)?(?:ia|clave|api|modelo)|cambia\w*\s*clave)/i.test(
-    text
-  );
+  return detectKeySetupIntentWithProvider(text).isSetup;
+}
+
+function createDefaultBrowserVault(): BrowserVault {
+  const providers: Record<string, BrowserProviderSlot> = {};
+  for (const spec of AI_PROVIDER_LIST) {
+    providers[spec.id] = {
+      modelId: spec.defaultModelId,
+      apiKey: null,
+      customModels: [],
+      cooldownUntilMs: null,
+      quotaStatus: "ready",
+      quotaReason: null,
+    };
+  }
+  return {
+    provider: "openrouter",
+    modelId: "openrouter/free",
+    apiKey: null,
+    customModels: [],
+    providers,
+    autoFailover: true,
+    failoverOrder: [...DEFAULT_FAILOVER_ORDER],
+  };
+}
+
+function normalizeBrowserVault(raw: Partial<BrowserVault> | null | undefined): BrowserVault {
+  const base = createDefaultBrowserVault();
+  if (!raw) return base;
+  const activePid = normalizeProviderIdClient(raw.provider);
+  const nextProviders: Record<string, BrowserProviderSlot> = { ...base.providers };
+
+  if (raw.providers && typeof raw.providers === "object") {
+    for (const [k, slot] of Object.entries(raw.providers)) {
+      if (!slot) continue;
+      const pid = normalizeProviderIdClient(k);
+      nextProviders[pid] = {
+        modelId: slot.modelId || AI_PROVIDERS[pid].defaultModelId,
+        apiKey: slot.apiKey ? normalizeApiKey(slot.apiKey) : null,
+        customModels: Array.isArray(slot.customModels) ? slot.customModels : [],
+        cooldownUntilMs: typeof slot.cooldownUntilMs === "number" ? slot.cooldownUntilMs : null,
+        quotaStatus: slot.quotaStatus || "ready",
+        quotaReason: slot.quotaReason || null,
+      };
+    }
+  }
+
+  // Migración legacy de un solo proveedor
+  if (!nextProviders[activePid].apiKey && raw.apiKey) {
+    nextProviders[activePid].apiKey = normalizeApiKey(raw.apiKey);
+  }
+  if (raw.modelId && (!raw.providers || !raw.providers[activePid]?.modelId)) {
+    nextProviders[activePid].modelId = raw.modelId;
+  }
+  if (Array.isArray(raw.customModels) && raw.customModels.length > 0 && nextProviders[activePid].customModels.length === 0) {
+    nextProviders[activePid].customModels = raw.customModels;
+  }
+
+  const orderRaw = Array.isArray(raw.failoverOrder) ? raw.failoverOrder : DEFAULT_FAILOVER_ORDER;
+  const order: AiProviderId[] = [];
+  for (const item of orderRaw) {
+    const pid = normalizeProviderIdClient(item);
+    if (!order.includes(pid)) order.push(pid);
+  }
+  for (const pid of DEFAULT_FAILOVER_ORDER) {
+    if (!order.includes(pid)) order.push(pid);
+  }
+
+  const activeSlot = nextProviders[activePid];
+  return {
+    provider: activePid,
+    modelId: activeSlot.modelId || AI_PROVIDERS[activePid].defaultModelId,
+    apiKey: activeSlot.apiKey,
+    customModels: activeSlot.customModels,
+    providers: nextProviders,
+    autoFailover: raw.autoFailover ?? true,
+    failoverOrder: order,
+  };
 }
 
 function readBrowserVault(): BrowserVault {
   try {
     const raw = localStorage.getItem(BROWSER_VAULT_KEY);
-    if (!raw) {
-      return {
-        provider: "openrouter",
-        modelId: "openrouter/free",
-        apiKey: null,
-        customModels: [],
-      };
-    }
-    const parsed = JSON.parse(raw) as Partial<BrowserVault>;
-    return {
-      provider: parsed.provider || "openrouter",
-      modelId: parsed.modelId || "openrouter/free",
-      apiKey: parsed.apiKey || null,
-      customModels: Array.isArray(parsed.customModels) ? parsed.customModels : [],
-    };
+    if (!raw) return createDefaultBrowserVault();
+    return normalizeBrowserVault(JSON.parse(raw) as Partial<BrowserVault>);
   } catch {
-    return {
-      provider: "openrouter",
-      modelId: "openrouter/free",
-      apiKey: null,
-      customModels: [],
-    };
+    return createDefaultBrowserVault();
   }
 }
 
@@ -750,6 +1454,38 @@ function writeBrowserVault(vault: BrowserVault): void {
   }
 }
 
+function browserVaultToPublic(vault: BrowserVault): AiConfigStatus {
+  const now = Date.now();
+  const configuredProviders: Record<string, ProviderPublicStatus> = {};
+  for (const spec of AI_PROVIDER_LIST) {
+    const slot = vault.providers[spec.id];
+    const activeCd = slot?.cooldownUntilMs && slot.cooldownUntilMs > now ? slot.cooldownUntilMs : null;
+    configuredProviders[spec.id] = {
+      provider: spec.id,
+      modelId: slot?.modelId || spec.defaultModelId,
+      hasApiKey: Boolean(slot?.apiKey),
+      maskedKey: slot?.apiKey ? maskApiKey(slot.apiKey) : null,
+      keySource: slot?.apiKey ? "browser" : "none",
+      customModels: slot?.customModels ?? [],
+      cooldownUntilMs: activeCd,
+      quotaStatus: activeCd ? (slot?.quotaStatus || "cooldown") : "ready",
+      quotaReason: activeCd ? (slot?.quotaReason ?? null) : null,
+    };
+  }
+  const activeSlot = vault.providers[normalizeProviderIdClient(vault.provider)];
+  return {
+    provider: vault.provider,
+    modelId: activeSlot?.modelId || vault.modelId,
+    hasApiKey: Boolean(activeSlot?.apiKey),
+    maskedKey: activeSlot?.apiKey ? maskApiKey(activeSlot.apiKey) : null,
+    keySource: activeSlot?.apiKey ? "browser" : "none",
+    customModels: activeSlot?.customModels ?? vault.customModels,
+    autoFailover: vault.autoFailover,
+    failoverOrder: vault.failoverOrder,
+    configuredProviders,
+  };
+}
+
 export async function getAiConfigStatus(): Promise<AiConfigStatus> {
   if (isTauriRuntime()) {
     try {
@@ -759,15 +1495,7 @@ export async function getAiConfigStatus(): Promise<AiConfigStatus> {
       // Fallback a vault local si el comando no está disponible
     }
   }
-  const vault = readBrowserVault();
-  return {
-    provider: vault.provider,
-    modelId: vault.modelId,
-    hasApiKey: Boolean(vault.apiKey),
-    maskedKey: vault.apiKey ? maskApiKey(vault.apiKey) : null,
-    keySource: vault.apiKey ? "browser" : "none",
-    customModels: vault.customModels,
-  };
+  return browserVaultToPublic(readBrowserVault());
 }
 
 export function normalizeApiKey(raw?: string | null): string {
@@ -778,7 +1506,7 @@ export function normalizeApiKey(raw?: string | null): string {
       .trim()
       .replace(/^['"`]+|['"`,;.]+$/g, "");
   }
-  const embedded = key.match(/\b(sk-or-(?:v1-)?[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9_-]{20,})\b/);
+  const embedded = key.match(API_KEY_PATTERN);
   if (embedded) {
     return embedded[1];
   }
@@ -799,44 +1527,122 @@ export async function saveAiConfig(input: SaveAiConfigInput): Promise<AiConfigSt
   }
 
   const current = readBrowserVault();
-  const next: BrowserVault = {
-    provider: input.provider?.trim() || current.provider,
-    modelId: input.modelId?.trim() || current.modelId,
-    customModels: input.customModels ?? current.customModels,
-    apiKey: input.clearKey ? null : cleanedKey || current.apiKey,
-  };
-  writeBrowserVault(next);
+  const nextActiveProvider = input.provider?.trim()
+    ? normalizeProviderIdClient(input.provider)
+    : normalizeProviderIdClient(current.provider);
+  const targetPid = input.targetProvider?.trim()
+    ? normalizeProviderIdClient(input.targetProvider)
+    : input.provider?.trim()
+      ? normalizeProviderIdClient(input.provider)
+      : nextActiveProvider;
 
-  return {
-    provider: next.provider,
-    modelId: next.modelId,
-    hasApiKey: Boolean(next.apiKey),
-    maskedKey: next.apiKey ? maskApiKey(next.apiKey) : null,
-    keySource: next.apiKey ? "browser" : "none",
-    customModels: next.customModels,
-  };
+  const slot = { ...current.providers[targetPid] };
+  if (input.modelId?.trim()) {
+    slot.modelId = input.modelId.trim();
+  }
+  if (input.customModels) {
+    slot.customModels = input.customModels.map((s) => s.trim()).filter(Boolean);
+  }
+  if (input.clearKey) {
+    slot.apiKey = null;
+    slot.cooldownUntilMs = null;
+    slot.quotaStatus = "ready";
+    slot.quotaReason = null;
+  } else if (cleanedKey) {
+    slot.apiKey = cleanedKey;
+    slot.cooldownUntilMs = null;
+    slot.quotaStatus = "ready";
+    slot.quotaReason = null;
+  }
+  if (input.clearCooldown) {
+    slot.cooldownUntilMs = null;
+    slot.quotaStatus = "ready";
+    slot.quotaReason = null;
+  }
+
+  const nextProviders = { ...current.providers, [targetPid]: slot };
+  const activeSlot = nextProviders[nextActiveProvider];
+  const next = normalizeBrowserVault({
+    provider: nextActiveProvider,
+    modelId: activeSlot.modelId,
+    apiKey: activeSlot.apiKey,
+    customModels: activeSlot.customModels,
+    providers: nextProviders,
+    autoFailover: input.autoFailover ?? current.autoFailover,
+    failoverOrder: (input.failoverOrder ?? current.failoverOrder).map((p) =>
+      normalizeProviderIdClient(p),
+    ),
+  });
+  writeBrowserVault(next);
+  return browserVaultToPublic(next);
 }
 
-export async function testAiConnection(): Promise<AiConnectionTestResult> {
+export async function testAiConnection(provider?: string): Promise<AiConnectionTestResult> {
   if (isTauriRuntime()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      return await invoke<AiConnectionTestResult>("test_ai_connection");
+      return await invoke<AiConnectionTestResult>("test_ai_connection", {
+        provider: provider ?? null,
+      });
     } catch (err) {
       return { ok: false, message: String(err) };
     }
   }
 
   const vault = readBrowserVault();
-  const key = normalizeApiKey(vault.apiKey);
+  const targetPid = normalizeProviderIdClient(provider || vault.provider);
+  const spec = AI_PROVIDERS[targetPid];
+  const slot = vault.providers[targetPid];
+  const key = normalizeApiKey(slot?.apiKey);
   if (!key) {
-    return { ok: false, message: "No hay una clave API de OpenRouter guardada." };
-  }
-  if (/^[a-fA-F0-9]{64}$/.test(key)) {
     return {
       ok: false,
+      provider: targetPid,
+      message: `No hay una clave API de ${spec.name} guardada.`,
+    };
+  }
+  if (targetPid === "openrouter" && /^[a-fA-F0-9]{64}$/.test(key)) {
+    return {
+      ok: false,
+      provider: targetPid,
       message: "Parece que falta el prefijo 'sk-or-v1-' al inicio de tu clave de OpenRouter.",
     };
+  }
+
+  if (targetPid !== "openrouter") {
+    try {
+      const baseUrl = spec.baseUrl;
+      const headers: Record<string, string> =
+        targetPid === "anthropic"
+          ? {
+              "x-api-key": key,
+              "anthropic-version": "2023-06-01",
+              "anthropic-dangerous-direct-browser-access": "true",
+            }
+          : { Authorization: `Bearer ${key}` };
+      const resp = await fetch(`${baseUrl}/models`, { method: "GET", headers });
+      if (!resp.ok) {
+        return {
+          ok: false,
+          provider: targetPid,
+          message: mapFriendlyHttpError(resp.status, undefined, spec.name),
+        };
+      }
+      return {
+        ok: true,
+        provider: targetPid,
+        label: spec.name,
+        is_free_tier: spec.supportsFreeTier,
+        can_use_paid_models: true,
+        message: `Conexión verificada con ${spec.name}.`,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        provider: targetPid,
+        message: extractErrorMessage(err, `No se pudo conectar con ${spec.name} desde el navegador.`),
+      };
+    }
   }
 
   try {
@@ -863,6 +1669,7 @@ export async function testAiConnection(): Promise<AiConnectionTestResult> {
     if (!resp.ok) {
       return {
         ok: false,
+        provider: "openrouter",
         message: body.error?.message || `Error HTTP ${resp.status}`,
       };
     }
@@ -902,6 +1709,7 @@ export async function testAiConnection(): Promise<AiConnectionTestResult> {
 
     return {
       ok: true,
+      provider: "openrouter",
       label: d.label || "OpenRouter",
       is_free_tier: isFreeTier,
       limit: limitVal,
@@ -922,6 +1730,7 @@ export async function testAiConnection(): Promise<AiConnectionTestResult> {
   } catch (err) {
     return {
       ok: false,
+      provider: "openrouter",
       message: extractErrorMessage(err, "No se pudo conectar con OpenRouter."),
     };
   }
@@ -929,14 +1738,16 @@ export async function testAiConnection(): Promise<AiConnectionTestResult> {
 
 export async function fetchOpenRouterModels(
   freeOnly = false,
-  forceRefresh = false
+  forceRefresh = false,
+  provider?: string
 ): Promise<{ ok: boolean; models: OpenRouterModelOption[]; source: string }> {
+  const pid = normalizeProviderIdClient(provider || "openrouter");
+  const spec = AI_PROVIDERS[pid];
   const now = Date.now();
-  if (!forceRefresh && cachedCatalog && now - cachedCatalog.fetchedAt < 5 * 60 * 1000) {
-    const models = freeOnly
-      ? cachedCatalog.models.filter((m) => m.is_free)
-      : cachedCatalog.models;
-    return { ok: true, models, source: cachedCatalog.source };
+  const cached = cachedCatalogByProvider.get(pid);
+  if (!forceRefresh && cached && now - cached.fetchedAt < 5 * 60 * 1000) {
+    const models = freeOnly ? cached.models.filter((m) => m.is_free) : cached.models;
+    return { ok: true, models, source: cached.source };
   }
 
   if (isTauriRuntime()) {
@@ -944,10 +1755,10 @@ export async function fetchOpenRouterModels(
       const { invoke } = await import("@tauri-apps/api/core");
       const res = await invoke<{ ok: boolean; models: OpenRouterModelOption[]; source: string }>(
         "fetch_openrouter_models",
-        { freeOnly: false }
+        { freeOnly: false, provider: pid }
       );
       if (res.ok && res.models.length > 0) {
-        cachedCatalog = { fetchedAt: now, models: res.models, source: res.source };
+        cachedCatalogByProvider.set(pid, { fetchedAt: now, models: res.models, source: res.source });
       }
       const filtered = freeOnly ? res.models.filter((m) => m.is_free) : res.models;
       return { ...res, models: filtered };
@@ -956,10 +1767,24 @@ export async function fetchOpenRouterModels(
     }
   }
 
+  if (pid !== "openrouter") {
+    cachedCatalogByProvider.set(pid, {
+      fetchedAt: now,
+      models: spec.curatedModels,
+      source: `${pid}_curated`,
+    });
+    return {
+      ok: true,
+      models: freeOnly ? spec.curatedModels.filter((m) => m.is_free) : spec.curatedModels,
+      source: `${pid}_curated`,
+    };
+  }
+
   try {
     const vault = readBrowserVault();
+    const orKey = vault.providers.openrouter?.apiKey;
     const headers: Record<string, string> = {};
-    if (vault.apiKey) headers.Authorization = `Bearer ${vault.apiKey}`;
+    if (orKey) headers.Authorization = `Bearer ${orKey}`;
     const resp = await fetch(`${OPENROUTER_BASE_URL}/models`, { headers });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const payload = (await resp.json()) as {
@@ -973,7 +1798,7 @@ export async function fetchOpenRouterModels(
     const raw = payload.data ?? [];
     const list: OpenRouterModelOption[] = raw
       .filter((m) => Boolean(m.id))
-      .map((m) => formatOpenRouterRawModel(m))
+      .map((m) => ({ ...formatOpenRouterRawModel(m), provider_id: "openrouter" }))
       .sort((a, b) => {
         if (a.id === "openrouter/free") return -1;
         if (b.id === "openrouter/free") return 1;
@@ -981,7 +1806,7 @@ export async function fetchOpenRouterModels(
         return a.name.localeCompare(b.name);
       });
 
-    cachedCatalog = { fetchedAt: now, models: list, source: "openrouter" };
+    cachedCatalogByProvider.set("openrouter", { fetchedAt: now, models: list, source: "openrouter" });
     return {
       ok: true,
       models: freeOnly ? list.filter((m) => m.is_free) : list,
@@ -990,7 +1815,7 @@ export async function fetchOpenRouterModels(
   } catch {
     return {
       ok: false,
-      models: OPENROUTER_PRESET_MODELS.filter((m) => !freeOnly || m.is_free),
+      models: spec.curatedModels.filter((m) => !freeOnly || m.is_free),
       source: "presets",
     };
   }
@@ -1186,6 +2011,33 @@ function extractClarificationFromToolCalls(
   return undefined;
 }
 
+function extractVaultActionFromToolCalls(
+  toolCalls: AccumulatedToolCall[]
+): VaultPromptSpec | undefined {
+  for (const tc of toolCalls) {
+    const fnName = (tc.function?.name ?? "").trim().toLowerCase();
+    if (!fnName || !fnName.includes("configure_ai_vault")) continue;
+    const parsedArgs = parseJsonObjectCandidate(tc.function.arguments);
+    const rawPid =
+      typeof parsedArgs?.provider === "string" ? parsedArgs.provider.trim() : undefined;
+    const rawAction =
+      typeof parsedArgs?.action === "string"
+        ? parsedArgs.action.trim().toLowerCase()
+        : "prompt_key";
+    const intent =
+      rawAction === "switch_provider" || rawAction === "open_settings"
+        ? rawAction
+        : "prompt_key";
+    const note = typeof parsedArgs?.note === "string" ? parsedArgs.note.trim() : undefined;
+    return {
+      provider: normalizeProviderIdClient(rawPid),
+      intent,
+      note: note ? note.slice(0, 220) : undefined,
+    };
+  }
+  return undefined;
+}
+
 function resolveBrowserCanvasArtifact(params: {
   toolCalls: AccumulatedToolCall[];
   canvasBuf: string;
@@ -1300,15 +2152,30 @@ function extractBrowserJson(rawContent: string): {
   };
 }
 
-function mapFriendlyHttpError(status: number, rawMessage?: string): string {
+function mapFriendlyHttpError(
+  status: number,
+  rawMessage?: string,
+  providerName = "el proveedor de IA"
+): string {
   const lower = (rawMessage ?? "").toLowerCase();
-  if (status === 402 || lower.includes("insufficient credits") || lower.includes("more credits")) {
-    return "Tu cuenta de OpenRouter no tiene saldo suficiente para este modelo. Cambia a un modelo gratuito o recarga créditos.";
+  if (
+    status === 402 ||
+    lower.includes("insufficient credits") ||
+    lower.includes("more credits") ||
+    lower.includes("insufficient_quota") ||
+    lower.includes("credit balance is too low") ||
+    lower.includes("insufficient balance") ||
+    lower.includes("exceeded your current quota")
+  ) {
+    return `${providerName} se quedó sin saldo o cuota disponible. Agrega saldo o activa el respaldo automático con otro proveedor.`;
   }
-  if (status === 429 || lower.includes("rate limit")) {
-    return "Se alcanzó el límite temporal de solicitudes en OpenRouter (gratuito: 20/min o 50/día). Espera un momento o prueba otro modelo gratuito.";
+  if (status === 429 || lower.includes("rate limit") || lower.includes("resource_exhausted")) {
+    return `Se alcanzó el límite temporal de solicitudes en ${providerName}. Espera un momento o deja que XOOK cambie automáticamente al siguiente proveedor.`;
   }
-  return rawMessage || `Error OpenRouter HTTP ${status}`;
+  if (status === 401 || status === 403 || lower.includes("invalid api key") || lower.includes("api key not valid")) {
+    return `La clave API de ${providerName} no es válida o expiró.`;
+  }
+  return rawMessage || `Error HTTP ${status} en ${providerName}`;
 }
 
 export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResponse> {
@@ -1323,8 +2190,18 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       canvas?: unknown;
       clarification?: unknown;
       generated_pdfs?: unknown[];
+      provider_used?: string;
       model_used?: string;
       latency_ms?: number;
+      exhausted_providers?: Array<Record<string, unknown>>;
+      failover_events?: Array<{
+        from_provider?: string;
+        to_provider?: string;
+        reason?: string;
+        kind?: string;
+        model_used?: string;
+      }>;
+      failover_notice?: string;
       usage?: {
         prompt_tokens?: number;
         completion_tokens?: number;
@@ -1339,6 +2216,7 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
         agendaItems: req.agendaItems,
         attachedContext: req.attachedContext,
         modelOverride: req.modelOverride ?? null,
+        providerOverride: req.providerOverride ?? null,
         userProfile: req.userProfile ?? null,
         activeCanvas: req.activeCanvas ?? null,
       },
@@ -1363,9 +2241,19 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       canvas: res.canvas ? sanitizeCanvasArtifact(res.canvas) ?? undefined : undefined,
       clarification: safeClarification,
       generatedPdfs: sanitizeGeneratedPdfList(res.generated_pdfs),
+      providerUsed: res.provider_used,
       modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
       latencyMs: res.latency_ms ?? 0,
       usage,
+      failoverNotice: res.failover_notice,
+      exhaustedProviders: res.exhausted_providers,
+      failoverEvents: res.failover_events?.map((fe) => ({
+        fromProvider: fe.from_provider ?? "",
+        toProvider: fe.to_provider ?? "",
+        modelUsed: fe.model_used,
+        kind: fe.kind,
+        reason: fe.reason,
+      })),
     };
   }
 
@@ -1685,6 +2573,7 @@ CAPACIDADES:
 - Cuando el usuario trate temas de su operación, tienda, inventario, proveedores, agenda o tareas, apoya usando su contexto operativo, reglamento y memoria.
 - Si el usuario pide crear o mostrar una TABLA, tabla comparativa, desglose, matriz de opciones o presupuesto: usa la herramienta \`create_canvas\` (preferida; evita emitir bloques \`<canvas>\` manualmente) pasando columnas en texto simple y TODAS las filas completas en \`rows\`. NUNCA escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en tu mensaje al usuario; escribe libremente tu explicación o conclusión sin duplicar la tabla en HTML ni usar etiquetas XML.
 - Aclaraciones (\`ask_clarification\`): analiza primero qué ya especificó el usuario. Si ya dio evento/acción + fecha/hora (ej. "cita para mañana a las 10 pm"), NO pidas aclaraciones y genera la tarjeta directo (solo avisa si choca con AGENDA ACTIVA). Úsala únicamente si falta un dato esencial (como en "agenda algo" o "haz una cita mañana" sin hora), preguntando SOLO lo que falta y nunca datos que ya indicó.
+- Bóveda y proveedores IA (\`configure_ai_vault\`): TÚ SÍ PUEDES configurar proveedores en la bóveda local de XOOK (openrouter, deepseek, groq, gemini, openai, anthropic). Si el usuario pide agregar, configurar o cambiar su API key o proveedor en XOOK, PROHIBIDO sugerir \`.env\` o código; llama de inmediato a \`configure_ai_vault\` para mostrar el formulario seguro Zero-Trust en tu respuesta.
 - Agenda vs Reloj: para recordatorios o entregas con fecha/hora del reloj (ej. "mañana 18:00", "viernes 13 a las 19:00", "1 hora antes") usa SIEMPRE \`intent.type="schedule_event"\` y \`schedule.mode="alarm"\` (NUNCA \`start_timer\`). Usa \`start_timer\` solo para temporizadores cortos que arrancan ahora con \`paramValues.duration_min\` explícito.
 ${req.businessContextSnapshot ? `\nCONTEXTO DEL NEGOCIO:\n${req.businessContextSnapshot}\n` : ""}${opLine}${canvasLine}
 TAREAS PENDIENTES:\n${JSON.stringify(compactTasks)}
@@ -1697,7 +2586,7 @@ ${req.attachedContext.length ? `CONTEXTO ADJUNTO:\n${JSON.stringify(req.attached
 ESTILO DE RESPUESTA Y LIBERTAD:
 Responde directamente en español (o en el idioma que pida el usuario) usando Markdown natural y limpio, con plena libertad expresiva para escribir todo lo que necesites y elegir el tono, estructura, encabezados, listas, bloques de código, tablas Markdown o extensión que mejor ayuden al usuario.
 - NUNCA envuelvas tu respuesta en etiquetas XML o pseudo-HTML como \`<respuesta>\`, \`<analisis>\`, \`<posta>\`, \`<reply>\`, \`<canvas>\` o \`<acciones>\`. Escribe directamente al usuario.
-- Usa herramientas nativas como \`create_canvas\`, \`propose_tasks\`, \`ask_clarification\` o \`pdf_generate\` únicamente cuando la petición requiera una tabla interactiva, tareas/recordatorios en XOOK, aclaración estructurada o PDF.`;
+- Usa herramientas nativas como \`create_canvas\`, \`propose_tasks\`, \`ask_clarification\`, \`configure_ai_vault\` o \`pdf_generate\` únicamente cuando la petición requiera una tabla interactiva, tareas/recordatorios en XOOK, aclaración estructurada, configurar la bóveda o PDF.`;
   }
 
   return `${header}
@@ -1734,6 +2623,12 @@ export async function runXoxAiChatStream(
         delta?: string;
         canvas?: unknown;
         pdf?: unknown;
+        from_provider?: string;
+        to_provider?: string;
+        model_used?: string;
+        kind?: string;
+        reason?: string;
+        notice?: string;
         [key: string]: unknown;
       };
     }>("xox-chat-stream", (ev) => {
@@ -1742,6 +2637,15 @@ export async function runXoxAiChatStream(
       const evt = payload.event;
       if (evt.type === "phase" && evt.xox_state) {
         callbacks?.onPhase?.(evt.xox_state, evt.label);
+      } else if (evt.type === "provider_failover") {
+        callbacks?.onProviderFailover?.({
+          fromProvider: String(evt.from_provider ?? ""),
+          toProvider: String(evt.to_provider ?? ""),
+          modelUsed: typeof evt.model_used === "string" ? evt.model_used : undefined,
+          kind: typeof evt.kind === "string" ? evt.kind : undefined,
+          reason: typeof evt.reason === "string" ? evt.reason : undefined,
+          notice: typeof evt.notice === "string" ? evt.notice : undefined,
+        });
       } else if (evt.type === "steps" && Array.isArray(evt.steps)) {
         callbacks?.onSteps?.(evt.steps);
       } else if (evt.type === "reasoning_delta" && evt.delta) {
@@ -1753,6 +2657,16 @@ export async function runXoxAiChatStream(
       } else if (evt.type === "canvas" && evt.canvas) {
         const parsedCanvas = sanitizeCanvasArtifact(evt.canvas);
         if (parsedCanvas) callbacks?.onCanvas?.(parsedCanvas);
+      } else if (evt.type === "vault_action" && evt.vault_action && typeof evt.vault_action === "object") {
+        const va = evt.vault_action as { provider?: unknown; intent?: unknown; note?: unknown };
+        const rawIntent = String(va.intent ?? "prompt_key").trim().toLowerCase();
+        const intent =
+          rawIntent === "switch_provider" || rawIntent === "open_settings" ? rawIntent : "prompt_key";
+        callbacks?.onVaultAction?.({
+          provider: normalizeProviderIdClient(typeof va.provider === "string" ? va.provider : undefined),
+          intent,
+          note: typeof va.note === "string" ? va.note : undefined,
+        });
       } else if (evt.type === "pdf_draft_progress") {
         const rawBlocks = Array.isArray(evt.blocks) ? evt.blocks : [];
         const blocks: PdfDraftPreviewBlock[] = rawBlocks
@@ -1839,9 +2753,20 @@ export async function runXoxAiChatStream(
         canvas?: unknown;
         clarification?: unknown;
         generated_pdfs?: unknown[];
+        vault_action?: { provider?: string; intent?: string; note?: string };
+        provider_used?: string;
         model_used?: string;
         latency_ms?: number;
         workspace_mutated?: boolean;
+        exhausted_providers?: Array<Record<string, unknown>>;
+        failover_events?: Array<{
+          from_provider?: string;
+          to_provider?: string;
+          reason?: string;
+          kind?: string;
+          model_used?: string;
+        }>;
+        failover_notice?: string;
         usage?: {
           prompt_tokens?: number;
           completion_tokens?: number;
@@ -1856,6 +2781,7 @@ export async function runXoxAiChatStream(
           agendaItems: req.agendaItems,
           attachedContext: req.attachedContext,
           modelOverride: req.modelOverride ?? null,
+          providerOverride: req.providerOverride ?? null,
           streamId,
           userProfile: req.userProfile ?? null,
           activeCanvas: req.activeCanvas ?? null,
@@ -1875,6 +2801,17 @@ export async function runXoxAiChatStream(
       const safeCanvas = resCanvas && canvasHasCellData(resCanvas) ? resCanvas : undefined;
       const safeClarification = res.clarification
         ? sanitizeClarificationSpec(res.clarification) ?? undefined
+        : undefined;
+      const safeVaultAction: VaultPromptSpec | undefined = res.vault_action
+        ? {
+            provider: normalizeProviderIdClient(res.vault_action.provider),
+            intent:
+              res.vault_action.intent === "switch_provider" ||
+              res.vault_action.intent === "open_settings"
+                ? res.vault_action.intent
+                : "prompt_key",
+            note: typeof res.vault_action.note === "string" ? res.vault_action.note : undefined,
+          }
         : undefined;
       const hasTabularCanvas = Boolean(
         safeCanvas && safeCanvas.columns.length > 0 && safeCanvas.rows.length > 0
@@ -1898,11 +2835,22 @@ export async function runXoxAiChatStream(
         tasks: (res.tasks ?? []).map(sanitizeTaskProposal),
         canvas: safeCanvas,
         clarification: safeClarification,
+        vaultAction: safeVaultAction,
         generatedPdfs: sanitizeGeneratedPdfList(res.generated_pdfs),
+        providerUsed: res.provider_used,
         modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
         latencyMs: res.latency_ms ?? 0,
         usage,
         workspaceMutated: Boolean(res.workspace_mutated),
+        failoverNotice: res.failover_notice,
+        exhaustedProviders: res.exhausted_providers,
+        failoverEvents: res.failover_events?.map((fe) => ({
+          fromProvider: fe.from_provider ?? "",
+          toProvider: fe.to_provider ?? "",
+          modelUsed: fe.model_used,
+          kind: fe.kind,
+          reason: fe.reason,
+        })),
       };
     } finally {
       unlisten();
@@ -1993,7 +2941,9 @@ export async function runXoxAiChatStream(
     }
   };
 
-  const apiKey = normalizeApiKey(vault.apiKey);
+  const activeBrowserPid = normalizeProviderIdClient(req.providerOverride || vault.provider);
+  const activeBrowserSpec = AI_PROVIDERS[activeBrowserPid];
+  const apiKey = normalizeApiKey(vault.providers[activeBrowserPid]?.apiKey ?? vault.apiKey);
 
   const runBrowserStreamPass = async (
     reqMessages: Array<Record<string, unknown>>,
@@ -2012,17 +2962,24 @@ export async function runXoxAiChatStream(
         stream: true,
       };
       if (includeTools) {
-        reqBody.tools = [BROWSER_CANVAS_TOOL_DEF, BROWSER_CLARIFICATION_TOOL_DEF];
+        reqBody.tools = [
+          BROWSER_CANVAS_TOOL_DEF,
+          BROWSER_CLARIFICATION_TOOL_DEF,
+          BROWSER_VAULT_CONFIG_TOOL_DEF,
+        ];
         reqBody.tool_choice = "auto";
       }
-      const attemptResp = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      };
+      if (activeBrowserPid === "openrouter") {
+        headers["HTTP-Referer"] = window.location.origin;
+        headers["X-Title"] = "XOOK Enterprise Agentic Orchestrator";
+      }
+      const attemptResp = await fetch(`${activeBrowserSpec.baseUrl}/chat/completions`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-          "HTTP-Referer": window.location.origin,
-          "X-Title": "XOOK Enterprise Agentic Orchestrator",
-        },
+        headers,
         body: JSON.stringify(reqBody),
       });
       if (attemptResp.ok && attemptResp.body) {
@@ -2044,7 +3001,7 @@ export async function runXoxAiChatStream(
         includeTools = false;
         continue;
       }
-      throw new Error(mapFriendlyHttpError(attemptResp.status, errText));
+      throw new Error(mapFriendlyHttpError(attemptResp.status, errText, activeBrowserSpec.name));
     }
 
     if (!resp || !resp.body) {
@@ -2205,6 +3162,11 @@ export async function runXoxAiChatStream(
         }
       : undefined);
 
+  const vaultAction = extractVaultActionFromToolCalls(toolCallsList);
+  if (vaultAction) {
+    callbacks?.onVaultAction?.(vaultAction);
+  }
+
   const canvasArtifact = resolveBrowserCanvasArtifact({
     toolCalls: toolCallsList,
     canvasBuf: router.canvasBuf,
@@ -2265,16 +3227,24 @@ export async function runXoxAiChatStream(
   const cleanedFinalReply = cleanVisibleReply(rawFinalReply, { stripTables: hasTabularCanvas });
   const finalReply =
     cleanedFinalReply ||
-    (hasTabularCanvas && canvasArtifact
-      ? `Listo, preparé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).${canvasArtifact.summary ? `\n\n${canvasArtifact.summary}` : ""}`
-      : clarificationSpec
-        ? clarificationSpec.subtitle || clarificationSpec.title
-        : rawFinalReply);
+    (vaultAction
+      ? `Abrí el formulario seguro de bóveda para **${getProviderSpec(vaultAction.provider).name}** aquí mismo. Ingresa tu clave para guardarla localmente.`
+      : hasTabularCanvas && canvasArtifact
+        ? `Listo, preparé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).${canvasArtifact.summary ? `\n\n${canvasArtifact.summary}` : ""}`
+        : clarificationSpec
+          ? clarificationSpec.subtitle || clarificationSpec.title
+          : rawFinalReply);
   const completedSteps = steps.map((s) => ({ ...s, status: "done" as const }));
   if (clarificationSpec) {
     completedSteps.push({
       id: "ask_clarification",
       label: "Esperando detalles del usuario",
+      status: "done",
+    });
+  } else if (vaultAction) {
+    completedSteps.push({
+      id: "configure_ai_vault",
+      label: `Bóveda lista para ${getProviderSpec(vaultAction.provider).shortName}`,
       status: "done",
     });
   } else if (parsedActions.tasks.length > 0) {
@@ -2306,6 +3276,7 @@ export async function runXoxAiChatStream(
     tasks: parsedActions.tasks,
     canvas: canvasArtifact,
     clarification: clarificationSpec,
+    vaultAction,
     modelUsed: actualModel,
     latencyMs,
     usage: usageObj,
@@ -2314,11 +3285,15 @@ export async function runXoxAiChatStream(
 
 async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResponse> {
   const vault = readBrowserVault();
-  if (!vault.apiKey) {
-    throw new Error("Falta configurar tu clave API de OpenRouter.");
+  const activePid = normalizeProviderIdClient(req.providerOverride || vault.provider);
+  const spec = AI_PROVIDERS[activePid];
+  const slot = vault.providers[activePid];
+  const activeKey = normalizeApiKey(slot?.apiKey ?? vault.apiKey);
+  if (!activeKey) {
+    throw new Error(`Falta configurar tu clave API de ${spec.name}.`);
   }
 
-  const chosenModel = req.modelOverride?.trim() || vault.modelId || "openrouter/free";
+  const chosenModel = req.modelOverride?.trim() || slot?.modelId || vault.modelId || spec.defaultModelId;
   const systemPrompt = buildBrowserSystemPrompt(req, false);
 
   const messages = [
@@ -2339,17 +3314,24 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
       payload.response_format = { type: "json_object" };
     }
     if (useTools) {
-      payload.tools = [BROWSER_CANVAS_TOOL_DEF, BROWSER_CLARIFICATION_TOOL_DEF];
+      payload.tools = [
+        BROWSER_CANVAS_TOOL_DEF,
+        BROWSER_CLARIFICATION_TOOL_DEF,
+        BROWSER_VAULT_CONFIG_TOOL_DEF,
+      ];
       payload.tool_choice = "auto";
     }
-    return fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${activeKey}`,
+    };
+    if (activePid === "openrouter") {
+      headers["HTTP-Referer"] = window.location.origin;
+      headers["X-Title"] = "XOOK Enterprise Agentic Orchestrator";
+    }
+    return fetch(`${spec.baseUrl}/chat/completions`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${normalizeApiKey(vault.apiKey)}`,
-        "HTTP-Referer": window.location.origin,
-        "X-Title": "XOOK Enterprise Agentic Orchestrator",
-      },
+      headers,
       body: JSON.stringify(payload),
     });
   };
@@ -2395,6 +3377,7 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
           originalQuery: parsed.clarification.originalQuery || req.message,
         }
       : undefined);
+  const vaultAction = extractVaultActionFromToolCalls(toolCalls);
   const canvasArtifact = resolveBrowserCanvasArtifact({
     toolCalls,
     canvasBuf: "",
@@ -2406,11 +3389,13 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
   const cleanedSyncReply = cleanVisibleReply(parsed.reply || "", { stripTables: false });
   const finalReply =
     cleanedSyncReply ||
-    (canvasArtifact
-      ? `Listo, generé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).`
-      : clarificationSpec
-        ? clarificationSpec.subtitle || clarificationSpec.title
-        : "Listo, procesé tu consulta.");
+    (vaultAction
+      ? `Abrí el formulario seguro de bóveda para **${getProviderSpec(vaultAction.provider).name}**. Ingresa ahí tu clave para guardarla localmente.`
+      : canvasArtifact
+        ? `Listo, generé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).`
+        : clarificationSpec
+          ? clarificationSpec.subtitle || clarificationSpec.title
+          : "Listo, procesé tu consulta.");
 
   return {
     ...parsed,
@@ -2418,6 +3403,7 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
     reply: finalReply,
     canvas: canvasArtifact,
     clarification: clarificationSpec,
+    vaultAction,
     xoxMood: canvasArtifact && parsed.xoxMood === "talking" ? "success" : parsed.xoxMood,
     modelUsed: data.model || chosenModel,
     latencyMs,

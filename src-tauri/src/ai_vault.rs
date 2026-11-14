@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -8,6 +9,86 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 const VAULT_FILENAME: &str = "ai-vault.json";
 const DEFAULT_PROVIDER: &str = "openrouter";
 const DEFAULT_MODEL_ID: &str = "openrouter/free";
+pub const AI_CONFIG_UPDATED_EVENT: &str = "xox-ai-config-updated";
+
+const SUPPORTED_PROVIDERS: [&str; 6] = [
+    "openrouter",
+    "deepseek",
+    "groq",
+    "gemini",
+    "openai",
+    "anthropic",
+];
+
+fn default_auto_failover() -> bool {
+    true
+}
+
+fn default_failover_order() -> Vec<String> {
+    SUPPORTED_PROVIDERS.iter().map(|s| s.to_string()).collect()
+}
+
+pub(crate) fn normalize_provider_id(raw: &str) -> &'static str {
+    let clean = raw.trim().to_ascii_lowercase();
+    match clean.as_str() {
+        "deepseek" => "deepseek",
+        "groq" => "groq",
+        "gemini" | "google" | "google_ai" | "google-gemini" | "aistudio" => "gemini",
+        "openai" | "gpt" => "openai",
+        "anthropic" | "claude" => "anthropic",
+        _ => "openrouter",
+    }
+}
+
+fn default_model_for_provider(provider: &str) -> &'static str {
+    match normalize_provider_id(provider) {
+        "deepseek" => "deepseek-flash",
+        "groq" => "openai/gpt-oss-120b",
+        "gemini" => "gemini-2.5-flash-lite",
+        "openai" => "gpt-4.1-mini",
+        "anthropic" => "claude-sonnet-4-6",
+        _ => "openrouter/free",
+    }
+}
+
+fn provider_env_vars(provider: &str) -> &'static [&'static str] {
+    match normalize_provider_id(provider) {
+        "deepseek" => &["DEEPSEEK_API_KEY"],
+        "groq" => &["GROQ_API_KEY"],
+        "gemini" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        "openai" => &["OPENAI_API_KEY"],
+        "anthropic" => &["ANTHROPIC_API_KEY"],
+        _ => &["OPENROUTER_API_KEY"],
+    }
+}
+
+fn provider_display_name(provider: &str) -> &'static str {
+    match normalize_provider_id(provider) {
+        "deepseek" => "DeepSeek",
+        "groq" => "Groq",
+        "gemini" => "Google Gemini",
+        "openai" => "OpenAI",
+        "anthropic" => "Anthropic",
+        _ => "OpenRouter",
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct StoredProviderEntry {
+    #[serde(default)]
+    model_id: String,
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    custom_models: Vec<String>,
+    #[serde(default)]
+    cooldown_until_ms: Option<i64>,
+    #[serde(default)]
+    quota_status: Option<String>,
+    #[serde(default)]
+    quota_reason: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,17 +98,50 @@ struct StoredAiVault {
     api_key: Option<String>,
     #[serde(default)]
     custom_models: Vec<String>,
+    #[serde(default)]
+    providers: HashMap<String, StoredProviderEntry>,
+    #[serde(default = "default_auto_failover")]
+    auto_failover: bool,
+    #[serde(default = "default_failover_order")]
+    failover_order: Vec<String>,
 }
 
 impl Default for StoredAiVault {
     fn default() -> Self {
+        let mut providers = HashMap::new();
+        for pid in SUPPORTED_PROVIDERS {
+            providers.insert(
+                pid.to_string(),
+                StoredProviderEntry {
+                    model_id: default_model_for_provider(pid).to_string(),
+                    ..Default::default()
+                },
+            );
+        }
         Self {
             provider: DEFAULT_PROVIDER.to_string(),
             model_id: DEFAULT_MODEL_ID.to_string(),
             api_key: None,
             custom_models: Vec::new(),
+            providers,
+            auto_failover: true,
+            failover_order: default_failover_order(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderPublicStatus {
+    pub provider: String,
+    pub model_id: String,
+    pub has_api_key: bool,
+    pub masked_key: Option<String>,
+    pub key_source: String, // "vault" | "env" | "none"
+    pub custom_models: Vec<String>,
+    pub cooldown_until_ms: Option<i64>,
+    pub quota_status: String, // "ready" | "cooldown" | "exhausted" | "auth_error"
+    pub quota_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,16 +153,23 @@ pub struct AiConfigPublic {
     pub masked_key: Option<String>,
     pub key_source: String, // "vault" | "env" | "none"
     pub custom_models: Vec<String>,
+    pub auto_failover: bool,
+    pub failover_order: Vec<String>,
+    pub configured_providers: HashMap<String, ProviderPublicStatus>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveAiConfigPayload {
     pub provider: Option<String>,
+    pub target_provider: Option<String>,
     pub model_id: Option<String>,
     pub api_key: Option<String>,
     pub clear_key: Option<bool>,
     pub custom_models: Option<Vec<String>>,
+    pub auto_failover: Option<bool>,
+    pub failover_order: Option<Vec<String>>,
+    pub clear_cooldown: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,6 +185,7 @@ pub struct XoxChatRequest {
     #[serde(default)]
     pub attached_context: Vec<serde_json::Value>,
     pub model_override: Option<String>,
+    pub provider_override: Option<String>,
     pub stream_id: Option<String>,
     pub user_profile: Option<serde_json::Value>,
     #[serde(default)]
@@ -77,14 +199,84 @@ fn vault_file_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
         .map(|dir| dir.join(VAULT_FILENAME))
 }
 
+fn normalize_failover_order(raw: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in raw {
+        let pid = normalize_provider_id(item).to_string();
+        if !out.contains(&pid) {
+            out.push(pid);
+        }
+    }
+    for pid in SUPPORTED_PROVIDERS {
+        let s = pid.to_string();
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
+
+fn normalize_vault_state(vault: &mut StoredAiVault) {
+    let active_pid = normalize_provider_id(&vault.provider).to_string();
+    vault.provider = active_pid.clone();
+
+    let mut normalized_providers: HashMap<String, StoredProviderEntry> = HashMap::new();
+    for (k, mut entry) in std::mem::take(&mut vault.providers) {
+        let pid = normalize_provider_id(&k).to_string();
+        if entry.model_id.trim().is_empty() {
+            entry.model_id = default_model_for_provider(&pid).to_string();
+        }
+        if let Some(ref raw_k) = entry.api_key {
+            let norm_k = normalize_api_key(raw_k);
+            entry.api_key = if norm_k.is_empty() { None } else { Some(norm_k) };
+        }
+        normalized_providers.insert(pid, entry);
+    }
+
+    for pid in SUPPORTED_PROVIDERS {
+        normalized_providers
+            .entry(pid.to_string())
+            .or_insert_with(|| StoredProviderEntry {
+                model_id: default_model_for_provider(pid).to_string(),
+                ..Default::default()
+            });
+    }
+
+    // Migrate legacy single-provider fields into the active provider slot.
+    if let Some(active_entry) = normalized_providers.get_mut(&active_pid) {
+        if active_entry.api_key.is_none() {
+            if let Some(ref legacy_key) = vault.api_key {
+                let norm = normalize_api_key(legacy_key);
+                if !norm.is_empty() {
+                    active_entry.api_key = Some(norm);
+                }
+            }
+        }
+        if active_entry.model_id.trim().is_empty() || (active_entry.model_id == default_model_for_provider(&active_pid) && !vault.model_id.trim().is_empty() && active_pid == "openrouter") {
+            let legacy_model = vault.model_id.trim();
+            if !legacy_model.is_empty() {
+                active_entry.model_id = legacy_model.to_string();
+            }
+        }
+        if active_entry.custom_models.is_empty() && !vault.custom_models.is_empty() {
+            active_entry.custom_models = vault.custom_models.clone();
+        }
+        vault.model_id = active_entry.model_id.clone();
+        vault.api_key = active_entry.api_key.clone();
+        vault.custom_models = active_entry.custom_models.clone();
+    }
+
+    vault.providers = normalized_providers;
+    vault.failover_order = normalize_failover_order(&vault.failover_order);
+}
+
 fn load_vault<R: Runtime>(app: &AppHandle<R>) -> StoredAiVault {
-    let Some(path) = vault_file_path(app) else {
-        return StoredAiVault::default();
-    };
-    let Ok(raw) = fs::read_to_string(path) else {
-        return StoredAiVault::default();
-    };
-    serde_json::from_str::<StoredAiVault>(&raw).unwrap_or_default()
+    let mut vault = vault_file_path(app)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|raw| serde_json::from_str::<StoredAiVault>(&raw).ok())
+        .unwrap_or_default();
+    normalize_vault_state(&mut vault);
+    vault
 }
 
 fn write_vault<R: Runtime>(app: &AppHandle<R>, vault: &StoredAiVault) -> Result<(), String> {
@@ -113,6 +305,10 @@ fn mask_api_key(key: &str) -> String {
     }
     let prefix_len = if key.starts_with("sk-or-v1-") && len > 14 {
         9
+    } else if (key.starts_with("sk-ant-") || key.starts_with("sk-proj-")) && len > 13 {
+        7
+    } else if key.starts_with("AIza") || key.starts_with("gsk_") {
+        4
     } else {
         4.min(len / 3)
     };
@@ -130,45 +326,310 @@ fn normalize_api_key(raw: &str) -> String {
             .trim()
             .trim_matches(|c| matches!(c, '"' | '\'' | '`' | ',' | ';' | '.'));
     }
-    if let Some(idx) = trimmed.find("sk-or-") {
-        let candidate: String = trimmed[idx..]
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        if candidate.len() >= 18 {
-            return candidate;
+    for (prefix, min_len) in [
+        ("sk-or-", 18usize),
+        ("sk-ant-", 18usize),
+        ("sk-proj-", 18usize),
+        ("sk-svcacct-", 18usize),
+        ("gsk_", 18usize),
+        ("AIza", 20usize),
+        ("sk-", 18usize),
+    ] {
+        if let Some(idx) = trimmed.find(prefix) {
+            let candidate: String = trimmed[idx..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if candidate.len() >= min_len {
+                return candidate;
+            }
         }
     }
     trimmed.to_string()
 }
 
-fn resolve_effective_key(vault: &StoredAiVault) -> (Option<String>, &'static str) {
-    if let Some(k) = vault
-        .api_key
-        .as_deref()
-        .map(normalize_api_key)
-        .filter(|s| !s.is_empty())
-    {
-        return (Some(k), "vault");
+fn resolve_provider_key(vault: &StoredAiVault, provider: &str) -> (Option<String>, &'static str) {
+    let pid = normalize_provider_id(provider);
+    if let Some(entry) = vault.providers.get(pid) {
+        if let Some(k) = entry
+            .api_key
+            .as_deref()
+            .map(normalize_api_key)
+            .filter(|s| !s.is_empty())
+        {
+            return (Some(k), "vault");
+        }
     }
-    if let Ok(env_k) = std::env::var("OPENROUTER_API_KEY") {
-        let trimmed = normalize_api_key(&env_k);
-        if !trimmed.is_empty() {
-            return (Some(trimmed), "env");
+    if pid == vault.provider {
+        if let Some(k) = vault
+            .api_key
+            .as_deref()
+            .map(normalize_api_key)
+            .filter(|s| !s.is_empty())
+        {
+            return (Some(k), "vault");
+        }
+    }
+    for env_name in provider_env_vars(pid) {
+        if let Ok(env_k) = std::env::var(env_name) {
+            let trimmed = normalize_api_key(&env_k);
+            if !trimmed.is_empty() {
+                return (Some(trimmed), "env");
+            }
         }
     }
     (None, "none")
 }
 
+fn resolve_effective_key(vault: &StoredAiVault) -> (Option<String>, &'static str) {
+    resolve_provider_key(vault, &vault.provider)
+}
+
+fn resolve_first_available_provider(
+    vault: &StoredAiVault,
+    preferred_provider: &str,
+) -> Option<(String, String, String)> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let pref = normalize_provider_id(preferred_provider).to_string();
+
+    if let (Some(key), _) = resolve_provider_key(vault, &pref) {
+        let model_id = vault
+            .providers
+            .get(&pref)
+            .map(|e| e.model_id.clone())
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| vault.model_id.clone());
+        return Some((pref, key, model_id));
+    }
+
+    if !vault.auto_failover {
+        return None;
+    }
+
+    let mut ready_candidates: Vec<(String, String, String)> = Vec::new();
+    let mut cooldown_candidates: Vec<(String, String, String)> = Vec::new();
+    for pid in &vault.failover_order {
+        let norm_pid = normalize_provider_id(pid).to_string();
+        if norm_pid == pref {
+            continue;
+        }
+        let (Some(key), _) = resolve_provider_key(vault, &norm_pid) else {
+            continue;
+        };
+        let entry = vault.providers.get(&norm_pid);
+        let model_id = entry
+            .map(|e| e.model_id.clone())
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| default_model_for_provider(&norm_pid).to_string());
+        let in_cooldown = entry
+            .and_then(|e| e.cooldown_until_ms)
+            .map(|ts| ts > now_ms)
+            .unwrap_or(false);
+        if in_cooldown {
+            cooldown_candidates.push((norm_pid, key, model_id));
+        } else {
+            ready_candidates.push((norm_pid, key, model_id));
+        }
+    }
+    ready_candidates
+        .into_iter()
+        .next()
+        .or_else(|| cooldown_candidates.into_iter().next())
+}
+
+fn build_provider_credentials_json(vault: &StoredAiVault) -> serde_json::Map<String, serde_json::Value> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut map = serde_json::Map::new();
+    for pid in SUPPORTED_PROVIDERS {
+        let (maybe_key, _) = resolve_provider_key(vault, pid);
+        let Some(api_key) = maybe_key else {
+            continue;
+        };
+        let entry = vault.providers.get(pid);
+        let model_id = entry
+            .map(|e| e.model_id.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| default_model_for_provider(pid).to_string());
+        let cooldown_until_ms = entry
+            .and_then(|e| e.cooldown_until_ms)
+            .filter(|ts| *ts > now_ms);
+        map.insert(
+            pid.to_string(),
+            serde_json::json!({
+                "api_key": api_key,
+                "model_id": model_id,
+                "cooldown_until_ms": cooldown_until_ms,
+            }),
+        );
+    }
+    map
+}
+
 fn to_public_config(vault: &StoredAiVault) -> AiConfigPublic {
-    let (key, source) = resolve_effective_key(vault);
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let mut configured_providers = HashMap::new();
+
+    for pid in SUPPORTED_PROVIDERS {
+        let (key, source) = resolve_provider_key(vault, pid);
+        let entry = vault.providers.get(pid);
+        let model_id = entry
+            .map(|e| e.model_id.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| default_model_for_provider(pid).to_string());
+        let custom_models = entry
+            .map(|e| e.custom_models.clone())
+            .unwrap_or_default();
+        let raw_cd = entry.and_then(|e| e.cooldown_until_ms);
+        let active_cd = raw_cd.filter(|ts| *ts > now_ms);
+        let quota_status = if active_cd.is_some() {
+            match entry.and_then(|e| e.quota_status.as_deref()) {
+                Some("exhausted") => "exhausted".to_string(),
+                Some("auth_error") => "auth_error".to_string(),
+                _ => "cooldown".to_string(),
+            }
+        } else {
+            "ready".to_string()
+        };
+        let quota_reason = if active_cd.is_some() {
+            entry.and_then(|e| e.quota_reason.clone())
+        } else {
+            None
+        };
+
+        configured_providers.insert(
+            pid.to_string(),
+            ProviderPublicStatus {
+                provider: pid.to_string(),
+                model_id,
+                has_api_key: key.is_some(),
+                masked_key: key.as_deref().map(mask_api_key),
+                key_source: source.to_string(),
+                custom_models,
+                cooldown_until_ms: active_cd,
+                quota_status,
+                quota_reason,
+            },
+        );
+    }
+
+    let (active_key, active_source) = resolve_effective_key(vault);
     AiConfigPublic {
         provider: vault.provider.clone(),
         model_id: vault.model_id.clone(),
-        has_api_key: key.is_some(),
-        masked_key: key.as_deref().map(mask_api_key),
-        key_source: source.to_string(),
+        has_api_key: active_key.is_some(),
+        masked_key: active_key.as_deref().map(mask_api_key),
+        key_source: active_source.to_string(),
         custom_models: vault.custom_models.clone(),
+        auto_failover: vault.auto_failover,
+        failover_order: vault.failover_order.clone(),
+        configured_providers,
+    }
+}
+
+fn sync_vault_from_sidecar_result<R: Runtime>(
+    app: &AppHandle<R>,
+    result_val: &serde_json::Value,
+    requested_provider: &str,
+) {
+    let exhausted = result_val
+        .get("exhausted_providers")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let failover_events = result_val
+        .get("failover_events")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let used_provider = result_val
+        .get("provider_used")
+        .and_then(|v| v.as_str())
+        .map(normalize_provider_id);
+    let model_used = result_val
+        .get("model_used")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if exhausted.is_empty() && failover_events.is_empty() {
+        return;
+    }
+
+    let mut vault = load_vault(app);
+    let mut changed = false;
+
+    for item in &exhausted {
+        let Some(raw_pid) = item.get("provider").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let pid = normalize_provider_id(raw_pid).to_string();
+        let kind = item
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("cooldown");
+        let status_label = match kind {
+            "quota_exhausted" => "exhausted",
+            "auth_error" => "auth_error",
+            _ => "cooldown",
+        };
+        let cd_ms = item
+            .get("cooldown_until_ms")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() + 180_000);
+        let reason = item
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(|s| s.chars().take(240).collect::<String>());
+
+        let entry = vault.providers.entry(pid).or_insert_with(StoredProviderEntry::default);
+        entry.cooldown_until_ms = Some(cd_ms);
+        entry.quota_status = Some(status_label.to_string());
+        entry.quota_reason = reason;
+        changed = true;
+    }
+
+    let has_hard_exhaustion = exhausted.iter().any(|item| {
+        matches!(
+            item.get("kind").and_then(|v| v.as_str()),
+            Some("quota_exhausted" | "auth_error" | "rate_limit")
+        )
+    });
+
+    if !failover_events.is_empty() && has_hard_exhaustion {
+        if let Some(next_pid) = used_provider {
+            if next_pid != normalize_provider_id(requested_provider) || next_pid != vault.provider {
+                vault.provider = next_pid.to_string();
+                let next_model = {
+                    let entry = vault
+                        .providers
+                        .entry(next_pid.to_string())
+                        .or_insert_with(|| StoredProviderEntry {
+                            model_id: default_model_for_provider(next_pid).to_string(),
+                            ..Default::default()
+                        });
+                    if let Some(m) = model_used {
+                        entry.model_id = m.to_string();
+                    } else if entry.model_id.trim().is_empty() {
+                        entry.model_id = default_model_for_provider(next_pid).to_string();
+                    }
+                    entry.cooldown_until_ms = None;
+                    entry.quota_status = Some("ready".to_string());
+                    entry.quota_reason = None;
+                    vault.api_key = entry.api_key.clone();
+                    vault.custom_models = entry.custom_models.clone();
+                    entry.model_id.clone()
+                };
+                vault.model_id = next_model;
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        normalize_vault_state(&mut vault);
+        let _ = write_vault(app, &vault);
+        let public = to_public_config(&vault);
+        let _ = app.emit(AI_CONFIG_UPDATED_EVENT, &public);
     }
 }
 
@@ -297,55 +758,132 @@ pub fn save_ai_config<R: Runtime>(
 ) -> Result<AiConfigPublic, String> {
     let mut vault = load_vault(&app);
 
-    if let Some(p) = payload.provider {
-        let trimmed = p.trim();
-        if !trimmed.is_empty() {
-            vault.provider = trimmed.to_string();
+    let switching_provider = payload
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_provider_id);
+
+    let target_pid = payload
+        .target_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_provider_id)
+        .or(switching_provider)
+        .unwrap_or_else(|| normalize_provider_id(&vault.provider))
+        .to_string();
+
+    {
+        let entry = vault
+            .providers
+            .entry(target_pid.clone())
+            .or_insert_with(|| StoredProviderEntry {
+                model_id: default_model_for_provider(&target_pid).to_string(),
+                ..Default::default()
+            });
+
+        if let Some(m) = payload.model_id {
+            let trimmed = m.trim();
+            if !trimmed.is_empty() {
+                entry.model_id = trimmed.to_string();
+            }
+        }
+
+        if let Some(custom) = payload.custom_models {
+            entry.custom_models = custom
+                .into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+
+        if payload.clear_key.unwrap_or(false) {
+            entry.api_key = None;
+            entry.cooldown_until_ms = None;
+            entry.quota_status = None;
+            entry.quota_reason = None;
+        } else if let Some(new_key) = payload.api_key {
+            let normalized = normalize_api_key(&new_key);
+            if !normalized.is_empty() {
+                entry.api_key = Some(normalized);
+                // Reset cooldown when user saves a fresh API key
+                entry.cooldown_until_ms = None;
+                entry.quota_status = None;
+                entry.quota_reason = None;
+            }
+        }
+
+        if payload.clear_cooldown.unwrap_or(false) {
+            entry.cooldown_until_ms = None;
+            entry.quota_status = None;
+            entry.quota_reason = None;
         }
     }
 
-    if let Some(m) = payload.model_id {
-        let trimmed = m.trim();
-        if !trimmed.is_empty() {
-            vault.model_id = trimmed.to_string();
-        }
+    if let Some(active_pid) = switching_provider {
+        vault.provider = active_pid.to_string();
     }
 
-    if let Some(custom) = payload.custom_models {
-        vault.custom_models = custom
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+    if let Some(auto_fo) = payload.auto_failover {
+        vault.auto_failover = auto_fo;
     }
 
-    if payload.clear_key.unwrap_or(false) {
-        vault.api_key = None;
-    } else if let Some(new_key) = payload.api_key {
-        let normalized = normalize_api_key(&new_key);
-        if !normalized.is_empty() {
-            vault.api_key = Some(normalized);
-        }
+    if let Some(order) = payload.failover_order {
+        vault.failover_order = normalize_failover_order(&order);
     }
 
+    if let Some(active_entry) = vault.providers.get(&vault.provider) {
+        vault.model_id = if active_entry.model_id.trim().is_empty() {
+            default_model_for_provider(&vault.provider).to_string()
+        } else {
+            active_entry.model_id.clone()
+        };
+        vault.api_key = active_entry.api_key.clone();
+        vault.custom_models = active_entry.custom_models.clone();
+    }
+
+    normalize_vault_state(&mut vault);
     write_vault(&app, &vault)?;
-    Ok(to_public_config(&vault))
+    let public = to_public_config(&vault);
+    let _ = app.emit(AI_CONFIG_UPDATED_EVENT, &public);
+    Ok(public)
 }
 
 #[tauri::command]
-pub async fn test_ai_connection<R: Runtime>(app: AppHandle<R>) -> Result<serde_json::Value, String> {
+pub async fn test_ai_connection<R: Runtime>(
+    app: AppHandle<R>,
+    provider: Option<String>,
+) -> Result<serde_json::Value, String> {
     let vault = load_vault(&app);
-    let (maybe_key, _) = resolve_effective_key(&vault);
+    let target_pid = provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_provider_id)
+        .unwrap_or_else(|| normalize_provider_id(&vault.provider))
+        .to_string();
+
+    let (maybe_key, _) = resolve_provider_key(&vault, &target_pid);
     let Some(api_key) = maybe_key else {
         return Ok(serde_json::json!({
             "ok": false,
-            "message": "No hay una clave API de OpenRouter guardada en la bóveda."
+            "provider": target_pid,
+            "message": format!("No hay una clave API de {} guardada en la bóveda.", provider_display_name(&target_pid)),
         }));
     };
 
     let script = find_sidecar_script(&app)?;
     tokio::task::spawn_blocking(move || {
-        call_python_sidecar(&script, "test_ai_key", serde_json::json!({ "api_key": api_key }))
+        call_python_sidecar(
+            &script,
+            "test_ai_key",
+            serde_json::json!({
+                "provider": target_pid,
+                "api_key": api_key,
+            }),
+        )
     })
     .await
     .map_err(|e| format!("Error de concurrencia: {e}"))?
@@ -355,9 +893,17 @@ pub async fn test_ai_connection<R: Runtime>(app: AppHandle<R>) -> Result<serde_j
 pub async fn fetch_openrouter_models<R: Runtime>(
     app: AppHandle<R>,
     free_only: Option<bool>,
+    provider: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let vault = load_vault(&app);
-    let (maybe_key, _) = resolve_effective_key(&vault);
+    let target_pid = provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_provider_id)
+        .unwrap_or_else(|| normalize_provider_id(&vault.provider))
+        .to_string();
+    let (maybe_key, _) = resolve_provider_key(&vault, &target_pid);
     let script = find_sidecar_script(&app)?;
     let only_free = free_only.unwrap_or(false);
 
@@ -366,6 +912,7 @@ pub async fn fetch_openrouter_models<R: Runtime>(
             &script,
             "list_ai_models",
             serde_json::json!({
+                "provider": target_pid,
                 "api_key": maybe_key,
                 "free_only": only_free,
             }),
@@ -381,9 +928,22 @@ pub async fn run_xox_chat<R: Runtime>(
     payload: XoxChatRequest,
 ) -> Result<serde_json::Value, String> {
     let vault = load_vault(&app);
-    let (maybe_key, _) = resolve_effective_key(&vault);
-    let Some(api_key) = maybe_key else {
-        return Err("Falta configurar tu clave API de OpenRouter.".to_string());
+    let requested_provider = payload
+        .provider_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_provider_id)
+        .unwrap_or_else(|| normalize_provider_id(&vault.provider))
+        .to_string();
+
+    let Some((effective_provider, api_key, default_entry_model)) =
+        resolve_first_available_provider(&vault, &requested_provider)
+    else {
+        return Err(format!(
+            "Falta configurar tu clave API de {} (o un proveedor de respaldo).",
+            provider_display_name(&requested_provider)
+        ));
     };
 
     let script = find_sidecar_script(&app)?;
@@ -396,19 +956,32 @@ pub async fn run_xox_chat<R: Runtime>(
             workspace_root_path.as_deref(),
             &payload.message,
         );
-    let model_id = payload
-        .model_override
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| vault.model_id.clone());
+    let model_id = if effective_provider == requested_provider {
+        payload
+            .model_override
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| default_entry_model.clone())
+    } else {
+        default_entry_model
+    };
+    let provider_credentials = build_provider_credentials_json(&vault);
+    let auto_failover = vault.auto_failover;
+    let failover_order = vault.failover_order.clone();
+    let app_for_sync = app.clone();
+    let eff_for_sync = effective_provider.clone();
 
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         call_python_sidecar(
             &script,
             "ai_chat",
             serde_json::json!({
+                "provider": effective_provider,
                 "api_key": api_key,
                 "model_id": model_id,
+                "provider_credentials": provider_credentials,
+                "auto_failover": auto_failover,
+                "failover_order": failover_order,
                 "workspace_root": workspace_root,
                 "message": payload.message,
                 "history": payload.history,
@@ -425,7 +998,10 @@ pub async fn run_xox_chat<R: Runtime>(
         )
     })
     .await
-    .map_err(|e| format!("Error de concurrencia: {e}"))?
+    .map_err(|e| format!("Error de concurrencia: {e}"))??;
+
+    sync_vault_from_sidecar_result(&app_for_sync, &result, &eff_for_sync);
+    Ok(result)
 }
 
 struct BrokerPendingCleanup<'a> {
@@ -446,12 +1022,16 @@ fn handle_command_rpc_callback<R: Runtime>(
 ) -> serde_json::Value {
     use crate::slices::command_runner::{
         commands::PERMISSIONS_UPDATED_EVENT,
-        policy::{PolicyVerdict, add_or_update_rule, evaluate_command},
+        policy::{
+            PolicyVerdict, add_or_update_rule, command_needs_ext_write,
+            evaluate_command_with_config,
+        },
         runner::{
             CommandPermissionBroker, CommandPermissionDecision, execute_sandboxed_command,
             finish_command_execution, insert_command_execution,
         },
     };
+    use crate::slices::host_fs::guard::is_broad_or_sensitive_root;
     use crate::slices::task_ledger::commands::WORKSPACE_UPDATED_EVENT;
     use crate::slices::task_ledger::migrations::open_workspace_db;
     use crate::slices::task_ledger::store::try_record_audit_event_for_root;
@@ -508,7 +1088,8 @@ fn handle_command_rpc_callback<R: Runtime>(
     };
 
     let cmd_id = format!("{request_id}_{}", chrono::Utc::now().timestamp_millis());
-    let eval = evaluate_command(&workspace_root, &command, &cwd);
+    let app_cfg_dir = app.path().app_config_dir().ok();
+    let eval = evaluate_command_with_config(&workspace_root, app_cfg_dir.as_deref(), &command, &cwd);
 
     match &eval.verdict {
         PolicyVerdict::Deny(reason) => {
@@ -617,6 +1198,8 @@ fn handle_command_rpc_callback<R: Runtime>(
                     "riskLevel": eval.risk_level,
                     "program": eval.program,
                     "patternSuggestion": eval.pattern_suggestion,
+                    "allowAlwaysAllowed": eval.allow_always_allowed,
+                    "isExternal": eval.is_external,
                 }),
             );
 
@@ -651,25 +1234,53 @@ fn handle_command_rpc_callback<R: Runtime>(
                     serde_json::to_value(&res).unwrap_or_else(|_| serde_json::json!({ "ok": res.ok }))
                 }
                 Ok(CommandPermissionDecision::AllowAlways) => {
-                    if let Ok(cfg) = add_or_update_rule(
-                        &workspace_root,
-                        &eval.pattern_suggestion,
-                        "allow",
-                        "program",
-                        Some(purpose.clone()),
-                    ) {
-                        let _ = app.emit(PERMISSIONS_UPDATED_EVENT, &cfg);
-                        let _ = app.emit(
-                            WORKSPACE_UPDATED_EVENT,
-                            serde_json::json!({ "reason": "permission_always" }),
-                        );
-                    }
+                    let effective_mode = if eval.allow_always_allowed {
+                        if let Ok(mut cfg) = add_or_update_rule(
+                            &workspace_root,
+                            &eval.pattern_suggestion,
+                            "allow",
+                            "program",
+                            Some(purpose.clone()),
+                        ) {
+                            if eval.is_external {
+                                let ext_scope = if command_needs_ext_write(&eval.program, eval.uses_shell) {
+                                    "ext_write"
+                                } else {
+                                    "ext_read"
+                                };
+                                for ext_dir in &eval.external_dirs {
+                                    if !is_broad_or_sensitive_root(ext_dir) {
+                                        if let Ok(next_cfg) = add_or_update_rule(
+                                            &workspace_root,
+                                            &ext_dir.to_string_lossy(),
+                                            "allow",
+                                            ext_scope,
+                                            Some(format!(
+                                                "Carpeta externa autorizada para '{}'",
+                                                eval.program
+                                            )),
+                                        ) {
+                                            cfg = next_cfg;
+                                        }
+                                    }
+                                }
+                            }
+                            let _ = app.emit(PERMISSIONS_UPDATED_EVENT, &cfg);
+                            let _ = app.emit(
+                                WORKSPACE_UPDATED_EVENT,
+                                serde_json::json!({ "reason": "permission_always" }),
+                            );
+                        }
+                        "always"
+                    } else {
+                        "once"
+                    };
                     let res = execute_sandboxed_command(
                         &conn,
                         &workspace_root,
                         &cmd_id,
                         &eval,
-                        "always",
+                        effective_mode,
                         timeout_sec,
                     );
                     let _ = app.emit(
@@ -1745,6 +2356,693 @@ where
     }
 }
 
+fn run_host_fs_gated_action<R, F>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+    kind: &'static str,
+    op: crate::slices::host_fs::guard::HostFsOperation,
+    raw_path: &str,
+    purpose: String,
+    display_cmd: String,
+    detail_preview: Option<String>,
+    action_fn: F,
+) -> serde_json::Value
+where
+    R: Runtime,
+    F: FnOnce(&std::path::Path) -> Result<(serde_json::Value, String), String>,
+{
+    use crate::slices::command_runner::{
+        commands::PERMISSIONS_UPDATED_EVENT,
+        policy::{CommandEvaluation, PolicyVerdict, add_or_update_rule},
+        runner::{
+            CommandExecutionResult, CommandPermissionBroker, CommandPermissionDecision,
+            finish_command_execution, insert_command_execution,
+        },
+    };
+    use crate::slices::host_fs::guard::evaluate_host_fs_access;
+    use crate::slices::task_ledger::commands::WORKSPACE_UPDATED_EVENT;
+    use crate::slices::task_ledger::migrations::open_workspace_db;
+    use crate::slices::task_ledger::store::try_record_audit_event_for_root;
+    use crate::slices::workspace_manager::registry::resolve_active_workspace_root;
+
+    let request_id = parsed
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("extfs_req")
+        .to_string();
+    let stream_id = parsed
+        .get("stream_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    let root = fallback_workspace_root
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| resolve_active_workspace_root(app));
+    let conn = root.as_deref().and_then(|r| open_workspace_db(r).ok());
+    let app_cfg_dir = app.path().app_config_dir().ok();
+    let ws_fallback = PathBuf::from("/__xook_no_workspace__");
+    let ws_ref = root.as_deref().unwrap_or(&ws_fallback);
+
+    let mut host_eval = match evaluate_host_fs_access(ws_ref, app_cfg_dir.as_deref(), raw_path, op) {
+        Ok(ev) => ev,
+        Err(err) => {
+            return serde_json::json!({
+                "ok": false,
+                "status": "error",
+                "error": err,
+            });
+        }
+    };
+    if root.is_none() && matches!(host_eval.verdict, PolicyVerdict::Allow) {
+        host_eval.verdict = PolicyVerdict::Ask;
+        host_eval.allow_always_allowed = false;
+    }
+
+    let scope_dir_str = host_eval.scope_dir.to_string_lossy().to_string();
+    let eval_cmd = CommandEvaluation {
+        verdict: host_eval.verdict.clone(),
+        matched_rule: host_eval.matched_rule.clone(),
+        risk_level: host_eval.risk_level.clone(),
+        program: kind.to_string(),
+        args: vec![host_eval.canonical_path.to_string_lossy().to_string()],
+        cwd_abs: host_eval.scope_dir.clone(),
+        cwd_rel: scope_dir_str.clone(),
+        pattern_suggestion: scope_dir_str.clone(),
+        allow_always_allowed: host_eval.allow_always_allowed,
+        uses_shell: false,
+        raw_command: display_cmd.clone(),
+        is_external: !host_eval.inside_workspace,
+        external_dirs: if host_eval.inside_workspace {
+            Vec::new()
+        } else {
+            vec![host_eval.scope_dir.clone()]
+        },
+    };
+    let cmd_id = format!("{request_id}_{}", chrono::Utc::now().timestamp_millis());
+    let audit_action = if op.is_write() { "ext_fs_write" } else { "ext_fs_read" };
+
+    let run_now = |perm_mode: &str, emit_events: bool| -> serde_json::Value {
+        let started = std::time::Instant::now();
+        match action_fn(&host_eval.canonical_path) {
+            Ok((mut payload, summary)) => {
+                let duration_ms = started.elapsed().as_millis() as i64;
+                if emit_events {
+                    if let Some(ref c) = conn {
+                        let _ = finish_command_execution(
+                            c,
+                            &cmd_id,
+                            "finished",
+                            Some(perm_mode),
+                            Some(0),
+                            Some(duration_ms),
+                            None,
+                        );
+                    }
+                    let cmd_result = CommandExecutionResult {
+                        ok: true,
+                        command_id: cmd_id.clone(),
+                        status: "finished".to_string(),
+                        permission_mode: perm_mode.to_string(),
+                        exit_code: Some(0),
+                        duration_ms: duration_ms.max(0) as u128,
+                        stdout: summary,
+                        stderr: String::new(),
+                        truncated: false,
+                        log_path: None,
+                        error: None,
+                    };
+                    let _ = app.emit(
+                        "xox:command-finished",
+                        serde_json::json!({
+                            "requestId": request_id,
+                            "streamId": stream_id,
+                            "commandId": cmd_id,
+                            "kind": kind,
+                            "purpose": purpose,
+                            "command": display_cmd,
+                            "cwdRel": scope_dir_str,
+                            "riskLevel": host_eval.risk_level,
+                            "status": "finished",
+                            "detailPreview": detail_preview,
+                            "result": cmd_result,
+                        }),
+                    );
+                }
+                if emit_events || op.is_write() {
+                    if let Some(ref ws_root) = root {
+                        let _ = try_record_audit_event_for_root(
+                            ws_root,
+                            "user",
+                            audit_action,
+                            &host_eval.canonical_path.to_string_lossy(),
+                            "agente",
+                            Some(&display_cmd),
+                        );
+                    }
+                }
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.entry("ok").or_insert(serde_json::json!(true));
+                    obj.insert("outside_workspace".to_string(), serde_json::json!(!host_eval.inside_workspace));
+                }
+                payload
+            }
+            Err(err_msg) => {
+                let duration_ms = started.elapsed().as_millis() as i64;
+                if emit_events {
+                    if let Some(ref c) = conn {
+                        let _ = finish_command_execution(
+                            c,
+                            &cmd_id,
+                            "error",
+                            Some(perm_mode),
+                            Some(-1),
+                            Some(duration_ms),
+                            None,
+                        );
+                    }
+                    let cmd_result = CommandExecutionResult {
+                        ok: false,
+                        command_id: cmd_id.clone(),
+                        status: "error".to_string(),
+                        permission_mode: perm_mode.to_string(),
+                        exit_code: Some(-1),
+                        duration_ms: duration_ms.max(0) as u128,
+                        stdout: String::new(),
+                        stderr: err_msg.clone(),
+                        truncated: false,
+                        log_path: None,
+                        error: Some(err_msg.clone()),
+                    };
+                    let _ = app.emit(
+                        "xox:command-finished",
+                        serde_json::json!({
+                            "requestId": request_id,
+                            "streamId": stream_id,
+                            "commandId": cmd_id,
+                            "kind": kind,
+                            "purpose": purpose,
+                            "command": display_cmd,
+                            "cwdRel": scope_dir_str,
+                            "riskLevel": host_eval.risk_level,
+                            "status": "error",
+                            "detailPreview": detail_preview,
+                            "result": cmd_result,
+                            "error": err_msg,
+                        }),
+                    );
+                }
+                serde_json::json!({
+                    "ok": false,
+                    "status": "error",
+                    "error": err_msg,
+                })
+            }
+        }
+    };
+
+    match &host_eval.verdict {
+        PolicyVerdict::Deny(reason) => {
+            if let Some(ref c) = conn {
+                let _ = insert_command_execution(
+                    c,
+                    &cmd_id,
+                    stream_id.as_deref(),
+                    Some(&request_id),
+                    &purpose,
+                    &display_cmd,
+                    &eval_cmd,
+                    "blocked",
+                    "blocked",
+                );
+                let _ = finish_command_execution(c, &cmd_id, "blocked", Some("blocked"), None, None, None);
+            }
+            let _ = app.emit(
+                "xox:command-finished",
+                serde_json::json!({
+                    "requestId": request_id,
+                    "streamId": stream_id,
+                    "commandId": cmd_id,
+                    "kind": kind,
+                    "purpose": purpose,
+                    "command": display_cmd,
+                    "cwdRel": scope_dir_str,
+                    "riskLevel": "blocked",
+                    "status": "blocked",
+                    "detailPreview": detail_preview,
+                    "error": reason,
+                }),
+            );
+            serde_json::json!({
+                "ok": false,
+                "commandId": cmd_id,
+                "status": "blocked",
+                "error": reason,
+            })
+        }
+        PolicyVerdict::Allow => run_now("always_rule", false),
+        PolicyVerdict::Ask => {
+            if let Some(ref c) = conn {
+                let _ = insert_command_execution(
+                    c,
+                    &cmd_id,
+                    stream_id.as_deref(),
+                    Some(&request_id),
+                    &purpose,
+                    &display_cmd,
+                    &eval_cmd,
+                    "ask",
+                    "awaiting_permission",
+                );
+            }
+            let broker = app.state::<CommandPermissionBroker>();
+            let rx = broker.register(&request_id);
+            let _cleanup = BrokerPendingCleanup {
+                broker: &broker,
+                request_id: request_id.clone(),
+            };
+
+            let _ = app.emit(
+                "xox-permission-request",
+                serde_json::json!({
+                    "requestId": request_id,
+                    "streamId": stream_id,
+                    "commandId": cmd_id,
+                    "kind": kind,
+                    "purpose": purpose,
+                    "command": display_cmd,
+                    "cwdRel": scope_dir_str,
+                    "riskLevel": host_eval.risk_level,
+                    "program": kind,
+                    "patternSuggestion": scope_dir_str,
+                    "allowAlwaysAllowed": host_eval.allow_always_allowed,
+                    "isExternal": true,
+                    "detailPreview": detail_preview,
+                }),
+            );
+
+            match rx.recv_timeout(std::time::Duration::from_secs(180)) {
+                Ok(CommandPermissionDecision::AllowOnce) => run_now("once", true),
+                Ok(CommandPermissionDecision::AllowAlways) => {
+                    let effective = if host_eval.allow_always_allowed {
+                        if let Some(ref ws_root) = root {
+                            let desc = if host_eval.scope_kind == "ext_write" {
+                                format!("Escritura en carpeta externa: {scope_dir_str}")
+                            } else {
+                                format!("Lectura en carpeta externa: {scope_dir_str}")
+                            };
+                            if let Ok(cfg) = add_or_update_rule(
+                                ws_root,
+                                &scope_dir_str,
+                                "allow",
+                                &host_eval.scope_kind,
+                                Some(desc),
+                            ) {
+                                let _ = app.emit(PERMISSIONS_UPDATED_EVENT, &cfg);
+                                let _ = app.emit(
+                                    WORKSPACE_UPDATED_EVENT,
+                                    serde_json::json!({ "reason": "permission_always" }),
+                                );
+                            }
+                        }
+                        "always"
+                    } else {
+                        "once"
+                    };
+                    run_now(effective, true)
+                }
+                Ok(CommandPermissionDecision::Deny) => {
+                    if let Some(ref c) = conn {
+                        let _ = finish_command_execution(c, &cmd_id, "denied", Some("denied"), None, None, None);
+                    }
+                    let _ = app.emit(
+                        "xox:command-finished",
+                        serde_json::json!({
+                            "requestId": request_id,
+                            "streamId": stream_id,
+                            "commandId": cmd_id,
+                            "kind": kind,
+                            "purpose": purpose,
+                            "command": display_cmd,
+                            "cwdRel": scope_dir_str,
+                            "riskLevel": host_eval.risk_level,
+                            "status": "denied",
+                            "detailPreview": detail_preview,
+                        }),
+                    );
+                    serde_json::json!({
+                        "ok": false,
+                        "commandId": cmd_id,
+                        "status": "denied",
+                        "permissionMode": "denied",
+                        "error": "El usuario rechazó el acceso a esta ruta del equipo.",
+                    })
+                }
+                Err(_) => {
+                    if let Some(ref c) = conn {
+                        let _ = finish_command_execution(c, &cmd_id, "timeout_permission", Some("ask"), None, None, None);
+                    }
+                    let _ = app.emit(
+                        "xox:command-finished",
+                        serde_json::json!({
+                            "requestId": request_id,
+                            "streamId": stream_id,
+                            "commandId": cmd_id,
+                            "kind": kind,
+                            "status": "denied",
+                            "error": "Tiempo de espera agotado para confirmar acceso a la ruta.",
+                        }),
+                    );
+                    serde_json::json!({
+                        "ok": false,
+                        "commandId": cmd_id,
+                        "status": "denied",
+                        "error": "No se recibió confirmación del usuario a tiempo.",
+                    })
+                }
+            }
+        }
+    }
+}
+
+fn handle_host_fs_list_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::host_fs::{actions::list_host_directory, guard::HostFsOperation};
+    use crate::slices::workspace_manager::registry::resolve_active_workspace_root;
+
+    let raw_path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("~").trim();
+    let filter = parsed.get("filter").and_then(|v| v.as_str()).map(str::to_string);
+    let max_entries = parsed.get("max_entries").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let ws_root = fallback_workspace_root
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| resolve_active_workspace_root(app));
+    let app_cfg_dir = app.path().app_config_dir().ok();
+
+    run_host_fs_gated_action(
+        app,
+        parsed,
+        fallback_workspace_root,
+        "ext_fs_list",
+        HostFsOperation::List,
+        raw_path,
+        format!("Listar carpeta del equipo: {raw_path}"),
+        format!("Listar {raw_path}"),
+        None,
+        |canon| {
+            let val = list_host_directory(
+                canon,
+                filter.as_deref(),
+                max_entries,
+                app_cfg_dir.as_deref(),
+                ws_root.as_deref(),
+            )?;
+            let count = val
+                .get("entries")
+                .and_then(|e| e.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            Ok((val, format!("{count} elementos listados")))
+        },
+    )
+}
+
+fn handle_host_fs_search_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::host_fs::{actions::search_host_files, guard::HostFsOperation};
+    use crate::slices::workspace_manager::registry::resolve_active_workspace_root;
+
+    let raw_path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("~").trim();
+    let query = parsed.get("query").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    let mode = parsed.get("mode").and_then(|v| v.as_str()).unwrap_or("auto").to_string();
+    let max_results = parsed.get("max_results").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let ws_root = fallback_workspace_root
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| resolve_active_workspace_root(app));
+    let app_cfg_dir = app.path().app_config_dir().ok();
+
+    run_host_fs_gated_action(
+        app,
+        parsed,
+        fallback_workspace_root,
+        "ext_fs_search",
+        HostFsOperation::Search,
+        raw_path,
+        format!("Buscar '{query}' en {raw_path}"),
+        format!("Buscar \"{query}\" en {raw_path}"),
+        None,
+        |canon| {
+            let val = search_host_files(
+                canon,
+                &query,
+                &mode,
+                max_results,
+                app_cfg_dir.as_deref(),
+                ws_root.as_deref(),
+            )?;
+            let count = val
+                .get("matches")
+                .and_then(|m| m.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            Ok((val, format!("{count} coincidencias")))
+        },
+    )
+}
+
+fn handle_host_fs_authorize_read_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::host_fs::guard::HostFsOperation;
+
+    let raw_path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if raw_path.is_empty() {
+        return serde_json::json!({ "ok": false, "error": "Falta la ruta del archivo a leer." });
+    }
+
+    run_host_fs_gated_action(
+        app,
+        parsed,
+        fallback_workspace_root,
+        "ext_fs_read",
+        HostFsOperation::Read,
+        raw_path,
+        format!("Leer archivo del equipo: {raw_path}"),
+        format!("Leer {raw_path}"),
+        None,
+        |canon| {
+            let canon_str = canon.to_string_lossy().to_string();
+            Ok((
+                serde_json::json!({
+                    "ok": true,
+                    "authorized_path": canon_str,
+                }),
+                format!("Lectura autorizada: {canon_str}"),
+            ))
+        },
+    )
+}
+
+fn handle_host_fs_write_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::host_fs::{actions::write_host_file_atomic, guard::HostFsOperation};
+
+    let raw_path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let content = parsed.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if raw_path.is_empty() {
+        return serde_json::json!({ "ok": false, "error": "Falta la ruta destino." });
+    }
+
+    let preview_snip: String = content.trim().chars().take(240).collect();
+    let detail_preview = Some(format!(
+        "Archivo: {raw_path}\nTamaño: {} bytes\nVista previa:\n{preview_snip}",
+        content.len()
+    ));
+
+    run_host_fs_gated_action(
+        app,
+        parsed,
+        fallback_workspace_root,
+        "ext_fs_write",
+        HostFsOperation::Write,
+        raw_path,
+        format!("Escribir archivo en el equipo: {raw_path}"),
+        format!("Escribir {raw_path}"),
+        detail_preview,
+        |canon| {
+            let val = write_host_file_atomic(canon, &content)?;
+            Ok((val, format!("Archivo guardado ({} bytes)", content.len())))
+        },
+    )
+}
+
+fn handle_host_fs_edit_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::command_runner::policy::PolicyVerdict;
+    use crate::slices::host_fs::{
+        actions::{prepare_host_edit, write_host_file_atomic},
+        guard::{HostFsOperation, evaluate_host_fs_access},
+    };
+    use crate::slices::workspace_manager::registry::resolve_active_workspace_root;
+
+    let raw_path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let old_text = parsed.get("old_text").and_then(|v| v.as_str()).unwrap_or("");
+    let new_text = parsed.get("new_text").and_then(|v| v.as_str()).unwrap_or("");
+    let replace_all = parsed.get("replace_all").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    if raw_path.is_empty() {
+        return serde_json::json!({ "ok": false, "error": "Falta la ruta del archivo a editar." });
+    }
+
+    let root = fallback_workspace_root
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| resolve_active_workspace_root(app));
+    let app_cfg_dir = app.path().app_config_dir().ok();
+    let ws_fallback = PathBuf::from("/__xook_no_workspace__");
+    let ws_ref = root.as_deref().unwrap_or(&ws_fallback);
+
+    // Pre-checar Capa 1 ANTES de abrir el archivo para generar vista previa del parche
+    let mut prepared_patch: Option<(String, String)> = None;
+    if let Ok(pre_eval) = evaluate_host_fs_access(ws_ref, app_cfg_dir.as_deref(), raw_path, HostFsOperation::Edit) {
+        if !matches!(pre_eval.verdict, PolicyVerdict::Deny(_)) {
+            match prepare_host_edit(&pre_eval.canonical_path, old_text, new_text, replace_all) {
+                Ok(pair) => prepared_patch = Some(pair),
+                Err(err) => {
+                    return serde_json::json!({ "ok": false, "error": err });
+                }
+            }
+        }
+    }
+
+    let preview = prepared_patch.as_ref().map(|(_, p)| p.clone());
+    let updated_content = prepared_patch.map(|(u, _)| u).unwrap_or_default();
+
+    run_host_fs_gated_action(
+        app,
+        parsed,
+        fallback_workspace_root,
+        "ext_fs_edit",
+        HostFsOperation::Edit,
+        raw_path,
+        format!("Editar archivo del equipo: {raw_path}"),
+        format!("Editar {raw_path}"),
+        preview,
+        |canon| {
+            let mut val = write_host_file_atomic(canon, &updated_content)?;
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("edited".to_string(), serde_json::json!(true));
+            }
+            Ok((val, "Archivo editado correctamente".to_string()))
+        },
+    )
+}
+
+fn handle_host_fs_mkdir_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::host_fs::{actions::mkdir_host_dir, guard::HostFsOperation};
+
+    let raw_path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if raw_path.is_empty() {
+        return serde_json::json!({ "ok": false, "error": "Falta la ruta de la carpeta a crear." });
+    }
+
+    run_host_fs_gated_action(
+        app,
+        parsed,
+        fallback_workspace_root,
+        "ext_fs_mkdir",
+        HostFsOperation::Mkdir,
+        raw_path,
+        format!("Crear carpeta en el equipo: {raw_path}"),
+        format!("Crear carpeta {raw_path}"),
+        None,
+        |canon| {
+            let val = mkdir_host_dir(canon)?;
+            Ok((val, format!("Carpeta creada: {}", canon.display())))
+        },
+    )
+}
+
+fn handle_host_fs_copy_from_workspace_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::host_fs::guard::HostFsOperation;
+    use crate::slices::workspace_manager::{
+        registry::resolve_active_workspace_root,
+        sandbox::{WorkspaceZone, resolve_inside_workspace},
+    };
+
+    let src_rel = parsed.get("src_rel").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let dest_path = parsed.get("dest_path").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if src_rel.is_empty() || dest_path.is_empty() {
+        return serde_json::json!({ "ok": false, "error": "Faltan rutas origen/destino." });
+    }
+
+    let Some(ws_root) = fallback_workspace_root
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| resolve_active_workspace_root(app))
+    else {
+        return serde_json::json!({ "ok": false, "error": "No hay espacio de trabajo activo." });
+    };
+
+    let src_abs = match resolve_inside_workspace(&ws_root, src_rel, true) {
+        Ok((abs, _, zone)) if zone != WorkspaceZone::Meta && abs.is_file() => abs,
+        Ok(_) => return serde_json::json!({ "ok": false, "error": "El archivo origen no existe." }),
+        Err(err) => return serde_json::json!({ "ok": false, "error": err }),
+    };
+
+    run_host_fs_gated_action(
+        app,
+        parsed,
+        fallback_workspace_root,
+        "ext_fs_write",
+        HostFsOperation::Write,
+        dest_path,
+        format!("Guardar archivo generado en el equipo: {dest_path}"),
+        format!("Guardar en {dest_path}"),
+        Some(format!("Destino: {dest_path}\nOrigen temporal: {src_rel}")),
+        |canon_dest| {
+            if let Some(parent) = canon_dest.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("No se pudo crear carpeta destino: {e}"))?;
+            }
+            let copied = std::fs::copy(&src_abs, canon_dest)
+                .map_err(|e| format!("Error copiando archivo a destino externo: {e}"))?;
+            Ok((
+                serde_json::json!({
+                    "ok": true,
+                    "path": canon_dest.to_string_lossy().to_string(),
+                    "bytes_written": copied,
+                }),
+                format!("Archivo guardado ({copied} bytes)"),
+            ))
+        },
+    )
+}
+
 fn handle_notes_list_rpc_callback<R: Runtime>(
     app: &AppHandle<R>,
     parsed: &serde_json::Value,
@@ -2214,6 +3512,17 @@ fn call_python_sidecar_streaming<R: Runtime>(
                     Some(handle_query_screen_memory_rpc_callback(app, &parsed, ws_ref))
                 }
                 "memory_search" => Some(handle_memory_search_rpc_callback(app, &parsed, ws_ref)),
+                "host_fs_list" => Some(handle_host_fs_list_rpc(app, &parsed, ws_ref)),
+                "host_fs_search" => Some(handle_host_fs_search_rpc(app, &parsed, ws_ref)),
+                "host_fs_authorize_read" => {
+                    Some(handle_host_fs_authorize_read_rpc(app, &parsed, ws_ref))
+                }
+                "host_fs_write" => Some(handle_host_fs_write_rpc(app, &parsed, ws_ref)),
+                "host_fs_edit" => Some(handle_host_fs_edit_rpc(app, &parsed, ws_ref)),
+                "host_fs_mkdir" => Some(handle_host_fs_mkdir_rpc(app, &parsed, ws_ref)),
+                "host_fs_copy_from_workspace" => {
+                    Some(handle_host_fs_copy_from_workspace_rpc(app, &parsed, ws_ref))
+                }
                 _ => None,
             };
             if let Some(cb_result) = cb_result_opt {
@@ -2296,9 +3605,22 @@ pub async fn run_xox_chat_stream<R: Runtime>(
     payload: XoxChatRequest,
 ) -> Result<serde_json::Value, String> {
     let vault = load_vault(&app);
-    let (maybe_key, _) = resolve_effective_key(&vault);
-    let Some(api_key) = maybe_key else {
-        return Err("Falta configurar tu clave API de OpenRouter.".to_string());
+    let requested_provider = payload
+        .provider_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_provider_id)
+        .unwrap_or_else(|| normalize_provider_id(&vault.provider))
+        .to_string();
+
+    let Some((effective_provider, api_key, default_entry_model)) =
+        resolve_first_available_provider(&vault, &requested_provider)
+    else {
+        return Err(format!(
+            "Falta configurar tu clave API de {} (o un proveedor de respaldo).",
+            provider_display_name(&requested_provider)
+        ));
     };
 
     let script = find_sidecar_script(&app)?;
@@ -2311,24 +3633,37 @@ pub async fn run_xox_chat_stream<R: Runtime>(
             workspace_root_path.as_deref(),
             &payload.message,
         );
-    let model_id = payload
-        .model_override
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| vault.model_id.clone());
+    let model_id = if effective_provider == requested_provider {
+        payload
+            .model_override
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| default_entry_model.clone())
+    } else {
+        default_entry_model
+    };
     let stream_id = payload
         .stream_id
         .unwrap_or_else(|| format!("str_{}", chrono::Utc::now().timestamp_millis()));
+    let provider_credentials = build_provider_credentials_json(&vault);
+    let auto_failover = vault.auto_failover;
+    let failover_order = vault.failover_order.clone();
 
     let app_clone = app.clone();
-    tokio::task::spawn_blocking(move || {
+    let app_for_sync = app.clone();
+    let eff_for_sync = effective_provider.clone();
+    let result = tokio::task::spawn_blocking(move || {
         call_python_sidecar_streaming(
             &app_clone,
             &script,
             serde_json::json!({
                 "stream_id": stream_id,
+                "provider": effective_provider,
                 "api_key": api_key,
                 "model_id": model_id,
+                "provider_credentials": provider_credentials,
+                "auto_failover": auto_failover,
+                "failover_order": failover_order,
                 "workspace_root": workspace_root,
                 "message": payload.message,
                 "history": payload.history,
@@ -2345,6 +3680,9 @@ pub async fn run_xox_chat_stream<R: Runtime>(
         )
     })
     .await
-    .map_err(|e| format!("Error de concurrencia: {e}"))?
+    .map_err(|e| format!("Error de concurrencia: {e}"))??;
+
+    sync_vault_from_sidecar_result(&app_for_sync, &result, &eff_for_sync);
+    Ok(result)
 }
 

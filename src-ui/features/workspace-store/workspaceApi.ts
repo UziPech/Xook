@@ -214,7 +214,7 @@ export interface PermissionRule {
   id: string;
   pattern: string;
   action: "allow" | "ask" | "deny" | string;
-  scope: "program" | "prefix" | "exact" | string;
+  scope: "program" | "prefix" | "exact" | "app" | "capability" | "ext_read" | "ext_write" | string;
   description?: string | null;
   createdAt: string;
 }
@@ -264,11 +264,18 @@ export interface CommandPermissionRequestEvent {
   commandId: string;
   kind?:
     | "command"
+    | "external_command"
     | "open_app"
     | "os_notes_read"
     | "os_notes_write"
     | "os_calendar_read"
     | "os_calendar_write"
+    | "ext_fs_list"
+    | "ext_fs_search"
+    | "ext_fs_read"
+    | "ext_fs_write"
+    | "ext_fs_edit"
+    | "ext_fs_mkdir"
     | string;
   purpose: string;
   command: string;
@@ -276,6 +283,8 @@ export interface CommandPermissionRequestEvent {
   riskLevel: "low" | "medium" | "high" | "blocked" | string;
   program: string;
   patternSuggestion: string;
+  allowAlwaysAllowed?: boolean;
+  isExternal?: boolean;
   appName?: string | null;
   bundleId?: string | null;
   appPath?: string | null;
@@ -288,11 +297,18 @@ export interface CommandFinishedEvent {
   commandId?: string;
   kind?:
     | "command"
+    | "external_command"
     | "open_app"
     | "os_notes_read"
     | "os_notes_write"
     | "os_calendar_read"
     | "os_calendar_write"
+    | "ext_fs_list"
+    | "ext_fs_search"
+    | "ext_fs_read"
+    | "ext_fs_write"
+    | "ext_fs_edit"
+    | "ext_fs_mkdir"
     | string;
   purpose?: string;
   command?: string;

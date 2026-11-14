@@ -30,6 +30,7 @@ import {
   sanitizeCanvasArtifact,
 } from "../features/canvas/canvasSchema";
 import { LocalUserProfile, getLocalUserProfile } from "../features/workspace-store/localStore";
+import { ProviderIcon } from "../features/ai-service/ProviderIcon";
 import {
   AiConfigStatus,
   AiConnectionTestResult,
@@ -39,13 +40,17 @@ import {
   OPENROUTER_PRESET_MODELS,
   OpenRouterModelOption,
   detectApiKeyInText,
+  detectVaultConfigRequest,
   extractErrorMessage,
   fetchOpenRouterModels,
   formatModelDisplay,
+  formatPricePerMillion,
   getAiConfigStatus,
   getAvailableQuickModels,
+  getProviderSpec,
   incrementLocalDailyRequestCount,
   loadWorkspaceContext,
+  normalizeProviderIdClient,
   runXoxAiChatStream,
   saveAiConfig,
   testAiConnection,
@@ -155,6 +160,8 @@ export const QuickBar: React.FC = () => {
     keySource: "none",
     customModels: [],
   });
+  const activeProvider = normalizeProviderIdClient(aiConfig.provider);
+  const activeSpec = getProviderSpec(activeProvider);
   const [accountUsage, setAccountUsage] = useState<AiConnectionTestResult | null>(null);
   const [liveCatalog, setLiveCatalog] = useState<OpenRouterModelOption[]>([]);
   const [unavailableModelIds, setUnavailableModelIds] = useState<Set<string>>(() => new Set());
@@ -490,7 +497,7 @@ export const QuickBar: React.FC = () => {
       if (cfg.modelId) setModelId(cfg.modelId);
       if (cfg.hasApiKey) {
         if (!accountUsageRef.current) {
-          void testAiConnection().then((res) => {
+          void testAiConnection(cfg.provider).then((res) => {
             if (res.ok) setAccountUsage(res);
           });
         }
@@ -506,12 +513,12 @@ export const QuickBar: React.FC = () => {
     if (catalogLoadingRef.current) return;
     catalogLoadingRef.current = true;
     try {
-      const res = await fetchOpenRouterModels(false);
+      const res = await fetchOpenRouterModels(false, false, activeProvider);
       if (res.models.length > 0) setLiveCatalog(res.models);
     } finally {
       catalogLoadingRef.current = false;
     }
-  }, []);
+  }, [activeProvider]);
 
   // Libera el catálogo extenso cuando la Quick Bar se oculta para reducir memoria
   useEffect(() => {
@@ -536,6 +543,7 @@ export const QuickBar: React.FC = () => {
     let unlistenDismiss: (() => void) | undefined;
     let unlistenHidden: (() => void) | undefined;
     let unlistenRecenter: (() => void) | undefined;
+    let unlistenAiConfig: (() => void) | undefined;
 
     (async () => {
       try {
@@ -623,6 +631,18 @@ export const QuickBar: React.FC = () => {
         }
         unlistenRecenter = u4;
 
+        const u5 = await listen<AiConfigStatus>("xox-ai-config-updated", (ev) => {
+          if (!ev.payload) return;
+          setAiConfig(ev.payload);
+          if (ev.payload.modelId) setModelId(ev.payload.modelId);
+          setLiveCatalog([]);
+        });
+        if (cancelled) {
+          u5();
+          return;
+        }
+        unlistenAiConfig = u5;
+
         const ready = await invoke<{ visible: boolean; seq: number }>("quick_bar_ready");
         if (cancelled) return;
         if (ready?.visible) {
@@ -644,6 +664,7 @@ export const QuickBar: React.FC = () => {
       unlistenDismiss?.();
       unlistenHidden?.();
       unlistenRecenter?.();
+      unlistenAiConfig?.();
     };
   }, [
     clearActionTimers,
@@ -810,15 +831,50 @@ export const QuickBar: React.FC = () => {
     lastClarificationDisplayRef.current = null;
 
     // Zero-Trust: bloquear envío de claves API pegadas desde Quick Bar
-    const { detectedKey, maskedKey } = detectApiKeyInText(text);
+    const { detectedKey, maskedKey, detectedProvider } = detectApiKeyInText(text);
     if (detectedKey && maskedKey) {
+      const targetSpec = detectedProvider ? getProviderSpec(detectedProvider) : null;
       setXoxState("alert");
       setStatusNote("");
       setReply(
-        `Detecté una clave API (${maskedKey}) y la retuve localmente sin enviarla a internet. Abre XOOK (⌘↩) para guardarla en la bóveda con tu aprobación.`
+        `Detecté una clave API${targetSpec ? ` de ${targetSpec.shortName}` : ""} (${maskedKey}) y la retuve localmente sin enviarla a internet. Abre XOOK (⌘↩) y pégala en el chat o en Ajustes > Bóveda para guardarla cifrada.`
       );
       const t = setTimeout(() => setXoxState("idle"), 2600);
       timersRef.current.push(t);
+      return;
+    }
+
+    const vaultReq = detectVaultConfigRequest(text);
+    if (vaultReq.isVaultRequest) {
+      const targetPid = vaultReq.providerHint ?? activeProvider;
+      const targetSpec = getProviderSpec(targetPid);
+      const targetSlot = aiConfig.configuredProviders?.[targetPid];
+      if (vaultReq.intentKind === "switch_provider" && targetSlot?.hasApiKey) {
+        try {
+          const nextModel = targetSlot.modelId || targetSpec.defaultModelId;
+          const updated = await saveAiConfig({
+            provider: targetPid,
+            modelId: nextModel,
+          });
+          setAiConfig(updated);
+          setModelId(nextModel);
+          setXoxState("success");
+          setStatusNote("");
+          setReply(
+            `Listo, cambié el proveedor activo a ${targetSpec.name} (${targetSlot.maskedKey ?? "clave guardada"}).`
+          );
+          const t = setTimeout(() => setXoxState("idle"), 2600);
+          timersRef.current.push(t);
+          return;
+        } catch {
+          // Continúa con guía local
+        }
+      }
+      setXoxState("idle");
+      setStatusNote("");
+      setReply(
+        `Para guardar tu API key de ${targetSpec.name} (${targetSpec.keyPrefixHint}) en la bóveda local cifrada, abre XOOK (⌘↩) y pídelo en el chat (aparecerá el recuadro seguro Zero-Trust ahí mismo) o entra a Ajustes > Conexión IA.`
+      );
       return;
     }
 
@@ -837,12 +893,15 @@ export const QuickBar: React.FC = () => {
     try {
       const latestCfg = await getAiConfigStatus();
       setAiConfig(latestCfg);
-      if (!latestCfg.hasApiKey) {
+      const latestBackupConfigured =
+        latestCfg.autoFailover !== false &&
+        Object.values(latestCfg.configuredProviders ?? {}).some((p) => p.hasApiKey);
+      if (!latestCfg.hasApiKey && !latestBackupConfigured) {
         setIsStreaming(false);
         setXoxState("idle");
         setStatusNote("");
         setReply(
-          "Aún no hay una clave de OpenRouter conectada. Abre XOOK (⌘↩) para conectar tu cuenta."
+          "Aún no hay ningún proveedor de IA conectado. Abre XOOK (⌘↩) para configurar tus claves o tarifas."
         );
         return;
       }
@@ -926,6 +985,7 @@ export const QuickBar: React.FC = () => {
           agendaItems,
           attachedContext: extraAttached,
           modelOverride: modelId,
+          providerOverride: activeProvider,
           userProfile: localUser
             ? {
                 name: localUser.name,
@@ -939,6 +999,15 @@ export const QuickBar: React.FC = () => {
         {
           onStreamStart: (streamId) => {
             activeStreamIdRef.current = streamId;
+          },
+          onProviderFailover: (evt) => {
+            const toSpec = getProviderSpec(evt.toProvider);
+            setStatusNote(
+              evt.notice || `Cambiando respaldo a ${toSpec.shortName}...`
+            );
+            if (evt.modelUsed) {
+              setModelId(evt.modelUsed);
+            }
           },
           onPhase: (phase, label) => {
             if (hasEnteredTalking && (phase === "reading" || phase === "thinking")) {
@@ -1027,7 +1096,21 @@ export const QuickBar: React.FC = () => {
           { role: "assistant", content: res.reply },
         ];
       }
-      setReply(res.reply);
+      if (res.failoverNotice || (res.failoverEvents && res.failoverEvents.length > 0)) {
+        const finalPid = res.providerUsed ? normalizeProviderIdClient(res.providerUsed) : activeProvider;
+        void getAiConfigStatus().then((fresh) => {
+          setAiConfig(fresh);
+          if (fresh.modelId) setModelId(fresh.modelId);
+        });
+        void fetchOpenRouterModels(false, false, finalPid).then((catRes) => {
+          if (catRes.models.length > 0) setLiveCatalog(catRes.models);
+        });
+      }
+      const replyFinalText =
+        res.failoverNotice && res.reply && !res.reply.includes(res.failoverNotice)
+          ? `> *Respaldo automático:* ${res.failoverNotice}\n\n${res.reply}`
+          : res.reply;
+      setReply(replyFinalText);
       setIsStreaming(false);
 
       const finalMood: XoxState = res.xoxMood === "alert" ? "alert" : "success";
@@ -1064,12 +1147,12 @@ export const QuickBar: React.FC = () => {
       clearActionTimers();
       setIsStreaming(false);
       const errMsg = extractErrorMessage(err, "No se pudo obtener respuesta.");
-      if (/saldo suficiente|402|no longer available/i.test(errMsg)) {
+      if (/saldo suficiente|402|cuota|no longer available/i.test(errMsg)) {
         setUnavailableModelIds((prev) => new Set(prev).add(modelId));
       }
       setXoxState("alert");
       setStatusNote("");
-      setReply(`Error OpenRouter: ${errMsg}`);
+      setReply(`Error (${activeSpec.shortName}): ${errMsg}`);
       const t = setTimeout(() => setXoxState("idle"), 2800);
       timersRef.current.push(t);
     }
@@ -1179,24 +1262,31 @@ export const QuickBar: React.FC = () => {
     finishDragSession(e.currentTarget, e.pointerId);
   };
 
-  const canUsePaidModels = accountUsage?.can_use_paid_models ?? false;
+  const canUsePaidModels =
+    activeProvider !== "openrouter" ? true : (accountUsage?.can_use_paid_models ?? false);
   const modelOptions: OpenRouterModelOption[] = useMemo(
     () =>
       getAvailableQuickModels(
         liveCatalog,
         aiConfig.customModels,
         canUsePaidModels,
-        unavailableModelIds
+        unavailableModelIds,
+        activeProvider
       ),
-    [liveCatalog, aiConfig.customModels, canUsePaidModels, unavailableModelIds]
+    [liveCatalog, aiConfig.customModels, canUsePaidModels, unavailableModelIds, activeProvider]
   );
 
   const activeModel: OpenRouterModelOption = useMemo(() => {
     const extra = cachedSelectedModelRef.current ? [cachedSelectedModelRef.current] : [];
-    const resolved = formatModelDisplay(modelId, [...liveCatalog, ...modelOptions, ...extra]);
+    const resolved = formatModelDisplay(modelId, [
+      ...liveCatalog,
+      ...activeSpec.curatedModels,
+      ...modelOptions,
+      ...extra,
+    ]);
     cachedSelectedModelRef.current = resolved;
     return resolved;
-  }, [modelId, liveCatalog, modelOptions]);
+  }, [modelId, liveCatalog, activeSpec.curatedModels, modelOptions]);
 
   const isBusy =
     isStreaming || xoxState === "thinking" || xoxState === "reading" || xoxState === "syncing";
@@ -1660,9 +1750,10 @@ export const QuickBar: React.FC = () => {
                     }}
                     aria-haspopup="listbox"
                     aria-expanded={showModels}
-                    className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 px-3.5 rounded-full text-[11.5px] font-medium text-white [text-shadow:0_1px_4px_rgba(4,8,18,0.65)] cursor-pointer"
+                    className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 px-3 rounded-full text-[11.5px] font-medium text-white [text-shadow:0_1px_4px_rgba(4,8,18,0.65)] cursor-pointer"
                   >
-                    <span className="max-w-[140px] truncate">{activeModel.name}</span>
+                    <ProviderIcon provider={activeProvider} size={13} className="text-white/85 shrink-0" />
+                    <span className="max-w-[132px] truncate">{activeModel.name}</span>
                     <ChevronDown
                       className={`w-3 h-3 text-sky-100/80 transition-transform ${
                         showModels ? "rotate-180" : ""
@@ -1680,10 +1771,17 @@ export const QuickBar: React.FC = () => {
                       <LiquidGlassBackdrop variant="menu" />
 
                       <div className="relative z-[1] px-2.5 py-1 mb-1 flex items-center justify-between gap-2 text-[10px] text-zinc-200/75 border-b border-white/[0.06]">
-                        <span>Disponibles ({modelOptions.length})</span>
-                        <div className="flex items-center gap-1.5">
+                        <span className="inline-flex items-center gap-1.5 truncate">
+                          <ProviderIcon provider={activeProvider} size={11} className="shrink-0" />
+                          <span>{activeSpec.shortName} ({modelOptions.length})</span>
+                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0">
                           <span className="font-mono">
-                            {canUsePaidModels ? "Con saldo" : "Plan gratuito"}
+                            {activeProvider === "openrouter"
+                              ? canUsePaidModels
+                                ? "Con saldo"
+                                : "Gratis"
+                              : activeSpec.tierBadge}
                           </span>
                           {modelOptions.length > 4 && (
                             <button
@@ -1722,7 +1820,11 @@ export const QuickBar: React.FC = () => {
                               setModelId(m.id);
                               setShowModels(false);
                               inputRef.current?.focus();
-                              void saveAiConfig({ modelId: m.id })
+                              void saveAiConfig({
+                                provider: activeProvider,
+                                targetProvider: activeProvider,
+                                modelId: m.id,
+                              })
                                 .then(setAiConfig)
                                 .catch(() => {});
                             }}
@@ -1731,8 +1833,18 @@ export const QuickBar: React.FC = () => {
                             }`}
                           >
                             <span className="min-w-0">
-                              <span className="block text-xs font-medium text-white truncate [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]">
-                                {m.name}
+                              <span className="flex items-center gap-1.5 text-xs font-medium text-white truncate [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]">
+                                <span className="truncate">{m.name}</span>
+                                {m.is_free ? (
+                                  <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[8.5px] font-medium text-zinc-200/90 shrink-0">
+                                    gratis
+                                  </span>
+                                ) : typeof m.prompt_price_per_million === "number" &&
+                                  m.prompt_price_per_million > 0 ? (
+                                  <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[8.5px] font-mono text-zinc-300/90 shrink-0 tabular-nums">
+                                    {formatPricePerMillion(m.prompt_price_per_million)}/1M
+                                  </span>
+                                ) : null}
                               </span>
                               <span className="block text-[10.5px] text-zinc-200/75 truncate [text-shadow:0_1px_3px_rgba(4,8,18,0.6)]">
                                 {m.hint}

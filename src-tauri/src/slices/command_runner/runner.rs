@@ -1,4 +1,5 @@
 use super::policy::CommandEvaluation;
+use crate::slices::host_fs::guard::resolve_user_home;
 use crate::slices::task_ledger::store::try_record_audit_event_for_root;
 use crate::slices::workspace_manager::sandbox::{resolve_inside_workspace, write_string_atomic};
 use chrono::Utc;
@@ -236,16 +237,37 @@ pub fn execute_sandboxed_command(
 ) -> CommandExecutionResult {
     let clamped_timeout = timeout_sec.clamp(1, 30);
     let safe_path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_string());
+    let env_home = if eval.is_external {
+        resolve_user_home().unwrap_or_else(|| workspace_root.to_path_buf())
+    } else {
+        workspace_root.to_path_buf()
+    };
 
-    let mut command = Command::new(&eval.program);
+    let mut command = if eval.uses_shell {
+        #[cfg(target_os = "windows")]
+        {
+            let mut c = Command::new("cmd");
+            c.args(["/C", &eval.raw_command]);
+            c
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut c = Command::new("/bin/sh");
+            c.args(["-c", &eval.raw_command]);
+            c
+        }
+    } else {
+        let mut c = Command::new(&eval.program);
+        c.args(&eval.args);
+        c
+    };
     command
-        .args(&eval.args)
         .current_dir(&eval.cwd_abs)
         .env_clear()
         .env("PATH", safe_path)
         .env("LANG", "en_US.UTF-8")
         .env("LC_ALL", "en_US.UTF-8")
-        .env("HOME", workspace_root)
+        .env("HOME", env_home)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

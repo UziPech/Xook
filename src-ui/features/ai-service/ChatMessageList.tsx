@@ -9,20 +9,25 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   FileText,
   FolderOpen,
   HelpCircle,
   Image as ImageIcon,
   KeyRound,
+  Loader2,
   Paperclip,
   Pencil,
   RotateCcw,
+  ShieldCheck,
   Sparkles,
   Table2,
   ThumbsDown,
   ThumbsUp,
 } from "lucide-react";
 import { XoxStar, XoxState } from "../../components/XoxStar";
+import { ProviderIcon } from "./ProviderIcon";
 import {
   CanvasArtifact,
   cleanVisibleReply,
@@ -31,11 +36,16 @@ import {
   parseMarkdownTableBlock,
 } from "../canvas/canvasSchema";
 import {
+  AI_PROVIDER_LIST,
+  AiProviderId,
   ClarificationSpec,
   GeneratedPdfArtifact,
   OpenRouterModelOption,
   ThinkingStep,
+  VaultPromptSpec,
+  detectApiKeyInText,
   formatModelDisplay,
+  getProviderSpec,
 } from "./aiClient";
 
 export interface UiChatAttachment {
@@ -63,9 +73,11 @@ export interface UiChatMessage {
   canvas?: CanvasArtifact;
   generatedPdfs?: GeneratedPdfArtifact[];
   isError?: boolean;
+  vaultPrompt?: VaultPromptSpec;
   actionButton?: {
     label: string;
     kind: "open_settings" | "save_pending_key" | "open_clarification";
+    provider?: AiProviderId;
     cardId?: string;
     clarification?: ClarificationSpec;
   };
@@ -91,6 +103,13 @@ interface ChatMessageListProps {
   onOpenTasksTab: () => void;
   onRegenerateMessage?: (msg: UiChatMessage) => void;
   onRateMessage?: (msgId: string, rating: "up" | "down") => void;
+  onSaveInlineVaultKey?: (
+    msgId: string,
+    provider: AiProviderId,
+    apiKey: string,
+    modelId?: string
+  ) => Promise<{ ok: boolean; message: string; maskedKey?: string }>;
+  onOpenAiVaultModal?: (provider?: AiProviderId) => void;
   permissionItems?: CommandPermissionUiItem[];
   onResolvePermission?: (
     requestId: string,
@@ -329,6 +348,217 @@ function XoxMiniGlyph() {
   );
 }
 
+function InlineVaultKeyCard({
+  msgId,
+  spec,
+  onSave,
+  onOpenModal,
+}: {
+  msgId: string;
+  spec: VaultPromptSpec;
+  onSave: (
+    msgId: string,
+    provider: AiProviderId,
+    apiKey: string,
+    modelId?: string
+  ) => Promise<{ ok: boolean; message: string; maskedKey?: string }>;
+  onOpenModal?: (provider?: AiProviderId) => void;
+}) {
+  const [selectedPid, setSelectedPid] = useState<AiProviderId>(spec.provider);
+  const [rawKey, setRawKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const activeSpec = getProviderSpec(selectedPid);
+  const isCompleted = Boolean(spec.completed);
+
+  const handleKeyChange = (val: string) => {
+    setRawKey(val);
+    setFeedback(null);
+    const detected = detectApiKeyInText(val);
+    if (
+      detected.detectedProvider &&
+      detected.ambiguousProviders.length <= 1
+    ) {
+      setSelectedPid(detected.detectedProvider);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = rawKey.trim();
+    if (!cleaned || saving) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const res = await onSave(msgId, selectedPid, cleaned);
+      if (res.ok) {
+        setRawKey("");
+        setFeedback({ ok: true, text: res.message });
+      } else {
+        setFeedback({ ok: false, text: res.message });
+      }
+    } catch (err) {
+      setFeedback({ ok: false, text: String(err) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (isCompleted) {
+    return (
+      <div
+        style={{
+          boxShadow:
+            "inset 0 1px 1px rgba(255,255,255,0.09), 0 12px 26px -18px rgba(0,0,0,0.85)",
+        }}
+        className="w-full max-w-[490px] @5xl:max-w-[540px] rounded-2xl border border-white/[0.1] bg-gradient-to-b from-white/[0.045] via-[#0c0d12]/90 to-[#060709]/95 px-3.5 py-2.5 flex items-center justify-between gap-2.5"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="w-6 h-6 rounded-full bg-emerald-500/15 border border-emerald-400/25 flex items-center justify-center shrink-0">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-300" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-[12px] font-medium text-white truncate">
+              {activeSpec.name} guardado en bóveda segura
+            </div>
+            {spec.savedMaskedKey && (
+              <div className="text-[10.5px] font-mono text-zinc-400">
+                {spec.savedMaskedKey}
+              </div>
+            )}
+          </div>
+        </div>
+        {onOpenModal && (
+          <button
+            type="button"
+            onClick={() => onOpenModal(selectedPid)}
+            className="quick-liquid-btn px-2.5 py-1 rounded-full text-[10.5px] text-zinc-200 hover:text-white cursor-pointer shrink-0"
+          >
+            Ajustes
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={(e) => void handleSubmit(e)}
+      style={{
+        boxShadow:
+          "inset 0 1px 1px rgba(255,255,255,0.10), 0 14px 30px -18px rgba(0,0,0,0.88)",
+      }}
+      className="w-full max-w-[510px] @5xl:max-w-[560px] rounded-2xl border border-white/[0.1] bg-gradient-to-b from-white/[0.055] via-[#0c0d12]/90 to-[#060709]/95 p-3.5 space-y-3"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="w-6 h-6 rounded-lg bg-white/[0.06] border border-white/[0.12] flex items-center justify-center shrink-0 text-zinc-100">
+            <ProviderIcon provider={selectedPid} size={13} />
+          </span>
+          <div className="min-w-0">
+            <div className="text-[12.5px] font-medium text-white truncate">
+              Bóveda IA · {activeSpec.name}
+            </div>
+            <div className="text-[10.5px] text-zinc-400 truncate">
+              {spec.note || `${activeSpec.tariffSummary} · Guardado local cifrado`}
+            </div>
+          </div>
+        </div>
+        <span className="px-2 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.09] text-[10px] text-zinc-300 shrink-0">
+          Zero-Trust
+        </span>
+      </div>
+
+      {/* Selector rápido entre los 6 proveedores */}
+      <div className="flex flex-wrap gap-1.5">
+        {AI_PROVIDER_LIST.map((p) => {
+          const active = p.id === selectedPid;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => {
+                setSelectedPid(p.id);
+                setFeedback(null);
+              }}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors cursor-pointer border ${
+                active
+                  ? "bg-white/[0.14] border-white/[0.28] text-white"
+                  : "bg-white/[0.03] border-white/[0.08] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06]"
+              }`}
+            >
+              <ProviderIcon provider={p.id} size={11} />
+              <span>{p.shortName}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1 min-w-0">
+          <input
+            type={showKey ? "text" : "password"}
+            value={rawKey}
+            onChange={(e) => handleKeyChange(e.target.value)}
+            placeholder={`Pega tu API key (${activeSpec.keyPrefixHint})`}
+            autoComplete="off"
+            spellCheck={false}
+            aria-label={`API key para ${activeSpec.name}`}
+            className="w-full rounded-xl bg-black/55 border border-white/[0.12] focus:border-white/30 focus:outline-none px-3 py-2 pr-9 text-[12px] font-mono text-zinc-100 placeholder:text-zinc-500"
+          />
+          <button
+            type="button"
+            onClick={() => setShowKey((s) => !s)}
+            title={showKey ? "Ocultar clave" : "Mostrar clave"}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-200 cursor-pointer"
+          >
+            {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+        <button
+          type="submit"
+          disabled={!rawKey.trim() || saving}
+          className="quick-liquid-btn inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[11.5px] font-medium text-white disabled:opacity-40 cursor-pointer shrink-0"
+        >
+          {saving ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-zinc-200" />
+          ) : (
+            <KeyRound className="w-3.5 h-3.5 text-zinc-200" />
+          )}
+          <span>{saving ? "Guardando..." : "Guardar en bóveda"}</span>
+        </button>
+      </div>
+
+      {feedback && (
+        <div
+          className={`text-[11px] rounded-lg px-2.5 py-1.5 border ${
+            feedback.ok
+              ? "bg-emerald-500/10 border-emerald-400/25 text-emerald-200"
+              : "bg-rose-500/10 border-rose-400/25 text-rose-200"
+          }`}
+        >
+          {feedback.text}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-2 text-[10.5px] text-zinc-500">
+        <span className="truncate">{activeSpec.rateLimitNote}</span>
+        {onOpenModal && (
+          <button
+            type="button"
+            onClick={() => onOpenModal(selectedPid)}
+            className="text-zinc-300 hover:text-white underline underline-offset-2 shrink-0 cursor-pointer"
+          >
+            Abrir bóveda completa
+          </button>
+        )}
+      </div>
+    </form>
+  );
+}
+
 export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   messages,
   modelCatalog = [],
@@ -349,6 +579,8 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   onOpenTasksTab,
   onRegenerateMessage,
   onRateMessage,
+  onSaveInlineVaultKey,
+  onOpenAiVaultModal,
   permissionItems = [],
   onResolvePermission,
 }) => {
@@ -853,6 +1085,16 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     </span>
                   </button>
                 </div>
+              )}
+
+              {/* Formulario Zero-Trust directo en chat para guardar API key en la bóveda */}
+              {msg.vaultPrompt && onSaveInlineVaultKey && (
+                <InlineVaultKeyCard
+                  msgId={msg.id}
+                  spec={msg.vaultPrompt}
+                  onSave={onSaveInlineVaultKey}
+                  onOpenModal={onOpenAiVaultModal}
+                />
               )}
 
               {/* Acción especial (ej. conectar clave o reabrir pregunta en el input) */}

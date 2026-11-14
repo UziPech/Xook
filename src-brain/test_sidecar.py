@@ -2054,6 +2054,472 @@ def test_screen_reading_tools_and_unified_memory():
     print("✅ Lectura de pantalla en tiempo real, FTS5 unificado y manejo seguro de imágenes en RAM verificados.")
 
 
+def test_multi_provider_registry_anthropic_and_failover():
+    import io
+    import tempfile
+    import urllib.error
+    import urllib.request
+    from unittest.mock import patch
+
+    from slices.ai_service import openrouter_client
+    from slices.ai_service.anthropic_adapter import (
+        build_anthropic_request_payload,
+        iter_anthropic_sse_as_openai_events,
+    )
+    from slices.ai_service.model_router import clear_router_runtime_state
+    from slices.ai_service.provider_registry import (
+        PROVIDER_SPECS,
+        build_openai_compat_chat_payload,
+        build_provider_headers,
+        classify_provider_error,
+        detect_provider_from_key,
+        enrich_model_with_tariffs,
+        is_provider_in_cooldown,
+        normalize_provider_id,
+    )
+
+    # 1. Registro de 6 proveedores, detección de prefijos, cabeceras y tarifas
+    assert set(PROVIDER_SPECS.keys()) == {"openrouter", "deepseek", "openai", "anthropic", "groq", "gemini"}
+    assert normalize_provider_id("claude") == "anthropic"
+    assert normalize_provider_id("google-gemini") == "gemini"
+    assert normalize_provider_id("chatgpt") == "openai"
+
+    assert detect_provider_from_key("sk-or-v1-abcd1234567890") == "openrouter"
+    assert detect_provider_from_key("sk-ant-api03-abcd1234567890") == "anthropic"
+    assert detect_provider_from_key("gsk_abcd1234567890abcd") == "groq"
+    assert detect_provider_from_key("AIzaSyD-1234567890abcdefghijk") == "gemini"
+    assert detect_provider_from_key("sk-proj-abcd1234567890abcd") == "openai"
+    assert detect_provider_from_key("sk-1234567890abcdefghij1234") is None  # DeepSeek vs OpenAI legacy
+
+    ant_headers = build_provider_headers("anthropic", "sk-ant-api03-test1234567890")
+    assert ant_headers.get("x-api-key") == "sk-ant-api03-test1234567890"
+    assert ant_headers.get("anthropic-version") == "2023-06-01"
+    assert "Authorization" not in ant_headers
+
+    or_headers = build_provider_headers("openrouter", "sk-or-v1-test1234567890")
+    assert or_headers.get("Authorization") == "Bearer sk-or-v1-test1234567890"
+    assert "HTTP-Referer" in or_headers and "X-Title" in or_headers
+
+    o3_payload = build_openai_compat_chat_payload(
+        "openai",
+        "o3-mini",
+        {"model": "o3-mini", "messages": [], "max_tokens": 4096, "temperature": 0.2},
+    )
+    assert "max_tokens" not in o3_payload and o3_payload.get("max_completion_tokens") == 4096
+    assert "temperature" not in o3_payload
+
+    ds_model = enrich_model_with_tariffs("deepseek", {"id": "deepseek-chat", "name": "DeepSeek Chat"})
+    assert ds_model.get("prompt_price_per_million") == 0.15
+    assert ds_model.get("cache_price_per_million") == 0.014
+    gem_model = enrich_model_with_tariffs("gemini", {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"})
+    assert gem_model.get("is_free") is True
+
+    assert classify_provider_error("HTTP 402 credit balance is too low", "deepseek")["kind"] == "quota_exhausted"
+    assert classify_provider_error("RESOURCE_EXHAUSTED 429 rate limit", "gemini")["kind"] == "rate_limited"
+
+    # 2. Orden estático de system prompt para maximizar Prompt Caching
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "empresa").mkdir(parents=True, exist_ok=True)
+        (ws / "habilidades").mkdir(parents=True, exist_ok=True)
+        with patch.object(openrouter_client, "_current_local_datetime_label", return_value="2026-11-13 10:00"):
+            p1 = openrouter_client._build_system_prompt(ws / "empresa", ws / "habilidades", [], [], [], stream_mode=True, workspace_root=ws)
+        with patch.object(openrouter_client, "_current_local_datetime_label", return_value="2026-11-13 10:45"):
+            p2 = openrouter_client._build_system_prompt(ws / "empresa", ws / "habilidades", [], [], [], stream_mode=True, workspace_root=ws)
+        marker = "FECHA Y HORA LOCAL ACTUAL DEL SISTEMA:"
+        assert marker in p1 and marker in p2
+        prefix_1 = p1.split(marker, 1)[0]
+        prefix_2 = p2.split(marker, 1)[0]
+        assert len(prefix_1) > 1500 and prefix_1 == prefix_2
+
+    # 3. Adaptador nativo Anthropic /v1/messages (prompt + tools + cache_control + SSE)
+    ant_req = build_anthropic_request_payload(
+        {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 2048,
+            "temperature": 0.2,
+            "messages": [
+                {"role": "system", "content": "Instrucciones fijas de XOOK."},
+                {"role": "user", "content": "Consulta 1"},
+                {"role": "user", "content": "Consulta 2"},
+                {
+                    "role": "assistant",
+                    "content": "Llamando herramienta",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "workspace_list", "arguments": "{\"path\": \".\"}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "{\"files\": [\"a.txt\"]}"},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "workspace_list",
+                        "description": "Lista archivos",
+                        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                    },
+                }
+            ],
+        },
+        stream=True,
+    )
+    assert ant_req["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert ant_req["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert [m["role"] for m in ant_req["messages"]] == ["user", "assistant", "user"]
+    assert ant_req["messages"][1]["content"][-1]["type"] == "tool_use"
+    assert ant_req["messages"][2]["content"][0]["type"] == "tool_result"
+
+    class _FakeAnthropicStreamResp:
+        def __init__(self, sse_lines: list):
+            self._lines = [ln.encode("utf-8") for ln in sse_lines]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            return iter(self._lines)
+
+    fake_ant_sse = _FakeAnthropicStreamResp([
+        "event: message_start\n",
+        'data: {"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":120,"cache_read_input_tokens":80}}}\n\n',
+        "event: content_block_delta\n",
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Analizando..."}}\n\n',
+        "event: content_block_start\n",
+        'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu_1","name":"workspace_list"}}\n\n',
+        "event: content_block_delta\n",
+        'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\".\\"}"}}\n\n',
+        "event: content_block_delta\n",
+        'data: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Listo"}}\n\n',
+        "event: message_delta\n",
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":25}}\n\n',
+    ])
+    translated_events = list(iter_anthropic_sse_as_openai_events(fake_ant_sse, default_model="claude-sonnet-4-6"))
+    assert any(ev["choices"][0]["delta"].get("reasoning_content") == "Analizando..." for ev in translated_events)
+    assert any(ev["choices"][0]["delta"].get("content") == "Listo" for ev in translated_events)
+    assert any(
+        ev["choices"][0]["delta"].get("tool_calls", [{}])[0].get("function", {}).get("name") == "workspace_list"
+        for ev in translated_events
+    )
+    assert translated_events[-1].get("usage", {}).get("prompt_tokens_details", {}).get("cached_tokens") == 80
+
+    # 4. Failover automático ante cuota agotada (no-stream DeepSeek -> Groq + cooldown)
+    clear_router_runtime_state()
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "empresa").mkdir(parents=True, exist_ok=True)
+        (ws / "habilidades").mkdir(parents=True, exist_ok=True)
+        nonstream_providers_called = []
+
+        def fake_provider_http(provider_arg, url, *, method="GET", api_key=None, payload=None, timeout=60):
+            if method == "GET":
+                return {"data": []}
+            nonstream_providers_called.append(provider_arg)
+            if provider_arg == "deepseek":
+                raise RuntimeError("HTTP 402 error: credit balance is too low")
+            return {
+                "model": "llama-3.3-70b-versatile",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Respondido desde Groq tras respaldo.",
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 50, "completion_tokens": 12},
+            }
+
+        with patch.object(openrouter_client, "_provider_http_json", side_effect=fake_provider_http):
+            nonstream_out = openrouter_client.run_agent_completion(
+                api_key="sk-deepseek-test1234567890",
+                model_id="deepseek-chat",
+                user_message="Hola, responde breve.",
+                history=[],
+                context_dir=ws / "empresa",
+                skills_dir=ws / "habilidades",
+                workspace_root=str(ws),
+                provider="deepseek",
+                provider_credentials={
+                    "deepseek": {"api_key": "sk-deepseek-test1234567890", "model_id": "deepseek-chat"},
+                    "groq": {"api_key": "gsk_groq_test1234567890", "model_id": "llama-3.3-70b-versatile"},
+                },
+                auto_failover=True,
+                failover_order=["deepseek", "groq"],
+            )
+
+        assert nonstream_providers_called == ["deepseek", "groq"], nonstream_providers_called
+        assert nonstream_out["provider_used"] == "groq", nonstream_out
+        assert is_provider_in_cooldown("deepseek") is True
+        assert nonstream_out["exhausted_providers"][0]["provider"] == "deepseek"
+        assert nonstream_out["failover_events"][0]["to_provider"] == "groq"
+        assert "DeepSeek" in (nonstream_out.get("failover_notice") or "")
+        assert "Groq" in (nonstream_out.get("failover_notice") or "")
+
+    # 5. Failover automático en streaming (OpenAI 429 quota -> Anthropic nativo + evento provider_failover)
+    clear_router_runtime_state()
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "empresa").mkdir(parents=True, exist_ok=True)
+        (ws / "habilidades").mkdir(parents=True, exist_ok=True)
+        stream_events = []
+
+        def fake_openai_quota_urlopen(req, context=None, timeout=None):
+            err_body = json.dumps({"error": {"message": "You exceeded your current quota (insufficient_quota)"}}).encode("utf-8")
+            raise urllib.error.HTTPError(
+                url=req.full_url,
+                code=429,
+                msg="Too Many Requests",
+                hdrs={},
+                fp=io.BytesIO(err_body),
+            )
+
+        def fake_ant_stream(api_key_arg, openai_payload_arg, timeout_sec=60):
+            return _FakeAnthropicStreamResp([
+                "event: message_start\n",
+                'data: {"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":40}}}\n\n',
+                "event: content_block_delta\n",
+                'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Respuesta desde Claude tras respaldo."}}\n\n',
+                "event: message_delta\n",
+                'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}\n\n',
+            ])
+
+        with patch.object(
+            openrouter_client,
+            "list_provider_models",
+            return_value={"ok": True, "provider": "openai", "models": [{"id": "gpt-4o", "name": "GPT-4o", "supports_tools": True}]},
+        ), patch.object(urllib.request, "urlopen", side_effect=fake_openai_quota_urlopen), patch.object(
+            openrouter_client, "open_anthropic_stream", side_effect=fake_ant_stream
+        ):
+            stream_out = openrouter_client.stream_agent_completion(
+                api_key="sk-proj-test1234567890",
+                model_id="gpt-4o",
+                user_message="Dime hola.",
+                history=[],
+                context_dir=ws / "empresa",
+                skills_dir=ws / "habilidades",
+                emit_event=stream_events.append,
+                workspace_root=str(ws),
+                provider="openai",
+                provider_credentials={
+                    "openai": {"api_key": "sk-proj-test1234567890", "model_id": "gpt-4o"},
+                    "anthropic": {"api_key": "sk-ant-test1234567890", "model_id": "claude-sonnet-4-6"},
+                },
+                auto_failover=True,
+                failover_order=["openai", "anthropic"],
+            )
+
+        assert stream_out["provider_used"] == "anthropic", stream_out
+        assert "Respuesta desde Claude tras respaldo." in stream_out["reply"]
+        assert stream_out["exhausted_providers"][0]["provider"] == "openai"
+        failover_sse = [ev for ev in stream_events if ev.get("type") == "provider_failover"]
+        assert len(failover_sse) == 1, stream_events
+        assert failover_sse[0]["from_provider"] == "openai" and failover_sse[0]["to_provider"] == "anthropic"
+        assert "OpenAI" in (stream_out.get("failover_notice") or "")
+        assert "Anthropic" in (stream_out.get("failover_notice") or "")
+
+    # 6. Extracción de clave con prefijo ENV= + herramienta configure_ai_vault + SSE vault_action
+    from slices.ai_service.provider_registry import normalize_provider_api_key
+
+    assert normalize_provider_api_key('DEEPSEEK_API_KEY="sk-1234567890abcdef1234"') == "sk-1234567890abcdef1234"
+    extracted_va = openrouter_client._extract_vault_action_from_tool_calls([
+        {
+            "id": "tc_vault_1",
+            "type": "function",
+            "function": {
+                "name": "configure_ai_vault",
+                "arguments": json.dumps({"provider": "deepseek", "action": "prompt_key", "note": "Usa tu clave sk-..."}),
+            },
+        }
+    ])
+    assert extracted_va == {"provider": "deepseek", "intent": "prompt_key", "note": "Usa tu clave sk-..."}, extracted_va
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "empresa").mkdir(parents=True, exist_ok=True)
+        (ws / "habilidades").mkdir(parents=True, exist_ok=True)
+        sys_prompt = openrouter_client._build_system_prompt(
+            ws / "empresa", ws / "habilidades", [], [], [], stream_mode=True, workspace_root=ws
+        )
+        assert "configure_ai_vault" in sys_prompt
+        assert "PROHIBIDO decirle que edite un archivo `.env`" in sys_prompt
+
+        class _FakeVaultToolStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                chunk_tc = {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_vault_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "configure_ai_vault",
+                                            "arguments": json.dumps({"provider": "deepseek", "action": "prompt_key"}),
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                }
+                yield ("data: " + json.dumps(chunk_tc) + "\n").encode("utf-8")
+                yield b"data: [DONE]\n"
+
+        vault_events = []
+        with patch.object(
+            openrouter_client,
+            "list_provider_models",
+            return_value={"ok": True, "provider": "openrouter", "models": [{"id": "openrouter/free", "name": "Auto", "supports_tools": True}]},
+        ), patch.object(urllib.request, "urlopen", return_value=_FakeVaultToolStream()):
+            vault_res = openrouter_client.stream_agent_completion(
+                api_key="sk-or-v1-test1234567890",
+                model_id="openrouter/free",
+                user_message="Ayúdame a poner deepseek en tu bóveda.",
+                history=[],
+                context_dir=ws / "empresa",
+                skills_dir=ws / "habilidades",
+                emit_event=vault_events.append,
+                workspace_root=str(ws),
+                provider="openrouter",
+            )
+        assert vault_res.get("vault_action", {}).get("provider") == "deepseek", vault_res
+        assert any(ev.get("type") == "vault_action" and ev["vault_action"]["provider"] == "deepseek" for ev in vault_events), vault_events
+
+    clear_router_runtime_state()
+    print("✅ Registro multi-proveedor, adaptador Anthropic, bóveda en chat y failover automático verificados.")
+
+
+def test_unified_host_fs_tools_and_anti_injection():
+    import tempfile
+    from slices.agent_tools.toolkit import WorkspaceToolExecutor
+    from slices.ai_service import openrouter_client
+
+    with tempfile.TemporaryDirectory() as tmp_ws, tempfile.TemporaryDirectory() as tmp_host:
+        ws = Path(tmp_ws)
+        host = Path(tmp_host)
+        for sub in ("empresa", "datos", "memoria", "habilidades", "agente"):
+            (ws / sub).mkdir(parents=True, exist_ok=True)
+        (ws / "agente/nota.md").write_text("Hola workspace\nlinea dos\n", encoding="utf-8")
+        (ws / "datos/precios.csv").write_text("sku,precio\nA1,100\n", encoding="utf-8")
+
+        secret_val = "xook-super-session-secret-998877"
+        ext_file = host / "doc_externo.txt"
+        ext_file.write_text(
+            f"Notas proyecto\nClave filtrada: sk-or-v1-abcdef1234567890\nSession: {secret_val}\n",
+            encoding="utf-8",
+        )
+
+        rpc_calls = []
+
+        def fake_bridge(payload: dict) -> dict:
+            rpc_calls.append(payload)
+            cb = payload.get("rpc_callback")
+            if cb == "host_fs_list":
+                return {"ok": True, "path": payload["path"], "outside_workspace": True, "entries": [{"name": "doc_externo.txt", "kind": "file"}]}
+            if cb == "host_fs_search":
+                return {"ok": True, "base_path": payload["path"], "outside_workspace": True, "matches": [{"path": str(ext_file), "match_type": "filename"}]}
+            if cb == "host_fs_authorize_read":
+                return {"ok": True, "authorized_path": str(ext_file), "outside_workspace": True}
+            if cb == "host_fs_edit":
+                return {"ok": True, "path": payload["path"], "edited": True, "outside_workspace": True}
+            if cb == "host_fs_write":
+                return {"ok": True, "path": payload["path"], "bytes_written": len(payload["content"]), "outside_workspace": True}
+            if cb == "host_fs_mkdir":
+                return {"ok": True, "created_dir": payload["path"], "outside_workspace": True}
+            if cb == "run_workspace_command":
+                return {
+                    "ok": True,
+                    "status": "finished",
+                    "cwdRel": payload["cwd"],
+                    "stdout": f"leak=AIzaSyDummyKey1234567890123456 {secret_val}\n",
+                    "stderr": "",
+                    "exitCode": 0,
+                }
+            return {"ok": False, "error": f"RPC inesperado: {cb}"}
+
+        executor = WorkspaceToolExecutor(ws, command_bridge=fake_bridge, active_secrets=[secret_val])
+
+        # 1. workspace_list, workspace_search y workspace_read con rutas externas + redacción de secretos
+        ls_ext = executor.execute("workspace_list", {"path": "~/Downloads", "filter": "doc"})
+        assert ls_ext["ok"] is True and ls_ext["trust_level"] == "external_untrusted_data", ls_ext
+        assert rpc_calls[-1]["rpc_callback"] == "host_fs_list" and rpc_calls[-1]["path"] == "~/Downloads"
+
+        sr_ext = executor.execute("workspace_search", {"path": "~/Documents", "query": "doc", "mode": "name"})
+        assert sr_ext["ok"] is True and sr_ext["trust_level"] == "external_untrusted_data"
+        assert rpc_calls[-1]["rpc_callback"] == "host_fs_search" and rpc_calls[-1]["mode"] == "name"
+
+        rd_ext = executor.execute("workspace_read", {"path": str(ext_file)})
+        assert rd_ext["ok"] is True and rd_ext["outside_workspace"] is True
+        assert rd_ext["trust_level"] == "external_untrusted_data"
+        assert "sk-or-v1-abcdef" not in rd_ext["content"]
+        assert secret_val not in rd_ext["content"]
+        assert "[REDACTED_API_KEY]" in rd_ext["content"]
+        assert "[REDACTED_SESSION_SECRET]" in rd_ext["content"]
+
+        # 2. workspace_edit_file autónomo en agente/, HITL en datos/ y bridge en ruta externa
+        ed_local = executor.execute(
+            "workspace_edit_file",
+            {"path": "agente/nota.md", "old_text": "linea dos", "new_text": "linea actualizada"},
+        )
+        assert ed_local["ok"] is True
+        assert "linea actualizada" in (ws / "agente/nota.md").read_text(encoding="utf-8")
+
+        ed_hitl = executor.execute(
+            "workspace_edit_file",
+            {"path": "datos/precios.csv", "old_text": "A1,100", "new_text": "A1,125"},
+        )
+        assert ed_hitl["ok"] is True
+        assert any(t.get("stagingPayload", {}).get("kind") == "file_edit" for t in executor.staged_tasks)
+
+        ed_ext = executor.execute(
+            "workspace_edit_file",
+            {"path": "~/Documents/notas.md", "old_text": "viejo", "new_text": "nuevo"},
+        )
+        assert ed_ext["ok"] is True and rpc_calls[-1]["rpc_callback"] == "host_fs_edit"
+
+        # 3. write/mkdir externos delegan al Guardián
+        wr_ext = executor.execute("workspace_write_file", {"path": "~/Desktop/hola.txt", "content": "hola"})
+        assert wr_ext["ok"] is True and rpc_calls[-1]["rpc_callback"] == "host_fs_write"
+        mk_ext = executor.execute("workspace_mkdir", {"path": "~/Desktop/NuevaCarpeta"})
+        assert mk_ext["ok"] is True and rpc_calls[-1]["rpc_callback"] == "host_fs_mkdir"
+
+        # 4. run_workspace_command preserva cwd externo (`~/Downloads` o `/...`) y redacta stdout
+        cmd_ext = executor.execute(
+            "run_workspace_command",
+            {"purpose": "Listar descargas", "command": "ls -la", "cwd": "~/Downloads"},
+        )
+        assert cmd_ext["ok"] is True
+        assert rpc_calls[-1]["cwd"] == "~/Downloads"
+        assert "AIzaSyDummy" not in cmd_ext["stdout"]
+        assert secret_val not in cmd_ext["stdout"]
+        assert cmd_ext["trust_level"] == "external_untrusted_data"
+
+        # 5. Prompt unificado y regla anti-prompt-injection presentes
+        sp = openrouter_client._build_system_prompt(
+            ws / "empresa", ws / "habilidades", [], [], [], stream_mode=True, workspace_root=ws
+        )
+        assert "~/Desktop" in sp and "SEGURIDAD ANTI-PROMPT-INJECTION" in sp
+
+    print("✅ Herramientas unificadas de archivos del equipo, edición y limpieza anti-prompt-injection verificadas.")
+
+
 if __name__ == "__main__":
     test_sidecar_ping_and_inventory()
     test_canvas_schema_and_stream_router()
@@ -2066,4 +2532,6 @@ if __name__ == "__main__":
     test_ready_cover_full_page_and_content_enforcement()
     test_free_form_response_and_stray_tag_cleanup()
     test_screen_reading_tools_and_unified_memory()
+    test_multi_provider_registry_anthropic_and_failover()
+    test_unified_host_fs_tools_and_anti_injection()
 

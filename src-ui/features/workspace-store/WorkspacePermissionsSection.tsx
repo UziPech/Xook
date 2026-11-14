@@ -242,7 +242,11 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
             <ul className="space-y-1 max-h-36 overflow-y-auto pr-0.5">
               {config.rules.map((rule) => {
                 const badge = ACTION_LABEL[rule.action] ?? ACTION_LABEL.ask;
-                const isExternalRule = rule.scope === "app" || rule.scope === "capability";
+                const isExternalRule =
+                  rule.scope === "app" ||
+                  rule.scope === "capability" ||
+                  rule.scope === "ext_read" ||
+                  rule.scope === "ext_write";
                 const title = isExternalRule
                   ? rule.description || rule.pattern
                   : rule.description || rule.pattern;
@@ -269,7 +273,11 @@ export const WorkspacePermissionsSection: React.FC<WorkspacePermissionsSectionPr
                         <div className="text-[10px] text-zinc-400 truncate mt-0.5">
                           {rule.scope === "app"
                             ? `Aplicación: ${rule.pattern}`
-                            : `Integración: ${rule.pattern}`}
+                            : rule.scope === "ext_read"
+                              ? `Lectura en equipo: ${rule.pattern}`
+                              : rule.scope === "ext_write"
+                                ? `Edición en equipo: ${rule.pattern}`
+                                : `Integración: ${rule.pattern}`}
                         </div>
                       )}
                     </div>

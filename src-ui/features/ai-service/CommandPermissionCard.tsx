@@ -25,11 +25,18 @@ export interface CommandPermissionUiItem {
   commandId?: string;
   kind?:
     | "command"
+    | "external_command"
     | "open_app"
     | "os_notes_read"
     | "os_notes_write"
     | "os_calendar_read"
     | "os_calendar_write"
+    | "ext_fs_list"
+    | "ext_fs_search"
+    | "ext_fs_read"
+    | "ext_fs_write"
+    | "ext_fs_edit"
+    | "ext_fs_mkdir"
     | string;
   purpose: string;
   command: string;
@@ -37,6 +44,8 @@ export interface CommandPermissionUiItem {
   riskLevel: "low" | "medium" | "high" | "blocked" | string;
   program?: string;
   patternSuggestion?: string;
+  allowAlwaysAllowed?: boolean;
+  isExternal?: boolean;
   appName?: string | null;
   bundleId?: string | null;
   appPath?: string | null;
@@ -102,6 +111,8 @@ export function buildPermissionUiItemFromRequest(
     riskLevel: req.riskLevel,
     program: req.program,
     patternSuggestion: req.patternSuggestion,
+    allowAlwaysAllowed: req.allowAlwaysAllowed,
+    isExternal: req.isExternal,
     appName: req.appName,
     bundleId: req.bundleId,
     appPath: req.appPath,
@@ -220,6 +231,54 @@ function resolveActionCopy(item: CommandPermissionUiItem): ActionCopySpec {
       finishedFail: "No se pudo agendar el evento",
       denied: "Agenda de evento rechazada",
       zone: "App Calendario de tu Mac",
+    },
+    ext_fs_list: {
+      pending: "Xox solicita permiso para explorar esta carpeta del equipo",
+      running: "Listando carpeta del equipo...",
+      finishedOk: "Carpeta consultada",
+      finishedFail: "No se pudo listar la carpeta",
+      denied: "Exploración rechazada",
+      zone: item.cwdRel || "Carpeta del equipo",
+    },
+    ext_fs_search: {
+      pending: "Xox solicita permiso para buscar archivos en tu equipo",
+      running: "Buscando archivos en tu equipo...",
+      finishedOk: "Búsqueda completada",
+      finishedFail: "No se pudo completar la búsqueda",
+      denied: "Búsqueda rechazada",
+      zone: item.cwdRel || "Carpeta del equipo",
+    },
+    ext_fs_read: {
+      pending: "Xox solicita permiso para leer un archivo de tu equipo",
+      running: "Leyendo archivo del equipo...",
+      finishedOk: "Archivo leído",
+      finishedFail: "No se pudo leer el archivo",
+      denied: "Lectura rechazada",
+      zone: item.cwdRel || "Carpeta del equipo",
+    },
+    ext_fs_write: {
+      pending: "Xox solicita permiso para guardar un archivo en tu equipo",
+      running: "Guardando archivo en tu equipo...",
+      finishedOk: "Archivo guardado",
+      finishedFail: "No se pudo guardar el archivo",
+      denied: "Escritura rechazada",
+      zone: item.cwdRel || "Carpeta del equipo",
+    },
+    ext_fs_edit: {
+      pending: "Xox solicita permiso para editar un archivo de tu equipo",
+      running: "Aplicando cambios al archivo...",
+      finishedOk: "Archivo editado",
+      finishedFail: "No se pudo editar el archivo",
+      denied: "Edición rechazada",
+      zone: item.cwdRel || "Carpeta del equipo",
+    },
+    ext_fs_mkdir: {
+      pending: "Xox solicita permiso para crear una carpeta en tu equipo",
+      running: "Creando carpeta en tu equipo...",
+      finishedOk: "Carpeta creada",
+      finishedFail: "No se pudo crear la carpeta",
+      denied: "Creación de carpeta rechazada",
+      zone: item.cwdRel || "Carpeta del equipo",
     },
   };
   return (
@@ -416,14 +475,16 @@ export const CommandPermissionCard: React.FC<CommandPermissionCardProps> = ({
               <Check className="w-3 h-3 stroke-[2.25]" />
               <span>Permitir una vez</span>
             </button>
-            <button
-              type="button"
-              onClick={() => onResolve(item.requestId, "allow_always")}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.11] border border-white/[0.12] text-zinc-200 hover:text-white text-[11px] font-medium transition-colors cursor-pointer"
-            >
-              <CheckCheck className="w-3 h-3" />
-              <span>Permitir siempre</span>
-            </button>
+            {item.allowAlwaysAllowed !== false && (
+              <button
+                type="button"
+                onClick={() => onResolve(item.requestId, "allow_always")}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/[0.06] hover:bg-white/[0.11] border border-white/[0.12] text-zinc-200 hover:text-white text-[11px] font-medium transition-colors cursor-pointer"
+              >
+                <CheckCheck className="w-3 h-3" />
+                <span>Permitir siempre</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => onResolve(item.requestId, "deny")}

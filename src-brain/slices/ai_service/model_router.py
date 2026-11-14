@@ -21,10 +21,7 @@ AUTO_FREE_ID = "openrouter/free"
 AUTO_STANDARD_ID = "openrouter/auto"
 
 _CATALOG_LOCK = threading.Lock()
-_CATALOG_CACHE: Dict[str, Any] = {
-    "fetched_at": 0.0,
-    "models": [],
-}
+_CATALOG_CACHE: Dict[str, Dict[str, Any]] = {}
 _UNHEALTHY_UNTIL: Dict[str, float] = {}
 CATALOG_TTL_SECONDS = 600.0
 UNHEALTHY_COOLDOWN_SECONDS = 180.0
@@ -67,9 +64,13 @@ def mark_model_temporarily_unhealthy(model_id: str, reason: str = "") -> None:
 def clear_router_runtime_state() -> None:
     """Limpia cachés en memoria (útil en pruebas unitarias)."""
     with _CATALOG_LOCK:
-        _CATALOG_CACHE["fetched_at"] = 0.0
-        _CATALOG_CACHE["models"] = []
+        _CATALOG_CACHE.clear()
         _UNHEALTHY_UNTIL.clear()
+    try:
+        from slices.ai_service.provider_registry import _PROVIDER_COOLDOWNS
+        _PROVIDER_COOLDOWNS.clear()
+    except Exception:
+        pass
 
 
 def _is_model_unhealthy(model_id: str, now: Optional[float] = None) -> bool:
@@ -420,12 +421,15 @@ def score_model_for_task(model_entry: Dict[str, Any], task: TaskProfile) -> floa
 def get_cached_catalog_models(
     fetch_fn: Callable[[], Dict[str, Any]],
     *,
+    provider: str = "openrouter",
     force_refresh: bool = False,
 ) -> List[Dict[str, Any]]:
     now = time.time()
+    pkey = (provider or "openrouter").strip().lower() or "openrouter"
     with _CATALOG_LOCK:
-        cached = list(_CATALOG_CACHE.get("models") or [])
-        age = now - float(_CATALOG_CACHE.get("fetched_at") or 0.0)
+        bucket = _CATALOG_CACHE.get(pkey) or {}
+        cached = list(bucket.get("models") or [])
+        age = now - float(bucket.get("fetched_at") or 0.0)
         if cached and not force_refresh and age < CATALOG_TTL_SECONDS:
             return cached
 
@@ -434,8 +438,10 @@ def get_cached_catalog_models(
         models = list(res.get("models") or [])
         if models and res.get("ok"):
             with _CATALOG_LOCK:
-                _CATALOG_CACHE["models"] = models
-                _CATALOG_CACHE["fetched_at"] = time.time()
+                _CATALOG_CACHE[pkey] = {
+                    "fetched_at": time.time(),
+                    "models": models,
+                }
             return models
         if models:
             return models
@@ -443,13 +449,15 @@ def get_cached_catalog_models(
         pass
 
     with _CATALOG_LOCK:
-        return list(_CATALOG_CACHE.get("models") or [])
+        bucket = _CATALOG_CACHE.get(pkey) or {}
+        return list(bucket.get("models") or [])
 
 
 def select_best_models_for_task(
     requested_model: Optional[str],
     user_message: str,
     *,
+    provider: str = "openrouter",
     has_workspace: bool,
     has_active_canvas: bool,
     tools_available: bool,
@@ -460,7 +468,10 @@ def select_best_models_for_task(
     has_attachments: bool = False,
     has_images: bool = False,
 ) -> RoutingPlan:
-    req = (requested_model or AUTO_FREE_ID).strip() or AUTO_FREE_ID
+    pkey = (provider or "openrouter").strip().lower() or "openrouter"
+    req = (requested_model or (AUTO_FREE_ID if pkey == "openrouter" else "")).strip()
+    if not req and pkey == "openrouter":
+        req = AUTO_FREE_ID
     profile = classify_task_intent(
         user_message,
         has_workspace=has_workspace,
@@ -480,10 +491,10 @@ def select_best_models_for_task(
             selected_reason="modelo fijado manualmente por ti",
         )
 
-    free_only = req == AUTO_FREE_ID
+    free_only = req == AUTO_FREE_ID and pkey == "openrouter"
     models = list(catalog_models or [])
     if not models and fetch_catalog_fn is not None:
-        models = get_cached_catalog_models(fetch_catalog_fn)
+        models = get_cached_catalog_models(fetch_catalog_fn, provider=pkey)
 
     now = time.time()
     scored: List[tuple[float, Dict[str, Any]]] = []
@@ -505,8 +516,11 @@ def select_best_models_for_task(
     scored.sort(key=lambda pair: (-pair[0], str(pair[1].get("id") or "")))
     concrete_ids = [str(entry["id"]) for _, entry in scored[:max_concrete_candidates]]
 
-    # Siempre conservar el router de OpenRouter como respaldo final
-    candidates = [*concrete_ids, req]
+    if pkey == "openrouter":
+        # Siempre conservar el router de OpenRouter como respaldo final
+        candidates = [*concrete_ids, req]
+    else:
+        candidates = concrete_ids if concrete_ids else ([req] if req else [])
 
     if concrete_ids:
         top_entry = scored[0][1]
@@ -514,11 +528,11 @@ def select_best_models_for_task(
         tools_note = "con soporte nativo de herramientas" if profile.needs_tools else profile.reason_es
         reason = f"{top_name} ({tools_note})"
     else:
-        reason = f"enrutador {req} ({profile.reason_es})"
+        reason = f"enrutador {req or pkey} ({profile.reason_es})"
 
     return RoutingPlan(
         is_auto=True,
-        requested_model=req,
+        requested_model=req or pkey,
         task_profile=profile,
         candidates=candidates,
         selected_reason=reason,

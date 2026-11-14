@@ -10,9 +10,11 @@ from pathlib import Path
 from slices.task_ui.schemas import sanitize_task_proposal
 from slices.ai_service.openrouter_client import (
     list_openrouter_models,
+    list_provider_models,
     run_agent_completion,
     stream_agent_completion,
     test_openrouter_key,
+    test_provider_key,
 )
 
 # Paths al contexto de negocio y memoria local
@@ -233,6 +235,10 @@ def handle_rpc_request(request_line):
                 workspace_root=ws_root,
                 unified_memory=params.get("unified_memory"),
                 command_bridge=_make_sync_bridge() if params.get("enable_command_bridge") else None,
+                provider=params.get("provider", "openrouter"),
+                provider_credentials=params.get("provider_credentials"),
+                auto_failover=bool(params.get("auto_failover", True)),
+                failover_order=params.get("failover_order"),
             )
         elif method == "ai_chat_stream":
             stream_id = params.get("stream_id")
@@ -269,14 +275,30 @@ def handle_rpc_request(request_line):
                 workspace_root=ws_root,
                 unified_memory=params.get("unified_memory"),
                 command_bridge=_stream_command_bridge if params.get("enable_command_bridge", True) else None,
+                provider=params.get("provider", "openrouter"),
+                provider_credentials=params.get("provider_credentials"),
+                auto_failover=bool(params.get("auto_failover", True)),
+                failover_order=params.get("failover_order"),
             )
         elif method == "test_ai_key":
-            result = test_openrouter_key(params.get("api_key", ""))
+            prov = str(params.get("provider") or "openrouter")
+            if prov == "openrouter":
+                result = test_openrouter_key(params.get("api_key", ""))
+            else:
+                result = test_provider_key(prov, params.get("api_key", ""))
         elif method == "list_ai_models":
-            result = list_openrouter_models(
-                api_key=params.get("api_key"),
-                free_only=bool(params.get("free_only", False)),
-            )
+            prov = str(params.get("provider") or "openrouter")
+            if prov == "openrouter":
+                result = list_openrouter_models(
+                    api_key=params.get("api_key"),
+                    free_only=bool(params.get("free_only", False)),
+                )
+            else:
+                result = list_provider_models(
+                    provider=prov,
+                    api_key=params.get("api_key"),
+                    free_only=bool(params.get("free_only", False)),
+                )
         elif method == "record_feedback":
             result = register_user_feedback(params.get("feedback", {}))
         elif method == "run_business_review":
