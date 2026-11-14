@@ -2,18 +2,21 @@
 Registro centralizado de proveedores IA soportados por XOOK:
 - OpenRouter (`openrouter`)
 - DeepSeek (`deepseek`)
+- Kimi / Moonshot AI (`kimi`)
 - OpenAI (`openai`)
 - Anthropic (`anthropic`)
 - Groq (`groq`)
 - Google Gemini (`gemini`)
 
 Incluye metadatos de endpoints, tarifas de referencia por millón de tokens (USD/1M),
-normalización y detección segura de claves, y clasificación de errores de cuota/límite
-para activar el failover automático entre proveedores.
+normalización y detección segura de claves, parser unificado de headers de rate-limit/cuota,
+cálculo de costo estimado por turno y clasificación de errores para failover automático.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
 import re
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -22,6 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 PROVIDER_ORDER: Tuple[str, ...] = (
     "openrouter",
     "deepseek",
+    "kimi",
     "groq",
     "gemini",
     "openai",
@@ -69,6 +73,15 @@ MODEL_TARIFF_HINTS: Dict[str, Dict[str, Any]] = {
     "claude-sonnet-5-5": {"prompt": 2.00, "completion": 10.00, "cache": 0.20, "free": False},
     "claude-opus-4-1": {"prompt": 15.00, "completion": 75.00, "cache": 1.50, "free": False},
     "claude-opus-5-5": {"prompt": 4.00, "completion": 20.00, "cache": 0.40, "free": False},
+    # Moonshot AI / Kimi
+    "kimi-k3.1-pro": {"prompt": 2.00, "completion": 10.00, "cache": 0.20, "free": False},
+    "kimi-k3.1-pro-highspeed": {"prompt": 4.00, "completion": 20.00, "cache": 0.20, "free": False},
+    "kimi-k3": {"prompt": 3.00, "completion": 15.00, "cache": 0.30, "free": False},
+    "kimi-k2.5": {"prompt": 0.60, "completion": 3.00, "cache": 0.15, "free": False},
+    "kimi-k2.6": {"prompt": 0.95, "completion": 4.00, "cache": 0.19, "free": False},
+    "kimi-k2.7-code": {"prompt": 0.95, "completion": 4.00, "cache": 0.16, "free": False},
+    "kimi-k2-0905-preview": {"prompt": 0.60, "completion": 2.50, "cache": 0.15, "free": False},
+    "moonshot-v1-128k": {"prompt": 0.60, "completion": 2.50, "cache": 0.15, "free": False},
 }
 
 
@@ -497,6 +510,68 @@ PROVIDER_SPECS: Dict[str, Dict[str, Any]] = {
             },
         ],
     },
+    "kimi": {
+        "id": "kimi",
+        "name": "Kimi (Moonshot)",
+        "base_url": "https://api.moonshot.ai/v1",
+        "cn_base_url": "https://api.moonshot.cn/v1",
+        "protocol": "openai",
+        "default_model": "kimi-k3.1-pro",
+        "tier_badge": "Prepago · Saldo API",
+        "tariff_short": "K3.1 Pro $2.00/$10.00 · Caché $0.20 · Ventana 1M",
+        "rate_limit_note": "Consulta saldo real (/users/me/balance) + headers RPM/TPM por turno",
+        "key_prefix_hint": "sk-...",
+        "default_models": [
+            {
+                "id": "kimi-k3.1-pro",
+                "name": "Kimi K3.1 Pro",
+                "provider_name": "Kimi (Moonshot)",
+                "provider_id": "kimi",
+                "hint": "Kimi · $2.00/$10.00 · Caché $0.20 · Ventana 1M",
+                "is_free": False,
+                "context_length": 1000000,
+                "prompt_price_per_million": 2.00,
+                "completion_price_per_million": 10.00,
+                "cache_price_per_million": 0.20,
+                "supports_tools": True,
+                "supports_reasoning": True,
+                "supports_structured": True,
+                "supports_vision": True,
+            },
+            {
+                "id": "kimi-k3.1-pro-highspeed",
+                "name": "Kimi K3.1 Pro Highspeed",
+                "provider_name": "Kimi (Moonshot)",
+                "provider_id": "kimi",
+                "hint": "Kimi · $4.00/$20.00 · Alta velocidad · Ventana 1M",
+                "is_free": False,
+                "context_length": 1000000,
+                "prompt_price_per_million": 4.00,
+                "completion_price_per_million": 20.00,
+                "cache_price_per_million": 0.20,
+                "supports_tools": True,
+                "supports_reasoning": True,
+                "supports_structured": True,
+                "supports_vision": True,
+            },
+            {
+                "id": "kimi-k3",
+                "name": "Kimi K3",
+                "provider_name": "Kimi (Moonshot)",
+                "provider_id": "kimi",
+                "hint": "Kimi · $3.00/$15.00 · Estándar 1M",
+                "is_free": False,
+                "context_length": 1000000,
+                "prompt_price_per_million": 3.00,
+                "completion_price_per_million": 15.00,
+                "cache_price_per_million": 0.30,
+                "supports_tools": True,
+                "supports_reasoning": True,
+                "supports_structured": True,
+                "supports_vision": True,
+            },
+        ],
+    },
 }
 
 
@@ -506,6 +581,13 @@ def normalize_provider_id(provider: Optional[str]) -> str:
         "openrouter": "openrouter",
         "open-router": "openrouter",
         "deepseek": "deepseek",
+        "kimi": "kimi",
+        "moonshot": "kimi",
+        "moonshot-ai": "kimi",
+        "moonshot_ai": "kimi",
+        "moonshotai": "kimi",
+        "moonshot-cn": "kimi",
+        "moonshot_cn": "kimi",
         "openai": "openai",
         "chatgpt": "openai",
         "anthropic": "anthropic",
@@ -517,6 +599,17 @@ def normalize_provider_id(provider: Optional[str]) -> str:
         "google_gemini": "gemini",
     }
     return aliases.get(raw, "openrouter")
+
+
+def resolve_provider_base_url(provider: Optional[str], region_or_url: Optional[str] = None) -> str:
+    pid = normalize_provider_id(provider)
+    spec = PROVIDER_SPECS[pid]
+    override = str(region_or_url or "").strip()
+    if override.startswith(("https://", "http://")):
+        return override.rstrip("/")
+    if pid == "kimi" and override.lower() in ("cn", "china", "moonshot-cn", "moonshot.cn", "api.moonshot.cn"):
+        return str(spec.get("cn_base_url") or "https://api.moonshot.cn/v1").rstrip("/")
+    return str(spec["base_url"]).rstrip("/")
 
 
 def get_provider_spec(provider: Optional[str]) -> Dict[str, Any]:
@@ -619,7 +712,355 @@ def build_openai_compat_chat_payload(
     return payload
 
 
-def classify_provider_error(err_msg: str, provider: Optional[str] = None) -> Dict[str, Any]:
+def _coerce_int_header(raw: Any) -> Optional[int]:
+    if raw is None:
+        return None
+    try:
+        val = int(float(str(raw).strip()))
+        return val if val >= 0 else None
+    except Exception:
+        return None
+
+
+def _coerce_float_header(raw: Any) -> Optional[float]:
+    if raw is None:
+        return None
+    try:
+        val = float(str(raw).strip())
+        return val if val >= 0 else None
+    except Exception:
+        return None
+
+
+def _parse_reset_timestamp_ms(raw: Any, ref_ms: int) -> Optional[int]:
+    if raw is None:
+        return None
+    txt = str(raw).strip()
+    if not txt:
+        return None
+    # ISO 8601 (ej. Anthropic: 2026-11-14T07:12:00Z)
+    if "T" in txt or (txt.endswith("Z") and "-" in txt):
+        try:
+            normalized = txt[:-1] + "+00:00" if txt.endswith("Z") else txt
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            pass
+    # Numérico puro: epoch ms, epoch s, o segundos relativos
+    try:
+        num = float(txt)
+        if num >= 1e12:
+            return int(num)
+        if num >= 1e9:
+            return int(num * 1000)
+        if num >= 0:
+            return int(ref_ms + num * 1000)
+    except Exception:
+        pass
+    # Duración compuesta tipo Go (OpenAI/Groq/Moonshot: "6m30s", "1s", "250ms", "1h2m3s")
+    matches = re.findall(r"(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)", txt.lower())
+    if matches:
+        total_ms = 0.0
+        unit_ms = {"ms": 1.0, "s": 1000.0, "m": 60_000.0, "h": 3_600_000.0, "d": 86_400_000.0}
+        for amount_str, unit in matches:
+            total_ms += float(amount_str) * unit_ms.get(unit, 1000.0)
+        return int(ref_ms + total_ms)
+    return None
+
+
+def parse_rate_limit_headers(
+    provider: Optional[str],
+    headers_map: Any,
+    *,
+    now_ms: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Extrae límites reales y contadores restantes desde headers HTTP de respuesta/error:
+    - Anthropic (`anthropic-ratelimit-*`)
+    - OpenAI / Groq / DeepSeek / Kimi / OpenRouter (`x-ratelimit-*`, `retry-after`)
+    Retorna None si la respuesta no incluyó headers de límite.
+    """
+    if headers_map is None:
+        return None
+    low_headers: Dict[str, str] = {}
+    try:
+        items = headers_map.items() if hasattr(headers_map, "items") else dict(headers_map).items()
+        for k, v in items:
+            lk = str(k).strip().lower()
+            if lk:
+                low_headers[lk] = str(v).strip()
+    except Exception:
+        return None
+
+    if not low_headers:
+        return None
+
+    pid = normalize_provider_id(provider)
+    ref_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+
+    def _first(*keys: str) -> Optional[str]:
+        for k in keys:
+            val = low_headers.get(k)
+            if val is not None and val != "":
+                return val
+        return None
+
+    rpm_limit = _coerce_int_header(_first(
+        "anthropic-ratelimit-requests-limit",
+        "x-ratelimit-limit-requests",
+        "x-ratelimit-requests-limit",
+        "x-ratelimit-limit",
+    ))
+    rpm_remaining = _coerce_int_header(_first(
+        "anthropic-ratelimit-requests-remaining",
+        "x-ratelimit-remaining-requests",
+        "x-ratelimit-requests-remaining",
+        "x-ratelimit-remaining",
+    ))
+    rpm_reset_at_ms = _parse_reset_timestamp_ms(
+        _first(
+            "anthropic-ratelimit-requests-reset",
+            "x-ratelimit-reset-requests",
+            "x-ratelimit-requests-reset",
+            "x-ratelimit-reset",
+        ),
+        ref_ms,
+    )
+
+    tpm_limit = _coerce_int_header(_first(
+        "anthropic-ratelimit-tokens-limit",
+        "x-ratelimit-limit-tokens",
+        "x-ratelimit-tokens-limit",
+    ))
+    tpm_remaining = _coerce_int_header(_first(
+        "anthropic-ratelimit-tokens-remaining",
+        "x-ratelimit-remaining-tokens",
+        "x-ratelimit-tokens-remaining",
+    ))
+    tpm_reset_at_ms = _parse_reset_timestamp_ms(
+        _first(
+            "anthropic-ratelimit-tokens-reset",
+            "x-ratelimit-reset-tokens",
+            "x-ratelimit-tokens-reset",
+        ),
+        ref_ms,
+    )
+
+    itpm_limit = _coerce_int_header(_first("anthropic-ratelimit-input-tokens-limit"))
+    itpm_remaining = _coerce_int_header(_first("anthropic-ratelimit-input-tokens-remaining"))
+    otpm_limit = _coerce_int_header(_first("anthropic-ratelimit-output-tokens-limit"))
+    otpm_remaining = _coerce_int_header(_first("anthropic-ratelimit-output-tokens-remaining"))
+
+    retry_after_sec = _coerce_float_header(_first("retry-after"))
+    if retry_after_sec is None:
+        retry_ms = _coerce_float_header(_first("retry-after-ms"))
+        if retry_ms is not None:
+            retry_after_sec = round(retry_ms / 1000.0, 3)
+
+    has_any = any(
+        v is not None
+        for v in (
+            rpm_limit,
+            rpm_remaining,
+            rpm_reset_at_ms,
+            tpm_limit,
+            tpm_remaining,
+            tpm_reset_at_ms,
+            itpm_limit,
+            itpm_remaining,
+            otpm_limit,
+            otpm_remaining,
+            retry_after_sec,
+        )
+    )
+    if not has_any:
+        return None
+
+    return {
+        "provider": pid,
+        "source": "api_headers",
+        "updated_at_ms": ref_ms,
+        "rpm_limit": rpm_limit,
+        "rpm_remaining": rpm_remaining,
+        "rpm_reset_at_ms": rpm_reset_at_ms,
+        "tpm_limit": tpm_limit,
+        "tpm_remaining": tpm_remaining,
+        "tpm_reset_at_ms": tpm_reset_at_ms,
+        "itpm_limit": itpm_limit,
+        "itpm_remaining": itpm_remaining,
+        "otpm_limit": otpm_limit,
+        "otpm_remaining": otpm_remaining,
+        "retry_after_sec": retry_after_sec,
+    }
+
+
+def parse_gemini_quota_error(err_body_or_detail: str) -> Optional[Dict[str, Any]]:
+    """
+    Extrae detalles reales de cuota/reintento cuando Gemini responde HTTP 429 RESOURCE_EXHAUSTED
+    (`google.rpc.QuotaFailure` y `google.rpc.RetryInfo`).
+    """
+    raw = str(err_body_or_detail or "").strip()
+    if not raw:
+        return None
+
+    parsed_json: Optional[Dict[str, Any]] = None
+    json_start = raw.find("{")
+    if json_start >= 0:
+        try:
+            candidate = json.loads(raw[json_start:])
+            if isinstance(candidate, dict):
+                parsed_json = candidate
+        except Exception:
+            parsed_json = None
+
+    quota_metric: Optional[str] = None
+    quota_id: Optional[str] = None
+    quota_value: Optional[int] = None
+    retry_after_sec: Optional[float] = None
+
+    if parsed_json:
+        err_obj = parsed_json.get("error") if isinstance(parsed_json.get("error"), dict) else parsed_json
+        details = err_obj.get("details") if isinstance(err_obj, dict) else None
+        if isinstance(details, list):
+            for det in details:
+                if not isinstance(det, dict):
+                    continue
+                dtype = str(det.get("@type") or "")
+                if "QuotaFailure" in dtype:
+                    violations = det.get("violations") or []
+                    if isinstance(violations, list) and violations:
+                        first_v = violations[0] if isinstance(violations[0], dict) else {}
+                        quota_metric = str(first_v.get("quotaMetric") or "") or None
+                        quota_id = str(first_v.get("quotaId") or "") or None
+                        quota_value = _coerce_int_header(first_v.get("quotaValue"))
+                elif "RetryInfo" in dtype:
+                    rd = str(det.get("retryDelay") or "").strip()
+                    m = re.match(r"^(\d+(?:\.\d+)?)s$", rd.lower())
+                    if m:
+                        retry_after_sec = float(m.group(1))
+
+    if retry_after_sec is None:
+        m_retry = re.search(r"retry(?:\s+in|\s+after)?\s+(\d+(?:\.\d+)?)\s*s", raw.lower())
+        if m_retry:
+            retry_after_sec = float(m_retry.group(1))
+    if quota_value is None:
+        m_lim = re.search(r"limit\s*[:=]\s*(\d+)", raw.lower())
+        if m_lim:
+            quota_value = int(m_lim.group(1))
+
+    if not any(v is not None for v in (quota_metric, quota_id, quota_value, retry_after_sec)):
+        return None
+
+    low_scope = f"{quota_id or ''} {quota_metric or ''} {raw}".lower()
+    is_daily = "perday" in low_scope or "per_day" in low_scope or "requests_per_day" in low_scope or "rpd" in low_scope
+    is_rpm = "perminute" in low_scope or "per_minute" in low_scope or "rpm" in low_scope
+    is_tokens = "token" in low_scope
+
+    out: Dict[str, Any] = {
+        "provider": "gemini",
+        "source": "api_429_quota_detail",
+        "updated_at_ms": int(time.time() * 1000),
+        "quota_metric": quota_metric,
+        "quota_id": quota_id,
+        "quota_value": quota_value,
+        "retry_after_sec": retry_after_sec,
+    }
+    if quota_value is not None:
+        if is_tokens:
+            out["tpm_limit"] = quota_value
+            out["tpm_remaining"] = 0
+        elif is_daily:
+            out["daily_limit"] = quota_value
+            out["daily_remaining"] = 0
+        elif is_rpm:
+            out["rpm_limit"] = quota_value
+            out["rpm_remaining"] = 0
+    return out
+
+
+def _lookup_model_tariff(provider: str, model_id: str) -> Optional[Dict[str, Any]]:
+    mid = str(model_id or "").strip()
+    if not mid:
+        return None
+    candidates = [mid, mid.lower()]
+    if "/" in mid:
+        stripped = mid.split("/", 1)[1]
+        candidates.extend([stripped, stripped.lower()])
+    for key in candidates:
+        if key in MODEL_TARIFF_HINTS:
+            return MODEL_TARIFF_HINTS[key]
+    low_mid = mid.lower()
+    stripped_low = low_mid.split("/", 1)[1] if "/" in low_mid else low_mid
+    for k, v in MODEL_TARIFF_HINTS.items():
+        if low_mid.startswith(k.lower()) or stripped_low.startswith(k.lower()):
+            return v
+    return None
+
+
+def estimate_turn_cost_usd(
+    provider: Optional[str],
+    model_id: str,
+    usage: Optional[Dict[str, Any]],
+) -> Optional[float]:
+    """
+    Calcula el costo real (si el proveedor lo reporta, ej. OpenRouter `usage.cost`) o estimado USD
+    a partir de tokens de entrada, salida y caché lectura usando tarifas conocidas del modelo.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return None
+    direct_cost = usage.get("cost")
+    if direct_cost is None:
+        direct_cost = usage.get("estimated_cost_usd")
+    if direct_cost is not None:
+        try:
+            c = float(direct_cost)
+            if c >= 0:
+                return round(c, 8)
+        except Exception:
+            pass
+
+    pid = normalize_provider_id(provider)
+    tariff = _lookup_model_tariff(pid, model_id)
+    if not tariff:
+        return None
+    if tariff.get("free"):
+        return 0.0
+
+    prompt_rate = tariff.get("prompt")
+    completion_rate = tariff.get("completion")
+    cache_rate = tariff.get("cache")
+    if prompt_rate is None and completion_rate is None:
+        return None
+
+    prompt_tok = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    completion_tok = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    cached_tok = int(
+        usage.get("cached_tokens")
+        or usage.get("prompt_cache_hit_tokens")
+        or usage.get("cache_read_input_tokens")
+        or 0
+    )
+    if cached_tok <= 0 and isinstance(usage.get("prompt_tokens_details"), dict):
+        cached_tok = int(usage["prompt_tokens_details"].get("cached_tokens") or 0)
+
+    cached_applied = min(max(0, cached_tok), max(0, prompt_tok))
+    uncached_prompt = max(0, prompt_tok - cached_applied)
+
+    p_cost = (uncached_prompt / 1_000_000.0) * float(prompt_rate or 0.0)
+    c_rate = float(cache_rate) if cache_rate is not None else float(prompt_rate or 0.0)
+    cache_cost = (cached_applied / 1_000_000.0) * c_rate
+    out_cost = (max(0, completion_tok) / 1_000_000.0) * float(completion_rate or 0.0)
+    return round(p_cost + cache_cost + out_cost, 8)
+
+
+def classify_provider_error(
+    err_msg: str,
+    provider: Optional[str] = None,
+    *,
+    retry_after_sec: Optional[float] = None,
+) -> Dict[str, Any]:
     """
     Clasifica errores HTTP/SDK de proveedores para decidir cooldown y failover automático.
     Retorna:
@@ -656,8 +1097,13 @@ def classify_provider_error(err_msg: str, provider: Optional[str] = None) -> Dic
             "friendly_message": f"La clave API de {pname} no es válida o fue revocada.",
         }
 
+    is_per_minute_rate = any(
+        tok in low
+        for tok in ("per minute", "per_minute", "requests_per_minute", "tokens_per_minute")
+    )
+
     # Agotamiento de saldo / cuota diaria o mensual
-    if any(
+    if not is_per_minute_rate and any(
         tok in low
         for tok in (
             "402",
@@ -665,15 +1111,22 @@ def classify_provider_error(err_msg: str, provider: Optional[str] = None) -> Dic
             "more credits",
             "insufficient_quota",
             "exceeded your current quota",
+            "exceeded_current_quota",
             "credit balance is too low",
             "balance is insufficient",
             "insufficient balance",
+            "account suspended",
+            "suspended",
+            "recharge",
+            "resource_package_exhausted",
             "billing",
             "payment required",
             "quota exceeded",
             "daily limit",
             "tokens per day",
             "requests per day",
+            "per_day",
+            "perday",
             "free limit",
         )
     ):
@@ -700,13 +1153,25 @@ def classify_provider_error(err_msg: str, provider: Optional[str] = None) -> Dic
             "tpm",
         )
     ):
-        return {
+        gemini_detail = parse_gemini_quota_error(raw) if pid == "gemini" else None
+        detected_retry = retry_after_sec
+        if detected_retry is None and gemini_detail:
+            detected_retry = gemini_detail.get("retry_after_sec")
+        cd_secs = 90
+        if detected_retry is not None and detected_retry > 0:
+            cd_secs = max(5, min(3600, int(round(detected_retry))))
+        out = {
             "kind": "rate_limited",
             "is_quota_or_rate": True,
             "should_failover_provider": True,
-            "cooldown_seconds": 90,
+            "cooldown_seconds": cd_secs,
             "friendly_message": f"{pname} alcanzó su límite temporal de velocidad (RPM/TPM).",
         }
+        if detected_retry is not None:
+            out["retry_after_sec"] = detected_retry
+        if gemini_detail:
+            out["quota_detail"] = gemini_detail
+        return out
 
     if any(tok in low for tok in ("404", "model_not_found", "not_found_error", "does not exist", "no endpoints")):
         return {
@@ -881,7 +1346,7 @@ def order_provider_failover_chain(
     ordered: List[str] = [primary]
     custom_seq = [normalize_provider_id(p) for p in (failover_order or [])]
     # Luego proveedores con capa gratuita/ultra económica primero si el usuario no definió otro orden
-    default_priority = ("openrouter", "groq", "gemini", "deepseek", "openai", "anthropic")
+    default_priority = ("openrouter", "groq", "gemini", "deepseek", "kimi", "openai", "anthropic")
     for candidate in (*custom_seq, *default_priority):
         if candidate in configured and candidate not in ordered:
             ordered.append(candidate)

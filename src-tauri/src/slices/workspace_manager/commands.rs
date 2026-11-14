@@ -4,7 +4,9 @@ use super::registry::{
     read_business_summary, read_permissions_rule_count, read_workspace_patterns, save_registry,
     scaffold_workspace_dir,
 };
-use super::sandbox::{WorkspaceZone, resolve_inside_workspace, write_string_atomic};
+use super::sandbox::{
+    WorkspaceZone, is_protected_workspace_rel_path, resolve_inside_workspace, write_string_atomic,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -287,7 +289,13 @@ pub fn switch_workspace<R: Runtime>(
     let active = registry.workspaces[pos].clone();
     save_registry(&app, &registry)?;
 
-    let _ = crate::slices::task_ledger::migrations::open_workspace_db(&root);
+    if let Ok(conn) = crate::slices::task_ledger::migrations::open_workspace_db(&root) {
+        let _ = crate::slices::task_ledger::inventory::heal_workspace_from_db(
+            &conn,
+            &root,
+            Utc::now(),
+        );
+    }
     crate::slices::task_ledger::store::try_record_audit_event_for_root(
         &root,
         "user",
@@ -413,8 +421,14 @@ pub fn save_workspace_file<R: Runtime>(
         return Err("No está permitido escribir fuera de las zonas del espacio de trabajo.".to_string());
     }
 
-    write_string_atomic(&target, &content)?;
     let rel_str = clean_rel.to_string_lossy().replace('\\', "/");
+    if is_protected_workspace_rel_path(&clean_rel).is_some() {
+        super::registry::snapshot_core_file(&root, &rel_str);
+    }
+    write_string_atomic(&target, &content)?;
+    if is_protected_workspace_rel_path(&clean_rel).is_some() {
+        super::registry::snapshot_core_file(&root, &rel_str);
+    }
     crate::slices::task_ledger::store::try_record_audit_event_for_root(
         &root,
         "user",
@@ -1258,22 +1272,11 @@ pub async fn save_pdf_document<R: Runtime>(
     Ok(res)
 }
 
-#[tauri::command]
-pub fn download_workspace_file<R: Runtime>(
-    app: AppHandle<R>,
-    relative_path: String,
-    preferred_name: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let (_, active) = ensure_active_workspace(&app)?;
-    let root = PathBuf::from(&active.root_path);
-    let (resolved, clean_rel, zone) = resolve_inside_workspace(&root, &relative_path, false)?;
-    if zone.is_protected_system() {
-        return Err("No está permitido exportar rutas reservadas del sistema.".to_string());
-    }
-    if !resolved.is_file() {
-        return Err(format!("Archivo no encontrado: {relative_path}"));
-    }
-
+fn resolve_unique_download_path<R: Runtime>(
+    app: &AppHandle<R>,
+    fallback_root: Option<&Path>,
+    raw_name: &str,
+) -> Result<(PathBuf, String), String> {
     let downloads_dir = app
         .path()
         .download_dir()
@@ -1283,30 +1286,18 @@ pub fn download_workspace_file<R: Runtime>(
                 .ok()
                 .map(|h| PathBuf::from(h).join("Downloads"))
         })
-        .unwrap_or_else(|| root.clone());
+        .or_else(|| fallback_root.map(Path::to_path_buf))
+        .ok_or_else(|| "No se pudo determinar la carpeta de Descargas.".to_string())?;
 
     fs::create_dir_all(&downloads_dir)
         .map_err(|e| format!("No se pudo acceder a la carpeta de Descargas: {e}"))?;
 
-    let raw_name = preferred_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            resolved
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "documento.pdf".to_string());
-
-    let safe_name = sanitize_attachment_filename(&raw_name);
+    let safe_name = sanitize_attachment_filename(raw_name);
     let safe_path = Path::new(&safe_name);
     let stem = safe_path
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("documento");
+        .unwrap_or("archivo");
     let ext = safe_path
         .extension()
         .and_then(|s| s.to_str())
@@ -1324,19 +1315,76 @@ pub fn download_workspace_file<R: Runtime>(
         counter += 1;
     }
 
-    fs::copy(&resolved, &dest_path)
-        .map_err(|e| format!("No se pudo copiar el archivo a Descargas: {e}"))?;
-
     let final_name = dest_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(&safe_name)
         .to_string();
+
+    Ok((dest_path, final_name))
+}
+
+#[tauri::command]
+pub fn download_workspace_file<R: Runtime>(
+    app: AppHandle<R>,
+    relative_path: String,
+    preferred_name: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let (_, active) = ensure_active_workspace(&app)?;
+    let root = PathBuf::from(&active.root_path);
+    let (resolved, clean_rel, zone) = resolve_inside_workspace(&root, &relative_path, false)?;
+    if zone.is_protected_system() {
+        return Err("No está permitido exportar rutas reservadas del sistema.".to_string());
+    }
+    if !resolved.is_file() {
+        return Err(format!("Archivo no encontrado: {relative_path}"));
+    }
+
+    let raw_name = preferred_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            resolved
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "documento.pdf".to_string());
+
+    let (dest_path, final_name) = resolve_unique_download_path(&app, Some(&root), &raw_name)?;
+
+    fs::copy(&resolved, &dest_path)
+        .map_err(|e| format!("No se pudo copiar el archivo a Descargas: {e}"))?;
+
     let rel_str = clean_rel.to_string_lossy().replace('\\', "/");
 
     Ok(serde_json::json!({
         "ok": true,
         "path": rel_str,
+        "filename": final_name,
+        "downloadedPath": dest_path.to_string_lossy().to_string(),
+    }))
+}
+
+#[tauri::command]
+pub fn download_text_artifact<R: Runtime>(
+    app: AppHandle<R>,
+    filename: String,
+    content: String,
+) -> Result<serde_json::Value, String> {
+    let raw_name = filename.trim();
+    let effective_name = if raw_name.is_empty() {
+        "codigo.txt"
+    } else {
+        raw_name
+    };
+    let (dest_path, final_name) = resolve_unique_download_path(&app, None, effective_name)?;
+    write_string_atomic(&dest_path, &content)?;
+
+    Ok(serde_json::json!({
+        "ok": true,
         "filename": final_name,
         "downloadedPath": dest_path.to_string_lossy().to_string(),
     }))

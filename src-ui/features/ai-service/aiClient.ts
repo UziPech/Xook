@@ -108,13 +108,13 @@ const BROWSER_VAULT_CONFIG_TOOL_DEF = {
   function: {
     name: "configure_ai_vault",
     description:
-      "Abre el formulario cifrado Zero-Trust dentro del chat de XOOK para guardar una API key en la bóveda local o cambiar el proveedor de IA activo (openrouter, deepseek, groq, gemini, openai, anthropic).",
+      "Abre el formulario cifrado Zero-Trust dentro del chat de XOOK para guardar una API key en la bóveda local o cambiar el proveedor de IA activo (openrouter, deepseek, kimi, groq, gemini, openai, anthropic).",
     parameters: {
       type: "object",
       properties: {
         provider: {
           type: "string",
-          enum: ["openrouter", "deepseek", "groq", "gemini", "openai", "anthropic"],
+          enum: ["openrouter", "deepseek", "kimi", "groq", "gemini", "openai", "anthropic"],
         },
         action: {
           type: "string",
@@ -162,6 +162,7 @@ export interface AiProviderSpec {
 export const DEFAULT_FAILOVER_ORDER: AiProviderId[] = [
   "openrouter",
   "deepseek",
+  "kimi",
   "groq",
   "gemini",
   "openai",
@@ -305,6 +306,61 @@ export const AI_PROVIDERS: Record<AiProviderId, AiProviderSpec> = {
         prompt_price_per_million: 0.28,
         completion_price_per_million: 0.42,
         cache_price_per_million: 0.028,
+      },
+    ],
+  },
+  kimi: {
+    id: "kimi",
+    name: "Kimi (Moonshot)",
+    shortName: "Kimi",
+    baseUrl: "https://api.moonshot.ai/v1",
+    defaultModelId: "kimi-k3.1-pro",
+    tierBadge: "Prepago · Saldo API",
+    tariffSummary: "K3.1 Pro $2.00/$10.00 · Caché $0.20 · Ventana 1M",
+    inputPriceHint: "$2.00 - $4.00 / 1M",
+    outputPriceHint: "$10.00 - $20.00 / 1M",
+    cachePriceHint: "$0.20 / 1M (caché)",
+    rateLimitNote: "Consulta saldo real (/users/me/balance) + headers RPM/TPM por turno.",
+    keyPrefixHint: "sk-...",
+    docsUrl: "https://platform.moonshot.ai/console/api-keys",
+    supportsPromptCache: true,
+    supportsFreeTier: false,
+    curatedModels: [
+      {
+        id: "kimi-k3.1-pro",
+        name: "Kimi K3.1 Pro",
+        provider_id: "kimi",
+        provider_name: "Kimi (Moonshot)",
+        hint: "Insignia de razonamiento y código con ventana 1M",
+        is_free: false,
+        context_length: 1000000,
+        prompt_price_per_million: 2.0,
+        completion_price_per_million: 10.0,
+        cache_price_per_million: 0.2,
+      },
+      {
+        id: "kimi-k3.1-pro-highspeed",
+        name: "Kimi K3.1 Pro Highspeed",
+        provider_id: "kimi",
+        provider_name: "Kimi (Moonshot)",
+        hint: "Alta velocidad y baja latencia · Ventana 1M",
+        is_free: false,
+        context_length: 1000000,
+        prompt_price_per_million: 4.0,
+        completion_price_per_million: 20.0,
+        cache_price_per_million: 0.2,
+      },
+      {
+        id: "kimi-k3",
+        name: "Kimi K3",
+        provider_id: "kimi",
+        provider_name: "Kimi (Moonshot)",
+        hint: "Modelo estándar balanceado · Ventana 1M",
+        is_free: false,
+        context_length: 1000000,
+        prompt_price_per_million: 3.0,
+        completion_price_per_million: 15.0,
+        cache_price_per_million: 0.3,
       },
     ],
   },
@@ -593,6 +649,86 @@ export function formatPricePerMillion(usd?: number | null): string {
 export const OPENROUTER_PRESET_MODELS: OpenRouterModelOption[] =
   AI_PROVIDERS.openrouter.curatedModels;
 
+export interface ProviderRateLimitsSnapshot {
+  source?: string | null;
+  updatedAtMs?: number | null;
+  rpmLimit?: number | null;
+  rpmRemaining?: number | null;
+  rpmResetAtMs?: number | null;
+  tpmLimit?: number | null;
+  tpmRemaining?: number | null;
+  tpmResetAtMs?: number | null;
+  itpmLimit?: number | null;
+  itpmRemaining?: number | null;
+  otpmLimit?: number | null;
+  otpmRemaining?: number | null;
+  retryAfterSec?: number | null;
+  dailyLimit?: number | null;
+  dailyRemaining?: number | null;
+}
+
+export interface ProviderBalanceSnapshot {
+  currency?: string | null;
+  balanceRaw?: number | null;
+  balanceUsd?: number | null;
+  creditsRemaining?: number | null;
+  creditsTotal?: number | null;
+  creditsUsage?: number | null;
+  balanceGranted?: number | null;
+  balanceToppedUp?: number | null;
+  limit?: number | null;
+  limitRemaining?: number | null;
+  limitReset?: string | null;
+  isFreeTier?: boolean | null;
+  canUsePaidModels?: boolean | null;
+  apiUsageDaily?: number | null;
+  apiUsageMonthly?: number | null;
+  updatedAtMs?: number | null;
+  source?: string | null;
+}
+
+export interface ProviderLimitConfig {
+  monthlyBudgetUsd?: number | null;
+  dailyRequestLimit?: number | null;
+  rpmLimit?: number | null;
+  tierMode?: "free" | "paid" | string | null;
+}
+
+export interface ProviderUsageEntry {
+  provider: string;
+  todayDate: string;
+  todayRequests: number;
+  todayPromptTokens: number;
+  todayCompletionTokens: number;
+  todayCachedTokens: number;
+  todayCostUsd: number;
+  monthKey: string;
+  monthRequests: number;
+  monthPromptTokens: number;
+  monthCompletionTokens: number;
+  monthCachedTokens: number;
+  monthCostUsd: number;
+  recentRequestTimestampsMs: number[];
+  currentRpm: number;
+  lastModelId?: string | null;
+  lastRequestAtMs?: number | null;
+  rateLimits?: ProviderRateLimitsSnapshot | null;
+  balance?: ProviderBalanceSnapshot | null;
+  limits: ProviderLimitConfig;
+}
+
+export interface AiUsageLedger {
+  providers: Record<string, ProviderUsageEntry>;
+}
+
+export interface SetProviderLimitsInput {
+  provider: string;
+  monthlyBudgetUsd?: number | null;
+  dailyRequestLimit?: number | null;
+  rpmLimit?: number | null;
+  tierMode?: "free" | "paid" | null;
+}
+
 export interface ProviderPublicStatus {
   provider: AiProviderId | string;
   modelId: string;
@@ -603,6 +739,7 @@ export interface ProviderPublicStatus {
   cooldownUntilMs?: number | null;
   quotaStatus?: "ready" | "cooldown" | "exhausted" | "auth_error";
   quotaReason?: string | null;
+  apiRegion?: string | null;
 }
 
 export interface AiConfigStatus {
@@ -627,12 +764,14 @@ export interface SaveAiConfigInput {
   autoFailover?: boolean;
   failoverOrder?: string[];
   clearCooldown?: boolean;
+  apiRegion?: string;
 }
 
 export interface AiConnectionTestResult {
   ok: boolean;
   provider?: string;
   label?: string;
+  base_url?: string;
   is_free_tier?: boolean;
   limit?: number | null;
   limit_remaining?: number | null;
@@ -645,11 +784,18 @@ export interface AiConnectionTestResult {
   credits_usage?: number | null;
   credits_remaining?: number | null;
   balance_usd?: number | null;
+  balance_raw?: number | null;
+  balance_currency?: string | null;
+  balance_granted?: number | null;
+  balance_topped_up?: number | null;
   currency?: string | null;
   balance_available?: boolean | null;
   can_use_paid_models?: boolean;
   daily_free_limit?: number;
   rpm_free_limit?: number;
+  rpm_limit?: number | null;
+  rate_limit_source?: string | null;
+  rate_limits?: ProviderRateLimitsSnapshot | Record<string, unknown> | null;
   message: string;
 }
 
@@ -825,8 +971,10 @@ export interface XoxAiChatRequest {
 export interface XoxTokenUsage {
   promptTokens: number;
   completionTokens: number;
+  cachedTokens?: number;
   totalTokens: number;
   cost?: number;
+  estimatedCostUsd?: number;
 }
 
 export interface ProviderFailoverEvent {
@@ -862,6 +1010,7 @@ export interface XoxAiChatResponse {
   modelUsed: string;
   latencyMs: number;
   usage?: XoxTokenUsage;
+  rateLimits?: ProviderRateLimitsSnapshot;
   workspaceMutated?: boolean;
   failoverNotice?: string;
   exhaustedProviders?: Array<Record<string, unknown>>;
@@ -893,6 +1042,9 @@ export interface WorkspaceContextSource {
 
 const BROWSER_VAULT_KEY = "xook_ai_vault_v1";
 const DAILY_REQUESTS_KEY = "xook_openrouter_daily_reqs_v1";
+const BROWSER_USAGE_LEDGER_KEY = "xook_ai_usage_ledger_v1";
+const BROWSER_USAGE_EVENT = "xook-browser-usage-updated";
+export const AI_USAGE_UPDATED_EVENT = "xox-ai-usage-updated";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 interface BrowserProviderSlot {
@@ -902,6 +1054,7 @@ interface BrowserProviderSlot {
   cooldownUntilMs?: number | null;
   quotaStatus?: "ready" | "cooldown" | "exhausted" | "auth_error";
   quotaReason?: string | null;
+  apiRegion?: string | null;
 }
 
 interface BrowserVault {
@@ -1240,12 +1393,14 @@ export function detectApiKeyInText(text: string): DetectedApiKeyResult {
     const lower = text.toLowerCase();
     if (lower.includes("deepseek")) {
       detectedProvider = "deepseek";
+    } else if (lower.includes("kimi") || lower.includes("moonshot")) {
+      detectedProvider = "kimi";
     } else if (lower.includes("openai") || lower.includes("openia") || lower.includes("gpt")) {
       detectedProvider = "openai";
     } else {
-      // sk- genérico puede ser DeepSeek o OpenAI legacy: Xox pregunta o da selector rápido
+      // sk- genérico puede ser DeepSeek, Kimi u OpenAI legacy: Xox pregunta o da selector rápido
       detectedProvider = "deepseek";
-      ambiguousProviders = ["deepseek", "openai"];
+      ambiguousProviders = ["deepseek", "kimi", "openai"];
     }
   }
 
@@ -1265,6 +1420,7 @@ export function detectKeySetupIntentWithProvider(text: string): {
   const lower = text.toLowerCase();
   let providerHint: AiProviderId | null = null;
   if (/\bdeepseek\b/i.test(lower)) providerHint = "deepseek";
+  else if (/\b(?:kimi|moonshot)\b/i.test(lower)) providerHint = "kimi";
   else if (/\b(?:anthropic|antrophic|anhtropic|claude)\b/i.test(lower)) providerHint = "anthropic";
   else if (/\bgroq\b/i.test(lower)) providerHint = "groq";
   else if (/\b(?:gemini|google\s*ai|ai\s*studio)\b/i.test(lower)) providerHint = "gemini";
@@ -1272,7 +1428,7 @@ export function detectKeySetupIntentWithProvider(text: string): {
   else if (/\bopenrouter\b/i.test(lower)) providerHint = "openrouter";
 
   const isSetup =
-    /(api\s*key|clave\s*api|b[oó]veda|openrouter|deepseek|groq|gemini|anthropic|antrophic|openai|open\s*ia|openia|token\s*de\s*ia|configur\w*\s*(?:la\s*|el\s*|mi\s*|tu\s*)?(?:ia|clave|api|key|modelo|b[oó]veda|provedor|proveedor)|cambia\w*\s*(?:clave|proveedor|modelo)|guarda\w*\s*(?:la\s*|mi\s*)?(?:clave|api|key))/i.test(
+    /(api\s*key|clave\s*api|b[oó]veda|openrouter|deepseek|kimi|moonshot|groq|gemini|anthropic|antrophic|openai|open\s*ia|openia|token\s*de\s*ia|configur\w*\s*(?:la\s*|el\s*|mi\s*|tu\s*)?(?:ia|clave|api|key|modelo|b[oó]veda|provedor|proveedor)|cambia\w*\s*(?:clave|proveedor|modelo)|guarda\w*\s*(?:la\s*|mi\s*)?(?:clave|api|key))/i.test(
       text
     );
   return { isSetup, providerHint };
@@ -1359,6 +1515,21 @@ export function isKeySetupIntent(text: string): boolean {
   return detectKeySetupIntentWithProvider(text).isSetup;
 }
 
+export function resolveProviderBaseUrlClient(
+  providerId: AiProviderId | string,
+  apiRegion?: string | null
+): string {
+  const pid = normalizeProviderIdClient(providerId);
+  if (pid === "kimi") {
+    const r = (apiRegion ?? "").trim().toLowerCase();
+    if (r === "cn" || r === "china" || r === "moonshot-cn" || r === "moonshot.cn") {
+      return "https://api.moonshot.cn/v1";
+    }
+    return "https://api.moonshot.ai/v1";
+  }
+  return AI_PROVIDERS[pid].baseUrl;
+}
+
 function createDefaultBrowserVault(): BrowserVault {
   const providers: Record<string, BrowserProviderSlot> = {};
   for (const spec of AI_PROVIDER_LIST) {
@@ -1369,6 +1540,7 @@ function createDefaultBrowserVault(): BrowserVault {
       cooldownUntilMs: null,
       quotaStatus: "ready",
       quotaReason: null,
+      apiRegion: spec.id === "kimi" ? "ai" : null,
     };
   }
   return {
@@ -1399,6 +1571,12 @@ function normalizeBrowserVault(raw: Partial<BrowserVault> | null | undefined): B
         cooldownUntilMs: typeof slot.cooldownUntilMs === "number" ? slot.cooldownUntilMs : null,
         quotaStatus: slot.quotaStatus || "ready",
         quotaReason: slot.quotaReason || null,
+        apiRegion:
+          typeof slot.apiRegion === "string" && slot.apiRegion.trim()
+            ? slot.apiRegion.trim()
+            : pid === "kimi"
+              ? "ai"
+              : null,
       };
     }
   }
@@ -1470,6 +1648,7 @@ function browserVaultToPublic(vault: BrowserVault): AiConfigStatus {
       cooldownUntilMs: activeCd,
       quotaStatus: activeCd ? (slot?.quotaStatus || "cooldown") : "ready",
       quotaReason: activeCd ? (slot?.quotaReason ?? null) : null,
+      apiRegion: slot?.apiRegion ?? (spec.id === "kimi" ? "ai" : null),
     };
   }
   const activeSlot = vault.providers[normalizeProviderIdClient(vault.provider)];
@@ -1559,6 +1738,10 @@ export async function saveAiConfig(input: SaveAiConfigInput): Promise<AiConfigSt
     slot.quotaStatus = "ready";
     slot.quotaReason = null;
   }
+  if (typeof input.apiRegion === "string") {
+    const trimmedRegion = input.apiRegion.trim();
+    slot.apiRegion = trimmedRegion || (targetPid === "kimi" ? "ai" : null);
+  }
 
   const nextProviders = { ...current.providers, [targetPid]: slot };
   const activeSlot = nextProviders[nextActiveProvider];
@@ -1611,7 +1794,7 @@ export async function testAiConnection(provider?: string): Promise<AiConnectionT
 
   if (targetPid !== "openrouter") {
     try {
-      const baseUrl = spec.baseUrl;
+      const baseUrl = resolveProviderBaseUrlClient(targetPid, slot?.apiRegion);
       const headers: Record<string, string> =
         targetPid === "anthropic"
           ? {
@@ -1625,17 +1808,139 @@ export async function testAiConnection(provider?: string): Promise<AiConnectionT
         return {
           ok: false,
           provider: targetPid,
+          base_url: baseUrl,
           message: mapFriendlyHttpError(resp.status, undefined, spec.name),
         };
       }
-      return {
+      const headerLimits = parseBrowserRateLimitHeaders(resp.headers, targetPid);
+
+      let isFreeTier = spec.supportsFreeTier;
+      let canUsePaid = true;
+      let balanceRaw: number | null = null;
+      let balanceUsd: number | null = null;
+      let creditsRemaining: number | null = null;
+      let balanceCurrency: string | null = null;
+      let balanceGranted: number | null = null;
+      let balanceToppedUp: number | null = null;
+      let balanceAvailable: boolean | null = null;
+
+      if (targetPid === "deepseek") {
+        try {
+          const balResp = await fetch(`${baseUrl}/user/balance`, {
+            method: "GET",
+            headers: { Authorization: `Bearer ${key}` },
+          });
+          if (balResp.ok) {
+            const balData = (await balResp.json()) as {
+              is_available?: boolean;
+              balance_infos?: Array<{
+                currency?: string;
+                total_balance?: string | number;
+                granted_balance?: string | number;
+                topped_up_balance?: string | number;
+              }>;
+            };
+            const infos = Array.isArray(balData.balance_infos) ? balData.balance_infos : [];
+            const usdRow = infos.find((r) => (r.currency ?? "").toUpperCase() === "USD");
+            const chosenRow = usdRow ?? infos[0];
+            if (chosenRow) {
+              const cur = (chosenRow.currency || "USD").toUpperCase();
+              const total = Number(chosenRow.total_balance ?? 0);
+              const granted = Number(chosenRow.granted_balance ?? 0);
+              const topped = Number(chosenRow.topped_up_balance ?? 0);
+              balanceCurrency = cur;
+              balanceRaw = Number.isFinite(total) ? Math.round(total * 1e6) / 1e6 : null;
+              balanceGranted = Number.isFinite(granted) ? Math.round(granted * 1e6) / 1e6 : null;
+              balanceToppedUp = Number.isFinite(topped) ? Math.round(topped * 1e6) / 1e6 : null;
+              if (cur === "USD" && balanceRaw !== null) {
+                balanceUsd = balanceRaw;
+                creditsRemaining = balanceRaw;
+              }
+            }
+            balanceAvailable =
+              typeof balData.is_available === "boolean"
+                ? balData.is_available
+                : (balanceRaw ?? 0) > 0;
+            canUsePaid = balanceAvailable;
+            isFreeTier = !canUsePaid;
+          }
+        } catch {
+          // Ignorar fallo de CORS o endpoint opcional
+        }
+      } else if (targetPid === "kimi") {
+        try {
+          const balResp = await fetch(`${baseUrl}/users/me/balance`, {
+            method: "GET",
+            headers: { Authorization: `Bearer ${key}` },
+          });
+          if (balResp.ok) {
+            const balData = (await balResp.json()) as {
+              data?: {
+                available_balance?: number | string;
+                voucher_balance?: number | string;
+                cash_balance?: number | string;
+                currency?: string;
+              };
+            };
+            const d = balData.data;
+            if (d && d.available_balance !== undefined) {
+              const cur = (
+                d.currency || (baseUrl.includes("moonshot.cn") ? "CNY" : "USD")
+              ).toUpperCase();
+              const avail = Number(d.available_balance ?? 0);
+              const voucher = Number(d.voucher_balance ?? 0);
+              const cash = Number(d.cash_balance ?? 0);
+              balanceCurrency = cur;
+              balanceRaw = Number.isFinite(avail) ? Math.round(avail * 1e6) / 1e6 : null;
+              balanceGranted = Number.isFinite(voucher) ? Math.round(voucher * 1e6) / 1e6 : null;
+              balanceToppedUp = Number.isFinite(cash) ? Math.round(cash * 1e6) / 1e6 : null;
+              if (cur === "USD" && balanceRaw !== null) {
+                balanceUsd = balanceRaw;
+                creditsRemaining = balanceRaw;
+              }
+              balanceAvailable = (balanceRaw ?? 0) > 0;
+              canUsePaid = balanceAvailable;
+              isFreeTier = !canUsePaid;
+            }
+          }
+        } catch {
+          // Ignorar fallo de CORS o endpoint opcional
+        }
+      }
+
+      const rateLimitSource =
+        balanceRaw !== null
+          ? "api_balance"
+          : headerLimits
+            ? "api_headers"
+            : targetPid === "groq" || targetPid === "gemini"
+              ? "reference_tier"
+              : "none";
+
+      const result: AiConnectionTestResult = {
         ok: true,
         provider: targetPid,
         label: spec.name,
-        is_free_tier: spec.supportsFreeTier,
-        can_use_paid_models: true,
+        base_url: baseUrl,
+        is_free_tier: isFreeTier,
+        credits_remaining: creditsRemaining,
+        balance_usd: balanceUsd,
+        balance_raw: balanceRaw,
+        balance_currency: balanceCurrency,
+        currency: balanceCurrency,
+        balance_granted: balanceGranted,
+        balance_topped_up: balanceToppedUp,
+        balance_available: balanceAvailable,
+        can_use_paid_models: canUsePaid,
+        rate_limit_source: rateLimitSource,
+        rpm_limit: headerLimits?.rpmLimit ?? null,
+        rate_limits: headerLimits,
+        rpm_free_limit: targetPid === "groq" ? 30 : targetPid === "gemini" ? 15 : undefined,
+        daily_free_limit: targetPid === "gemini" ? 1000 : undefined,
         message: `Conexión verificada con ${spec.name}.`,
       };
+      recordBrowserTestConnectionUsage(result);
+      return result;
     } catch (err) {
       return {
         ok: false,
@@ -1707,7 +2012,8 @@ export async function testAiConnection(provider?: string): Promise<AiConnectionT
         ? limitRemaining > 0
         : !isFreeTier;
 
-    return {
+    const headerLimits = parseBrowserRateLimitHeaders(resp.headers, "openrouter");
+    const openRouterResult: AiConnectionTestResult = {
       ok: true,
       provider: "openrouter",
       label: d.label || "OpenRouter",
@@ -1722,11 +2028,18 @@ export async function testAiConnection(provider?: string): Promise<AiConnectionT
       credits_total: creditsTotal,
       credits_usage: creditsUsage,
       credits_remaining: creditsRemaining,
+      balance_usd: creditsRemaining,
+      balance_raw: creditsRemaining,
+      balance_currency: creditsRemaining !== null ? "USD" : null,
       can_use_paid_models: canUsePaid,
+      rate_limit_source: "api_balance",
+      rate_limits: headerLimits,
       daily_free_limit: isFreeTier ? 50 : 1000,
       rpm_free_limit: 20,
       message: "Conexión verificada con OpenRouter.",
     };
+    recordBrowserTestConnectionUsage(openRouterResult);
+    return openRouterResult;
   } catch (err) {
     return {
       ok: false,
@@ -1734,6 +2047,1113 @@ export async function testAiConnection(provider?: string): Promise<AiConnectionT
       message: extractErrorMessage(err, "No se pudo conectar con OpenRouter."),
     };
   }
+}
+
+function getLocalDayAndMonthKeys(): { day: string; month: string; nowMs: number } {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return { day: `${y}-${m}-${day}`, month: `${y}-${m}`, nowMs: d.getTime() };
+}
+
+function parseNumericHeader(val: string | null): number | null {
+  if (!val) return null;
+  const n = Number(val.trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseDurationResetMs(val: string | null, nowMs: number): number | null {
+  if (!val) return null;
+  const s = val.trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+    const parsed = Date.parse(s);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const pure = Number(s);
+  if (Number.isFinite(pure)) {
+    return pure > 1_000_000_000 ? Math.round(pure * 1000) : Math.round(nowMs + pure * 1000);
+  }
+  let sec = 0;
+  for (const m of s.toLowerCase().matchAll(/(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)/g)) {
+    const num = Number(m[1]);
+    if (!Number.isFinite(num)) continue;
+    if (m[2] === "ms") sec += num / 1000;
+    else if (m[2] === "s") sec += num;
+    else if (m[2] === "m") sec += num * 60;
+    else if (m[2] === "h") sec += num * 3600;
+    else if (m[2] === "d") sec += num * 86400;
+  }
+  return sec > 0 ? Math.round(nowMs + sec * 1000) : null;
+}
+
+export function normalizeRateLimitsSnapshot(raw: unknown): ProviderRateLimitsSnapshot | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const pickNum = (camel: string, snake: string): number | null => {
+    const v = r[camel] ?? r[snake];
+    return typeof v === "number" && Number.isFinite(v) ? v : null;
+  };
+  const pickStr = (camel: string, snake: string): string | null => {
+    const v = r[camel] ?? r[snake];
+    return typeof v === "string" && v.trim() ? v.trim() : null;
+  };
+  const snap: ProviderRateLimitsSnapshot = {
+    source: pickStr("source", "source"),
+    updatedAtMs: pickNum("updatedAtMs", "updated_at_ms"),
+    rpmLimit: pickNum("rpmLimit", "rpm_limit"),
+    rpmRemaining: pickNum("rpmRemaining", "rpm_remaining"),
+    rpmResetAtMs: pickNum("rpmResetAtMs", "rpm_reset_at_ms"),
+    tpmLimit: pickNum("tpmLimit", "tpm_limit"),
+    tpmRemaining: pickNum("tpmRemaining", "tpm_remaining"),
+    tpmResetAtMs: pickNum("tpmResetAtMs", "tpm_reset_at_ms"),
+    itpmLimit: pickNum("itpmLimit", "itpm_limit"),
+    itpmRemaining: pickNum("itpmRemaining", "itpm_remaining"),
+    otpmLimit: pickNum("otpmLimit", "otpm_limit"),
+    otpmRemaining: pickNum("otpmRemaining", "otpm_remaining"),
+    retryAfterSec: pickNum("retryAfterSec", "retry_after_sec"),
+    dailyLimit: pickNum("dailyLimit", "daily_limit"),
+    dailyRemaining: pickNum("dailyRemaining", "daily_remaining"),
+  };
+  const hasAny =
+    snap.rpmLimit !== null ||
+    snap.rpmRemaining !== null ||
+    snap.tpmLimit !== null ||
+    snap.tpmRemaining !== null ||
+    snap.itpmLimit !== null ||
+    snap.otpmLimit !== null ||
+    snap.dailyLimit !== null ||
+    snap.retryAfterSec !== null;
+  return hasAny ? snap : null;
+}
+
+export function parseBrowserRateLimitHeaders(
+  headers: Headers,
+  providerId: AiProviderId | string
+): ProviderRateLimitsSnapshot | null {
+  const nowMs = Date.now();
+  const pid = normalizeProviderIdClient(providerId);
+  const rpmLimit =
+    parseNumericHeader(headers.get("anthropic-ratelimit-requests-limit")) ??
+    parseNumericHeader(headers.get("x-ratelimit-limit-requests"));
+  const rpmRemaining =
+    parseNumericHeader(headers.get("anthropic-ratelimit-requests-remaining")) ??
+    parseNumericHeader(headers.get("x-ratelimit-remaining-requests"));
+  const rpmResetAtMs =
+    parseDurationResetMs(headers.get("anthropic-ratelimit-requests-reset"), nowMs) ??
+    parseDurationResetMs(headers.get("x-ratelimit-reset-requests"), nowMs);
+  const tpmLimit =
+    parseNumericHeader(headers.get("anthropic-ratelimit-tokens-limit")) ??
+    parseNumericHeader(headers.get("x-ratelimit-limit-tokens"));
+  const tpmRemaining =
+    parseNumericHeader(headers.get("anthropic-ratelimit-tokens-remaining")) ??
+    parseNumericHeader(headers.get("x-ratelimit-remaining-tokens"));
+  const tpmResetAtMs =
+    parseDurationResetMs(headers.get("anthropic-ratelimit-tokens-reset"), nowMs) ??
+    parseDurationResetMs(headers.get("x-ratelimit-reset-tokens"), nowMs);
+  const itpmLimit = parseNumericHeader(headers.get("anthropic-ratelimit-input-tokens-limit"));
+  const itpmRemaining = parseNumericHeader(headers.get("anthropic-ratelimit-input-tokens-remaining"));
+  const otpmLimit = parseNumericHeader(headers.get("anthropic-ratelimit-output-tokens-limit"));
+  const otpmRemaining = parseNumericHeader(headers.get("anthropic-ratelimit-output-tokens-remaining"));
+  const retryAfterSec = parseNumericHeader(headers.get("retry-after"));
+
+  return normalizeRateLimitsSnapshot({
+    source: `${pid}_headers`,
+    updatedAtMs: nowMs,
+    rpmLimit,
+    rpmRemaining,
+    rpmResetAtMs,
+    tpmLimit,
+    tpmRemaining,
+    tpmResetAtMs,
+    itpmLimit,
+    itpmRemaining,
+    otpmLimit,
+    otpmRemaining,
+    retryAfterSec,
+  });
+}
+
+function createEmptyUsageEntry(provider: AiProviderId): ProviderUsageEntry {
+  const { day, month } = getLocalDayAndMonthKeys();
+  return {
+    provider,
+    todayDate: day,
+    todayRequests: 0,
+    todayPromptTokens: 0,
+    todayCompletionTokens: 0,
+    todayCachedTokens: 0,
+    todayCostUsd: 0,
+    monthKey: month,
+    monthRequests: 0,
+    monthPromptTokens: 0,
+    monthCompletionTokens: 0,
+    monthCachedTokens: 0,
+    monthCostUsd: 0,
+    recentRequestTimestampsMs: [],
+    currentRpm: 0,
+    lastModelId: null,
+    lastRequestAtMs: null,
+    rateLimits: null,
+    balance: null,
+    limits: {},
+  };
+}
+
+function rolloverUsageEntry(entry: ProviderUsageEntry, day: string, month: string, nowMs: number): ProviderUsageEntry {
+  const next = { ...entry };
+  if (next.todayDate !== day) {
+    next.todayDate = day;
+    next.todayRequests = 0;
+    next.todayPromptTokens = 0;
+    next.todayCompletionTokens = 0;
+    next.todayCachedTokens = 0;
+    next.todayCostUsd = 0;
+  }
+  if (next.monthKey !== month) {
+    next.monthKey = month;
+    next.monthRequests = 0;
+    next.monthPromptTokens = 0;
+    next.monthCompletionTokens = 0;
+    next.monthCachedTokens = 0;
+    next.monthCostUsd = 0;
+  }
+  const cutoff = nowMs - 60_000;
+  const recent = Array.isArray(next.recentRequestTimestampsMs)
+    ? next.recentRequestTimestampsMs.filter((ts) => typeof ts === "number" && ts >= cutoff)
+    : [];
+  next.recentRequestTimestampsMs = recent;
+  next.currentRpm = recent.length;
+  return next;
+}
+
+function readBrowserUsageLedger(): AiUsageLedger {
+  const { day, month, nowMs } = getLocalDayAndMonthKeys();
+  try {
+    const raw = localStorage.getItem(BROWSER_USAGE_LEDGER_KEY);
+    if (!raw) return { providers: {} };
+    const parsed = JSON.parse(raw) as Partial<AiUsageLedger>;
+    const providers: Record<string, ProviderUsageEntry> = {};
+    if (parsed.providers && typeof parsed.providers === "object") {
+      for (const [k, entry] of Object.entries(parsed.providers)) {
+        if (!entry) continue;
+        const pid = normalizeProviderIdClient(k);
+        providers[pid] = rolloverUsageEntry(
+          {
+            ...createEmptyUsageEntry(pid),
+            ...entry,
+            provider: pid,
+            limits: entry.limits ?? {},
+          },
+          day,
+          month,
+          nowMs
+        );
+      }
+    }
+    return { providers };
+  } catch {
+    return { providers: {} };
+  }
+}
+
+function writeBrowserUsageLedger(ledger: AiUsageLedger): void {
+  try {
+    localStorage.setItem(BROWSER_USAGE_LEDGER_KEY, JSON.stringify(ledger));
+    window.dispatchEvent(new CustomEvent<AiUsageLedger>(BROWSER_USAGE_EVENT, { detail: ledger }));
+  } catch {
+    // Ignorar error de almacenamiento privado
+  }
+}
+
+export function estimateBrowserTurnCostUsd(
+  providerId: AiProviderId | string,
+  modelId: string,
+  promptTokens: number,
+  completionTokens: number,
+  cachedTokens = 0
+): number {
+  const pid = normalizeProviderIdClient(providerId);
+  const spec = AI_PROVIDERS[pid];
+  const lower = (modelId || "").toLowerCase();
+  const match =
+    spec.curatedModels.find((m) => m.id.toLowerCase() === lower) ??
+    spec.curatedModels.find((m) => lower.includes(m.id.toLowerCase()));
+  if (!match || match.is_free) return 0;
+  const inPrice = match.prompt_price_per_million ?? 0;
+  const outPrice = match.completion_price_per_million ?? 0;
+  const cachePrice = match.cache_price_per_million ?? inPrice;
+  const safeCached = Math.min(Math.max(0, cachedTokens), Math.max(0, promptTokens));
+  const uncachedIn = Math.max(0, promptTokens - safeCached);
+  const cost =
+    (uncachedIn / 1_000_000) * inPrice +
+    (safeCached / 1_000_000) * cachePrice +
+    (Math.max(0, completionTokens) / 1_000_000) * outPrice;
+  return Math.round(cost * 1_000_000) / 1_000_000;
+}
+
+function recordBrowserTestConnectionUsage(result: AiConnectionTestResult): void {
+  if (!result.ok || !result.provider) return;
+  const pid = normalizeProviderIdClient(result.provider);
+  const { day, month, nowMs } = getLocalDayAndMonthKeys();
+  const ledger = readBrowserUsageLedger();
+  const entry = rolloverUsageEntry(
+    ledger.providers[pid] ?? createEmptyUsageEntry(pid),
+    day,
+    month,
+    nowMs
+  );
+  const normRl = normalizeRateLimitsSnapshot(result.rate_limits);
+  if (normRl) entry.rateLimits = normRl;
+  entry.balance = {
+    currency: result.balance_currency ?? result.currency ?? (result.credits_remaining !== null ? "USD" : null),
+    balanceRaw: result.balance_raw ?? result.balance_usd ?? result.credits_remaining ?? null,
+    balanceUsd: result.balance_usd ?? (result.balance_currency === "USD" ? result.balance_raw : null) ?? result.credits_remaining ?? null,
+    creditsRemaining: result.credits_remaining ?? null,
+    creditsTotal: result.credits_total ?? null,
+    creditsUsage: result.credits_usage ?? null,
+    balanceGranted: result.balance_granted ?? null,
+    balanceToppedUp: result.balance_topped_up ?? null,
+    limit: result.limit ?? null,
+    limitRemaining: result.limit_remaining ?? null,
+    limitReset: result.limit_reset ?? null,
+    isFreeTier: result.is_free_tier ?? null,
+    canUsePaidModels: result.can_use_paid_models ?? null,
+    apiUsageDaily: result.usage_daily ?? null,
+    apiUsageMonthly: result.usage_monthly ?? null,
+    updatedAtMs: nowMs,
+    source: result.rate_limit_source ?? "test_connection",
+  };
+  ledger.providers[pid] = entry;
+  writeBrowserUsageLedger(ledger);
+}
+
+export function recordBrowserAiUsage(params: {
+  provider: string;
+  modelId: string;
+  usage?: XoxTokenUsage;
+  rateLimits?: ProviderRateLimitsSnapshot | null;
+}): void {
+  const pid = normalizeProviderIdClient(params.provider);
+  const { day, month, nowMs } = getLocalDayAndMonthKeys();
+  const ledger = readBrowserUsageLedger();
+  const entry = rolloverUsageEntry(
+    ledger.providers[pid] ?? createEmptyUsageEntry(pid),
+    day,
+    month,
+    nowMs
+  );
+  const pt = Math.max(0, params.usage?.promptTokens ?? 0);
+  const ct = Math.max(0, params.usage?.completionTokens ?? 0);
+  const cached = Math.max(0, params.usage?.cachedTokens ?? 0);
+  const rawCost =
+    params.usage?.estimatedCostUsd ??
+    params.usage?.cost ??
+    estimateBrowserTurnCostUsd(pid, params.modelId, pt, ct, cached);
+  const cost = Number.isFinite(rawCost) && rawCost > 0 ? Math.round(rawCost * 1_000_000) / 1_000_000 : 0;
+
+  entry.todayRequests += 1;
+  entry.monthRequests += 1;
+  entry.todayPromptTokens += pt;
+  entry.todayCompletionTokens += ct;
+  entry.todayCachedTokens += cached;
+  entry.todayCostUsd = Math.round((entry.todayCostUsd + cost) * 1_000_000) / 1_000_000;
+  entry.monthPromptTokens += pt;
+  entry.monthCompletionTokens += ct;
+  entry.monthCachedTokens += cached;
+  entry.monthCostUsd = Math.round((entry.monthCostUsd + cost) * 1_000_000) / 1_000_000;
+  entry.lastModelId = params.modelId;
+  entry.lastRequestAtMs = nowMs;
+  const recent = [...entry.recentRequestTimestampsMs, nowMs].slice(-120);
+  entry.recentRequestTimestampsMs = recent;
+  entry.currentRpm = recent.length;
+  if (params.rateLimits) {
+    entry.rateLimits = params.rateLimits;
+  }
+  ledger.providers[pid] = entry;
+  writeBrowserUsageLedger(ledger);
+}
+
+export async function getAiUsageLedger(): Promise<AiUsageLedger> {
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<AiUsageLedger>("get_ai_usage_ledger");
+    } catch {
+      // Fallback a almacenamiento local
+    }
+  }
+  return readBrowserUsageLedger();
+}
+
+export async function setProviderUsageLimits(input: SetProviderLimitsInput): Promise<AiUsageLedger> {
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<AiUsageLedger>("set_provider_usage_limits", {
+        payload: {
+          provider: input.provider,
+          monthlyBudgetUsd: input.monthlyBudgetUsd ?? null,
+          dailyRequestLimit: input.dailyRequestLimit ?? null,
+          rpmLimit: input.rpmLimit ?? null,
+          tierMode: input.tierMode ?? null,
+        },
+      });
+    } catch {
+      // Fallback abajo
+    }
+  }
+  const pid = normalizeProviderIdClient(input.provider);
+  const { day, month, nowMs } = getLocalDayAndMonthKeys();
+  const ledger = readBrowserUsageLedger();
+  const entry = rolloverUsageEntry(
+    ledger.providers[pid] ?? createEmptyUsageEntry(pid),
+    day,
+    month,
+    nowMs
+  );
+  entry.limits = {
+    monthlyBudgetUsd:
+      typeof input.monthlyBudgetUsd === "number" && Number.isFinite(input.monthlyBudgetUsd) && input.monthlyBudgetUsd > 0
+        ? input.monthlyBudgetUsd
+        : null,
+    dailyRequestLimit:
+      typeof input.dailyRequestLimit === "number" && Number.isFinite(input.dailyRequestLimit) && input.dailyRequestLimit > 0
+        ? Math.round(input.dailyRequestLimit)
+        : null,
+    rpmLimit:
+      typeof input.rpmLimit === "number" && Number.isFinite(input.rpmLimit) && input.rpmLimit > 0
+        ? Math.round(input.rpmLimit)
+        : null,
+    tierMode: input.tierMode === "free" || input.tierMode === "paid" ? input.tierMode : null,
+  };
+  ledger.providers[pid] = entry;
+  writeBrowserUsageLedger(ledger);
+  return ledger;
+}
+
+export async function resetProviderUsageLedger(provider?: string | null): Promise<AiUsageLedger> {
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<AiUsageLedger>("reset_provider_usage_ledger", {
+        provider: provider ?? null,
+      });
+    } catch {
+      // Fallback abajo
+    }
+  }
+  const target = provider?.trim() ? normalizeProviderIdClient(provider) : null;
+  const ledger = readBrowserUsageLedger();
+  for (const [pid, entry] of Object.entries(ledger.providers)) {
+    if (!target || pid === target) {
+      entry.todayRequests = 0;
+      entry.todayPromptTokens = 0;
+      entry.todayCompletionTokens = 0;
+      entry.todayCachedTokens = 0;
+      entry.todayCostUsd = 0;
+      entry.monthRequests = 0;
+      entry.monthPromptTokens = 0;
+      entry.monthCompletionTokens = 0;
+      entry.monthCachedTokens = 0;
+      entry.monthCostUsd = 0;
+      entry.recentRequestTimestampsMs = [];
+      entry.currentRpm = 0;
+    }
+  }
+  writeBrowserUsageLedger(ledger);
+  return ledger;
+}
+
+export async function onAiUsageUpdated(handler: (ledger: AiUsageLedger) => void): Promise<() => void> {
+  const onBrowserEvt = (e: Event) => {
+    const custom = e as CustomEvent<AiUsageLedger>;
+    if (custom.detail) handler(custom.detail);
+  };
+  window.addEventListener(BROWSER_USAGE_EVENT, onBrowserEvt);
+
+  let unlistenTauri: (() => void) | null = null;
+  if (isTauriRuntime()) {
+    try {
+      const { listen } = await import("@tauri-apps/api/event");
+      unlistenTauri = await listen<AiUsageLedger>(AI_USAGE_UPDATED_EVENT, (ev) => {
+        if (ev.payload) handler(ev.payload);
+      });
+    } catch {
+      // Ignorar si no está disponible
+    }
+  }
+  return () => {
+    window.removeEventListener(BROWSER_USAGE_EVENT, onBrowserEvt);
+    if (unlistenTauri) unlistenTauri();
+  };
+}
+
+export interface ProviderUsageSummary {
+  provider: AiProviderId;
+  providerName: string;
+  sourceKind:
+    | "api_balance"
+    | "api_headers"
+    | "user_budget"
+    | "user_daily_cap"
+    | "reference_tier"
+    | "local_meter";
+  sourceBadge: string;
+  tierLabel: string;
+  headline: string;
+  shortBadge: string;
+  subline: string;
+  pct: number;
+  meterMode: "remaining" | "used" | "unlimited";
+  hasMeterBar: boolean;
+  canUsePaid: boolean;
+  isFreeTier: boolean;
+  currency: string | null;
+  balanceAmount: number | null;
+  balanceGranted: number | null;
+  balanceToppedUp: number | null;
+  monthlyBudgetUsd: number | null;
+  monthCostUsd: number;
+  todayCostUsd: number;
+  todayRequests: number;
+  monthRequests: number;
+  todayTokens: number;
+  monthTokens: number;
+  todayCachedTokens: number;
+  monthCachedTokens: number;
+  currentRpm: number;
+  effectiveRpmLimit: number | null;
+  effectiveRpmRemaining: number | null;
+  rpmResetText: string | null;
+  tpmRemaining: number | null;
+  tpmLimit: number | null;
+  dailyLimit: number | null;
+  dailyRemaining: number | null;
+}
+
+function formatMoneyAmount(amount: number, currency?: string | null): string {
+  const cur = (currency || "USD").toUpperCase();
+  const abs = Math.abs(amount);
+  const formatted = abs > 0 && abs < 0.01 ? amount.toFixed(4) : amount.toFixed(2);
+  if (cur === "CNY" || cur === "RMB") return `¥${formatted} CNY`;
+  return `$${formatted} ${cur}`;
+}
+
+function formatUsdShort(amount: number): string {
+  const abs = Math.abs(amount);
+  if (abs === 0) return "$0.00";
+  if (abs < 0.01) return `$${amount.toFixed(4)}`;
+  return `$${amount.toFixed(2)}`;
+}
+
+function formatResetEta(resetAtMs?: number | null): string | null {
+  if (!resetAtMs || resetAtMs <= Date.now()) return null;
+  const diffSec = Math.max(1, Math.round((resetAtMs - Date.now()) / 1000));
+  if (diffSec < 60) return `reinicio en ${diffSec}s`;
+  const mins = Math.floor(diffSec / 60);
+  const remSec = diffSec % 60;
+  if (mins < 60) return `reinicio en ${mins}m ${remSec}s`;
+  const hrs = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return `reinicio en ${hrs}h ${remMins}m`;
+}
+
+export function computeProviderUsageSummary(params: {
+  provider?: string | null;
+  aiConfig?: AiConfigStatus | null;
+  accountUsage?: AiConnectionTestResult | null;
+  usageLedger?: AiUsageLedger | null;
+  requestsTodayFallback?: number;
+  modelId?: string | null;
+}): ProviderUsageSummary {
+  const pid = normalizeProviderIdClient(params.provider ?? params.aiConfig?.provider);
+  const spec = AI_PROVIDERS[pid];
+  const entry = params.usageLedger?.providers?.[pid];
+  const slot = params.aiConfig?.configuredProviders?.[pid];
+  const hasKey = Boolean(slot?.hasApiKey ?? (params.aiConfig?.provider === pid && params.aiConfig?.hasApiKey));
+  const liveTest =
+    params.accountUsage &&
+    params.accountUsage.ok &&
+    (!params.accountUsage.provider || normalizeProviderIdClient(params.accountUsage.provider) === pid)
+      ? params.accountUsage
+      : null;
+
+  const bal = entry?.balance ?? null;
+  const rl = normalizeRateLimitsSnapshot(liveTest?.rate_limits ?? entry?.rateLimits);
+  const limits = entry?.limits ?? {};
+
+  const todayRequests = entry?.todayRequests ?? params.requestsTodayFallback ?? 0;
+  const monthRequests = entry?.monthRequests ?? todayRequests;
+  const todayTokens = (entry?.todayPromptTokens ?? 0) + (entry?.todayCompletionTokens ?? 0);
+  const monthTokens = (entry?.monthPromptTokens ?? 0) + (entry?.monthCompletionTokens ?? 0);
+  const todayCachedTokens = entry?.todayCachedTokens ?? 0;
+  const monthCachedTokens = entry?.monthCachedTokens ?? 0;
+  const todayCostUsd = entry?.todayCostUsd ?? 0;
+  const monthCostUsd = entry?.monthCostUsd ?? 0;
+  const currentRpm = entry?.currentRpm ?? 0;
+
+  const monthlyBudgetUsd =
+    typeof limits.monthlyBudgetUsd === "number" && limits.monthlyBudgetUsd > 0 ? limits.monthlyBudgetUsd : null;
+  const userDailyCap =
+    typeof limits.dailyRequestLimit === "number" && limits.dailyRequestLimit > 0 ? limits.dailyRequestLimit : null;
+  const userRpmCap =
+    typeof limits.rpmLimit === "number" && limits.rpmLimit > 0 ? limits.rpmLimit : null;
+  const tierOverride = limits.tierMode === "free" || limits.tierMode === "paid" ? limits.tierMode : null;
+
+  const currency = liveTest?.balance_currency ?? liveTest?.currency ?? bal?.currency ?? null;
+  const balanceAmount =
+    liveTest?.balance_raw ??
+    liveTest?.balance_usd ??
+    liveTest?.credits_remaining ??
+    bal?.balanceRaw ??
+    bal?.balanceUsd ??
+    bal?.creditsRemaining ??
+    null;
+  const balanceGranted = liveTest?.balance_granted ?? bal?.balanceGranted ?? null;
+  const balanceToppedUp = liveTest?.balance_topped_up ?? bal?.balanceToppedUp ?? null;
+
+  const keyLimit = liveTest?.limit ?? bal?.limit ?? null;
+  const keyLimitRemaining = liveTest?.limit_remaining ?? bal?.limitRemaining ?? null;
+  const creditsTotal = liveTest?.credits_total ?? bal?.creditsTotal ?? null;
+
+  const canUsePaid =
+    liveTest?.can_use_paid_models ??
+    bal?.canUsePaidModels ??
+    (pid === "deepseek" || pid === "kimi"
+      ? balanceAmount !== null
+        ? balanceAmount > 0
+        : hasKey
+      : pid === "openrouter"
+        ? tierOverride === "paid"
+        : true);
+
+  const isFreeTier =
+    tierOverride === "paid"
+      ? false
+      : tierOverride === "free"
+        ? true
+        : liveTest?.is_free_tier ?? bal?.isFreeTier ?? spec.supportsFreeTier;
+
+  const rpmResetText = formatResetEta(rl?.rpmResetAtMs);
+  const tpmLimit = rl?.tpmLimit ?? null;
+  const tpmRemaining = rl?.tpmRemaining ?? null;
+
+  const effectiveRpmLimit =
+    rl?.rpmLimit ??
+    userRpmCap ??
+    (pid === "groq" && isFreeTier
+      ? 30
+      : pid === "gemini" && isFreeTier
+        ? 15
+        : pid === "openrouter" && isFreeTier
+          ? 20
+          : null);
+  const effectiveRpmRemaining =
+    rl?.rpmRemaining !== null && rl?.rpmRemaining !== undefined
+      ? rl.rpmRemaining
+      : effectiveRpmLimit !== null
+        ? Math.max(0, effectiveRpmLimit - currentRpm)
+        : null;
+
+  const defaultDailyRef =
+    pid === "openrouter" && isFreeTier
+      ? creditsTotal !== null && creditsTotal >= 10
+        ? 1000
+        : 50
+      : pid === "gemini" && isFreeTier
+        ? 1000
+        : null;
+  const dailyLimit = rl?.dailyLimit ?? userDailyCap ?? defaultDailyRef;
+  const dailyRemaining =
+    rl?.dailyRemaining !== null && rl?.dailyRemaining !== undefined
+      ? rl.dailyRemaining
+      : dailyLimit !== null
+        ? Math.max(0, dailyLimit - todayRequests)
+        : null;
+
+  if (!hasKey) {
+    return {
+      provider: pid,
+      providerName: spec.shortName,
+      sourceKind: "local_meter",
+      sourceBadge: "Sin clave",
+      tierLabel: `${spec.shortName} · Sin clave`,
+      headline: `Configura tu clave de ${spec.shortName}`,
+      shortBadge: "Sin clave",
+      subline: spec.rateLimitNote,
+      pct: 0,
+      meterMode: "unlimited",
+      hasMeterBar: false,
+      canUsePaid: false,
+      isFreeTier: spec.supportsFreeTier,
+      currency,
+      balanceAmount: null,
+      balanceGranted: null,
+      balanceToppedUp: null,
+      monthlyBudgetUsd,
+      monthCostUsd,
+      todayCostUsd,
+      todayRequests,
+      monthRequests,
+      todayTokens,
+      monthTokens,
+      todayCachedTokens,
+      monthCachedTokens,
+      currentRpm,
+      effectiveRpmLimit,
+      effectiveRpmRemaining,
+      rpmResetText,
+      tpmRemaining,
+      tpmLimit,
+      dailyLimit,
+      dailyRemaining,
+    };
+  }
+
+  // 1. OpenRouter
+  if (pid === "openrouter") {
+    if (keyLimit !== null && keyLimit > 0 && keyLimitRemaining !== null) {
+      const pct = Math.max(0, Math.min(100, Math.round((keyLimitRemaining / keyLimit) * 100)));
+      return {
+        provider: pid,
+        providerName: spec.shortName,
+        sourceKind: "api_balance",
+        sourceBadge: "API OpenRouter",
+        tierLabel: isFreeTier ? "OpenRouter Free" : "OpenRouter Pro",
+        headline: `${formatUsdShort(keyLimitRemaining)} / ${formatUsdShort(keyLimit)} disp.`,
+        shortBadge: formatUsdShort(keyLimitRemaining),
+        subline: `Uso hoy: ${todayRequests} req · Mes est.: ${formatUsdShort(monthCostUsd)}`,
+        pct,
+        meterMode: "remaining",
+        hasMeterBar: true,
+        canUsePaid,
+        isFreeTier,
+        currency: "USD",
+        balanceAmount: balanceAmount ?? keyLimitRemaining,
+        balanceGranted,
+        balanceToppedUp,
+        monthlyBudgetUsd,
+        monthCostUsd,
+        todayCostUsd,
+        todayRequests,
+        monthRequests,
+        todayTokens,
+        monthTokens,
+        todayCachedTokens,
+        monthCachedTokens,
+        currentRpm,
+        effectiveRpmLimit,
+        effectiveRpmRemaining,
+        rpmResetText,
+        tpmRemaining,
+        tpmLimit,
+        dailyLimit,
+        dailyRemaining,
+      };
+    }
+    if (balanceAmount !== null) {
+      const hasBudget = monthlyBudgetUsd !== null && monthlyBudgetUsd > 0;
+      const pct = hasBudget
+        ? Math.max(0, Math.min(100, Math.round((monthCostUsd / monthlyBudgetUsd!) * 100)))
+        : creditsTotal && creditsTotal > 0
+          ? Math.max(0, Math.min(100, Math.round((balanceAmount / creditsTotal) * 100)))
+          : balanceAmount > 0
+            ? 100
+            : 0;
+      return {
+        provider: pid,
+        providerName: spec.shortName,
+        sourceKind: hasBudget ? "user_budget" : "api_balance",
+        sourceBadge: hasBudget ? "Saldo API + Presupuesto" : "Saldo API",
+        tierLabel: balanceAmount > 0 ? "OpenRouter Prepago" : "OpenRouter Free",
+        headline: hasBudget
+          ? `Saldo: ${formatMoneyAmount(balanceAmount, currency)} · Mes ${formatUsdShort(monthCostUsd)}/${formatUsdShort(monthlyBudgetUsd!)}`
+          : `Saldo API: ${formatMoneyAmount(balanceAmount, currency)}`,
+        shortBadge: formatMoneyAmount(balanceAmount, currency),
+        subline: `Hoy: ${todayRequests} req · ${formatTokenCount(todayTokens)} tok · ${currentRpm} RPM`,
+        pct,
+        meterMode: hasBudget ? "used" : "remaining",
+        hasMeterBar: true,
+        canUsePaid,
+        isFreeTier,
+        currency: currency || "USD",
+        balanceAmount,
+        balanceGranted,
+        balanceToppedUp,
+        monthlyBudgetUsd,
+        monthCostUsd,
+        todayCostUsd,
+        todayRequests,
+        monthRequests,
+        todayTokens,
+        monthTokens,
+        todayCachedTokens,
+        monthCachedTokens,
+        currentRpm,
+        effectiveRpmLimit,
+        effectiveRpmRemaining,
+        rpmResetText,
+        tpmRemaining,
+        tpmLimit,
+        dailyLimit,
+        dailyRemaining,
+      };
+    }
+    const cap = dailyLimit ?? 50;
+    const rem = Math.max(0, cap - todayRequests);
+    const pct = Math.max(0, Math.min(100, Math.round((rem / cap) * 100)));
+    return {
+      provider: pid,
+      providerName: spec.shortName,
+      sourceKind: userDailyCap ? "user_daily_cap" : "reference_tier",
+      sourceBadge: userDailyCap ? "Límite local" : "Tier gratis ref.",
+      tierLabel: `OpenRouter ${cap === 1000 ? "Free 1K" : "Free"}`,
+      headline: `Gratis hoy: ${rem} / ${cap} restantes`,
+      shortBadge: `${rem}/${cap} hoy`,
+      subline: `${todayRequests} envíos hoy · máx ${effectiveRpmLimit ?? 20} RPM`,
+      pct,
+      meterMode: "remaining",
+      hasMeterBar: true,
+      canUsePaid,
+      isFreeTier: true,
+      currency: "USD",
+      balanceAmount: null,
+      balanceGranted: null,
+      balanceToppedUp: null,
+      monthlyBudgetUsd,
+      monthCostUsd,
+      todayCostUsd,
+      todayRequests,
+      monthRequests,
+      todayTokens,
+      monthTokens,
+      todayCachedTokens,
+      monthCachedTokens,
+      currentRpm,
+      effectiveRpmLimit,
+      effectiveRpmRemaining,
+      rpmResetText,
+      tpmRemaining,
+      tpmLimit,
+      dailyLimit: cap,
+      dailyRemaining: rem,
+    };
+  }
+
+  // 2. DeepSeek y Kimi (prepago con consulta de saldo real en servidor)
+  if (pid === "deepseek" || pid === "kimi") {
+    const hasBalance = balanceAmount !== null;
+    const hasBudget = monthlyBudgetUsd !== null && monthlyBudgetUsd > 0;
+    const hasServerRpm = rl?.rpmLimit && rl.rpmLimit > 0 && rl.rpmRemaining !== null && rl.rpmRemaining !== undefined;
+    let pct = 0;
+    let meterMode: "remaining" | "used" | "unlimited" = "unlimited";
+    let hasMeterBar = false;
+
+    if (hasBudget) {
+      pct = Math.max(0, Math.min(100, Math.round((monthCostUsd / monthlyBudgetUsd!) * 100)));
+      meterMode = "used";
+      hasMeterBar = true;
+    } else if (hasServerRpm) {
+      pct = Math.max(0, Math.min(100, Math.round((rl!.rpmRemaining! / rl!.rpmLimit!) * 100)));
+      meterMode = "remaining";
+      hasMeterBar = true;
+    } else if (dailyLimit !== null && dailyRemaining !== null) {
+      pct = Math.max(0, Math.min(100, Math.round((dailyRemaining / dailyLimit) * 100)));
+      meterMode = "remaining";
+      hasMeterBar = true;
+    } else if (hasBalance) {
+      pct = balanceAmount! > 0 && canUsePaid ? 100 : 0;
+      meterMode = "remaining";
+      hasMeterBar = true;
+    }
+
+    const balanceText = hasBalance
+      ? balanceAmount! > 0 && canUsePaid
+        ? `Saldo API: ${formatMoneyAmount(balanceAmount!, currency)}`
+        : `Saldo agotado (${formatMoneyAmount(balanceAmount ?? 0, currency)})`
+      : `Sin saldo consultado · ${todayRequests} req hoy`;
+
+    const headline = hasBudget
+      ? `${hasBalance ? `${formatMoneyAmount(balanceAmount!, currency)} disp. · ` : ""}Mes ${formatUsdShort(monthCostUsd)}/${formatUsdShort(monthlyBudgetUsd!)}`
+      : hasServerRpm
+        ? `${balanceText} · ${rl!.rpmRemaining}/${rl!.rpmLimit} RPM`
+        : balanceText;
+
+    const shortBadge = hasBalance
+      ? formatMoneyAmount(balanceAmount!, currency)
+      : todayCostUsd > 0
+        ? `~${formatUsdShort(todayCostUsd)}`
+        : spec.tierBadge;
+
+    const subParts: string[] = [];
+    if (todayRequests > 0 || todayTokens > 0) {
+      subParts.push(`Hoy: ${todayRequests} req · ${formatTokenCount(todayTokens)} tok (~${formatUsdShort(todayCostUsd)})`);
+    } else {
+      subParts.push(spec.tariffSummary);
+    }
+    if (rpmResetText) subParts.push(rpmResetText);
+
+    return {
+      provider: pid,
+      providerName: spec.shortName,
+      sourceKind: hasBalance ? "api_balance" : hasBudget ? "user_budget" : "local_meter",
+      sourceBadge: hasBalance ? "Saldo API real" : hasBudget ? "Presupuesto usuario" : "Medición local",
+      tierLabel: hasBalance
+        ? canUsePaid
+          ? `${spec.shortName} · Prepago`
+          : `${spec.shortName} · Sin saldo`
+        : `${spec.shortName} · Prepago`,
+      headline,
+      shortBadge,
+      subline: subParts.join(" · "),
+      pct,
+      meterMode,
+      hasMeterBar,
+      canUsePaid,
+      isFreeTier: false,
+      currency: currency || "USD",
+      balanceAmount,
+      balanceGranted,
+      balanceToppedUp,
+      monthlyBudgetUsd,
+      monthCostUsd,
+      todayCostUsd,
+      todayRequests,
+      monthRequests,
+      todayTokens,
+      monthTokens,
+      todayCachedTokens,
+      monthCachedTokens,
+      currentRpm,
+      effectiveRpmLimit,
+      effectiveRpmRemaining,
+      rpmResetText,
+      tpmRemaining,
+      tpmLimit,
+      dailyLimit,
+      dailyRemaining,
+    };
+  }
+
+  // 3. Anthropic, OpenAI, Groq, Gemini (rate-limits en headers / 429 o presupuesto/cuota local)
+  if (rl && ((rl.rpmLimit && rl.rpmLimit > 0 && rl.rpmRemaining !== null && rl.rpmRemaining !== undefined) || (rl.tpmLimit && rl.tpmLimit > 0 && rl.tpmRemaining !== null && rl.tpmRemaining !== undefined))) {
+    const useRpm = Boolean(rl.rpmLimit && rl.rpmLimit > 0 && rl.rpmRemaining !== null && rl.rpmRemaining !== undefined);
+    const pct = useRpm
+      ? Math.max(0, Math.min(100, Math.round((rl.rpmRemaining! / rl.rpmLimit!) * 100)))
+      : Math.max(0, Math.min(100, Math.round((rl.tpmRemaining! / rl.tpmLimit!) * 100)));
+    const headline = useRpm
+      ? `RPM API: ${rl.rpmRemaining}/${rl.rpmLimit}${rl.tpmLimit ? ` · TPM ${formatTokenCount(rl.tpmRemaining ?? 0)}/${formatTokenCount(rl.tpmLimit)}` : ""}`
+      : `TPM API: ${formatTokenCount(rl.tpmRemaining ?? 0)}/${formatTokenCount(rl.tpmLimit ?? 0)}`;
+    const shortBadge = useRpm
+      ? `${rl.rpmRemaining}/${rl.rpmLimit} RPM`
+      : `${pct}% TPM`;
+    return {
+      provider: pid,
+      providerName: spec.shortName,
+      sourceKind: "api_headers",
+      sourceBadge: "Headers HTTP reales",
+      tierLabel: `${spec.shortName} · ${isFreeTier ? "Gratis" : "Pago"}`,
+      headline,
+      shortBadge,
+      subline: `Hoy: ${todayRequests} req · Est. ${formatUsdShort(todayCostUsd)}${rpmResetText ? ` · ${rpmResetText}` : ""}`,
+      pct,
+      meterMode: "remaining",
+      hasMeterBar: true,
+      canUsePaid,
+      isFreeTier,
+      currency: "USD",
+      balanceAmount: null,
+      balanceGranted: null,
+      balanceToppedUp: null,
+      monthlyBudgetUsd,
+      monthCostUsd,
+      todayCostUsd,
+      todayRequests,
+      monthRequests,
+      todayTokens,
+      monthTokens,
+      todayCachedTokens,
+      monthCachedTokens,
+      currentRpm,
+      effectiveRpmLimit,
+      effectiveRpmRemaining,
+      rpmResetText,
+      tpmRemaining,
+      tpmLimit,
+      dailyLimit,
+      dailyRemaining,
+    };
+  }
+
+  if (monthlyBudgetUsd !== null && monthlyBudgetUsd > 0) {
+    const pct = Math.max(0, Math.min(100, Math.round((monthCostUsd / monthlyBudgetUsd) * 100)));
+    return {
+      provider: pid,
+      providerName: spec.shortName,
+      sourceKind: "user_budget",
+      sourceBadge: "Presupuesto usuario",
+      tierLabel: `${spec.shortName} · Presupuesto`,
+      headline: `Mes est.: ${formatUsdShort(monthCostUsd)} / ${formatUsdShort(monthlyBudgetUsd)}`,
+      shortBadge: `${pct}% mes`,
+      subline: `Hoy: ${todayRequests} req · ${formatTokenCount(todayTokens)} tok · ${currentRpm} RPM`,
+      pct,
+      meterMode: "used",
+      hasMeterBar: true,
+      canUsePaid,
+      isFreeTier,
+      currency: "USD",
+      balanceAmount: null,
+      balanceGranted: null,
+      balanceToppedUp: null,
+      monthlyBudgetUsd,
+      monthCostUsd,
+      todayCostUsd,
+      todayRequests,
+      monthRequests,
+      todayTokens,
+      monthTokens,
+      todayCachedTokens,
+      monthCachedTokens,
+      currentRpm,
+      effectiveRpmLimit,
+      effectiveRpmRemaining,
+      rpmResetText,
+      tpmRemaining,
+      tpmLimit,
+      dailyLimit,
+      dailyRemaining,
+    };
+  }
+
+  if (dailyLimit !== null && dailyLimit > 0) {
+    const rem = Math.max(0, dailyLimit - todayRequests);
+    const pct = Math.max(0, Math.min(100, Math.round((rem / dailyLimit) * 100)));
+    const isRef = !userDailyCap;
+    return {
+      provider: pid,
+      providerName: spec.shortName,
+      sourceKind: isRef ? "reference_tier" : "user_daily_cap",
+      sourceBadge: isRef ? "Límite ref. gratis" : "Límite local",
+      tierLabel: `${spec.shortName} · ${isFreeTier ? "Gratis" : "Tope diario"}`,
+      headline: `Hoy: ${todayRequests} / ${dailyLimit} req${effectiveRpmLimit ? ` · ${currentRpm}/${effectiveRpmLimit} RPM` : ""}`,
+      shortBadge: `${rem}/${dailyLimit} hoy`,
+      subline: `${formatTokenCount(todayTokens)} tok hoy · Sin header HTTP hasta usar cuota`,
+      pct,
+      meterMode: "remaining",
+      hasMeterBar: true,
+      canUsePaid,
+      isFreeTier,
+      currency: "USD",
+      balanceAmount: null,
+      balanceGranted: null,
+      balanceToppedUp: null,
+      monthlyBudgetUsd,
+      monthCostUsd,
+      todayCostUsd,
+      todayRequests,
+      monthRequests,
+      todayTokens,
+      monthTokens,
+      todayCachedTokens,
+      monthCachedTokens,
+      currentRpm,
+      effectiveRpmLimit,
+      effectiveRpmRemaining,
+      rpmResetText,
+      tpmRemaining,
+      tpmLimit,
+      dailyLimit,
+      dailyRemaining: rem,
+    };
+  }
+
+  if (effectiveRpmLimit !== null && effectiveRpmLimit > 0) {
+    const remRpm = Math.max(0, effectiveRpmLimit - currentRpm);
+    const pct = Math.max(0, Math.min(100, Math.round((remRpm / effectiveRpmLimit) * 100)));
+    const isRef = !userRpmCap;
+    return {
+      provider: pid,
+      providerName: spec.shortName,
+      sourceKind: isRef ? "reference_tier" : "user_daily_cap",
+      sourceBadge: isRef ? "RPM ref. gratis" : "RPM local",
+      tierLabel: `${spec.shortName} · ${isFreeTier ? "Gratis LPU" : "Tope RPM"}`,
+      headline: `RPM actual: ${currentRpm} / ${effectiveRpmLimit} · Hoy: ${todayRequests} req`,
+      shortBadge: `${remRpm}/${effectiveRpmLimit} RPM`,
+      subline: `${formatTokenCount(todayTokens)} tok hoy · Medición local por minuto`,
+      pct,
+      meterMode: "remaining",
+      hasMeterBar: true,
+      canUsePaid,
+      isFreeTier,
+      currency: "USD",
+      balanceAmount: null,
+      balanceGranted: null,
+      balanceToppedUp: null,
+      monthlyBudgetUsd,
+      monthCostUsd,
+      todayCostUsd,
+      todayRequests,
+      monthRequests,
+      todayTokens,
+      monthTokens,
+      todayCachedTokens,
+      monthCachedTokens,
+      currentRpm,
+      effectiveRpmLimit,
+      effectiveRpmRemaining: remRpm,
+      rpmResetText,
+      tpmRemaining,
+      tpmLimit,
+      dailyLimit,
+      dailyRemaining,
+    };
+  }
+
+  // Fallback local puro (ej. Anthropic / OpenAI antes del primer turno o Gemini de pago)
+  return {
+    provider: pid,
+    providerName: spec.shortName,
+    sourceKind: "local_meter",
+    sourceBadge: "Medición local",
+    tierLabel: `${spec.shortName} · ${isFreeTier ? "Gratis" : "Pago"}`,
+    headline:
+      pid === "gemini"
+        ? `Hoy: ${todayRequests} req · ${formatTokenCount(todayTokens)} tok (~${formatUsdShort(todayCostUsd)})`
+        : `Hoy: ${todayRequests} req · ${formatTokenCount(todayTokens)} tok (~${formatUsdShort(todayCostUsd)})`,
+    shortBadge: todayCostUsd > 0 ? `~${formatUsdShort(todayCostUsd)}` : `${todayRequests} req`,
+    subline:
+      pid === "gemini"
+        ? "Gemini no envía headers de cuota en 200 OK · Configura tu presupuesto en Bóveda"
+        : "Envía 1 turno para capturar headers RPM/TPM o configura tu presupuesto",
+    pct: 0,
+    meterMode: "unlimited",
+    hasMeterBar: false,
+    canUsePaid,
+    isFreeTier,
+    currency: "USD",
+    balanceAmount: null,
+    balanceGranted: null,
+    balanceToppedUp: null,
+    monthlyBudgetUsd,
+    monthCostUsd,
+    todayCostUsd,
+    todayRequests,
+    monthRequests,
+    todayTokens,
+    monthTokens,
+    todayCachedTokens,
+    monthCachedTokens,
+    currentRpm,
+    effectiveRpmLimit,
+    effectiveRpmRemaining,
+    rpmResetText,
+    tpmRemaining,
+    tpmLimit,
+    dailyLimit,
+    dailyRemaining,
+  };
 }
 
 export async function fetchOpenRouterModels(
@@ -1837,7 +3257,9 @@ export async function loadWorkspaceContext(): Promise<WorkspaceContextSource[]> 
 
     const priorityPaths = [
       "empresa/perfil.json",
+      "empresa/roles.md",
       "empresa/reglas/operacion.md",
+      "habilidades/perfil-usuario.md",
       "memoria/hechos.md",
       "empresa/proveedores.json",
       "agente/notas-xox.md",
@@ -2205,9 +3627,13 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       usage?: {
         prompt_tokens?: number;
         completion_tokens?: number;
+        cached_tokens?: number;
+        prompt_cache_hit_tokens?: number;
         total_tokens?: number;
         cost?: number;
+        estimated_cost_usd?: number;
       };
+      rate_limits?: Record<string, unknown>;
     }>("run_xox_chat", {
       payload: {
         message: req.message,
@@ -2221,14 +3647,24 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
         activeCanvas: req.activeCanvas ?? null,
       },
     });
+    const cachedTok = res.usage?.cached_tokens ?? res.usage?.prompt_cache_hit_tokens ?? 0;
+    const estCost =
+      typeof res.usage?.estimated_cost_usd === "number"
+        ? res.usage.estimated_cost_usd
+        : typeof res.usage?.cost === "number"
+          ? res.usage.cost
+          : undefined;
     const usage = res.usage
       ? {
           promptTokens: res.usage.prompt_tokens ?? 0,
           completionTokens: res.usage.completion_tokens ?? 0,
+          cachedTokens: cachedTok > 0 ? cachedTok : undefined,
           totalTokens: res.usage.total_tokens ?? 0,
-          cost: typeof res.usage.cost === "number" ? res.usage.cost : undefined,
+          cost: typeof res.usage.cost === "number" ? res.usage.cost : estCost,
+          estimatedCostUsd: estCost,
         }
       : undefined;
+    const rateLimits = normalizeRateLimitsSnapshot(res.rate_limits) ?? undefined;
     const safeClarification = res.clarification
       ? sanitizeClarificationSpec(res.clarification) ?? undefined
       : undefined;
@@ -2245,6 +3681,7 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
       latencyMs: res.latency_ms ?? 0,
       usage,
+      rateLimits,
       failoverNotice: res.failover_notice,
       exhaustedProviders: res.exhausted_providers,
       failoverEvents: res.failover_events?.map((fe) => ({
@@ -2260,7 +3697,7 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
   return runBrowserAiChat(req);
 }
 
-class BrowserStreamTagRouter {
+export class BrowserStreamTagRouter {
   private static readonly OPEN_ANALYSIS = ["<analisis>", "<analysis>"];
   private static readonly CLOSE_ANALYSIS = ["</analisis>", "</analysis>"];
   private static readonly OPEN_REPLY = ["<respuesta>", "<response>", "<posta>", "<reply>", "<resp>"];
@@ -2295,6 +3732,11 @@ class BrowserStreamTagRouter {
   public actionsBuf = "";
   private enteredReply = false;
   private enteredCanvas = false;
+  private replyFenceChar = "";
+  private replyFenceLen = 0;
+  private replyAtLineStart = true;
+
+  private static readonly FENCE_OPEN_RE = /^([ \t]*)(`{3,}|~{3,})(.*)$/;
 
   constructor(
     private onReasoning: (chunk: string) => void,
@@ -2302,7 +3744,16 @@ class BrowserStreamTagRouter {
     private onPhase: (phase: "thinking" | "talking" | "canvas") => void
   ) {}
 
+  private emitReply(text: string) {
+    if (!text) return;
+    this.replyAtLineStart = text.endsWith("\n");
+    this.onReply(text);
+  }
+
   private enterReply() {
+    this.replyFenceChar = "";
+    this.replyFenceLen = 0;
+    this.replyAtLineStart = true;
     if (!this.enteredReply) {
       this.enteredReply = true;
       this.onPhase("talking");
@@ -2441,9 +3892,78 @@ class BrowserStreamTagRouter {
       }
 
       if (this.mode === "reply") {
-        const found = this.findFirstTag(this.buf, BrowserStreamTagRouter.STOP_REPLY);
+        // Inside a fenced code block, emit literally and ignore STOP_REPLY tags
+        if (this.replyFenceChar) {
+          const nlIdx = this.buf.indexOf("\n");
+          if (nlIdx !== -1) {
+            const segment = this.buf.slice(0, nlIdx + 1);
+            this.buf = this.buf.slice(nlIdx + 1);
+            if (this.replyAtLineStart) {
+              const stripped = segment.replace(/\r?\n$/, "").trim();
+              if (
+                stripped.length >= this.replyFenceLen &&
+                stripped.split("").every((ch) => ch === this.replyFenceChar)
+              ) {
+                this.replyFenceChar = "";
+                this.replyFenceLen = 0;
+              }
+            }
+            this.emitReply(segment);
+            continue;
+          }
+          const escapedFence = this.replyFenceChar === "~" ? "~" : "`";
+          if (
+            this.replyAtLineStart &&
+            new RegExp(`^[ \\t]*${escapedFence}*$`).test(this.buf)
+          ) {
+            return;
+          }
+          this.emitReply(this.buf);
+          this.buf = "";
+          return;
+        }
+
+        // Outside a fence: check if a new line starts a code fence
+        if (this.replyAtLineStart) {
+          const nlIdx = this.buf.indexOf("\n");
+          if (nlIdx === -1) {
+            const trimmedWs = this.buf.replace(/^[ \t]+/, "");
+            if (!trimmedWs) return;
+            if (trimmedWs[0] === "`" || trimmedWs[0] === "~") {
+              const fenceMatch = trimmedWs.match(/^(`+|~+)(.*)$/);
+              if (fenceMatch) {
+                const runLen = fenceMatch[1].length;
+                const infoRest = fenceMatch[2];
+                if (runLen < 3 && !infoRest) return;
+                if (runLen >= 3 && !(fenceMatch[1][0] === "`" && infoRest.includes("`"))) {
+                  return;
+                }
+              }
+            }
+          } else {
+            const firstLine = this.buf.slice(0, nlIdx).replace(/\r$/, "");
+            const openMatch = BrowserStreamTagRouter.FENCE_OPEN_RE.exec(firstLine);
+            if (openMatch) {
+              const fenceChar = openMatch[2][0];
+              const infoStr = openMatch[3];
+              if (!(fenceChar === "`" && infoStr.includes("`"))) {
+                this.replyFenceChar = fenceChar;
+                this.replyFenceLen = openMatch[2].length;
+                const segment = this.buf.slice(0, nlIdx + 1);
+                this.buf = this.buf.slice(nlIdx + 1);
+                this.emitReply(segment);
+                continue;
+              }
+            }
+          }
+        }
+
+        // Normal prose scan up to next newline (so next line re-checks fence opening)
+        const nlIdx = this.buf.indexOf("\n");
+        const scanSlice = nlIdx !== -1 ? this.buf.slice(0, nlIdx + 1) : this.buf;
+        const found = this.findFirstTag(scanSlice, BrowserStreamTagRouter.STOP_REPLY);
         if (found) {
-          if (found.idx > 0) this.onReply(this.buf.slice(0, found.idx));
+          if (found.idx > 0) this.emitReply(this.buf.slice(0, found.idx));
           this.buf = this.buf.slice(found.idx + found.rawLength);
           if (BrowserStreamTagRouter.OPEN_CANVAS.includes(found.canonical)) {
             this.enterCanvas();
@@ -2454,8 +3974,13 @@ class BrowserStreamTagRouter {
           }
           continue;
         }
+        if (nlIdx !== -1) {
+          this.emitReply(scanSlice);
+          this.buf = this.buf.slice(nlIdx + 1);
+          continue;
+        }
         const [safe, rem] = this.partialSplit(this.buf, BrowserStreamTagRouter.STOP_REPLY);
-        if (safe) this.onReply(safe);
+        if (safe) this.emitReply(safe);
         this.buf = rem;
         return;
       }
@@ -2502,11 +4027,15 @@ class BrowserStreamTagRouter {
     } else if (this.mode === "analysis") {
       this.onReasoning(this.buf);
     } else if (this.mode === "reply") {
-      const cleaned = this.buf.replace(
-        /<\s*\/?\s*(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions|posta|reply|resp)\s*(?:>|$)/gi,
-        ""
-      );
-      if (cleaned) this.onReply(cleaned);
+      if (this.replyFenceChar) {
+        this.emitReply(this.buf);
+      } else {
+        const cleaned = this.buf.replace(
+          /<\s*\/?\s*(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions|posta|reply|resp)\s*(?:>|$)/gi,
+          ""
+        );
+        if (cleaned) this.emitReply(cleaned);
+      }
     } else if (this.mode === "canvas") {
       this.canvasBuf += this.buf.replace(/<\s*\/?\s*(?:canvas|lienzo)\s*>/gi, "");
     } else if (this.mode === "actions") {
@@ -2564,13 +4093,13 @@ function buildBrowserSystemPrompt(
       })}`
     : "";
 
-  const header = `Eres Xox, un asistente inteligente y copiloto operativo dentro de XOOK. Respondes siempre en español claro, directo y humano, sin tecnicismos, sin emojis ni iconos y sin JSON visible al usuario.
+  const header = `Eres Xox, el agente inteligente y co-constructor operativo de propósito múltiple de XOOK. Respondes siempre en español claro, directo y humano (o en el idioma que pida el usuario), adaptando tu rol y enfoque al proyecto o espacio activo sin JSON visible al usuario.
 
 FECHA Y HORA LOCAL ACTUAL DEL SISTEMA: ${nowLabel}
 
 CAPACIDADES:
-- Puedes responder preguntas generales de uso diario (qué hora es, qué día es hoy, cálculos, dudas generales, explicaciones o charla casual) de forma directa y natural usando la fecha y hora local actual cuando aplique, SIN desviar la conversación hacia inventario si el usuario no lo pidió.
-- Cuando el usuario trate temas de su operación, tienda, inventario, proveedores, agenda o tareas, apoya usando su contexto operativo, reglamento y memoria.
+- Puedes responder preguntas generales de uso diario (qué hora es, qué día es hoy, cálculos, programación, redacción, investigación o charla casual) de forma directa y natural usando la fecha y hora local actual cuando aplique, SIN desviar la conversación hacia inventario si el usuario no lo pidió.
+- Cuando el usuario trabaje en negocios, software, investigación, productividad o proyectos creativos, adapta tu rol y apoya usando el contexto, gustos/flujo del usuario, habilidades y memoria reales del workspace.
 - Si el usuario pide crear o mostrar una TABLA, tabla comparativa, desglose, matriz de opciones o presupuesto: usa la herramienta \`create_canvas\` (preferida; evita emitir bloques \`<canvas>\` manualmente) pasando columnas en texto simple y TODAS las filas completas en \`rows\`. NUNCA escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en tu mensaje al usuario; escribe libremente tu explicación o conclusión sin duplicar la tabla en HTML ni usar etiquetas XML.
 - Aclaraciones (\`ask_clarification\`): analiza primero qué ya especificó el usuario. Si ya dio evento/acción + fecha/hora (ej. "cita para mañana a las 10 pm"), NO pidas aclaraciones y genera la tarjeta directo (solo avisa si choca con AGENDA ACTIVA). Úsala únicamente si falta un dato esencial (como en "agenda algo" o "haz una cita mañana" sin hora), preguntando SOLO lo que falta y nunca datos que ya indicó.
 - Bóveda y proveedores IA (\`configure_ai_vault\`): TÚ SÍ PUEDES configurar proveedores en la bóveda local de XOOK (openrouter, deepseek, groq, gemini, openai, anthropic). Si el usuario pide agregar, configurar o cambiar su API key o proveedor en XOOK, PROHIBIDO sugerir \`.env\` o código; llama de inmediato a \`configure_ai_vault\` para mostrar el formulario seguro Zero-Trust en tu respuesta.
@@ -2586,6 +4115,7 @@ ${req.attachedContext.length ? `CONTEXTO ADJUNTO:\n${JSON.stringify(req.attached
 ESTILO DE RESPUESTA Y LIBERTAD:
 Responde directamente en español (o en el idioma que pida el usuario) usando Markdown natural y limpio, con plena libertad expresiva para escribir todo lo que necesites y elegir el tono, estructura, encabezados, listas, bloques de código, tablas Markdown o extensión que mejor ayuden al usuario.
 - NUNCA envuelvas tu respuesta en etiquetas XML o pseudo-HTML como \`<respuesta>\`, \`<analisis>\`, \`<posta>\`, \`<reply>\`, \`<canvas>\` o \`<acciones>\`. Escribe directamente al usuario.
+- Cuando escribas código, consultas, configuraciones o diagramas en CUALQUIER lenguaje o formato (Python, C#, C++, TypeScript, TSX, Rust, Go, Java, Kotlin, Swift, SQL, HTML, CSS, Bash, PowerShell, Terraform/HCL, Solidity, Zig, Prisma, Dockerfile, YAML, JSON, LaTeX, Mermaid, etc.), usa SIEMPRE bloques Markdown con el identificador exacto del lenguaje tras \`\`\` (por ejemplo, \`\`\`csharp, \`\`\`python, \`\`\`tsx, \`\`\`sql, \`\`\`hcl, \`\`\`dockerfile) y opcionalmente el nombre del archivo si aporta claridad (por ejemplo, \`\`\`csharp CuentaBancaria.cs). Si el bloque contiene \`\`\` internos, envuélvelo con cuatro comillas invertidas (\`\`\`\`). Presenta código idiomático, completo y bien indentado.
 - Usa herramientas nativas como \`create_canvas\`, \`propose_tasks\`, \`ask_clarification\`, \`configure_ai_vault\` o \`pdf_generate\` únicamente cuando la petición requiera una tabla interactiva, tareas/recordatorios en XOOK, aclaración estructurada, configurar la bóveda o PDF.`;
   }
 
@@ -2770,9 +4300,13 @@ export async function runXoxAiChatStream(
         usage?: {
           prompt_tokens?: number;
           completion_tokens?: number;
+          cached_tokens?: number;
+          prompt_cache_hit_tokens?: number;
           total_tokens?: number;
           cost?: number;
+          estimated_cost_usd?: number;
         };
+        rate_limits?: Record<string, unknown>;
       }>("run_xox_chat_stream", {
         payload: {
           message: req.message,
@@ -2788,14 +4322,24 @@ export async function runXoxAiChatStream(
         },
       });
 
+      const cachedTok = res.usage?.cached_tokens ?? res.usage?.prompt_cache_hit_tokens ?? 0;
+      const estCost =
+        typeof res.usage?.estimated_cost_usd === "number"
+          ? res.usage.estimated_cost_usd
+          : typeof res.usage?.cost === "number"
+            ? res.usage.cost
+            : undefined;
       const usage = res.usage
         ? {
             promptTokens: res.usage.prompt_tokens ?? 0,
             completionTokens: res.usage.completion_tokens ?? 0,
+            cachedTokens: cachedTok > 0 ? cachedTok : undefined,
             totalTokens: res.usage.total_tokens ?? 0,
-            cost: typeof res.usage.cost === "number" ? res.usage.cost : undefined,
+            cost: typeof res.usage.cost === "number" ? res.usage.cost : estCost,
+            estimatedCostUsd: estCost,
           }
         : undefined;
+      const rateLimits = normalizeRateLimitsSnapshot(res.rate_limits) ?? undefined;
 
       const resCanvas = res.canvas ? sanitizeCanvasArtifact(res.canvas) ?? undefined : undefined;
       const safeCanvas = resCanvas && canvasHasCellData(resCanvas) ? resCanvas : undefined;
@@ -2841,6 +4385,7 @@ export async function runXoxAiChatStream(
         modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
         latencyMs: res.latency_ms ?? 0,
         usage,
+        rateLimits,
         workspaceMutated: Boolean(res.workspace_mutated),
         failoverNotice: res.failover_notice,
         exhaustedProviders: res.exhausted_providers,
@@ -2859,11 +4404,16 @@ export async function runXoxAiChatStream(
 
   // Fallback de streaming real para modo preview en navegador
   const vault = readBrowserVault();
-  if (!vault.apiKey) {
-    throw new Error("Falta configurar tu clave API de OpenRouter.");
+  const activeBrowserPid = normalizeProviderIdClient(req.providerOverride || vault.provider);
+  const activeBrowserSpec = AI_PROVIDERS[activeBrowserPid];
+  const activeSlot = vault.providers[activeBrowserPid];
+  const apiKey = normalizeApiKey(activeSlot?.apiKey ?? (activeBrowserPid === vault.provider ? vault.apiKey : null));
+  if (!apiKey) {
+    throw new Error(`Falta configurar tu clave API de ${activeBrowserSpec.name}.`);
   }
 
-  const chosenModel = req.modelOverride?.trim() || vault.modelId || "openrouter/free";
+  const chosenModel =
+    req.modelOverride?.trim() || activeSlot?.modelId || vault.modelId || activeBrowserSpec.defaultModelId;
   const contextNames = req.attachedContext.map((c) => c.name).filter(Boolean);
   const steps: ThinkingStep[] = [
     {
@@ -2901,6 +4451,7 @@ export async function runXoxAiChatStream(
   let replyText = "";
   let actualModel = chosenModel;
   let usageObj: XoxTokenUsage | undefined;
+  let browserRateLimits: ProviderRateLimitsSnapshot | null = null;
 
   const upsertStep = (id: string, label: string, status: "running" | "done") => {
     const idx = steps.findIndex((s) => s.id === id);
@@ -2941,9 +4492,7 @@ export async function runXoxAiChatStream(
     }
   };
 
-  const activeBrowserPid = normalizeProviderIdClient(req.providerOverride || vault.provider);
-  const activeBrowserSpec = AI_PROVIDERS[activeBrowserPid];
-  const apiKey = normalizeApiKey(vault.providers[activeBrowserPid]?.apiKey ?? vault.apiKey);
+  const activeBrowserBaseUrl = resolveProviderBaseUrlClient(activeBrowserPid, activeSlot?.apiRegion);
 
   const runBrowserStreamPass = async (
     reqMessages: Array<Record<string, unknown>>,
@@ -2977,11 +4526,13 @@ export async function runXoxAiChatStream(
         headers["HTTP-Referer"] = window.location.origin;
         headers["X-Title"] = "XOOK Enterprise Agentic Orchestrator";
       }
-      const attemptResp = await fetch(`${activeBrowserSpec.baseUrl}/chat/completions`, {
+      const attemptResp = await fetch(`${activeBrowserBaseUrl}/chat/completions`, {
         method: "POST",
         headers,
         body: JSON.stringify(reqBody),
       });
+      const parsedRl = parseBrowserRateLimitHeaders(attemptResp.headers, activeBrowserPid);
+      if (parsedRl) browserRateLimits = parsedRl;
       if (attemptResp.ok && attemptResp.body) {
         resp = attemptResp;
         break;
@@ -3030,6 +4581,8 @@ export async function runXoxAiChatStream(
             usage?: {
               prompt_tokens?: number;
               completion_tokens?: number;
+              prompt_cache_hit_tokens?: number;
+              prompt_tokens_details?: { cached_tokens?: number };
               total_tokens?: number;
               cost?: number;
             };
@@ -3052,11 +4605,21 @@ export async function runXoxAiChatStream(
             steps[1] = { ...steps[1], detail: actualModel };
           }
           if (evt.usage) {
+            const pt = evt.usage.prompt_tokens ?? 0;
+            const ct = evt.usage.completion_tokens ?? 0;
+            const cached =
+              evt.usage.prompt_cache_hit_tokens ?? evt.usage.prompt_tokens_details?.cached_tokens ?? 0;
+            const estCost =
+              typeof evt.usage.cost === "number"
+                ? evt.usage.cost
+                : estimateBrowserTurnCostUsd(activeBrowserPid, actualModel, pt, ct, cached);
             usageObj = {
-              promptTokens: evt.usage.prompt_tokens ?? 0,
-              completionTokens: evt.usage.completion_tokens ?? 0,
-              totalTokens: evt.usage.total_tokens ?? 0,
-              cost: typeof evt.usage.cost === "number" ? evt.usage.cost : undefined,
+              promptTokens: pt,
+              completionTokens: ct,
+              cachedTokens: cached > 0 ? cached : undefined,
+              totalTokens: evt.usage.total_tokens ?? pt + ct,
+              cost: estCost,
+              estimatedCostUsd: estCost,
             };
           }
           const delta = evt.choices?.[0]?.delta;
@@ -3266,6 +4829,13 @@ export async function runXoxAiChatStream(
       ? latencyMs
       : 0;
 
+  recordBrowserAiUsage({
+    provider: activeBrowserPid,
+    modelId: actualModel,
+    usage: usageObj,
+    rateLimits: browserRateLimits,
+  });
+
   return {
     reply: finalReply,
     reasoning: reasoningText.trim(),
@@ -3277,9 +4847,11 @@ export async function runXoxAiChatStream(
     canvas: canvasArtifact,
     clarification: clarificationSpec,
     vaultAction,
+    providerUsed: activeBrowserPid,
     modelUsed: actualModel,
     latencyMs,
     usage: usageObj,
+    rateLimits: browserRateLimits ?? undefined,
   };
 }
 
@@ -3329,7 +4901,7 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
       headers["HTTP-Referer"] = window.location.origin;
       headers["X-Title"] = "XOOK Enterprise Agentic Orchestrator";
     }
-    return fetch(`${spec.baseUrl}/chat/completions`, {
+    return fetch(`${resolveProviderBaseUrlClient(activePid, slot?.apiRegion)}/chat/completions`, {
       method: "POST",
       headers,
       body: JSON.stringify(payload),
@@ -3344,6 +4916,8 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
     }
   }
 
+  const browserRateLimits = parseBrowserRateLimitHeaders(resp.headers, activePid);
+
   const data = (await resp.json()) as {
     model?: string;
     choices?: Array<{
@@ -3355,6 +4929,8 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
     usage?: {
       prompt_tokens?: number;
       completion_tokens?: number;
+      prompt_cache_hit_tokens?: number;
+      prompt_tokens_details?: { cached_tokens?: number };
       total_tokens?: number;
       cost?: number;
     };
@@ -3397,6 +4973,33 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
           ? clarificationSpec.subtitle || clarificationSpec.title
           : "Listo, procesé tu consulta.");
 
+  const resolvedModel = data.model || chosenModel;
+  const pt = data.usage?.prompt_tokens ?? 0;
+  const ct = data.usage?.completion_tokens ?? 0;
+  const cached =
+    data.usage?.prompt_cache_hit_tokens ?? data.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+  const estCost =
+    typeof data.usage?.cost === "number"
+      ? data.usage.cost
+      : estimateBrowserTurnCostUsd(activePid, resolvedModel, pt, ct, cached);
+  const usageObj: XoxTokenUsage | undefined = data.usage
+    ? {
+        promptTokens: pt,
+        completionTokens: ct,
+        cachedTokens: cached > 0 ? cached : undefined,
+        totalTokens: data.usage.total_tokens ?? pt + ct,
+        cost: estCost,
+        estimatedCostUsd: estCost,
+      }
+    : undefined;
+
+  recordBrowserAiUsage({
+    provider: activePid,
+    modelId: resolvedModel,
+    usage: usageObj,
+    rateLimits: browserRateLimits,
+  });
+
   return {
     ...parsed,
     operation: clarificationSpec ? "ask_clarification" : parsed.operation,
@@ -3405,15 +5008,10 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
     clarification: clarificationSpec,
     vaultAction,
     xoxMood: canvasArtifact && parsed.xoxMood === "talking" ? "success" : parsed.xoxMood,
-    modelUsed: data.model || chosenModel,
+    providerUsed: activePid,
+    modelUsed: resolvedModel,
     latencyMs,
-    usage: data.usage
-      ? {
-          promptTokens: data.usage.prompt_tokens ?? 0,
-          completionTokens: data.usage.completion_tokens ?? 0,
-          totalTokens: data.usage.total_tokens ?? 0,
-          cost: typeof data.usage.cost === "number" ? data.usage.cost : undefined,
-        }
-      : undefined,
+    usage: usageObj,
+    rateLimits: browserRateLimits ?? undefined,
   };
 }

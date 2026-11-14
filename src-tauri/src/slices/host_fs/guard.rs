@@ -383,6 +383,59 @@ pub fn evaluate_host_fs_access(
 
     let inside_workspace = canonical_path == canonical_ws || canonical_path.starts_with(&canonical_ws);
     if inside_workspace {
+        if let Ok(rel) = canonical_path.strip_prefix(&canonical_ws) {
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let zone = crate::slices::workspace_manager::sandbox::zone_from_rel_path(rel);
+            let deny_reason: Option<(&str, String)> = if zone == crate::slices::workspace_manager::sandbox::WorkspaceZone::Meta {
+                Some((
+                    "workspace_meta_protected",
+                    "Bloqueado: `.xook` es interno y no puede accederse directamente.".to_string(),
+                ))
+            } else if op.is_write() {
+                if canonical_path == canonical_ws || zone.is_protected_system() {
+                    Some((
+                        "workspace_root_protected",
+                        "Bloqueado: no está permitido sobrescribir o crear archivos en la raíz del espacio de trabajo."
+                            .to_string(),
+                    ))
+                } else if zone.is_hitl_protected() {
+                    Some((
+                        "workspace_hitl_zone_protected",
+                        format!(
+                            "Bloqueado: `{rel_str}` pertenece a `{}` y solo puede modificarse mediante propuesta HITL o desde la app.",
+                            zone.as_str()
+                        ),
+                    ))
+                } else if let Some(kind) =
+                    crate::slices::workspace_manager::sandbox::is_protected_workspace_rel_path(rel)
+                {
+                    Some((
+                        "workspace_core_protected",
+                        format!(
+                            "Bloqueado: `{rel_str}` está protegido ({kind}) y no puede sobrescribirse directamente."
+                        ),
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some((rule_name, msg)) = deny_reason {
+                return Ok(HostFsEvaluation {
+                    verdict: PolicyVerdict::Deny(msg),
+                    canonical_path: canonical_path.clone(),
+                    inside_workspace: true,
+                    scope_dir: canonical_ws,
+                    scope_kind: op.scope_kind().to_string(),
+                    allow_always_allowed: false,
+                    risk_level: op.risk_level().to_string(),
+                    matched_rule: Some(rule_name.to_string()),
+                });
+            }
+        }
+
         return Ok(HostFsEvaluation {
             verdict: PolicyVerdict::Allow,
             canonical_path: canonical_path.clone(),
@@ -681,6 +734,52 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(res.verdict, PolicyVerdict::Deny(_)));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn inside_workspace_writes_block_hitl_and_protected_core_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "xook_guard_ws_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let ws = root.join("ws");
+        fs::create_dir_all(ws.join("empresa")).unwrap();
+        fs::create_dir_all(ws.join("memoria")).unwrap();
+        fs::create_dir_all(ws.join("agente/proyectos")).unwrap();
+        fs::write(ws.join("empresa/perfil.json"), "{}").unwrap();
+        fs::write(ws.join("memoria/decisiones.jsonl"), "").unwrap();
+
+        let blocked_perfil = evaluate_host_fs_access(
+            &ws,
+            None,
+            &ws.join("empresa/perfil.json").to_string_lossy(),
+            HostFsOperation::Write,
+        )
+        .unwrap();
+        assert!(matches!(blocked_perfil.verdict, PolicyVerdict::Deny(_)));
+
+        let blocked_decisions = evaluate_host_fs_access(
+            &ws,
+            None,
+            &ws.join("memoria/decisiones.jsonl").to_string_lossy(),
+            HostFsOperation::Edit,
+        )
+        .unwrap();
+        assert!(matches!(blocked_decisions.verdict, PolicyVerdict::Deny(_)));
+
+        let allowed_custom = evaluate_host_fs_access(
+            &ws,
+            None,
+            &ws.join("agente/proyectos/resumen.md").to_string_lossy(),
+            HostFsOperation::Write,
+        )
+        .unwrap();
+        assert_eq!(allowed_custom.verdict, PolicyVerdict::Allow);
 
         let _ = fs::remove_dir_all(&root);
     }

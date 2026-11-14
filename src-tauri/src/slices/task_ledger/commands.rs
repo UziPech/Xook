@@ -24,6 +24,7 @@ pub(crate) fn open_active_db<R: Runtime>(
     let (_, active) = ensure_active_workspace(app)?;
     let root = PathBuf::from(&active.root_path);
     let conn = open_workspace_db(&root)?;
+    let _ = super::inventory::heal_workspace_from_db(&conn, &root, chrono::Utc::now());
     Ok((active, root, conn))
 }
 

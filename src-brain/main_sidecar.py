@@ -239,6 +239,7 @@ def handle_rpc_request(request_line):
                 provider_credentials=params.get("provider_credentials"),
                 auto_failover=bool(params.get("auto_failover", True)),
                 failover_order=params.get("failover_order"),
+                provider_region=params.get("provider_region"),
             )
         elif method == "ai_chat_stream":
             stream_id = params.get("stream_id")
@@ -279,13 +280,18 @@ def handle_rpc_request(request_line):
                 provider_credentials=params.get("provider_credentials"),
                 auto_failover=bool(params.get("auto_failover", True)),
                 failover_order=params.get("failover_order"),
+                provider_region=params.get("provider_region"),
             )
         elif method == "test_ai_key":
             prov = str(params.get("provider") or "openrouter")
             if prov == "openrouter":
                 result = test_openrouter_key(params.get("api_key", ""))
             else:
-                result = test_provider_key(prov, params.get("api_key", ""))
+                result = test_provider_key(
+                    prov,
+                    params.get("api_key", ""),
+                    region=params.get("region"),
+                )
         elif method == "list_ai_models":
             prov = str(params.get("provider") or "openrouter")
             if prov == "openrouter":
@@ -298,6 +304,7 @@ def handle_rpc_request(request_line):
                     provider=prov,
                     api_key=params.get("api_key"),
                     free_only=bool(params.get("free_only", False)),
+                    region=params.get("region"),
                 )
         elif method == "record_feedback":
             result = register_user_feedback(params.get("feedback", {}))

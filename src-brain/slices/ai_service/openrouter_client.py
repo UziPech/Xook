@@ -8,6 +8,7 @@ import http.client
 import json
 import re
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -16,9 +17,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from slices.agent_tools import AGENT_TOOL_DEFS, WorkspaceToolExecutor
+from slices.agent_tools.skills_hub import index_workspace_skills
 from slices.ai_service.anthropic_adapter import (
     ANTHROPIC_BASE_URL,
     anthropic_chat_completion,
+    consume_last_anthropic_rate_limits,
     iter_anthropic_sse_as_openai_events,
     open_anthropic_stream,
 )
@@ -33,11 +36,15 @@ from slices.ai_service.provider_registry import (
     classify_provider_error,
     clear_provider_cooldown,
     enrich_model_with_tariffs,
+    estimate_turn_cost_usd,
     get_provider_spec,
     mark_provider_cooldown,
     normalize_provider_api_key,
     normalize_provider_id,
     order_provider_failover_chain,
+    parse_gemini_quota_error,
+    parse_rate_limit_headers,
+    resolve_provider_base_url,
     select_equivalent_model_for_provider,
 )
 from slices.task_ui.schemas import (
@@ -649,6 +656,122 @@ def _extract_http_error_detail(err: urllib.error.HTTPError) -> str:
     return f"HTTP {err.code}: {detail}"
 
 
+_HTTP_TLS = threading.local()
+
+
+def _store_http_rate_limits(provider: str, headers_map: Any) -> Optional[Dict[str, Any]]:
+    pid = normalize_provider_id(provider)
+    parsed = parse_rate_limit_headers(pid, headers_map) if headers_map is not None else None
+    bucket = getattr(_HTTP_TLS, "rate_limits_by_provider", None)
+    if bucket is None:
+        bucket = {}
+        _HTTP_TLS.rate_limits_by_provider = bucket
+    if parsed is not None:
+        bucket[pid] = parsed
+    else:
+        bucket.pop(pid, None)
+    return parsed
+
+
+def _consume_http_rate_limits(provider: str) -> Optional[Dict[str, Any]]:
+    pid = normalize_provider_id(provider)
+    if pid == "anthropic":
+        ant = consume_last_anthropic_rate_limits()
+        if ant is not None:
+            return ant
+    bucket = getattr(_HTTP_TLS, "rate_limits_by_provider", None)
+    if isinstance(bucket, dict):
+        return bucket.pop(pid, None)
+    return None
+
+
+def _merge_rate_limits(
+    base: Optional[Dict[str, Any]],
+    incoming: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not incoming:
+        return base
+    if not base:
+        return dict(incoming)
+    merged = dict(base)
+    for k, v in incoming.items():
+        if v is not None:
+            merged[k] = v
+    return merged
+
+
+def _extract_cached_tokens(usage_raw: Optional[Dict[str, Any]]) -> int:
+    if not isinstance(usage_raw, dict):
+        return 0
+    direct = (
+        usage_raw.get("cached_tokens")
+        or usage_raw.get("prompt_cache_hit_tokens")
+        or usage_raw.get("cache_read_input_tokens")
+    )
+    if direct is not None:
+        try:
+            return max(0, int(direct))
+        except Exception:
+            pass
+    details = usage_raw.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        try:
+            return max(0, int(details.get("cached_tokens") or 0))
+        except Exception:
+            pass
+    return 0
+
+
+def _accumulate_usage(acc: Dict[str, Any], delta_usage: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(delta_usage, dict) or not delta_usage:
+        return acc
+    delta_p = int(delta_usage.get("prompt_tokens") or delta_usage.get("input_tokens") or 0)
+    delta_c = int(delta_usage.get("completion_tokens") or delta_usage.get("output_tokens") or 0)
+    delta_t = int(delta_usage.get("total_tokens") or (delta_p + delta_c))
+    p_tok = int(acc.get("prompt_tokens") or 0) + delta_p
+    c_tok = int(acc.get("completion_tokens") or 0) + delta_c
+    t_tok = max(int(acc.get("total_tokens") or 0) + delta_t, p_tok + c_tok)
+    cached_tok = _extract_cached_tokens(acc) + _extract_cached_tokens(delta_usage)
+    out: Dict[str, Any] = {
+        "prompt_tokens": p_tok,
+        "completion_tokens": c_tok,
+        "total_tokens": t_tok,
+    }
+    if cached_tok > 0:
+        out["cached_tokens"] = cached_tok
+        out["prompt_tokens_details"] = {"cached_tokens": cached_tok}
+    prev_cost = acc.get("cost")
+    delta_cost = delta_usage.get("cost")
+    if prev_cost is not None or delta_cost is not None:
+        try:
+            out["cost"] = round(float(prev_cost or 0.0) + float(delta_cost or 0.0), 8)
+        except Exception:
+            pass
+    return out
+
+
+def _finalize_turn_usage(provider: str, model_id: str, usage_raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(usage_raw, dict) or not usage_raw:
+        return {}
+    out = dict(usage_raw)
+    cached_tok = _extract_cached_tokens(out)
+    if cached_tok > 0:
+        out["cached_tokens"] = cached_tok
+    est = estimate_turn_cost_usd(provider, model_id, out)
+    if est is not None:
+        out["estimated_cost_usd"] = est
+    return out
+
+
+def _clear_http_rate_limits(provider: str) -> None:
+    pid = normalize_provider_id(provider)
+    if pid == "anthropic":
+        consume_last_anthropic_rate_limits()
+    bucket = getattr(_HTTP_TLS, "rate_limits_by_provider", None)
+    if isinstance(bucket, dict):
+        bucket.pop(pid, None)
+
+
 def _http_json(
     url: str,
     method: str = "GET",
@@ -656,15 +779,18 @@ def _http_json(
     payload: Optional[Dict[str, Any]] = None,
     timeout: int = 45,
 ) -> Dict[str, Any]:
+    _clear_http_rate_limits("openrouter")
     headers = _build_headers(api_key, provider="openrouter")
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
+            _store_http_rate_limits("openrouter", getattr(resp, "headers", None))
             raw = resp.read().decode("utf-8")
             return json.loads(raw)
     except urllib.error.HTTPError as err:
+        _store_http_rate_limits("openrouter", getattr(err, "headers", None))
         raise RuntimeError(_extract_http_error_detail(err)) from err
     except urllib.error.URLError as err:
         raise RuntimeError(f"Error de red al conectar con OpenRouter: {err.reason}") from err
@@ -681,6 +807,7 @@ def _provider_http_json(
     pid = normalize_provider_id(provider)
     if pid == "openrouter":
         return _http_json(url, method=method, api_key=api_key, payload=payload, timeout=timeout)
+    _clear_http_rate_limits(pid)
     spec = get_provider_spec(pid)
     headers = _build_headers(api_key, provider=pid)
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -688,9 +815,11 @@ def _provider_http_json(
 
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
+            _store_http_rate_limits(pid, getattr(resp, "headers", None))
             raw = resp.read().decode("utf-8")
             return json.loads(raw)
     except urllib.error.HTTPError as err:
+        _store_http_rate_limits(pid, getattr(err, "headers", None))
         raise RuntimeError(_extract_http_error_detail(err)) from err
     except urllib.error.URLError as err:
         raise RuntimeError(f"Error de red al conectar con {spec['name']}: {err.reason}") from err
@@ -791,6 +920,7 @@ def test_openrouter_key(api_key: str) -> Dict[str, Any]:
 
     try:
         res = _http_json(f"{OPENROUTER_BASE_URL}/key", method="GET", api_key=key, timeout=15)
+        header_limits = _consume_http_rate_limits("openrouter")
         data = res.get("data", res)
         is_free_tier = bool(data.get("is_free_tier", False))
         limit_val = data.get("limit")
@@ -801,6 +931,7 @@ def test_openrouter_key(api_key: str) -> Dict[str, Any]:
         credits_remaining: Optional[float] = None
         try:
             cred_res = _http_json(f"{OPENROUTER_BASE_URL}/credits", method="GET", api_key=key, timeout=8)
+            header_limits = _merge_rate_limits(header_limits, _consume_http_rate_limits("openrouter"))
             cred_data = cred_res.get("data", cred_res)
             if isinstance(cred_data.get("total_credits"), (int, float)):
                 credits_total = float(cred_data["total_credits"])
@@ -819,7 +950,7 @@ def test_openrouter_key(api_key: str) -> Dict[str, Any]:
             can_use_paid = not is_free_tier
 
         clear_provider_cooldown("openrouter")
-        return {
+        out: Dict[str, Any] = {
             "ok": True,
             "provider": "openrouter",
             "label": data.get("label") or "OpenRouter",
@@ -834,65 +965,157 @@ def test_openrouter_key(api_key: str) -> Dict[str, Any]:
             "credits_total": credits_total,
             "credits_usage": credits_usage,
             "credits_remaining": credits_remaining,
+            "balance_usd": credits_remaining,
+            "balance_currency": "USD" if credits_remaining is not None else None,
+            "balance_raw": credits_remaining,
             "can_use_paid_models": can_use_paid,
             "daily_free_limit": 50 if is_free_tier else 1000,
             "rpm_free_limit": 20,
+            "rate_limit_source": "api_balance",
             "message": "Conexión verificada con OpenRouter.",
         }
+        if header_limits:
+            out["rate_limits"] = header_limits
+        return out
     except Exception as exc:
-        return {
+        err_limits = _consume_http_rate_limits("openrouter")
+        out_err: Dict[str, Any] = {
             "ok": False,
             "provider": "openrouter",
             "message": _friendly_http_error(RuntimeError(str(exc)), "openrouter").args[0],
         }
+        if err_limits:
+            out_err["rate_limits"] = err_limits
+        return out_err
 
 
-def test_provider_key(provider: str, api_key: str) -> Dict[str, Any]:
-    """Verifica credenciales de cualquiera de los 6 proveedores soportados y consulta saldo cuando existe API."""
+def test_provider_key(provider: str, api_key: str, region: Optional[str] = None) -> Dict[str, Any]:
+    """Verifica credenciales de los proveedores soportados y consulta saldo/headers reales cuando existe API."""
     pid = normalize_provider_id(provider)
     if pid == "openrouter":
         return test_openrouter_key(api_key)
 
     key = _normalize_api_key(api_key)
     spec = get_provider_spec(pid)
+    base_url = resolve_provider_base_url(pid, region)
     if not key:
         return {"ok": False, "provider": pid, "message": f"No hay una clave API configurada para {spec['name']}."}
 
     try:
-        res = _provider_http_json(pid, f"{spec['base_url']}/models", method="GET", api_key=key, timeout=15)
+        res = _provider_http_json(pid, f"{base_url}/models", method="GET", api_key=key, timeout=15)
+        header_limits = _consume_http_rate_limits(pid)
         model_count = len(res.get("data") or [])
         credits_remaining: Optional[float] = None
+        balance_usd: Optional[float] = None
+        balance_currency: Optional[str] = None
+        balance_raw: Optional[float] = None
+        balance_granted: Optional[float] = None
+        balance_topped_up: Optional[float] = None
+        balance_available: Optional[bool] = None
         can_use_paid = True
         is_free_tier = pid in ("groq", "gemini")
 
         if pid == "deepseek":
             try:
-                bal = _provider_http_json(pid, f"{spec['base_url']}/user/balance", method="GET", api_key=key, timeout=8)
+                bal = _provider_http_json(pid, f"{base_url}/user/balance", method="GET", api_key=key, timeout=8)
+                header_limits = _merge_rate_limits(header_limits, _consume_http_rate_limits(pid))
                 infos = bal.get("balance_infos") or []
-                total_usd = 0.0
+                usd_total = 0.0
+                usd_granted = 0.0
+                usd_topped = 0.0
+                has_usd = False
+                other_curr: Optional[str] = None
+                other_total = 0.0
+                other_granted = 0.0
+                other_topped = 0.0
                 for info in infos:
-                    if isinstance(info, dict) and str(info.get("currency") or "USD").upper() == "USD":
-                        total_usd += float(info.get("total_balance") or 0.0)
+                    if not isinstance(info, dict):
+                        continue
+                    curr = str(info.get("currency") or "USD").upper()
+                    tot = float(info.get("total_balance") or 0.0)
+                    gr = float(info.get("granted_balance") or 0.0)
+                    top = float(info.get("topped_up_balance") or 0.0)
+                    if curr == "USD":
+                        has_usd = True
+                        usd_total += tot
+                        usd_granted += gr
+                        usd_topped += top
+                    elif other_curr is None or curr == other_curr:
+                        other_curr = curr
+                        other_total += tot
+                        other_granted += gr
+                        other_topped += top
                 if infos:
-                    credits_remaining = round(total_usd, 6)
-                    can_use_paid = bool(bal.get("is_available", True)) and total_usd >= 0
+                    balance_available = bool(bal.get("is_available", True))
+                    if has_usd and (usd_total > 0 or not other_curr or other_total <= 0):
+                        balance_currency = "USD"
+                        balance_raw = round(usd_total, 6)
+                        balance_usd = balance_raw
+                        credits_remaining = balance_usd
+                        balance_granted = round(usd_granted, 6)
+                        balance_topped_up = round(usd_topped, 6)
+                    elif other_curr:
+                        balance_currency = other_curr
+                        balance_raw = round(other_total, 6)
+                        balance_granted = round(other_granted, 6)
+                        balance_topped_up = round(other_topped, 6)
+                    can_use_paid = balance_available and (usd_total > 0 or other_total > 0)
+            except Exception:
+                pass
+        elif pid == "kimi":
+            try:
+                bal = _provider_http_json(pid, f"{base_url}/users/me/balance", method="GET", api_key=key, timeout=8)
+                header_limits = _merge_rate_limits(header_limits, _consume_http_rate_limits(pid))
+                bal_data = bal.get("data") if isinstance(bal.get("data"), dict) else bal
+                if isinstance(bal_data, dict) and any(
+                    k in bal_data for k in ("available_balance", "cash_balance", "voucher_balance")
+                ):
+                    avail = float(bal_data.get("available_balance") or 0.0)
+                    voucher = float(bal_data.get("voucher_balance") or 0.0)
+                    cash = float(bal_data.get("cash_balance") or 0.0)
+                    balance_currency = "CNY" if "moonshot.cn" in base_url.lower() else "USD"
+                    balance_raw = round(avail, 6)
+                    if balance_currency == "USD":
+                        balance_usd = balance_raw
+                        credits_remaining = balance_usd
+                    balance_granted = round(voucher, 6)
+                    balance_topped_up = round(cash, 6)
+                    balance_available = bool(bal.get("status", True)) and avail > 0
+                    can_use_paid = balance_available
             except Exception:
                 pass
 
         clear_provider_cooldown(pid)
+        rate_limit_source = (
+            "api_balance"
+            if (balance_raw is not None or credits_remaining is not None)
+            else ("api_headers" if header_limits else ("reference_tier" if pid in ("groq", "gemini") else "none"))
+        )
         out: Dict[str, Any] = {
             "ok": True,
             "provider": pid,
             "label": spec["name"],
+            "base_url": base_url,
             "is_free_tier": is_free_tier,
             "credits_remaining": credits_remaining,
+            "balance_usd": balance_usd,
+            "balance_currency": balance_currency,
+            "balance_raw": balance_raw,
+            "balance_granted": balance_granted,
+            "balance_topped_up": balance_topped_up,
+            "balance_available": balance_available,
             "can_use_paid_models": can_use_paid,
+            "rate_limit_source": rate_limit_source,
             "message": (
                 f"Conexión verificada con {spec['name']} ({model_count} modelos)."
                 if model_count
                 else f"Conexión verificada con {spec['name']}."
             ),
         }
+        if header_limits:
+            out["rate_limits"] = header_limits
+            if header_limits.get("rpm_limit") is not None:
+                out["rpm_limit"] = header_limits["rpm_limit"]
         if pid == "groq":
             out["rpm_free_limit"] = 30
         elif pid == "gemini":
@@ -900,13 +1123,27 @@ def test_provider_key(provider: str, api_key: str) -> Dict[str, Any]:
             out["daily_free_limit"] = 1000
         return out
     except Exception as exc:
-        info = classify_provider_error(str(exc), pid)
-        return {
+        err_limits = _consume_http_rate_limits(pid)
+        info = classify_provider_error(
+            str(exc),
+            pid,
+            retry_after_sec=(err_limits or {}).get("retry_after_sec"),
+        )
+        msg = info["friendly_message"]
+        if pid == "kimi" and info["kind"] == "auth_error" and "moonshot.ai" in base_url.lower():
+            msg = f"{msg} Si tu cuenta es de Moonshot China (.cn), cambia la región a moonshot.cn."
+        out_err: Dict[str, Any] = {
             "ok": False,
             "provider": pid,
+            "base_url": base_url,
             "error_kind": info["kind"],
-            "message": info["friendly_message"],
+            "message": msg,
         }
+        if err_limits:
+            out_err["rate_limits"] = err_limits
+        if info.get("quota_detail"):
+            out_err["quota_detail"] = info["quota_detail"]
+        return out_err
 
 
 def list_openrouter_models(api_key: Optional[str] = None, free_only: bool = False) -> Dict[str, Any]:
@@ -948,6 +1185,7 @@ def list_provider_models(
     provider: str = "openrouter",
     api_key: Optional[str] = None,
     free_only: bool = False,
+    region: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Lista modelos disponibles y tarifas para cualquier proveedor configurado."""
     pid = normalize_provider_id(provider)
@@ -955,6 +1193,7 @@ def list_provider_models(
         return list_openrouter_models(api_key=api_key, free_only=free_only)
 
     spec = get_provider_spec(pid)
+    base_url = resolve_provider_base_url(pid, region)
     curated = [enrich_model_with_tariffs(pid, m) for m in spec["default_models"]]
     clean_key = _normalize_api_key(api_key)
     if not clean_key:
@@ -966,7 +1205,7 @@ def list_provider_models(
         }
 
     try:
-        res = _provider_http_json(pid, f"{spec['base_url']}/models", method="GET", api_key=clean_key, timeout=15)
+        res = _provider_http_json(pid, f"{base_url}/models", method="GET", api_key=clean_key, timeout=15)
         raw_models = res.get("data") or []
         by_id: Dict[str, Dict[str, Any]] = {}
         for m in raw_models:
@@ -1052,6 +1291,39 @@ def _current_local_datetime_label() -> str:
     )
 
 
+_INVENTORY_TRIGGER_RE = re.compile(
+    r"\b(inventario|stock|reponer|reposici[oó]n|orden\s+de\s+compra|abastec\w*|punto\s+de\s+reorden|"
+    r"merma|caducidad|almac[eé]n|bodega|sku|existencias|proveedores?)\b",
+    re.IGNORECASE,
+)
+
+
+def _should_enable_inventory_skill(
+    workspace_root: Optional[Path],
+    profile: Dict[str, Any],
+    user_message: str,
+    attached_context: List[Dict[str, Any]],
+) -> bool:
+    domain_type = str(profile.get("domain_type") or "").strip().lower()
+    active_role = str(profile.get("active_role") or "").strip().lower()
+    if any(k in active_role for k in ("inventario", "abastec", "almac")):
+        return True
+    combined_parts = [user_message or ""]
+    for item in attached_context or []:
+        if isinstance(item, dict):
+            combined_parts.append(str(item.get("name") or ""))
+            combined_parts.append(str(item.get("path") or ""))
+    if _INVENTORY_TRIGGER_RE.search(" ".join(combined_parts)):
+        return True
+    if workspace_root is not None and workspace_root.is_dir():
+        datos_dir = workspace_root / "datos"
+        if datos_dir.is_dir():
+            for csv_file in datos_dir.glob("*.csv"):
+                if csv_file.is_file() and csv_file.stat().st_size > 0:
+                    return True
+    return False
+
+
 def _build_system_prompt(
     context_dir: Path,
     skills_dir: Path,
@@ -1063,6 +1335,7 @@ def _build_system_prompt(
     active_canvas: Optional[Dict[str, Any]] = None,
     workspace_root: Optional[Path] = None,
     unified_memory: Optional[Dict[str, Any]] = None,
+    user_message: str = "",
 ) -> str:
     ws_active = workspace_root is not None and workspace_root.is_dir()
     unified_facts = unified_memory.get("facts") if isinstance(unified_memory, dict) else None
@@ -1090,14 +1363,54 @@ def _build_system_prompt(
         else:
             facts_text = hechos_path.read_text(encoding="utf-8", errors="replace")[:5500] if hechos_path.is_file() else ""
         ws_tree = _summarize_workspace_tree(workspace_root)
+        roles_path = workspace_root / "empresa" / "roles.md"
+        roles_md_text = roles_path.read_text(encoding="utf-8", errors="replace").strip()[:1200] if roles_path.is_file() else ""
     else:
         profile = _load_json_safe(context_dir / "business-profiles" / "store-profile.json")
         memory = _load_json_safe(context_dir / "memory" / "memory_store.json")
         facts_text = ""
         ws_tree = []
+        roles_md_text = ""
 
+    domain_type = str(profile.get("domain_type") or "general").strip() or "general"
+    domain_label = str(profile.get("domain_label") or "").strip()
+    active_role = str(profile.get("active_role") or "Asistente Co-Constructor").strip()
+    mission = str(profile.get("mission") or "").strip()
+    defined_roles = profile.get("roles") if isinstance(profile.get("roles"), list) else []
+
+    inventory_enabled = _should_enable_inventory_skill(workspace_root, profile, user_message, attached_context)
     skill_md_path = skills_dir / "inventory-advisor" / "SKILL.md"
-    skill_text = skill_md_path.read_text(encoding="utf-8") if skill_md_path.exists() else ""
+    skill_text = skill_md_path.read_text(encoding="utf-8") if (inventory_enabled and skill_md_path.exists()) else ""
+
+    if ws_active and workspace_root is not None:
+        skills_bundle = index_workspace_skills(
+            workspace_root,
+            built_in_skills_dir=skills_dir,
+            active_role=active_role,
+        )
+    else:
+        skills_bundle = {"skills": [], "user_profile": {"compact_prompt": ""}}
+    user_pref_compact = str(skills_bundle.get("user_profile", {}).get("compact_prompt") or "").strip()
+    indexed_skills = skills_bundle.get("skills") or []
+
+    skills_index_lines: List[str] = []
+    active_skills_bodies: List[str] = []
+    msg_low = (user_message or "").lower()
+    for sk in indexed_skills[:20]:
+        sk_slug = str(sk.get("slug") or "")
+        sk_name = str(sk.get("name") or sk_slug)
+        sk_desc = str(sk.get("description") or "")
+        sk_role = str(sk.get("role") or "")
+        sk_rel = str(sk.get("rel_path") or "")
+        if sk_slug == "inventory-advisor" and not inventory_enabled:
+            skills_index_lines.append(f"- `{sk_slug}` ({sk_rel}): [bajo demanda para inventario/compras] {sk_desc}")
+            continue
+        role_tag = f" | Rol: {sk_role}" if sk_role else ""
+        skills_index_lines.append(f"- `{sk_name}` (`{sk_rel}`{role_tag}): {sk_desc}")
+        if (sk.get("active_match") or (sk_slug and sk_slug in msg_low)) and sk.get("body"):
+            active_skills_bodies.append(f"### Habilidad activa: {sk_name}\n{sk['body']}")
+    if skill_text:
+        active_skills_bodies.append(f"### Habilidad condicional activa: inventory-advisor\n{skill_text[:1400]}")
 
     compact_tasks = [
         {
@@ -1207,6 +1520,7 @@ Antes de pedir aclaraciones, ANALIZA lo que el usuario ya dijo y lo que hay en A
         output_rules = f"""ESTILO DE RESPUESTA Y HERRAMIENTAS DE XOOK:
 Responde directamente al usuario en español (o en el idioma que pida) usando Markdown natural y limpio, con plena libertad expresiva para escribir todo lo que necesites y elegir el tono, estructura, encabezados, listas, tablas Markdown, código o extensión que mejor ayuden al usuario.
 - NUNCA envuelvas tu respuesta en etiquetas XML o pseudo-HTML como `<respuesta>`, `<analisis>`, `<posta>`, `<reply>`, `<canvas>` o `<acciones>`. Escribe texto directo y humano.
+- Cuando escribas código, consultas, configuraciones o diagramas en CUALQUIER lenguaje o formato (Python, C#, C++, TypeScript, TSX, Rust, Go, Java, Kotlin, Swift, SQL, HTML, CSS, Bash, PowerShell, Terraform/HCL, Solidity, Zig, Prisma, Dockerfile, YAML, JSON, LaTeX, Mermaid, etc.), usa SIEMPRE bloques Markdown con el identificador exacto del lenguaje tras ```` ``` ```` (por ejemplo, ```` ```csharp ````, ```` ```python ````, ```` ```tsx ````, ```` ```sql ````, ```` ```hcl ````, ```` ```dockerfile ````) y opcionalmente el nombre del archivo si aporta claridad (por ejemplo, ```` ```csharp CuentaBancaria.cs ````). Si el bloque contiene ```` ``` ```` internos, envuélvelo con cuatro comillas invertidas (````` ```` `````). Presenta código idiomático, completo y bien indentado.
 - Usa las herramientas nativas de XOOK solo cuando realmente aplique:
   * `propose_tasks`: cuando el usuario pida analizar stock con plan accionable, agendar tareas operativas, crear cronómetros/temporizadores o recordatorios internos de XOOK (`operation`: `"add_tasks"` o `"replace_tasks"`).
   * `ask_clarification`: si faltan datos críticos en una petición operativa ambigua y conviene preguntar con opciones interactivas.
@@ -1255,9 +1569,17 @@ HECHOS REGISTRADOS EN memoria/hechos.md:
 HERRAMIENTAS DEL ESPACIO DE TRABAJO Y EQUIPO DEL USUARIO (OBLIGATORIO CUANDO OPERES SOBRE ARCHIVOS O CARPETAS):
 - Puedes usar `workspace_list`, `workspace_read`, `workspace_search` y `pdf_read` tanto en rutas relativas del workspace (`empresa/`, `datos/`, `memoria/`, `habilidades/`, `agente/`) como en rutas explícitas del equipo del usuario (`~/Desktop`, `~/Downloads`, `~/Documents`, `$HOME/...`, `/...`, `C:\\...`). Cuando salgas del workspace, el Guardián pedirá autorización explícita al usuario si esa carpeta aún no tiene permiso.
 - Para crear o editar archivos:
-  * Dentro de `agente/` o `memoria/`: usa `workspace_mkdir`, `workspace_write_file`, `workspace_edit_file` y `memory_record_fact` (y `memory_search` para recordar hechos sin truncado).
-  * Dentro de `empresa/`, `datos/` o `habilidades/`: usa `propose_company_file_edit` (o `workspace_edit_file`, que prepara tarjeta HITL automáticamente).
+  * Dentro de `agente/` o `memoria/`: usa `workspace_mkdir`, `workspace_write_file`, `workspace_edit_file` y `memory_record_fact` (y `memory_search` para recordar hechos sin truncado). Nunca dejes en blanco ni intentes sobrescribir `memoria/decisiones.jsonl` o `memoria/patrones.json`.
+  * Dentro de `empresa/`, `datos/` o `habilidades/`: puedes actualizar configuraciones del proyecto o negocio (por ejemplo definir `domain_type`, `active_role`, `roles` o `mission` en `empresa/perfil.json`, crear `empresa/roles.md`, actualizar `empresa/proveedores.json` o reglas en `empresa/reglas/`) usando `propose_company_file_edit` (o `workspace_edit_file`), o usa **`propose_workspace_blueprint`** cuando estés co-construyendo o reestructurando varios archivos de `empresa/` y `datos/` en una sola tarjeta HITL.
+  * APRENDIZAJE, PREFERENCIAS DEL USUARIO Y SKILLS OFICIALES (`habilidades/`):
+    - `update_user_preferences`: guarda gustos/estilo, flujo de trabajo preferido y límites de "qué NO hacer" en `habilidades/perfil-usuario.md`.
+    - `learn_skill`: destila y guarda en `habilidades/<slug>/SKILL.md` nuevas habilidades, roles o procesos aprendidos directamente del usuario (validados por seguridad).
+    - `discover_official_skills` e `install_official_skill`: busca capacidades en `skills.sh` filtrando ESTRICTAMENTE a publicadores oficiales verificados (`anthropics`, `vercel-labs`, `google`, `google-gemini`, `modelcontextprotocol`, `agentskills`, `openai`, etc.) y las guarda tras pasar escaneo anti-inyección en `habilidades/<slug>/SKILL.md`.
   * Fuera del workspace (`~/...`, `/...`, `C:\\...`): usa `workspace_edit_file`, `workspace_write_file` o `workspace_mkdir` pasando la ruta explícita; el Guardián mostrará vista previa y pedirá confirmación al usuario.
+- PROTECCIÓN DE ESTRUCTURA Y LIMPIEZA SEGURA (`propose_delete_path`):
+  * JAMÁS propongas eliminar, mover ni "limpiar" carpetas estructurales del workspace (`empresa/`, `empresa/reglas/`, `datos/`, `datos/ventas/`, `datos/documentos/`, `memoria/`, `memoria/diario/`, `habilidades/`, `agente/`, `agente/adjuntos/`, `agente/proyectos/`, `agente/borradores/`, `agente/reportes/`, `agente/revisiones/`, `agente/ordenes/`, `agente/logs/`), aunque estén vacías: son ranuras base de XOOK.
+  * JAMÁS propongas eliminar archivos núcleo (`empresa/perfil.json`, `empresa/proveedores.json`, `empresa/reglas/operacion.md`, `memoria/hechos.md`, `memoria/decisiones.jsonl`, `memoria/patrones.json`, `habilidades/perfil-usuario.md`, `agente/notas-xox.md`), incluso si `proveedores.json` aún tiene lista vacía `[]`.
+  * Tampoco propongas borrar archivos ocultos del sistema (`.DS_Store`), borradores `.draft` de propuestas pendientes ni órdenes o recibos en `agente/ordenes/` vinculados al historial de auditoría. Usa `propose_delete_path` únicamente para archivos de usuario realmente obsoletos o redundantes fuera de esas categorías protegidas.
 - LECTURA DE PANTALLA EN TIEMPO REAL (`read_screen_now` y `query_screen_memory`):
   * Cuando el usuario pida leer, ver, describir o analizar su pantalla o ventana actual (ej. "lee la pantalla", "qué ves", "mira esto", "qué dice aquí", "ayúdame con lo que tengo abierto"), invoca DE INMEDIATO `read_screen_now` (y usa `query_screen_memory` si pregunta por algo visto hace unos minutos).
   * PROHIBIDO usar `run_workspace_command` (`identify`, `screencapture`, `open`, etc.) para intentar leer la pantalla.
@@ -1288,25 +1610,54 @@ HERRAMIENTAS DEL ESPACIO DE TRABAJO Y EQUIPO DEL USUARIO (OBLIGATORIO CUANDO OPE
             + unified_screen_summary
         )
 
+    domain_block_lines = [
+        f"- Ámbito (`domain_type`): {domain_type}" + (f" ({domain_label})" if domain_label else ""),
+        f"- Rol activo (`active_role`): {active_role}",
+    ]
+    if mission:
+        domain_block_lines.append(f"- Misión / enfoque: {mission}")
+    if defined_roles:
+        domain_block_lines.append(f"- Roles definidos: {json.dumps(defined_roles, ensure_ascii=False)}")
+    if roles_md_text:
+        domain_block_lines.append(f"- Definición en `empresa/roles.md`:\n{roles_md_text}")
+    domain_ctx_section = "\n".join(domain_block_lines)
+
+    user_pref_section = ""
+    if user_pref_compact:
+        user_pref_section = (
+            "\n\nESPACIO DEL USUARIO (Gustos, Flujo de Trabajo y Qué NO Hacer — `habilidades/perfil-usuario.md`):\n"
+            + user_pref_compact
+        )
+
+    skills_index_section = ""
+    if skills_index_lines:
+        skills_index_section = (
+            "\n\nÍNDICE DE HABILIDADES DISPONIBLES (`habilidades/` — usa `workspace_read` si necesitas el detalle de otra skill):\n"
+            + "\n".join(skills_index_lines)
+        )
+    if active_skills_bodies:
+        skills_index_section += "\n\nHABILIDADES ACTIVAS EN ESTE TURNO:\n" + "\n\n".join(active_skills_bodies)
+
     # Orden optimizado para Prompt Caching / Disk KV Cache (prefijo estático al inicio, contexto volátil al final)
-    return f"""Eres Xox, el asistente inteligente y copiloto operativo de XOOK (Enterprise Agentic Orchestrator).
-Hablas SIEMPRE en español claro, humano, directo y útil.
-Puedes responder con naturalidad cualquier consulta general (hora y fecha actual, cálculos, conocimiento general, tecnología, redacción, dudas cotidianas) además de ayudar con la operación del negocio, inventario, agenda, temporizadores y tareas.
+    return f"""Eres Xox, el agente inteligente y co-constructor operativo de propósito múltiple de XOOK.
+Hablas SIEMPRE en español claro, humano, directo y útil (o en el idioma que pida el usuario).
+Puedes operar en cualquier ámbito — negocio/empresa, ingeniería de software, investigación/estudio, productividad personal o proyectos creativos — adaptando tu rol, tono y herramientas al objetivo real del usuario en lugar de asumir un giro fijo.
 
 {output_rules}
 
 REGLAS CRÍTICAS:
 - Tienes plena libertad expresiva y de formato: adapta el tono, la estructura, la extensión y el nivel de detalle a lo que pida el usuario, sin envolver el texto en etiquetas XML.
-- Si el usuario hace una pregunta general o cotidiana (ej. "¿qué hora es?", "¿qué día es hoy?", análisis de imágenes, dudas técnicas, matemáticas, redacción, charla o conocimiento general), respóndele directa y útilmente usando tu conocimiento y la fecha/hora local abajo, sin forzar temas de inventario ni crear tareas innecesarias.
-- Nunca inventes ventas, stock ni pagos: usa archivos reales del workspace o señala claramente si falta cargar inventario.
-- Si es una pregunta conversacional simple sobre el negocio (ej. "¿cómo ves el stock?", "¿por qué 20 unidades?"), responde en conversación normal sin generar tarjetas.
-- Si el usuario pide crear una tarea operativa del negocio dentro de XOOK, reloj/temporizador, o recordatorio explícitamente interno de XOOK, usa `propose_tasks` (o `"tasks"` en modo JSON); si pide crear una nota o evento/agenda en las apps Notas o Calendario de su Mac, usa directamente las herramientas `os_create_note` / `os_create_calendar_event`.
+- CO-CONSTRUCCIÓN Y ADAPTACIÓN DE ROL: Si el usuario quiere construir un proyecto, empresa, flujo técnico o sistema desde cero o cambiar de enfoque, colabora con él proponiendo roles, reglas o estructura real mediante `propose_workspace_blueprint` o `propose_company_file_edit`, y aprende su forma de trabajar con `learn_skill` y `update_user_preferences`.
+- Si el usuario hace una pregunta general o cotidiana (ej. "¿qué hora es?", "¿qué día es hoy?", análisis de imágenes, dudas técnicas, matemáticas, redacción, charla o conocimiento general), respóndele directa y útilmente usando tu conocimiento y la fecha/hora local abajo, sin forzar temas de negocio/inventario ni crear tareas innecesarias.
+- Nunca inventes datos, ventas, stock, métricas ni resultados: usa archivos reales del workspace o señala claramente qué falta por definir o cargar.
+- Si es una pregunta conversacional simple sobre el proyecto o negocio, responde en conversación normal sin generar tarjetas.
+- Si el usuario pide crear una tarea operativa dentro de XOOK, reloj/temporizador, o recordatorio explícitamente interno de XOOK, usa `propose_tasks` (o `"tasks"` en modo JSON); si pide crear una nota o evento/agenda en las apps Notas o Calendario de su Mac, usa directamente las herramientas `os_create_note` / `os_create_calendar_event`.
 - BÓVEDA SEGURA Y CONFIGURACIÓN DE PROVEEDORES DE XOOK: TÚ SÍ PUEDES ayudar a configurar proveedores de IA y guardar API keys en la bóveda local de XOOK (`openrouter`, `deepseek`, `groq`, `gemini`, `openai`, `anthropic`). Cuando el usuario pida configurar, agregar, cambiar o guardar una API key o proveedor para ti/XOOK, PROHIBIDO decirle que edite un archivo `.env`, que escriba scripts Python/Node o que "no comparta su clave aquí"; llama de inmediato a la herramienta `configure_ai_vault` (`provider` + `action`) para mostrar el formulario cifrado Zero-Trust directamente en tu respuesta (donde la clave se guarda localmente en la bóveda sin enviarse nunca a ningún servidor ni al historial).
 
-SKILL ACTIVO (inventory-advisor):
-{skill_text[:1400]}
+ÁMBITO, MISIÓN Y ROL ACTIVO:
+{domain_ctx_section}{user_pref_section}{skills_index_section}
 
-PERFIL DEL NEGOCIO ACTUAL:
+PERFIL ACTUAL DEL PROYECTO / ESPACIO (`empresa/perfil.json`):
 {json.dumps(profile, ensure_ascii=False, indent=2)}
 
 MEMORIA Y PATRONES APRENDIDOS:
@@ -1383,6 +1734,7 @@ class _StreamTagRouter:
     CLOSE_ACTIONS = ("</acciones>", "</actions>")
     STOP_REPLY = CLOSE_REPLY + OPEN_CANVAS + OPEN_ACTIONS
     ALL_OPEN = OPEN_ANALYSIS + OPEN_REPLY + OPEN_CANVAS + OPEN_ACTIONS
+    _FENCE_OPEN_RE = re.compile(r"^([ \t]*)(`{3,}|~{3,})(.*)$")
 
     def __init__(
         self,
@@ -1399,8 +1751,20 @@ class _StreamTagRouter:
         self.on_phase = on_phase
         self._entered_reply = False
         self._entered_canvas = False
+        self._reply_fence_char = ""
+        self._reply_fence_len = 0
+        self._reply_at_line_start = True
+
+    def _emit_reply(self, text: str) -> None:
+        if not text:
+            return
+        self._reply_at_line_start = text.endswith("\n")
+        self.on_reply(text)
 
     def _enter_reply(self) -> None:
+        self._reply_fence_char = ""
+        self._reply_fence_len = 0
+        self._reply_at_line_start = True
         if not self._entered_reply:
             self._entered_reply = True
             self.on_phase("talking")
@@ -1485,11 +1849,71 @@ class _StreamTagRouter:
                 return
 
             if self.mode == "reply":
-                found = _find_first_tag(self.buf, self.STOP_REPLY)
+                # Inside a fenced code block, emit literally and ignore STOP_REPLY tags
+                if self._reply_fence_char:
+                    nl_idx = self.buf.find("\n")
+                    if nl_idx != -1:
+                        segment = self.buf[: nl_idx + 1]
+                        self.buf = self.buf[nl_idx + 1 :]
+                        if self._reply_at_line_start:
+                            stripped = segment.rstrip("\r\n").strip()
+                            if (
+                                len(stripped) >= self._reply_fence_len
+                                and set(stripped) == {self._reply_fence_char}
+                            ):
+                                self._reply_fence_char = ""
+                                self._reply_fence_len = 0
+                        self._emit_reply(segment)
+                        continue
+                    if self._reply_at_line_start and re.fullmatch(
+                        rf"[ \t]*{re.escape(self._reply_fence_char)}*",
+                        self.buf,
+                    ):
+                        return
+                    self._emit_reply(self.buf)
+                    self.buf = ""
+                    return
+
+                # Outside a fence: check if a new line starts a code fence
+                if self._reply_at_line_start:
+                    nl_idx = self.buf.find("\n")
+                    if nl_idx == -1:
+                        trimmed_ws = self.buf.lstrip(" \t")
+                        if not trimmed_ws:
+                            return
+                        if trimmed_ws[0] in ("`", "~"):
+                            fence_match = re.match(r"^(`+|~+)(.*)$", trimmed_ws)
+                            if fence_match:
+                                run_len = len(fence_match.group(1))
+                                info_rest = fence_match.group(2)
+                                if run_len < 3 and not info_rest:
+                                    return
+                                if run_len >= 3 and not (
+                                    fence_match.group(1)[0] == "`" and "`" in info_rest
+                                ):
+                                    return
+                    else:
+                        first_line = self.buf[:nl_idx].rstrip("\r")
+                        open_match = self._FENCE_OPEN_RE.match(first_line)
+                        if open_match:
+                            fence_char = open_match.group(2)[0]
+                            info_str = open_match.group(3)
+                            if not (fence_char == "`" and "`" in info_str):
+                                self._reply_fence_char = fence_char
+                                self._reply_fence_len = len(open_match.group(2))
+                                segment = self.buf[: nl_idx + 1]
+                                self.buf = self.buf[nl_idx + 1 :]
+                                self._emit_reply(segment)
+                                continue
+
+                # Normal prose scan up to next newline (so next line re-checks fence opening)
+                nl_idx = self.buf.find("\n")
+                scan_slice = self.buf[: nl_idx + 1] if nl_idx != -1 else self.buf
+                found = _find_first_tag(scan_slice, self.STOP_REPLY)
                 if found:
                     idx, raw_tag, canonical = found
                     if idx > 0:
-                        self.on_reply(self.buf[:idx])
+                        self._emit_reply(self.buf[:idx])
                     self.buf = self.buf[idx + len(raw_tag) :]
                     if canonical in self.OPEN_CANVAS:
                         self._enter_canvas()
@@ -1498,9 +1922,13 @@ class _StreamTagRouter:
                     else:
                         self.mode = "after_reply"
                     continue
+                if nl_idx != -1:
+                    self._emit_reply(scan_slice)
+                    self.buf = self.buf[nl_idx + 1 :]
+                    continue
                 safe, rem = _partial_tag_split(self.buf, self.STOP_REPLY)
                 if safe:
-                    self.on_reply(safe)
+                    self._emit_reply(safe)
                 self.buf = rem
                 return
 
@@ -1545,14 +1973,17 @@ class _StreamTagRouter:
         elif self.mode == "analysis":
             self.on_reasoning(self.buf)
         elif self.mode == "reply":
-            cleaned = re.sub(
-                r"<\s*/?\s*(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions|posta|reply|resp)\s*(?:>|$)",
-                "",
-                self.buf,
-                flags=re.IGNORECASE,
-            )
-            if cleaned:
-                self.on_reply(cleaned)
+            if self._reply_fence_char:
+                self._emit_reply(self.buf)
+            else:
+                cleaned = re.sub(
+                    r"<\s*/?\s*(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions|posta|reply|resp)\s*(?:>|$)",
+                    "",
+                    self.buf,
+                    flags=re.IGNORECASE,
+                )
+                if cleaned:
+                    self._emit_reply(cleaned)
         elif self.mode == "canvas":
             cleaned = re.sub(r"<\s*/?\s*(?:canvas|lienzo)\s*>", "", self.buf, flags=re.IGNORECASE)
             self.canvas_buf += cleaned
@@ -2244,6 +2675,7 @@ def _validate_and_build_messages(
         active_canvas=active_canvas,
         workspace_root=workspace_root,
         unified_memory=unified_memory,
+        user_message=user_message,
     )
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
@@ -2556,9 +2988,11 @@ def _prepare_provider_entries(
     *,
     needs_reasoning: bool = False,
     needs_vision: bool = False,
+    primary_region: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     primary = normalize_provider_id(primary_provider)
     clean_primary_key = _normalize_api_key(api_key)
+    clean_primary_region = str(primary_region or "").strip() or None
     creds: Dict[str, Dict[str, Any]] = {}
     if isinstance(provider_credentials, dict):
         for raw_pid, raw_info in provider_credentials.items():
@@ -2566,16 +3000,19 @@ def _prepare_provider_entries(
                 continue
             npid = normalize_provider_id(raw_pid)
             ckey = _normalize_api_key(str(raw_info.get("api_key") or ""))
+            cregion = str(raw_info.get("region") or raw_info.get("base_url") or "").strip() or None
             if ckey:
                 creds[npid] = {
                     "api_key": ckey,
                     "model_id": str(raw_info.get("model_id") or "").strip(),
                     "cooldown_until_ms": raw_info.get("cooldown_until_ms"),
+                    "region": cregion,
                 }
     if clean_primary_key and primary not in creds:
         creds[primary] = {
             "api_key": clean_primary_key,
             "model_id": (model_id or "").strip(),
+            "region": clean_primary_region,
         }
 
     chain = order_provider_failover_chain(
@@ -2601,13 +3038,19 @@ def _prepare_provider_entries(
                 needs_reasoning=needs_reasoning,
                 needs_vision=needs_vision,
             )
-        entries.append({"provider": pid, "api_key": pkey, "model_id": rmodel})
+        entries.append({
+            "provider": pid,
+            "api_key": pkey,
+            "model_id": rmodel,
+            "region": info.get("region") or (clean_primary_region if pid == primary else None),
+        })
     if not entries:
         spec = get_provider_spec(primary)
         entries.append({
             "provider": primary,
             "api_key": clean_primary_key,
             "model_id": (model_id or spec["default_model"]).strip() or spec["default_model"],
+            "region": clean_primary_region,
         })
     return entries
 
@@ -2631,6 +3074,7 @@ def run_agent_completion(
     provider_credentials: Optional[Dict[str, Any]] = None,
     auto_failover: bool = True,
     failover_order: Optional[List[str]] = None,
+    provider_region: Optional[str] = None,
 ) -> Dict[str, Any]:
     primary_provider = normalize_provider_id(provider)
     ws_path = Path(workspace_root).resolve() if workspace_root and Path(workspace_root).is_dir() else None
@@ -2676,7 +3120,7 @@ def run_agent_completion(
         has_active_canvas=active_canvas is not None,
         tools_available=True,
         history=history,
-        fetch_catalog_fn=lambda: list_provider_models(provider=primary_provider, api_key=key, free_only=False),
+        fetch_catalog_fn=lambda: list_provider_models(provider=primary_provider, api_key=key, free_only=False, region=provider_region),
         has_attachments=has_attachments,
         has_images=bool(image_parts),
     )
@@ -2690,6 +3134,7 @@ def run_agent_completion(
         failover_order,
         needs_reasoning=base_plan.task_profile.needs_reasoning,
         needs_vision=base_plan.task_profile.needs_vision,
+        primary_region=provider_region,
     )
 
     started = time.time()
@@ -2701,6 +3146,8 @@ def run_agent_completion(
     message_obj: Dict[str, Any] = {}
     raw_content = ""
     all_ui_tool_calls: List[Dict[str, Any]] = []
+    turn_accum_usage: Dict[str, Any] = {}
+    turn_rate_limits: Optional[Dict[str, Any]] = None
 
     def _run_provider_nonstream(
         cur_provider: str,
@@ -2708,44 +3155,62 @@ def run_agent_completion(
         cur_requested_model: str,
         has_next_provider: bool,
         plan: Any,
-    ) -> Tuple[str, Dict[str, Any], Dict[str, Any], str, List[Dict[str, Any]]]:
+        cur_region: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, Any], Dict[str, Any], str, List[Dict[str, Any]], Dict[str, Any], Optional[Dict[str, Any]]]:
         cur_spec = get_provider_spec(cur_provider)
+        cur_base_url = resolve_provider_base_url(cur_provider, cur_region)
         cands = list(plan.candidates or [cur_requested_model])
         local_active_model = cands[0]
         local_res: Dict[str, Any] = {}
         local_message_obj: Dict[str, Any] = {}
         local_raw_content = ""
         local_ui_tool_calls: List[Dict[str, Any]] = []
+        local_accum_usage: Dict[str, Any] = {}
+        local_rate_limits: Optional[Dict[str, Any]] = None
 
         def _call_with_fallbacks(cur_payload: Dict[str, Any], allow_tool_downgrade: bool) -> Dict[str, Any]:
+            nonlocal local_rate_limits
             for _attempt in range(3):
                 try:
                     req_model = str(cur_payload.get("model") or local_active_model)
                     if cur_provider == "anthropic":
                         clean_ant = dict(cur_payload)
                         clean_ant.pop("response_format", None)
-                        return anthropic_chat_completion(cur_key, clean_ant, timeout=60)
+                        ant_res = anthropic_chat_completion(cur_key, clean_ant, timeout=60)
+                        local_rate_limits = _merge_rate_limits(local_rate_limits, _consume_http_rate_limits("anthropic"))
+                        return ant_res
                     if cur_provider == "openrouter":
-                        return _http_json(
+                        or_res = _http_json(
                             f"{OPENROUTER_BASE_URL}/chat/completions",
                             method="POST",
                             api_key=cur_key,
                             payload=cur_payload,
                             timeout=60,
                         )
+                        local_rate_limits = _merge_rate_limits(local_rate_limits, _consume_http_rate_limits("openrouter"))
+                        return or_res
                     compat_payload = build_openai_compat_chat_payload(cur_provider, req_model, cur_payload)
-                    return _provider_http_json(
+                    prov_res = _provider_http_json(
                         cur_provider,
-                        f"{cur_spec['base_url']}/chat/completions",
+                        f"{cur_base_url}/chat/completions",
                         method="POST",
                         api_key=cur_key,
                         payload=compat_payload,
                         timeout=60,
                     )
+                    local_rate_limits = _merge_rate_limits(local_rate_limits, _consume_http_rate_limits(cur_provider))
+                    return prov_res
                 except RuntimeError as err:
+                    err_limits = _consume_http_rate_limits(cur_provider)
+                    if err_limits:
+                        local_rate_limits = _merge_rate_limits(local_rate_limits, err_limits)
                     err_str = str(err)
                     err_lower = err_str.lower()
-                    err_info = classify_provider_error(err_str, cur_provider)
+                    err_info = classify_provider_error(
+                        err_str,
+                        cur_provider,
+                        retry_after_sec=(err_limits or {}).get("retry_after_sec"),
+                    )
                     if has_next_provider and err_info["kind"] in ("quota_exhausted", "auth_error"):
                         raise _ProviderFailoverError(
                             err_info["friendly_message"],
@@ -2797,6 +3262,8 @@ def run_agent_completion(
             local_message_obj = {}
             local_raw_content = ""
             local_ui_tool_calls = []
+            local_accum_usage = {}
+            local_rate_limits = None
             use_response_format = cur_provider != "anthropic"
             tools_supported = True
             vision_supported = True
@@ -2831,6 +3298,7 @@ def run_agent_completion(
                         payload["tool_choice"] = "auto"
 
                     local_res = _call_with_fallbacks(payload, allow_tool_downgrade=allow_downgrade_now)
+                    local_accum_usage = _accumulate_usage(local_accum_usage, local_res.get("usage"))
                     if "tools" not in payload:
                         tools_supported = False
                     if "response_format" not in payload:
@@ -2849,6 +3317,7 @@ def run_agent_completion(
                         use_response_format = False
                         payload.pop("response_format", None)
                         local_res = _call_with_fallbacks(payload, allow_tool_downgrade=allow_downgrade_now)
+                        local_accum_usage = _accumulate_usage(local_accum_usage, local_res.get("usage"))
                         choices = local_res.get("choices") or []
                         local_message_obj = (choices[0].get("message") or {}) if choices else {}
                         finish_reason = str((choices[0].get("finish_reason") if choices else "") or "")
@@ -2940,7 +3409,15 @@ def run_agent_completion(
                 has_staged = bool(executor is not None and executor.staged_tasks)
                 if not local_raw_content.strip() and not local_ui_tool_calls and not has_staged and has_next_candidate:
                     raise _CandidateFailoverError("Respuesta vacía del candidato.")
-                return local_active_model, local_res, local_message_obj, local_raw_content, local_ui_tool_calls
+                return (
+                    local_active_model,
+                    local_res,
+                    local_message_obj,
+                    local_raw_content,
+                    local_ui_tool_calls,
+                    local_accum_usage,
+                    local_rate_limits,
+                )
             except _ProviderFailoverError:
                 raise
             except _CandidateFailoverError as err:
@@ -2973,12 +3450,21 @@ def run_agent_completion(
                         ) from err
                 raise
 
-        return local_active_model, local_res, local_message_obj, local_raw_content, local_ui_tool_calls
+        return (
+            local_active_model,
+            local_res,
+            local_message_obj,
+            local_raw_content,
+            local_ui_tool_calls,
+            local_accum_usage,
+            local_rate_limits,
+        )
 
     for p_idx, p_entry in enumerate(provider_entries):
         cur_provider = p_entry["provider"]
         cur_key = p_entry["api_key"]
         cur_req_model = p_entry["model_id"]
+        cur_region = p_entry.get("region")
         has_next_provider = p_idx < len(provider_entries) - 1
         plan = (
             base_plan
@@ -2991,18 +3477,19 @@ def run_agent_completion(
                 has_active_canvas=active_canvas is not None,
                 tools_available=True,
                 history=history,
-                fetch_catalog_fn=lambda pid=cur_provider, pkey=cur_key: list_provider_models(provider=pid, api_key=pkey, free_only=False),
+                fetch_catalog_fn=lambda pid=cur_provider, pkey=cur_key, preg=cur_region: list_provider_models(provider=pid, api_key=pkey, free_only=False, region=preg),
                 has_attachments=has_attachments,
                 has_images=bool(image_parts),
             )
         )
         try:
-            active_model, res, message_obj, raw_content, all_ui_tool_calls = _run_provider_nonstream(
+            active_model, res, message_obj, raw_content, all_ui_tool_calls, turn_accum_usage, turn_rate_limits = _run_provider_nonstream(
                 cur_provider,
                 cur_key,
                 cur_req_model,
                 has_next_provider,
                 plan,
+                cur_region=cur_region,
             )
             used_provider = cur_provider
             break
@@ -3111,6 +3598,12 @@ def run_agent_completion(
         to_name = get_provider_spec(used_provider)["name"]
         failover_notice = f"Cuota o límite alcanzado en {from_name}; Xox cambió automáticamente a {to_name}."
 
+    used_model_out = res.get("model") or active_model
+    final_usage = _finalize_turn_usage(
+        used_provider,
+        used_model_out,
+        turn_accum_usage or res.get("usage") or {},
+    )
     out: Dict[str, Any] = {
         "status": "ok",
         "reply": full_reply,
@@ -3120,13 +3613,15 @@ def run_agent_completion(
         "tasks": safe_tasks,
         "generated_pdfs": list(executor.generated_pdfs) if executor else [],
         "provider_used": used_provider,
-        "model_used": res.get("model") or active_model,
-        "usage": res.get("usage") or {},
+        "model_used": used_model_out,
+        "usage": final_usage,
         "latency_ms": latency_ms,
         "workspace_mutated": bool(executor.workspace_mutated) if executor else False,
         "exhausted_providers": exhausted_providers,
         "failover_events": failover_events,
     }
+    if turn_rate_limits:
+        out["rate_limits"] = turn_rate_limits
     if failover_notice:
         out["failover_notice"] = failover_notice
     if canvas_obj is not None:
@@ -3189,6 +3684,7 @@ def stream_agent_completion(
     provider_credentials: Optional[Dict[str, Any]] = None,
     auto_failover: bool = True,
     failover_order: Optional[List[str]] = None,
+    provider_region: Optional[str] = None,
 ) -> Dict[str, Any]:
     primary_provider = normalize_provider_id(provider)
     ws_path = Path(workspace_root).resolve() if workspace_root and Path(workspace_root).is_dir() else None
@@ -3256,7 +3752,7 @@ def stream_agent_completion(
         has_active_canvas=active_canvas is not None,
         tools_available=True,
         history=history,
-        fetch_catalog_fn=lambda: list_provider_models(provider=primary_provider, api_key=key, free_only=False),
+        fetch_catalog_fn=lambda: list_provider_models(provider=primary_provider, api_key=key, free_only=False, region=provider_region),
         has_attachments=has_attachments,
         has_images=bool(image_parts),
     )
@@ -3269,10 +3765,12 @@ def stream_agent_completion(
         failover_order,
         needs_reasoning=base_plan.task_profile.needs_reasoning,
         needs_vision=base_plan.task_profile.needs_vision,
+        primary_region=provider_region,
     )
 
     active_provider = provider_entries[0]["provider"]
     active_key = provider_entries[0]["api_key"]
+    active_region = provider_entries[0].get("region")
     active_spec = get_provider_spec(active_provider)
     used_provider = active_provider
     has_next_provider = len(provider_entries) > 1
@@ -3290,7 +3788,7 @@ def stream_agent_completion(
             has_active_canvas=active_canvas is not None,
             tools_available=True,
             history=history,
-            fetch_catalog_fn=lambda: list_provider_models(provider=active_provider, api_key=active_key, free_only=False),
+            fetch_catalog_fn=lambda: list_provider_models(provider=active_provider, api_key=active_key, free_only=False, region=active_region),
             has_attachments=has_attachments,
             has_images=bool(image_parts),
         )
@@ -3325,6 +3823,7 @@ def stream_agent_completion(
     reasoning_chunks: List[str] = []
     reply_chunks: List[str] = []
     usage_data: Dict[str, Any] = {}
+    rate_limits_data: Optional[Dict[str, Any]] = None
     actual_model = active_model
 
     def _set_think_step(status: Optional[str] = None, detail: Optional[str] = None) -> None:
@@ -3442,8 +3941,9 @@ def stream_agent_completion(
             if active_provider == "openrouter"
             else build_openai_compat_chat_payload(active_provider, active_model, payload)
         )
+        base_url = resolve_provider_base_url(active_provider, active_region)
         req = urllib.request.Request(
-            f"{active_spec['base_url']}/chat/completions",
+            f"{base_url}/chat/completions",
             data=json.dumps(final_payload).encode("utf-8"),
             headers=_build_headers(active_key, provider=active_provider),
             method="POST",
@@ -3461,7 +3961,7 @@ def stream_agent_completion(
         pass_meta: Optional[Dict[str, str]] = None,
         timeout_sec: int = 60,
     ) -> List[Dict[str, Any]]:
-        nonlocal actual_model, usage_data, tools_supported, vision_supported
+        nonlocal actual_model, usage_data, rate_limits_data, tools_supported, vision_supported
         include_usage = True
         include_tools = allow_tools and tools_supported
         active_msgs = req_messages if vision_supported else _strip_image_parts(req_messages)
@@ -3477,11 +3977,21 @@ def stream_agent_completion(
                     timeout_sec=timeout_sec,
                     max_tokens_override=cur_max_tokens,
                 )
+                hdr_limits = parse_rate_limit_headers(active_provider, getattr(resp, "headers", None))
+                if hdr_limits:
+                    rate_limits_data = _merge_rate_limits(rate_limits_data, hdr_limits)
                 break
             except urllib.error.HTTPError as err:
+                err_limits = parse_rate_limit_headers(active_provider, getattr(err, "headers", None))
+                if err_limits:
+                    rate_limits_data = _merge_rate_limits(rate_limits_data, err_limits)
                 detail_msg = _extract_http_error_detail(err)
                 lower_msg = detail_msg.lower()
-                err_info = classify_provider_error(detail_msg, active_provider)
+                err_info = classify_provider_error(
+                    detail_msg,
+                    active_provider,
+                    retry_after_sec=(err_limits or {}).get("retry_after_sec"),
+                )
                 if has_next_provider and err_info["kind"] in ("quota_exhausted", "auth_error"):
                     raise _ProviderFailoverError(
                         err_info["friendly_message"],
@@ -3591,7 +4101,7 @@ def stream_agent_completion(
                     actual_model = event_obj["model"]
                     _set_think_step(detail=actual_model)
                 if isinstance(event_obj.get("usage"), dict) and event_obj["usage"]:
-                    usage_data = event_obj["usage"]
+                    usage_data = _accumulate_usage(usage_data, event_obj["usage"])
                 choices = event_obj.get("choices") or []
                 if not choices:
                     continue
@@ -3720,6 +4230,7 @@ def stream_agent_completion(
             p_entry = provider_entries[prov_idx]
             active_provider = p_entry["provider"]
             active_key = p_entry["api_key"]
+            active_region = p_entry.get("region")
             active_spec = get_provider_spec(active_provider)
             has_next_provider = prov_idx < len(provider_entries) - 1
             routing_plan = select_best_models_for_task(
@@ -3730,7 +4241,7 @@ def stream_agent_completion(
                 has_active_canvas=active_canvas is not None,
                 tools_available=True,
                 history=history,
-                fetch_catalog_fn=lambda pid=active_provider, pkey=active_key: list_provider_models(provider=pid, api_key=pkey, free_only=False),
+                fetch_catalog_fn=lambda pid=active_provider, pkey=active_key, preg=active_region: list_provider_models(provider=pid, api_key=pkey, free_only=False, region=preg),
                 has_attachments=has_attachments,
                 has_images=bool(image_parts),
             )
@@ -3741,6 +4252,8 @@ def stream_agent_completion(
         used_provider = active_provider
         active_model = cand_model
         actual_model = cand_model
+        usage_data = {}
+        rate_limits_data = None
         tools_supported = True
         vision_supported = True
         loop_messages = list(messages)
@@ -3990,8 +4503,15 @@ def stream_agent_completion(
                 break
             raise _friendly_http_error(err, active_provider) from err
         except urllib.error.HTTPError as err:
+            err_limits = parse_rate_limit_headers(active_provider, getattr(err, "headers", None))
+            if err_limits:
+                rate_limits_data = _merge_rate_limits(rate_limits_data, err_limits)
             detail_msg = _extract_http_error_detail(err)
-            err_info = classify_provider_error(detail_msg, active_provider)
+            err_info = classify_provider_error(
+                detail_msg,
+                active_provider,
+                retry_after_sec=(err_limits or {}).get("retry_after_sec"),
+            )
             if _can_failover_candidate(has_next_provider) and err_info["kind"] in ("quota_exhausted", "auth_error"):
                 _failover_to_next_provider(
                     err_info["friendly_message"],
@@ -4249,6 +4769,7 @@ def stream_agent_completion(
         to_name = get_provider_spec(used_provider)["name"]
         failover_notice = f"Cuota o límite alcanzado en {from_name}; Xox cambió automáticamente a {to_name}."
 
+    final_stream_usage = _finalize_turn_usage(used_provider, actual_model, usage_data)
     result: Dict[str, Any] = {
         "status": "ok",
         "reply": full_reply,
@@ -4261,12 +4782,14 @@ def stream_agent_completion(
         "generated_pdfs": list(executor.generated_pdfs) if executor else [],
         "provider_used": used_provider,
         "model_used": actual_model,
-        "usage": usage_data,
+        "usage": final_stream_usage,
         "latency_ms": latency_ms,
         "workspace_mutated": bool(executor.workspace_mutated) if executor else False,
         "exhausted_providers": exhausted_providers,
         "failover_events": failover_events,
     }
+    if rate_limits_data:
+        result["rate_limits"] = rate_limits_data
     if failover_notice:
         result["failover_notice"] = failover_notice
     if canvas_obj is not None:

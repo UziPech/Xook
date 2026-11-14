@@ -15,17 +15,55 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import uuid
 
 from slices.inventory_advisor.review_engine import run_workspace_review
 from slices.task_ui.schemas import sanitize_task_proposal
+from slices.agent_tools.skills_hub import (
+    USER_PROFILE_REL,
+    discover_official_skills,
+    install_official_skill,
+    save_learned_skill,
+    update_user_preferences_doc,
+)
 
 
 AUTONOMOUS_WRITE_ROOTS = ("agente", "memoria")
 PROTECTED_HITL_ROOTS = ("empresa", "datos", "habilidades")
 READ_SEARCH_EXCLUDED_ROOTS = {".xook", ".git", "__pycache__", "node_modules"}
+PROTECTED_STRUCTURAL_DIRS = {
+    "empresa",
+    "empresa/reglas",
+    "datos",
+    "datos/ventas",
+    "datos/documentos",
+    "memoria",
+    "memoria/diario",
+    "habilidades",
+    "agente",
+    "agente/adjuntos",
+    "agente/proyectos",
+    "agente/borradores",
+    "agente/reportes",
+    "agente/revisiones",
+    "agente/ordenes",
+    "agente/logs",
+    "agente/.papelera",
+    "agente/.tmp_exports",
+}
+PROTECTED_CORE_FILES = {
+    "empresa/perfil.json",
+    "empresa/proveedores.json",
+    "empresa/reglas/operacion.md",
+    "memoria/hechos.md",
+    "memoria/patrones.json",
+    "memoria/decisiones.jsonl",
+    "habilidades/perfil-usuario.md",
+    "agente/notas-xox.md",
+}
 IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif", ".heic"}
 MAX_READ_BYTES = 24 * 1024
 MAX_SEARCH_MATCHES = 40
@@ -61,6 +99,178 @@ def _is_external_host_path(raw_path: Optional[str]) -> bool:
     ):
         return True
     return len(s) >= 3 and s[0].isalpha() and s[1] == ":" and s[2] in ("/", "\\")
+
+
+def _expand_host_path(raw_path: str) -> str:
+    s = str(raw_path or "").strip()
+    if s.startswith("~"):
+        s = os.path.expanduser(s)
+    home = str(Path.home())
+    if s.startswith("${HOME}"):
+        s = home + s[len("${HOME}"):]
+    elif s.startswith("$HOME"):
+        s = home + s[len("$HOME"):]
+    elif s.upper().startswith("%USERPROFILE%"):
+        s = home + s[len("%USERPROFILE%"):]
+    return s
+
+
+def _try_relativize_workspace_host_path(workspace_root: Path, raw_path: Optional[str]) -> Tuple[str, bool]:
+    """
+    Si `raw_path` es absoluta o relativa a HOME pero apunta dentro del workspace activo,
+    la convierte en ruta relativa del workspace (`is_external = False`) para que apliquen
+    siempre las reglas HITL y protecciones de archivos núcleo.
+    """
+    s = str(raw_path or "").strip()
+    if not _is_external_host_path(s):
+        return s, False
+    expanded = _expand_host_path(s)
+    try:
+        ws_root = workspace_root.resolve()
+        resolved = Path(expanded).resolve()
+    except OSError:
+        return s, True
+    if resolved == ws_root:
+        return ".", False
+    if ws_root in resolved.parents:
+        return resolved.relative_to(ws_root).as_posix(), False
+    return s, True
+
+
+def _is_hidden_or_temp_name(name: str) -> bool:
+    return name.startswith(".") or ".tmp." in name
+
+
+def _has_hidden_component(clean_rel: str) -> bool:
+    return any(
+        _is_hidden_or_temp_name(part)
+        for part in Path(clean_rel).parts
+        if part not in ("", ".")
+    )
+
+
+def _normalize_rel_for_compare(raw: Optional[str]) -> str:
+    s = str(raw or "").strip().replace("\\", "/")
+    while s.startswith("./"):
+        s = s[2:]
+    return s.rstrip("/")
+
+
+def _validate_protected_file_content(clean_rel: str, text: str) -> Optional[str]:
+    norm = _normalize_rel_for_compare(clean_rel).lower()
+    if norm == "empresa/perfil.json":
+        try:
+            parsed = json.loads(text)
+        except Exception as exc:
+            return f"`empresa/perfil.json` debe ser JSON válido ({exc})."
+        if not isinstance(parsed, dict) or not parsed:
+            return "`empresa/perfil.json` debe ser un objeto JSON no vacío."
+        return None
+    if norm == "empresa/proveedores.json":
+        try:
+            parsed = json.loads(text)
+        except Exception as exc:
+            return f"`empresa/proveedores.json` debe ser JSON válido ({exc})."
+        if isinstance(parsed, list):
+            return None
+        if isinstance(parsed, dict) and any(
+            isinstance(parsed.get(k), list) for k in ("suppliers", "proveedores", "items")
+        ):
+            return None
+        return "`empresa/proveedores.json` debe ser una lista JSON o contener `suppliers` como lista."
+    if norm in (
+        "empresa/reglas/operacion.md",
+        "memoria/hechos.md",
+        "habilidades/perfil-usuario.md",
+        "agente/notas-xox.md",
+    ):
+        if not text.strip():
+            return f"`{clean_rel}` es un archivo núcleo y no puede quedar vacío."
+        return None
+    return None
+
+
+def _matches_rel_or_child(candidate: str, target_rel: str, is_dir: bool) -> bool:
+    cand = _normalize_rel_for_compare(candidate)
+    tgt = _normalize_rel_for_compare(target_rel)
+    if not cand or not tgt:
+        return False
+    if cand == tgt:
+        return True
+    return is_dir and cand.startswith(f"{tgt}/")
+
+
+def _check_active_db_dependencies(workspace_root: Path, clean_target: str, is_dir: bool) -> Optional[str]:
+    db_path = workspace_root / ".xook" / "xook.db"
+    if not db_path.is_file():
+        return None
+    conn: Optional[sqlite3.Connection] = None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        for card_id, sp_raw in conn.execute(
+            "SELECT card_id, staging_payload_json FROM tasks "
+            "WHERE status = 'pending' AND staging_payload_json IS NOT NULL"
+        ):
+            try:
+                sp = json.loads(sp_raw)
+            except Exception:
+                continue
+            if not isinstance(sp, dict):
+                continue
+            for key in ("draftPath", "draft_path", "targetPath", "target_path"):
+                ref = sp.get(key)
+                if isinstance(ref, str) and _matches_rel_or_child(ref, clean_target, is_dir):
+                    return (
+                        f"`{clean_target}` está vinculado a la propuesta pendiente `{card_id}` "
+                        "y no puede eliminarse."
+                    )
+
+        for hist_id, art_raw in conn.execute(
+            "SELECT id, execution_artifact_path FROM decision_history "
+            "WHERE execution_artifact_path IS NOT NULL"
+        ):
+            art = _normalize_rel_for_compare(art_raw)
+            if _matches_rel_or_child(art, clean_target, is_dir):
+                return (
+                    f"`{clean_target}` es evidencia de auditoría de la decisión `{hist_id}` "
+                    "y no puede eliminarse."
+                )
+            if art.endswith(".json"):
+                twin = f"{art[:-5]}.md"
+                if _matches_rel_or_child(twin, clean_target, is_dir):
+                    return (
+                        f"`{clean_target}` está vinculado al artefacto `{art}` (`{hist_id}`) "
+                        "y no puede eliminarse."
+                    )
+            elif art.endswith(".md"):
+                twin = f"{art[:-3]}.json"
+                if _matches_rel_or_child(twin, clean_target, is_dir):
+                    return (
+                        f"`{clean_target}` está vinculado al artefacto `{art}` (`{hist_id}`) "
+                        "y no puede eliminarse."
+                    )
+    except sqlite3.Error:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+    return None
+
+
+def _summarize_dir_contents(dir_path: Path) -> Tuple[int, int]:
+    file_count = 0
+    total_bytes = 0
+    try:
+        for p in dir_path.rglob("*"):
+            if p.is_file():
+                file_count += 1
+                try:
+                    total_bytes += p.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return file_count, total_bytes
 
 
 def _redact_sensitive_text(text: str, active_secrets: Optional[List[str]] = None) -> str:
@@ -834,7 +1044,7 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
         "function": {
             "name": "memory_search",
             "description": (
-                "Busca hechos guardados del negocio en memoria/hechos.md y contexto reciente indexado por SQLite FTS5 sin límite de caracteres."
+                "Busca hechos guardados del proyecto o negocio en memoria/hechos.md y contexto reciente indexado por SQLite FTS5 sin límite de caracteres."
             ),
             "parameters": {
                 "type": "object",
@@ -843,6 +1053,146 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
                     "limit": {"type": "integer", "description": "Máximo de elementos relevantes."},
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "learn_skill",
+            "description": (
+                "Aprende y guarda una nueva habilidad, rol operativo o flujo reutilizable directamente en "
+                "`habilidades/<slug>/SKILL.md` tras pasar validación de seguridad. Úsala cuando el usuario te enseñe "
+                "cómo prefiere trabajar, te pida adoptar un nuevo rol o quiera estandarizar un proceso."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Nombre claro de la habilidad (ej. 'Arquitecto Backend', 'Control de Calidad')."},
+                    "description": {"type": "string", "description": "Propósito breve y cuándo activarse automáticamente."},
+                    "instructions": {"type": "string", "description": "Pasos operativos, criterios y formato de entrega en Markdown."},
+                    "role": {"type": "string", "description": "Nombre del rol asociado si aplica."},
+                    "domain": {
+                        "type": "string",
+                        "enum": ["general", "business", "software", "research", "personal", "creative", "custom"],
+                        "description": "Ámbito principal donde aplica la habilidad.",
+                    },
+                    "user_preferences": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Gustos o estilo específicos del usuario para esta tarea.",
+                    },
+                    "workflow_steps": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Pasos concretos del flujo que prefiere el usuario.",
+                    },
+                    "do_not_do": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Qué NO hacer o errores a evitar explícitamente.",
+                    },
+                    "sync_global_user_profile": {
+                        "type": "boolean",
+                        "description": "Si true, fusiona también gustos/flujo/no-hacer generales en `habilidades/perfil-usuario.md`.",
+                    },
+                },
+                "required": ["name", "description", "instructions"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_user_preferences",
+            "description": (
+                "Actualiza el espacio persistente del usuario en `habilidades/perfil-usuario.md` con sus gustos y estilo, "
+                "flujo de trabajo preferido y límites de 'qué NO hacer'. Úsala cuando el usuario exprese cómo le gusta "
+                "trabajar, qué evitar o cómo quiere que operes en cualquier ámbito."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "likes": {"type": "array", "items": {"type": "string"}, "description": "Gustos, formato y estilo preferido."},
+                    "workflows": {"type": "array", "items": {"type": "string"}, "description": "Pasos o flujo de trabajo habitual."},
+                    "donts": {"type": "array", "items": {"type": "string"}, "description": "Reglas negativas claras sobre qué NO hacer."},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["merge", "replace", "remove"],
+                        "description": "Cómo aplicar los puntos sobre el perfil actual (default 'merge').",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "discover_official_skills",
+            "description": (
+                "Busca habilidades en el directorio `skills.sh` filtrando ESTRICTAMENTE a publicadores oficiales verificados "
+                "(anthropics, vercel-labs, google, google-gemini, modelcontextprotocol, agentskills, openai, etc.). "
+                "No instala nada todavía; devuelve opciones oficiales candidatas."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Tema o capacidad a buscar (en inglés o español, ej. 'react', 'pdf', 'mcp', 'testing')."},
+                    "limit": {"type": "integer", "description": "Máximo de resultados oficiales a devolver (default 6)."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "install_official_skill",
+            "description": (
+                "Descarga el `SKILL.md` de un publicador oficial permitido encontrado con `discover_official_skills`, "
+                "ejecuta análisis estático anti-inyección y lo guarda en `habilidades/<slug>/SKILL.md`."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "Repositorio oficial exacto `owner/repo` (ej. 'anthropics/skills')."},
+                    "skill_id": {"type": "string", "description": "ID exacto de la skill oficial (ej. 'pdf')."},
+                    "local_slug": {"type": "string", "description": "Slug local opcional en `habilidades/`."},
+                },
+                "required": ["source", "skill_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_workspace_blueprint",
+            "description": (
+                "Prepara una sola tarjeta unificada de aprobación HITL (`blueprint`) para co-construir o reconfigurar "
+                "múltiples archivos de `empresa/` y `datos/` a la vez (por ejemplo `empresa/perfil.json` con `domain_type`, "
+                "`active_role`, `roles`, `mission`, `empresa/roles.md`, reglas o datos semilla) cuando diseñas un proyecto "
+                "o empresa junto con el usuario."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Título claro de la propuesta arquitectónica o de configuración."},
+                    "summary": {"type": "string", "description": "Explicación breve del objetivo y cambios principales."},
+                    "changes": {
+                        "type": "array",
+                        "description": "Lista de archivos en `empresa/` o `datos/` a crear o actualizar en conjunto.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "target_path": {"type": "string", "description": "Ruta dentro de `empresa/` o `datos/`."},
+                                "new_content": {"type": "string", "description": "Contenido completo del archivo."},
+                                "purpose": {"type": "string", "description": "Para qué sirve este archivo en el proyecto."},
+                            },
+                            "required": ["target_path", "new_content"],
+                        },
+                    },
+                },
+                "required": ["title", "summary", "changes"],
             },
         },
     },
@@ -925,6 +1275,11 @@ class WorkspaceToolExecutor:
             "read_screen_now": self._tool_read_screen_now,
             "query_screen_memory": self._tool_query_screen_memory,
             "memory_search": self._tool_memory_search,
+            "learn_skill": self._tool_learn_skill,
+            "update_user_preferences": self._tool_update_user_preferences,
+            "discover_official_skills": self._tool_discover_official_skills,
+            "install_official_skill": self._tool_install_official_skill,
+            "propose_workspace_blueprint": self._tool_propose_workspace_blueprint,
         }.get(name)
         if not handler:
             return {"ok": False, "error": f"Herramienta desconocida: {name}"}
@@ -935,20 +1290,24 @@ class WorkspaceToolExecutor:
             return {"ok": False, "error": _redact_sensitive_text(str(exc), self.active_secrets)}
 
     def _tool_list(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        raw_path = args.get("path") or "."
-        if _is_external_host_path(str(raw_path)):
+        raw_path, is_ext = _try_relativize_workspace_host_path(
+            self.workspace_root, str(args.get("path") or ".")
+        )
+        if is_ext:
             return self._require_bridge(
                 "host_fs_list",
                 "extfs",
                 {
-                    "path": str(raw_path).strip(),
+                    "path": raw_path,
                     "filter": args.get("filter"),
                     "max_entries": args.get("max_entries"),
                 },
                 "El listado de carpetas del equipo requiere sesión de escritorio con Guardián activo.",
             )
 
-        target, clean_rel, _ = resolve_workspace_path(self.workspace_root, str(raw_path))
+        target, clean_rel, _ = resolve_workspace_path(self.workspace_root, raw_path)
+        if clean_rel != "." and _has_hidden_component(clean_rel):
+            return {"ok": False, "error": f"Carpeta interna u oculta protegida: {clean_rel}"}
         if not target.exists():
             return {"ok": False, "error": f"No existe la ruta: {clean_rel}"}
         if target.is_file():
@@ -958,7 +1317,7 @@ class WorkspaceToolExecutor:
         cap = max(1, min(300, int(args.get("max_entries") or 120)))
         entries: List[Dict[str, Any]] = []
         for entry in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-            if entry.name.startswith(".") and clean_rel == ".":
+            if _is_hidden_or_temp_name(entry.name):
                 continue
             if filt and filt not in entry.name.lower():
                 continue
@@ -1024,8 +1383,8 @@ class WorkspaceToolExecutor:
         if not raw_path:
             return {"ok": False, "error": "Falta el parámetro 'path'."}
 
-        raw_str = str(raw_path).strip()
-        if _is_external_host_path(raw_str):
+        raw_str, is_ext = _try_relativize_workspace_host_path(self.workspace_root, str(raw_path))
+        if is_ext:
             auth = self._authorize_host_read(raw_str)
             if not auth.get("ok"):
                 return auth
@@ -1040,8 +1399,8 @@ class WorkspaceToolExecutor:
             )
 
         target, clean_rel, top_zone = resolve_workspace_path(self.workspace_root, raw_str)
-        if top_zone in READ_SEARCH_EXCLUDED_ROOTS:
-            return {"ok": False, "error": f"Ruta reservada no accesible: {clean_rel}"}
+        if top_zone in READ_SEARCH_EXCLUDED_ROOTS or _has_hidden_component(clean_rel):
+            return {"ok": False, "error": f"Ruta reservada u oculta no accesible: {clean_rel}"}
         if not target.is_file():
             return {"ok": False, "error": f"Archivo no encontrado: {clean_rel}"}
         return self._read_resolved_file(target, clean_rel, args, outside_workspace=False)
@@ -1151,8 +1510,8 @@ class WorkspaceToolExecutor:
         raw_path = args.get("path")
         if not raw_path:
             return {"ok": False, "error": "Falta el parámetro 'path' del PDF."}
-        raw_str = str(raw_path).strip()
-        if _is_external_host_path(raw_str):
+        raw_str, is_ext = _try_relativize_workspace_host_path(self.workspace_root, str(raw_path))
+        if is_ext:
             auth = self._authorize_host_read(raw_str)
             if not auth.get("ok"):
                 return auth
@@ -1165,8 +1524,8 @@ class WorkspaceToolExecutor:
             )
 
         target, clean_rel, top_zone = resolve_workspace_path(self.workspace_root, raw_str)
-        if top_zone in READ_SEARCH_EXCLUDED_ROOTS:
-            return {"ok": False, "error": f"Ruta reservada no accesible: {clean_rel}"}
+        if top_zone in READ_SEARCH_EXCLUDED_ROOTS or _has_hidden_component(clean_rel):
+            return {"ok": False, "error": f"Ruta reservada u oculta no accesible: {clean_rel}"}
         return self._read_pdf_path(target, clean_rel, args, outside_workspace=False)
 
     def _tool_pdf_generate(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1266,12 +1625,21 @@ class WorkspaceToolExecutor:
                     ),
                 }
 
-        raw_output_path = str(args.get("output_path") or "").strip()
-        external_output_dest = raw_output_path if _is_external_host_path(raw_output_path) else ""
+        raw_output_path, out_is_ext = _try_relativize_workspace_host_path(
+            self.workspace_root, str(args.get("output_path") or "")
+        )
+        external_output_dest = raw_output_path if out_is_ext else ""
         exec_args = dict(args)
+        if not out_is_ext and raw_output_path:
+            exec_args["output_path"] = raw_output_path
         tmp_cleanup_paths: List[Path] = []
-        if source_pdf_ref and _is_external_host_path(source_pdf_ref):
-            auth_src = self._authorize_host_read(source_pdf_ref)
+        norm_src_pdf, src_is_ext = _try_relativize_workspace_host_path(
+            self.workspace_root, source_pdf_ref
+        )
+        if source_pdf_ref and not src_is_ext:
+            exec_args["source_pdf_path"] = norm_src_pdf
+        elif source_pdf_ref and src_is_ext:
+            auth_src = self._authorize_host_read(norm_src_pdf)
             if not auth_src.get("ok"):
                 return auth_src
             src_canon = Path(str(auth_src.get("authorized_path") or ""))
@@ -1372,13 +1740,15 @@ class WorkspaceToolExecutor:
         query = str(args.get("query") or "").strip()
         if not query:
             return {"ok": False, "error": "Falta el texto 'query'."}
-        raw_path = args.get("path") or "."
-        if _is_external_host_path(str(raw_path)):
+        raw_path, is_ext = _try_relativize_workspace_host_path(
+            self.workspace_root, str(args.get("path") or ".")
+        )
+        if is_ext:
             return self._require_bridge(
                 "host_fs_search",
                 "extfs",
                 {
-                    "path": str(raw_path).strip(),
+                    "path": raw_path,
                     "query": query,
                     "mode": str(args.get("mode") or "auto"),
                     "max_results": args.get("max_results"),
@@ -1386,7 +1756,9 @@ class WorkspaceToolExecutor:
                 "La búsqueda en carpetas del equipo requiere sesión de escritorio con Guardián activo.",
             )
 
-        base, clean_rel, _ = resolve_workspace_path(self.workspace_root, str(raw_path))
+        base, clean_rel, _ = resolve_workspace_path(self.workspace_root, raw_path)
+        if clean_rel != "." and _has_hidden_component(clean_rel):
+            return {"ok": False, "error": f"Carpeta interna u oculta protegida: {clean_rel}"}
         if not base.exists():
             return {"ok": False, "error": f"Ruta no encontrada: {clean_rel}"}
 
@@ -1399,7 +1771,7 @@ class WorkspaceToolExecutor:
         candidates = [base] if base.is_file() else sorted(base.rglob("*"))
         for p in candidates:
             rel_parts = p.relative_to(self.workspace_root).parts
-            if any(part in READ_SEARCH_EXCLUDED_ROOTS for part in rel_parts):
+            if any(part in READ_SEARCH_EXCLUDED_ROOTS or _is_hidden_or_temp_name(part) for part in rel_parts):
                 continue
             if search_names and q_lower in p.name.lower():
                 matches.append({
@@ -1432,14 +1804,17 @@ class WorkspaceToolExecutor:
         raw_path = args.get("path")
         if not raw_path:
             return {"ok": False, "error": "Falta el parámetro 'path'."}
-        if _is_external_host_path(str(raw_path)):
+        norm_path, is_ext = _try_relativize_workspace_host_path(self.workspace_root, str(raw_path))
+        if is_ext:
             return self._require_bridge(
                 "host_fs_mkdir",
                 "extfs",
-                {"path": str(raw_path).strip()},
+                {"path": norm_path},
                 "Crear carpetas en rutas del equipo requiere sesión de escritorio con Guardián activo.",
             )
-        target, clean_rel, top_zone = resolve_workspace_path(self.workspace_root, str(raw_path))
+        target, clean_rel, top_zone = resolve_workspace_path(self.workspace_root, norm_path)
+        if _has_hidden_component(clean_rel):
+            return {"ok": False, "error": "No se permiten carpetas ocultas del sistema dentro del workspace."}
         if top_zone not in AUTONOMOUS_WRITE_ROOTS:
             return {
                 "ok": False,
@@ -1454,14 +1829,17 @@ class WorkspaceToolExecutor:
         content = args.get("content")
         if not raw_path or content is None:
             return {"ok": False, "error": "Faltan 'path' o 'content'."}
-        if _is_external_host_path(str(raw_path)):
+        norm_path, is_ext = _try_relativize_workspace_host_path(self.workspace_root, str(raw_path))
+        if is_ext:
             return self._require_bridge(
                 "host_fs_write",
                 "extfs",
-                {"path": str(raw_path).strip(), "content": str(content)},
+                {"path": norm_path, "content": str(content)},
                 "Escribir archivos fuera del espacio de trabajo requiere sesión de escritorio con Guardián activo.",
             )
-        target, clean_rel, top_zone = resolve_workspace_path(self.workspace_root, str(raw_path))
+        target, clean_rel, top_zone = resolve_workspace_path(self.workspace_root, norm_path)
+        if _has_hidden_component(clean_rel):
+            return {"ok": False, "error": f"Ruta interna u oculta protegida: {clean_rel}"}
         if top_zone not in AUTONOMOUS_WRITE_ROOTS:
             return {
                 "ok": False,
@@ -1470,14 +1848,20 @@ class WorkspaceToolExecutor:
                     "para preparar cambios con aprobación HITL."
                 ),
             }
-        if clean_rel.endswith("decisiones.jsonl") or clean_rel.endswith("patrones.json"):
+        clean_low = _normalize_rel_for_compare(clean_rel).lower()
+        if clean_low in PROTECTED_STRUCTURAL_DIRS or target.is_dir():
+            return {"ok": False, "error": f"`{clean_rel}` es una carpeta estructural protegida."}
+        if clean_low in ("memoria/decisiones.jsonl", "memoria/patrones.json"):
             return {
                 "ok": False,
                 "error": "Los registros estructurados de memoria los gestiona el sistema tras HITL.",
             }
-        _write_atomic(target, str(content))
+        body = str(content)
+        if err := _validate_protected_file_content(clean_rel, body):
+            return {"ok": False, "error": err}
+        _write_atomic(target, body)
         self._emit_workspace_changed(clean_rel, "write_file")
-        return {"ok": True, "path": clean_rel, "bytes_written": len(str(content).encode("utf-8"))}
+        return {"ok": True, "path": clean_rel, "bytes_written": len(body.encode("utf-8"))}
 
     def _tool_edit_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
         raw_path = args.get("path")
@@ -1491,8 +1875,8 @@ class WorkspaceToolExecutor:
         if not old_str:
             return {"ok": False, "error": "El parámetro 'old_text' no puede estar vacío."}
 
-        raw_str = str(raw_path).strip()
-        if _is_external_host_path(raw_str):
+        raw_str, is_ext = _try_relativize_workspace_host_path(self.workspace_root, str(raw_path))
+        if is_ext:
             return self._require_bridge(
                 "host_fs_edit",
                 "extfs",
@@ -1506,9 +1890,10 @@ class WorkspaceToolExecutor:
             )
 
         target, clean_rel, top_zone = resolve_workspace_path(self.workspace_root, raw_str)
-        if top_zone in READ_SEARCH_EXCLUDED_ROOTS:
-            return {"ok": False, "error": f"Ruta reservada no editable: {clean_rel}"}
-        if clean_rel.endswith("decisiones.jsonl") or clean_rel.endswith("patrones.json"):
+        if top_zone in READ_SEARCH_EXCLUDED_ROOTS or _has_hidden_component(clean_rel):
+            return {"ok": False, "error": f"Ruta reservada u oculta no editable: {clean_rel}"}
+        clean_low = _normalize_rel_for_compare(clean_rel).lower()
+        if clean_low in ("memoria/decisiones.jsonl", "memoria/patrones.json"):
             return {
                 "ok": False,
                 "error": "Los registros estructurados de memoria los gestiona el sistema tras HITL.",
@@ -1536,6 +1921,8 @@ class WorkspaceToolExecutor:
             })
         if top_zone not in AUTONOMOUS_WRITE_ROOTS:
             return {"ok": False, "error": f"Zona no editable directamente: {clean_rel}"}
+        if err := _validate_protected_file_content(clean_rel, updated):
+            return {"ok": False, "error": err}
 
         _write_atomic(target, updated)
         self._emit_workspace_changed(clean_rel, "edit_file")
@@ -1585,6 +1972,43 @@ class WorkspaceToolExecutor:
             "staged_task_ids": added_ids,
         }
 
+    def _validate_hitl_target(
+        self,
+        raw_target: str,
+        new_content: str,
+        *,
+        allowed_roots: Tuple[str, ...] = PROTECTED_HITL_ROOTS,
+    ) -> Tuple[Optional[Tuple[Path, str, str]], Optional[str]]:
+        norm_target, is_ext = _try_relativize_workspace_host_path(self.workspace_root, raw_target)
+        roots_label = ", ".join(f"`{r}/`" for r in allowed_roots)
+        if is_ext:
+            return None, f"Esta propuesta HITL solo aplica dentro de {roots_label}."
+        target_abs, clean_target, top_zone = resolve_workspace_path(self.workspace_root, norm_target)
+        if top_zone not in allowed_roots:
+            return None, (
+                f"`{clean_target}` no está en {roots_label}. "
+                "Para `agente/` o `memoria/` usa `workspace_write_file`."
+            )
+        if _has_hidden_component(clean_target):
+            return None, f"No se permiten archivos ocultos o internos: {clean_target}"
+        clean_low = _normalize_rel_for_compare(clean_target).lower()
+        if clean_low in PROTECTED_STRUCTURAL_DIRS or target_abs.is_dir():
+            return None, f"`{clean_target}` es una carpeta estructural protegida."
+        if err := _validate_protected_file_content(clean_target, new_content):
+            return None, err
+        return (target_abs, clean_target, top_zone), None
+
+    def _stage_draft_file(self, clean_target: str, new_text: str, action_name: str) -> str:
+        ts = int(time.time())
+        draft_rel = f"agente/borradores/{ts}_{_slugify(clean_target)}.draft"
+        draft_abs, _, _ = resolve_workspace_path(self.workspace_root, draft_rel)
+        if draft_abs.exists():
+            draft_rel = f"agente/borradores/{ts}_{time.time_ns() % 1_000_000}_{_slugify(clean_target)}.draft"
+            draft_abs, _, _ = resolve_workspace_path(self.workspace_root, draft_rel)
+        _write_atomic(draft_abs, new_text)
+        self._emit_workspace_changed(draft_rel, action_name)
+        return draft_rel
+
     def _tool_propose_company_edit(self, args: Dict[str, Any]) -> Dict[str, Any]:
         raw_target = str(args.get("target_path") or "").strip()
         new_content = args.get("new_content")
@@ -1592,23 +2016,15 @@ class WorkspaceToolExecutor:
         if not raw_target or new_content is None or not reason:
             return {"ok": False, "error": "Faltan 'target_path', 'new_content' o 'reason'."}
 
-        target_abs, clean_target, top_zone = resolve_workspace_path(self.workspace_root, raw_target)
-        if top_zone not in PROTECTED_HITL_ROOTS:
-            return {
-                "ok": False,
-                "error": (
-                    f"`{clean_target}` no está en `empresa/`, `datos/` o `habilidades/`. "
-                    "Para `agente/` o `memoria/` usa `workspace_write_file`."
-                ),
-            }
-
         new_text = str(new_content)
+        resolved, err = self._validate_hitl_target(raw_target, new_text)
+        if err or not resolved:
+            return {"ok": False, "error": err or "Ruta inválida."}
+        target_abs, clean_target, _ = resolved
+
         old_text = target_abs.read_text(encoding="utf-8", errors="replace") if target_abs.is_file() else ""
         ts = int(time.time())
-        draft_rel = f"agente/borradores/{ts}_{_slugify(clean_target)}.draft"
-        draft_abs, _, _ = resolve_workspace_path(self.workspace_root, draft_rel)
-        _write_atomic(draft_abs, new_text)
-        self._emit_workspace_changed(draft_rel, "propose_company_file_edit")
+        draft_rel = self._stage_draft_file(clean_target, new_text, "propose_company_file_edit")
 
         card_id = f"edit_{ts}_{_slugify(clean_target)[:20]}"
         title = str(args.get("title") or "").strip() or f"Actualizar {clean_target}"
@@ -1680,11 +2096,55 @@ class WorkspaceToolExecutor:
         if not raw_target or not reason:
             return {"ok": False, "error": "Faltan 'target_path' o 'reason'."}
 
-        target_abs, clean_target, top_zone = resolve_workspace_path(self.workspace_root, raw_target)
+        norm_target, is_ext = _try_relativize_workspace_host_path(self.workspace_root, raw_target)
+        if is_ext:
+            return {
+                "ok": False,
+                "error": "`propose_delete_path` solo puede proponerse sobre archivos no protegidos del workspace activo.",
+            }
+        target_abs, clean_target, top_zone = resolve_workspace_path(self.workspace_root, norm_target)
         if clean_target == "." or top_zone in ("root", ""):
             return {"ok": False, "error": "No se puede proponer eliminar la raíz del espacio de trabajo."}
         if not target_abs.exists():
             return {"ok": False, "error": f"No existe `{clean_target}` en el workspace."}
+
+        if _has_hidden_component(clean_target) or clean_target.startswith("agente/.papelera"):
+            return {
+                "ok": False,
+                "error": f"`{clean_target}` es un archivo oculto o interno del sistema y no debe eliminarse.",
+            }
+        clean_low = _normalize_rel_for_compare(clean_target).lower()
+        if clean_low in PROTECTED_STRUCTURAL_DIRS:
+            return {
+                "ok": False,
+                "error": f"`{clean_target}` es una carpeta estructural obligatoria de XOOK y no puede eliminarse ni archivarse.",
+            }
+        if clean_low in PROTECTED_CORE_FILES:
+            return {
+                "ok": False,
+                "error": (
+                    f"`{clean_target}` es un archivo núcleo de operación/memoria. "
+                    "Si necesita cambios, edita su contenido (ej. con `propose_company_file_edit`) pero no lo elimines."
+                ),
+            }
+        if dep_err := _check_active_db_dependencies(self.workspace_root, clean_target, target_abs.is_dir()):
+            return {"ok": False, "error": dep_err}
+
+        rows: List[Dict[str, str]] = [
+            {"label": "Archivo o carpeta", "value": clean_target},
+            {"label": "Acción al aprobar", "value": "Mover a agente/.papelera/"},
+        ]
+        if target_abs.is_dir():
+            file_count, total_bytes = _summarize_dir_contents(target_abs)
+            rows.append({
+                "label": "Contenido incluido",
+                "value": f"{file_count} archivo(s) · {total_bytes} bytes",
+            })
+        else:
+            try:
+                rows.append({"label": "Tamaño", "value": f"{target_abs.stat().st_size} bytes"})
+            except OSError:
+                pass
 
         ts = int(time.time())
         card_id = f"del_{ts}_{_slugify(clean_target)[:20]}"
@@ -1702,10 +2162,7 @@ class WorkspaceToolExecutor:
             "blocks": [
                 {
                     "type": "kv_list",
-                    "rows": [
-                        {"label": "Archivo o carpeta", "value": clean_target},
-                        {"label": "Acción al aprobar", "value": "Mover a agente/.papelera/"},
-                    ],
+                    "rows": rows,
                 },
                 {
                     "type": "insight",
@@ -2042,6 +2499,177 @@ class WorkspaceToolExecutor:
             {"query": query},
             "La búsqueda unificada de memoria requiere la app de escritorio activa.",
         )
+
+    def _tool_learn_skill(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        likes = args.get("user_preferences") if isinstance(args.get("user_preferences"), list) else None
+        steps = args.get("workflow_steps") if isinstance(args.get("workflow_steps"), list) else None
+        donts = args.get("do_not_do") if isinstance(args.get("do_not_do"), list) else None
+        res = save_learned_skill(
+            self.workspace_root,
+            name=str(args.get("name") or ""),
+            description=str(args.get("description") or ""),
+            instructions=str(args.get("instructions") or ""),
+            role=str(args.get("role") or ""),
+            domain=str(args.get("domain") or "general"),
+            user_preferences=[str(x) for x in likes] if likes is not None else None,
+            workflow_steps=[str(x) for x in steps] if steps is not None else None,
+            do_not_do=[str(x) for x in donts] if donts is not None else None,
+        )
+        if not res.get("ok"):
+            return res
+        self._emit_workspace_changed(str(res["path"]), "learn_skill")
+        if bool(args.get("sync_global_user_profile")) and (likes or steps or donts):
+            pref_res = update_user_preferences_doc(
+                self.workspace_root,
+                likes=[str(x) for x in likes] if likes else None,
+                workflows=[str(x) for x in steps] if steps else None,
+                donts=[str(x) for x in donts] if donts else None,
+                mode="merge",
+            )
+            if pref_res.get("ok"):
+                self._emit_workspace_changed(USER_PROFILE_REL, "update_user_preferences")
+                res["user_profile_updated"] = True
+        return res
+
+    def _tool_update_user_preferences(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        likes = [str(x) for x in args["likes"]] if isinstance(args.get("likes"), list) else None
+        workflows = [str(x) for x in args["workflows"]] if isinstance(args.get("workflows"), list) else None
+        donts = [str(x) for x in args["donts"]] if isinstance(args.get("donts"), list) else None
+        if likes is None and workflows is None and donts is None:
+            return {"ok": False, "error": "Indica al menos un elemento en `likes`, `workflows` o `donts`."}
+        res = update_user_preferences_doc(
+            self.workspace_root,
+            likes=likes,
+            workflows=workflows,
+            donts=donts,
+            mode=str(args.get("mode") or "merge"),
+        )
+        if res.get("ok"):
+            self._emit_workspace_changed(USER_PROFILE_REL, "update_user_preferences")
+        return res
+
+    def _tool_discover_official_skills(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            limit = int(args.get("limit") or 6)
+        except (TypeError, ValueError):
+            limit = 6
+        return discover_official_skills(str(args.get("query") or ""), limit=limit)
+
+    def _tool_install_official_skill(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        res = install_official_skill(
+            self.workspace_root,
+            source=str(args.get("source") or ""),
+            skill_id=str(args.get("skill_id") or ""),
+            local_slug=str(args.get("local_slug") or ""),
+        )
+        if res.get("ok"):
+            self._emit_workspace_changed(str(res["path"]), "install_official_skill")
+        return res
+
+    def _tool_propose_workspace_blueprint(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        title = str(args.get("title") or "").strip()
+        summary = str(args.get("summary") or "").strip()
+        raw_changes = args.get("changes")
+        if not title or not summary or not isinstance(raw_changes, list) or not raw_changes:
+            return {"ok": False, "error": "Faltan `title`, `summary` o `changes` no vacío."}
+        if len(raw_changes) > 12:
+            return {"ok": False, "error": "Un blueprint puede proponer máximo 12 archivos por tarjeta."}
+
+        validated: List[Dict[str, str]] = []
+        seen_paths = set()
+        for idx, item in enumerate(raw_changes):
+            if not isinstance(item, dict):
+                return {"ok": False, "error": f"El elemento #{idx + 1} de `changes` debe ser un objeto."}
+            raw_target = str(item.get("target_path") or "").strip()
+            raw_content = item.get("new_content")
+            if not raw_target or raw_content is None:
+                return {"ok": False, "error": f"Falta `target_path` o `new_content` en cambio #{idx + 1}."}
+            new_text = str(raw_content)
+            resolved, err = self._validate_hitl_target(
+                raw_target,
+                new_text,
+                allowed_roots=("empresa", "datos"),
+            )
+            if err or not resolved:
+                return {"ok": False, "error": err or f"Destino inválido en cambio #{idx + 1}."}
+            target_abs, clean_target, _ = resolved
+            if clean_target in seen_paths:
+                return {"ok": False, "error": f"Ruta duplicada en el blueprint: `{clean_target}`."}
+            seen_paths.add(clean_target)
+            old_text = target_abs.read_text(encoding="utf-8", errors="replace") if target_abs.is_file() else ""
+            validated.append(
+                {
+                    "targetPath": clean_target,
+                    "newContent": new_text,
+                    "purpose": str(item.get("purpose") or "Configuración del espacio de trabajo").strip(),
+                    "statusLabel": "Actualizar" if target_abs.is_file() else "Crear",
+                    "oldPreview": (old_text.strip()[:70] + ("…" if len(old_text.strip()) > 70 else "")) or "(nuevo archivo)",
+                    "newPreview": (new_text.strip()[:70] + ("…" if len(new_text.strip()) > 70 else "")) or "(vacío)",
+                }
+            )
+
+        staged_changes: List[Dict[str, str]] = []
+        kv_rows: List[Dict[str, str]] = []
+        comp_rows: List[Dict[str, str]] = []
+        for entry in validated:
+            draft_rel = self._stage_draft_file(entry["targetPath"], entry["newContent"], "propose_workspace_blueprint")
+            staged_changes.append(
+                {
+                    "targetPath": entry["targetPath"],
+                    "draftPath": draft_rel,
+                    "newContent": entry["newContent"],
+                    "purpose": entry["purpose"],
+                }
+            )
+            kv_rows.append({"label": f"{entry['statusLabel']} {entry['targetPath']}", "value": entry["purpose"]})
+            comp_rows.append(
+                {
+                    "label": entry["targetPath"],
+                    "before": entry["oldPreview"],
+                    "after": entry["newPreview"],
+                    "tone": "positive",
+                }
+            )
+
+        ts = int(time.time())
+        card_id = f"bp_{ts}_{uuid.uuid4().hex[:6]}"
+        proposal = sanitize_task_proposal(
+            {
+                "cardId": card_id,
+                "dedupKey": f"blueprint:{_slugify(title)[:40]}",
+                "title": title,
+                "subtitle": summary,
+                "category": "regla",
+                "urgency": "media",
+                "statusChip": f"Arquitectura ({len(staged_changes)} archivos)",
+                "defaultExpanded": True,
+                "generatedBy": "Xox Co-Constructor",
+                "blocks": [
+                    {"type": "kv_list", "rows": kv_rows[:12]},
+                    {"type": "comparison", "rows": comp_rows[:6]},
+                    {"type": "insight", "text": summary, "source": "Blueprint unificado pendiente de aprobación HITL"},
+                ],
+                "intent": {
+                    "type": "apply_rule",
+                    "targetLabel": ", ".join(c["targetPath"] for c in staged_changes[:3]),
+                    "primaryLabel": "Aplicar estructura",
+                },
+                "paramValues": {},
+                "stagingPayload": {
+                    "kind": "blueprint",
+                    "changes": staged_changes,
+                },
+            }
+        )
+        if proposal:
+            self.staged_tasks.append(proposal)
+        return {
+            "ok": True,
+            "staged_card_id": card_id,
+            "files_count": len(staged_changes),
+            "files": [c["targetPath"] for c in staged_changes],
+            "note": "Propuesta agrupada lista para revisión y aprobación visual HITL del usuario.",
+        }
 
 
 

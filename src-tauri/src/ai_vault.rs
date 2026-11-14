@@ -7,13 +7,16 @@ use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 const VAULT_FILENAME: &str = "ai-vault.json";
+const USAGE_LEDGER_FILENAME: &str = "ai-usage-ledger.json";
 const DEFAULT_PROVIDER: &str = "openrouter";
 const DEFAULT_MODEL_ID: &str = "openrouter/free";
 pub const AI_CONFIG_UPDATED_EVENT: &str = "xox-ai-config-updated";
+pub const AI_USAGE_UPDATED_EVENT: &str = "xox-ai-usage-updated";
 
-const SUPPORTED_PROVIDERS: [&str; 6] = [
+const SUPPORTED_PROVIDERS: [&str; 7] = [
     "openrouter",
     "deepseek",
+    "kimi",
     "groq",
     "gemini",
     "openai",
@@ -32,6 +35,7 @@ pub(crate) fn normalize_provider_id(raw: &str) -> &'static str {
     let clean = raw.trim().to_ascii_lowercase();
     match clean.as_str() {
         "deepseek" => "deepseek",
+        "kimi" | "moonshot" | "moonshot-ai" | "moonshot_ai" | "moonshotai" | "moonshot-cn" | "moonshot_cn" => "kimi",
         "groq" => "groq",
         "gemini" | "google" | "google_ai" | "google-gemini" | "aistudio" => "gemini",
         "openai" | "gpt" => "openai",
@@ -43,6 +47,7 @@ pub(crate) fn normalize_provider_id(raw: &str) -> &'static str {
 fn default_model_for_provider(provider: &str) -> &'static str {
     match normalize_provider_id(provider) {
         "deepseek" => "deepseek-flash",
+        "kimi" => "kimi-k3.1-pro",
         "groq" => "openai/gpt-oss-120b",
         "gemini" => "gemini-2.5-flash-lite",
         "openai" => "gpt-4.1-mini",
@@ -54,6 +59,7 @@ fn default_model_for_provider(provider: &str) -> &'static str {
 fn provider_env_vars(provider: &str) -> &'static [&'static str] {
     match normalize_provider_id(provider) {
         "deepseek" => &["DEEPSEEK_API_KEY"],
+        "kimi" => &["MOONSHOT_API_KEY", "KIMI_API_KEY"],
         "groq" => &["GROQ_API_KEY"],
         "gemini" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
@@ -65,6 +71,7 @@ fn provider_env_vars(provider: &str) -> &'static [&'static str] {
 fn provider_display_name(provider: &str) -> &'static str {
     match normalize_provider_id(provider) {
         "deepseek" => "DeepSeek",
+        "kimi" => "Kimi (Moonshot)",
         "groq" => "Groq",
         "gemini" => "Google Gemini",
         "openai" => "OpenAI",
@@ -88,6 +95,8 @@ struct StoredProviderEntry {
     quota_status: Option<String>,
     #[serde(default)]
     quota_reason: Option<String>,
+    #[serde(default)]
+    api_region: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +151,7 @@ pub struct ProviderPublicStatus {
     pub cooldown_until_ms: Option<i64>,
     pub quota_status: String, // "ready" | "cooldown" | "exhausted" | "auth_error"
     pub quota_reason: Option<String>,
+    pub api_region: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -170,6 +180,7 @@ pub struct SaveAiConfigPayload {
     pub auto_failover: Option<bool>,
     pub failover_order: Option<Vec<String>>,
     pub clear_cooldown: Option<bool>,
+    pub api_region: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -453,12 +464,14 @@ fn build_provider_credentials_json(vault: &StoredAiVault) -> serde_json::Map<Str
         let cooldown_until_ms = entry
             .and_then(|e| e.cooldown_until_ms)
             .filter(|ts| *ts > now_ms);
+        let region = entry.and_then(|e| e.api_region.clone());
         map.insert(
             pid.to_string(),
             serde_json::json!({
                 "api_key": api_key,
                 "model_id": model_id,
                 "cooldown_until_ms": cooldown_until_ms,
+                "region": region,
             }),
         );
     }
@@ -495,6 +508,7 @@ fn to_public_config(vault: &StoredAiVault) -> AiConfigPublic {
         } else {
             None
         };
+        let api_region = entry.and_then(|e| e.api_region.clone());
 
         configured_providers.insert(
             pid.to_string(),
@@ -508,6 +522,7 @@ fn to_public_config(vault: &StoredAiVault) -> AiConfigPublic {
                 cooldown_until_ms: active_cd,
                 quota_status,
                 quota_reason,
+                api_region,
             },
         );
     }
@@ -820,6 +835,11 @@ pub fn save_ai_config<R: Runtime>(
             entry.quota_status = None;
             entry.quota_reason = None;
         }
+
+        if let Some(region_raw) = payload.api_region {
+            let trimmed = region_raw.trim().to_string();
+            entry.api_region = if trimmed.is_empty() { None } else { Some(trimmed) };
+        }
     }
 
     if let Some(active_pid) = switching_provider {
@@ -873,20 +893,29 @@ pub async fn test_ai_connection<R: Runtime>(
             "message": format!("No hay una clave API de {} guardada en la bóveda.", provider_display_name(&target_pid)),
         }));
     };
+    let region = vault
+        .providers
+        .get(&target_pid)
+        .and_then(|e| e.api_region.clone());
 
     let script = find_sidecar_script(&app)?;
-    tokio::task::spawn_blocking(move || {
+    let pid_for_ledger = target_pid.clone();
+    let res = tokio::task::spawn_blocking(move || {
         call_python_sidecar(
             &script,
             "test_ai_key",
             serde_json::json!({
                 "provider": target_pid,
                 "api_key": api_key,
+                "region": region,
             }),
         )
     })
     .await
-    .map_err(|e| format!("Error de concurrencia: {e}"))?
+    .map_err(|e| format!("Error de concurrencia: {e}"))??;
+
+    record_test_result_in_ledger(&app, &pid_for_ledger, &res);
+    Ok(res)
 }
 
 #[tauri::command]
@@ -904,6 +933,10 @@ pub async fn fetch_openrouter_models<R: Runtime>(
         .unwrap_or_else(|| normalize_provider_id(&vault.provider))
         .to_string();
     let (maybe_key, _) = resolve_provider_key(&vault, &target_pid);
+    let region = vault
+        .providers
+        .get(&target_pid)
+        .and_then(|e| e.api_region.clone());
     let script = find_sidecar_script(&app)?;
     let only_free = free_only.unwrap_or(false);
 
@@ -915,6 +948,7 @@ pub async fn fetch_openrouter_models<R: Runtime>(
                 "provider": target_pid,
                 "api_key": maybe_key,
                 "free_only": only_free,
+                "region": region,
             }),
         )
     })
@@ -966,6 +1000,10 @@ pub async fn run_xox_chat<R: Runtime>(
         default_entry_model
     };
     let provider_credentials = build_provider_credentials_json(&vault);
+    let provider_region = vault
+        .providers
+        .get(&effective_provider)
+        .and_then(|e| e.api_region.clone());
     let auto_failover = vault.auto_failover;
     let failover_order = vault.failover_order.clone();
     let app_for_sync = app.clone();
@@ -977,6 +1015,7 @@ pub async fn run_xox_chat<R: Runtime>(
             "ai_chat",
             serde_json::json!({
                 "provider": effective_provider,
+                "provider_region": provider_region,
                 "api_key": api_key,
                 "model_id": model_id,
                 "provider_credentials": provider_credentials,
@@ -1001,6 +1040,7 @@ pub async fn run_xox_chat<R: Runtime>(
     .map_err(|e| format!("Error de concurrencia: {e}"))??;
 
     sync_vault_from_sidecar_result(&app_for_sync, &result, &eff_for_sync);
+    record_chat_turn_in_ledger(&app_for_sync, &result, &eff_for_sync);
     Ok(result)
 }
 
@@ -3646,6 +3686,10 @@ pub async fn run_xox_chat_stream<R: Runtime>(
         .stream_id
         .unwrap_or_else(|| format!("str_{}", chrono::Utc::now().timestamp_millis()));
     let provider_credentials = build_provider_credentials_json(&vault);
+    let provider_region = vault
+        .providers
+        .get(&effective_provider)
+        .and_then(|e| e.api_region.clone());
     let auto_failover = vault.auto_failover;
     let failover_order = vault.failover_order.clone();
 
@@ -3659,6 +3703,7 @@ pub async fn run_xox_chat_stream<R: Runtime>(
             serde_json::json!({
                 "stream_id": stream_id,
                 "provider": effective_provider,
+                "provider_region": provider_region,
                 "api_key": api_key,
                 "model_id": model_id,
                 "provider_credentials": provider_credentials,
@@ -3683,6 +3728,600 @@ pub async fn run_xox_chat_stream<R: Runtime>(
     .map_err(|e| format!("Error de concurrencia: {e}"))??;
 
     sync_vault_from_sidecar_result(&app_for_sync, &result, &eff_for_sync);
+    record_chat_turn_in_ledger(&app_for_sync, &result, &eff_for_sync);
     Ok(result)
+}
+
+static USAGE_LEDGER_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+fn usage_ledger_mutex() -> &'static std::sync::Mutex<()> {
+    USAGE_LEDGER_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRateLimitsSnapshot {
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub updated_at_ms: Option<i64>,
+    #[serde(default)]
+    pub rpm_limit: Option<u64>,
+    #[serde(default)]
+    pub rpm_remaining: Option<u64>,
+    #[serde(default)]
+    pub rpm_reset_at_ms: Option<i64>,
+    #[serde(default)]
+    pub tpm_limit: Option<u64>,
+    #[serde(default)]
+    pub tpm_remaining: Option<u64>,
+    #[serde(default)]
+    pub tpm_reset_at_ms: Option<i64>,
+    #[serde(default)]
+    pub itpm_limit: Option<u64>,
+    #[serde(default)]
+    pub itpm_remaining: Option<u64>,
+    #[serde(default)]
+    pub otpm_limit: Option<u64>,
+    #[serde(default)]
+    pub otpm_remaining: Option<u64>,
+    #[serde(default)]
+    pub retry_after_sec: Option<f64>,
+    #[serde(default)]
+    pub daily_limit: Option<u64>,
+    #[serde(default)]
+    pub daily_remaining: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderBalanceSnapshot {
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub balance_raw: Option<f64>,
+    #[serde(default)]
+    pub balance_usd: Option<f64>,
+    #[serde(default)]
+    pub credits_remaining: Option<f64>,
+    #[serde(default)]
+    pub credits_total: Option<f64>,
+    #[serde(default)]
+    pub credits_usage: Option<f64>,
+    #[serde(default)]
+    pub balance_granted: Option<f64>,
+    #[serde(default)]
+    pub balance_topped_up: Option<f64>,
+    #[serde(default)]
+    pub limit: Option<f64>,
+    #[serde(default)]
+    pub limit_remaining: Option<f64>,
+    #[serde(default)]
+    pub limit_reset: Option<String>,
+    #[serde(default)]
+    pub is_free_tier: Option<bool>,
+    #[serde(default)]
+    pub can_use_paid_models: Option<bool>,
+    #[serde(default)]
+    pub api_usage_daily: Option<f64>,
+    #[serde(default)]
+    pub api_usage_monthly: Option<f64>,
+    #[serde(default)]
+    pub updated_at_ms: Option<i64>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderLimitConfig {
+    #[serde(default)]
+    pub monthly_budget_usd: Option<f64>,
+    #[serde(default)]
+    pub daily_request_limit: Option<u64>,
+    #[serde(default)]
+    pub rpm_limit: Option<u64>,
+    #[serde(default)]
+    pub tier_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsageEntry {
+    pub provider: String,
+    #[serde(default)]
+    pub today_date: String,
+    #[serde(default)]
+    pub today_requests: u64,
+    #[serde(default)]
+    pub today_prompt_tokens: u64,
+    #[serde(default)]
+    pub today_completion_tokens: u64,
+    #[serde(default)]
+    pub today_cached_tokens: u64,
+    #[serde(default)]
+    pub today_cost_usd: f64,
+    #[serde(default)]
+    pub month_key: String,
+    #[serde(default)]
+    pub month_requests: u64,
+    #[serde(default)]
+    pub month_prompt_tokens: u64,
+    #[serde(default)]
+    pub month_completion_tokens: u64,
+    #[serde(default)]
+    pub month_cached_tokens: u64,
+    #[serde(default)]
+    pub month_cost_usd: f64,
+    #[serde(default)]
+    pub recent_request_timestamps_ms: Vec<i64>,
+    #[serde(default)]
+    pub current_rpm: u64,
+    #[serde(default)]
+    pub last_model_id: Option<String>,
+    #[serde(default)]
+    pub last_request_at_ms: Option<i64>,
+    #[serde(default)]
+    pub rate_limits: Option<ProviderRateLimitsSnapshot>,
+    #[serde(default)]
+    pub balance: Option<ProviderBalanceSnapshot>,
+    #[serde(default)]
+    pub limits: ProviderLimitConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredUsageLedger {
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderUsageEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetProviderLimitsPayload {
+    pub provider: String,
+    pub monthly_budget_usd: Option<f64>,
+    pub daily_request_limit: Option<u64>,
+    pub rpm_limit: Option<u64>,
+    pub tier_mode: Option<String>,
+}
+
+fn usage_ledger_file_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join(USAGE_LEDGER_FILENAME))
+}
+
+fn local_day_and_month_keys() -> (String, String, i64) {
+    let now_local = chrono::Local::now();
+    let day = now_local.format("%Y-%m-%d").to_string();
+    let month = now_local.format("%Y-%m").to_string();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    (day, month, now_ms)
+}
+
+fn normalize_usage_ledger_at(ledger: &mut StoredUsageLedger, day_key: &str, month_key: &str, now_ms: i64) {
+    let mut normalized: HashMap<String, ProviderUsageEntry> = HashMap::new();
+    for (raw_pid, mut entry) in std::mem::take(&mut ledger.providers) {
+        let pid = normalize_provider_id(&raw_pid).to_string();
+        entry.provider = pid.clone();
+        if entry.today_date != day_key {
+            entry.today_date = day_key.to_string();
+            entry.today_requests = 0;
+            entry.today_prompt_tokens = 0;
+            entry.today_completion_tokens = 0;
+            entry.today_cached_tokens = 0;
+            entry.today_cost_usd = 0.0;
+        }
+        if entry.month_key != month_key {
+            entry.month_key = month_key.to_string();
+            entry.month_requests = 0;
+            entry.month_prompt_tokens = 0;
+            entry.month_completion_tokens = 0;
+            entry.month_cached_tokens = 0;
+            entry.month_cost_usd = 0.0;
+        }
+        let window_start = now_ms - 60_000;
+        entry
+            .recent_request_timestamps_ms
+            .retain(|ts| *ts >= window_start && *ts <= now_ms + 5_000);
+        entry.current_rpm = entry.recent_request_timestamps_ms.len() as u64;
+        normalized.insert(pid, entry);
+    }
+
+    for pid in SUPPORTED_PROVIDERS {
+        normalized
+            .entry(pid.to_string())
+            .or_insert_with(|| ProviderUsageEntry {
+                provider: pid.to_string(),
+                today_date: day_key.to_string(),
+                month_key: month_key.to_string(),
+                ..Default::default()
+            });
+    }
+    ledger.providers = normalized;
+}
+
+fn load_usage_ledger<R: Runtime>(app: &AppHandle<R>) -> StoredUsageLedger {
+    let mut ledger = usage_ledger_file_path(app)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|raw| serde_json::from_str::<StoredUsageLedger>(&raw).ok())
+        .unwrap_or_default();
+    let (day, month, now_ms) = local_day_and_month_keys();
+    normalize_usage_ledger_at(&mut ledger, &day, &month, now_ms);
+    ledger
+}
+
+fn write_usage_ledger<R: Runtime>(app: &AppHandle<R>, ledger: &StoredUsageLedger) -> Result<(), String> {
+    let path = usage_ledger_file_path(app)
+        .ok_or_else(|| "No se pudo resolver app_config_dir para historial de uso".to_string())?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Error creando directorio de uso: {e}"))?;
+    }
+    let body = serde_json::to_string_pretty(ledger)
+        .map_err(|e| format!("Error serializando uso IA: {e}"))?;
+    fs::write(&path, body).map_err(|e| format!("Error escribiendo ledger de uso IA: {e}"))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+fn parse_rate_limits_from_json(raw: &serde_json::Value) -> Option<ProviderRateLimitsSnapshot> {
+    let obj = raw.as_object()?;
+    let snap = ProviderRateLimitsSnapshot {
+        source: obj.get("source").and_then(|v| v.as_str()).map(str::to_string),
+        updated_at_ms: obj.get("updated_at_ms").and_then(|v| v.as_i64()),
+        rpm_limit: obj.get("rpm_limit").and_then(|v| v.as_u64()),
+        rpm_remaining: obj.get("rpm_remaining").and_then(|v| v.as_u64()),
+        rpm_reset_at_ms: obj.get("rpm_reset_at_ms").and_then(|v| v.as_i64()),
+        tpm_limit: obj.get("tpm_limit").and_then(|v| v.as_u64()),
+        tpm_remaining: obj.get("tpm_remaining").and_then(|v| v.as_u64()),
+        tpm_reset_at_ms: obj.get("tpm_reset_at_ms").and_then(|v| v.as_i64()),
+        itpm_limit: obj.get("itpm_limit").and_then(|v| v.as_u64()),
+        itpm_remaining: obj.get("itpm_remaining").and_then(|v| v.as_u64()),
+        otpm_limit: obj.get("otpm_limit").and_then(|v| v.as_u64()),
+        otpm_remaining: obj.get("otpm_remaining").and_then(|v| v.as_u64()),
+        retry_after_sec: obj.get("retry_after_sec").and_then(|v| v.as_f64()),
+        daily_limit: obj.get("daily_limit").and_then(|v| v.as_u64()),
+        daily_remaining: obj.get("daily_remaining").and_then(|v| v.as_u64()),
+    };
+    if snap.rpm_limit.is_some()
+        || snap.rpm_remaining.is_some()
+        || snap.tpm_limit.is_some()
+        || snap.tpm_remaining.is_some()
+        || snap.daily_limit.is_some()
+        || snap.retry_after_sec.is_some()
+    {
+        Some(snap)
+    } else {
+        None
+    }
+}
+
+fn apply_chat_turn_to_ledger(
+    ledger: &mut StoredUsageLedger,
+    provider_id: &str,
+    result_val: &serde_json::Value,
+    day_key: &str,
+    month_key: &str,
+    now_ms: i64,
+) {
+    normalize_usage_ledger_at(ledger, day_key, month_key, now_ms);
+    let pid = normalize_provider_id(provider_id).to_string();
+    let entry = ledger.providers.entry(pid.clone()).or_insert_with(|| ProviderUsageEntry {
+        provider: pid,
+        today_date: day_key.to_string(),
+        month_key: month_key.to_string(),
+        ..Default::default()
+    });
+
+    entry.today_requests = entry.today_requests.saturating_add(1);
+    entry.month_requests = entry.month_requests.saturating_add(1);
+    entry.recent_request_timestamps_ms.push(now_ms);
+    let window_start = now_ms - 60_000;
+    entry
+        .recent_request_timestamps_ms
+        .retain(|ts| *ts >= window_start && *ts <= now_ms + 5_000);
+    entry.current_rpm = entry.recent_request_timestamps_ms.len() as u64;
+    entry.last_request_at_ms = Some(now_ms);
+    if let Some(m) = result_val.get("model_used").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
+        entry.last_model_id = Some(m.to_string());
+    }
+
+    if let Some(usage) = result_val.get("usage").and_then(|v| v.as_object()) {
+        let prompt_tok = usage
+            .get("prompt_tokens")
+            .or_else(|| usage.get("input_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let completion_tok = usage
+            .get("completion_tokens")
+            .or_else(|| usage.get("output_tokens"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cached_tok = usage
+            .get("cached_tokens")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                usage
+                    .get("prompt_tokens_details")
+                    .and_then(|d| d.get("cached_tokens"))
+                    .and_then(|v| v.as_u64())
+            })
+            .unwrap_or(0);
+        let cost_usd = usage
+            .get("estimated_cost_usd")
+            .or_else(|| usage.get("cost"))
+            .and_then(|v| v.as_f64())
+            .filter(|c| c.is_finite() && *c >= 0.0)
+            .unwrap_or(0.0);
+
+        entry.today_prompt_tokens = entry.today_prompt_tokens.saturating_add(prompt_tok);
+        entry.today_completion_tokens = entry.today_completion_tokens.saturating_add(completion_tok);
+        entry.today_cached_tokens = entry.today_cached_tokens.saturating_add(cached_tok);
+        entry.today_cost_usd = ((entry.today_cost_usd + cost_usd) * 100_000_000.0).round() / 100_000_000.0;
+
+        entry.month_prompt_tokens = entry.month_prompt_tokens.saturating_add(prompt_tok);
+        entry.month_completion_tokens = entry.month_completion_tokens.saturating_add(completion_tok);
+        entry.month_cached_tokens = entry.month_cached_tokens.saturating_add(cached_tok);
+        entry.month_cost_usd = ((entry.month_cost_usd + cost_usd) * 100_000_000.0).round() / 100_000_000.0;
+    }
+
+    if let Some(rl_val) = result_val.get("rate_limits") {
+        if let Some(rl) = parse_rate_limits_from_json(rl_val) {
+            entry.rate_limits = Some(rl);
+        }
+    }
+}
+
+fn apply_test_result_to_ledger(
+    ledger: &mut StoredUsageLedger,
+    provider_id: &str,
+    test_val: &serde_json::Value,
+    day_key: &str,
+    month_key: &str,
+    now_ms: i64,
+) {
+    normalize_usage_ledger_at(ledger, day_key, month_key, now_ms);
+    let pid = normalize_provider_id(provider_id).to_string();
+    let entry = ledger.providers.entry(pid.clone()).or_insert_with(|| ProviderUsageEntry {
+        provider: pid,
+        today_date: day_key.to_string(),
+        month_key: month_key.to_string(),
+        ..Default::default()
+    });
+
+    if let Some(rl_val) = test_val.get("rate_limits") {
+        if let Some(rl) = parse_rate_limits_from_json(rl_val) {
+            entry.rate_limits = Some(rl);
+        }
+    }
+
+    let ok = test_val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if ok {
+        let balance_usd = test_val.get("balance_usd").and_then(|v| v.as_f64());
+        let credits_remaining = test_val.get("credits_remaining").and_then(|v| v.as_f64());
+        let balance_raw = test_val
+            .get("balance_raw")
+            .and_then(|v| v.as_f64())
+            .or(balance_usd)
+            .or(credits_remaining);
+        let currency = test_val
+            .get("balance_currency")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| if balance_usd.is_some() || credits_remaining.is_some() { Some("USD".to_string()) } else { None });
+        let bal_snap = ProviderBalanceSnapshot {
+            currency,
+            balance_raw,
+            balance_usd: balance_usd.or(credits_remaining),
+            credits_remaining: credits_remaining.or(balance_usd),
+            credits_total: test_val.get("credits_total").and_then(|v| v.as_f64()),
+            credits_usage: test_val.get("credits_usage").and_then(|v| v.as_f64()),
+            balance_granted: test_val.get("balance_granted").and_then(|v| v.as_f64()),
+            balance_topped_up: test_val.get("balance_topped_up").and_then(|v| v.as_f64()),
+            limit: test_val.get("limit").and_then(|v| v.as_f64()),
+            limit_remaining: test_val.get("limit_remaining").and_then(|v| v.as_f64()),
+            limit_reset: test_val.get("limit_reset").and_then(|v| v.as_str()).map(str::to_string),
+            is_free_tier: test_val.get("is_free_tier").and_then(|v| v.as_bool()),
+            can_use_paid_models: test_val.get("can_use_paid_models").and_then(|v| v.as_bool()),
+            api_usage_daily: test_val.get("usage_daily").and_then(|v| v.as_f64()),
+            api_usage_monthly: test_val.get("usage_monthly").and_then(|v| v.as_f64()),
+            updated_at_ms: Some(now_ms),
+            source: test_val.get("rate_limit_source").and_then(|v| v.as_str()).map(str::to_string),
+        };
+        entry.balance = Some(bal_snap);
+    }
+}
+
+fn record_chat_turn_in_ledger<R: Runtime>(
+    app: &AppHandle<R>,
+    result_val: &serde_json::Value,
+    fallback_provider: &str,
+) {
+    let used_pid = result_val
+        .get("provider_used")
+        .and_then(|v| v.as_str())
+        .map(normalize_provider_id)
+        .unwrap_or_else(|| normalize_provider_id(fallback_provider));
+    let Ok(_guard) = usage_ledger_mutex().lock() else {
+        return;
+    };
+    let mut ledger = load_usage_ledger(app);
+    let (day, month, now_ms) = local_day_and_month_keys();
+    apply_chat_turn_to_ledger(&mut ledger, used_pid, result_val, &day, &month, now_ms);
+    if write_usage_ledger(app, &ledger).is_ok() {
+        let _ = app.emit(AI_USAGE_UPDATED_EVENT, &ledger);
+    }
+}
+
+fn record_test_result_in_ledger<R: Runtime>(
+    app: &AppHandle<R>,
+    provider_id: &str,
+    test_val: &serde_json::Value,
+) {
+    let Ok(_guard) = usage_ledger_mutex().lock() else {
+        return;
+    };
+    let mut ledger = load_usage_ledger(app);
+    let (day, month, now_ms) = local_day_and_month_keys();
+    apply_test_result_to_ledger(&mut ledger, provider_id, test_val, &day, &month, now_ms);
+    if write_usage_ledger(app, &ledger).is_ok() {
+        let _ = app.emit(AI_USAGE_UPDATED_EVENT, &ledger);
+    }
+}
+
+#[tauri::command]
+pub fn get_ai_usage_ledger<R: Runtime>(app: AppHandle<R>) -> StoredUsageLedger {
+    let Ok(_guard) = usage_ledger_mutex().lock() else {
+        return StoredUsageLedger::default();
+    };
+    load_usage_ledger(&app)
+}
+
+#[tauri::command]
+pub fn set_provider_usage_limits<R: Runtime>(
+    app: AppHandle<R>,
+    payload: SetProviderLimitsPayload,
+) -> Result<StoredUsageLedger, String> {
+    let Ok(_guard) = usage_ledger_mutex().lock() else {
+        return Err("No se pudo bloquear el historial de límites.".to_string());
+    };
+    let pid = normalize_provider_id(&payload.provider).to_string();
+    let mut ledger = load_usage_ledger(&app);
+    let (day, month, _) = local_day_and_month_keys();
+    let entry = ledger.providers.entry(pid.clone()).or_insert_with(|| ProviderUsageEntry {
+        provider: pid,
+        today_date: day,
+        month_key: month,
+        ..Default::default()
+    });
+    entry.limits = ProviderLimitConfig {
+        monthly_budget_usd: payload.monthly_budget_usd.filter(|v| v.is_finite() && *v > 0.0),
+        daily_request_limit: payload.daily_request_limit.filter(|v| *v > 0),
+        rpm_limit: payload.rpm_limit.filter(|v| *v > 0),
+        tier_mode: payload
+            .tier_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| matches!(*s, "free" | "paid"))
+            .map(str::to_string),
+    };
+    write_usage_ledger(&app, &ledger)?;
+    let _ = app.emit(AI_USAGE_UPDATED_EVENT, &ledger);
+    Ok(ledger)
+}
+
+#[tauri::command]
+pub fn reset_provider_usage_ledger<R: Runtime>(
+    app: AppHandle<R>,
+    provider: Option<String>,
+) -> Result<StoredUsageLedger, String> {
+    let Ok(_guard) = usage_ledger_mutex().lock() else {
+        return Err("No se pudo bloquear el historial de límites.".to_string());
+    };
+    let mut ledger = load_usage_ledger(&app);
+    let target = provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_provider_id);
+    for (pid, entry) in ledger.providers.iter_mut() {
+        if target.map(|t| t == pid).unwrap_or(true) {
+            entry.today_requests = 0;
+            entry.today_prompt_tokens = 0;
+            entry.today_completion_tokens = 0;
+            entry.today_cached_tokens = 0;
+            entry.today_cost_usd = 0.0;
+            entry.month_requests = 0;
+            entry.month_prompt_tokens = 0;
+            entry.month_completion_tokens = 0;
+            entry.month_cached_tokens = 0;
+            entry.month_cost_usd = 0.0;
+            entry.recent_request_timestamps_ms.clear();
+            entry.current_rpm = 0;
+        }
+    }
+    write_usage_ledger(&app, &ledger)?;
+    let _ = app.emit(AI_USAGE_UPDATED_EVENT, &ledger);
+    Ok(ledger)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_kimi_and_moonshot_aliases() {
+        assert_eq!(normalize_provider_id("kimi"), "kimi");
+        assert_eq!(normalize_provider_id("Moonshot"), "kimi");
+        assert_eq!(normalize_provider_id("moonshot-ai"), "kimi");
+        assert_eq!(normalize_provider_id("moonshot-cn"), "kimi");
+        assert_eq!(default_model_for_provider("kimi"), "kimi-k3.1-pro");
+        assert_eq!(SUPPORTED_PROVIDERS.len(), 7);
+    }
+
+    #[test]
+    fn ledger_tracks_rpm_rollover_and_cost() {
+        let mut ledger = StoredUsageLedger::default();
+        let res = serde_json::json!({
+            "provider_used": "deepseek",
+            "model_used": "deepseek-flash",
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+                "cached_tokens": 200,
+                "estimated_cost_usd": 0.00042,
+            },
+            "rate_limits": {
+                "source": "api_headers",
+                "rpm_limit": 60,
+                "rpm_remaining": 59,
+            }
+        });
+        apply_chat_turn_to_ledger(&mut ledger, "deepseek", &res, "2026-11-14", "2026-11", 1_000_000);
+        apply_chat_turn_to_ledger(&mut ledger, "deepseek", &res, "2026-11-14", "2026-11", 1_020_000);
+        let ds = ledger.providers.get("deepseek").expect("deepseek entry");
+        assert_eq!(ds.today_requests, 2);
+        assert_eq!(ds.month_requests, 2);
+        assert_eq!(ds.today_prompt_tokens, 2000);
+        assert_eq!(ds.today_cached_tokens, 400);
+        assert!((ds.today_cost_usd - 0.00084).abs() < 1e-8);
+        assert_eq!(ds.current_rpm, 2);
+        assert_eq!(ds.rate_limits.as_ref().and_then(|r| r.rpm_remaining), Some(59));
+
+        // Next day resets today counters & old RPM window, keeps month totals
+        apply_chat_turn_to_ledger(&mut ledger, "deepseek", &res, "2026-11-15", "2026-11", 87_000_000);
+        let ds_next = ledger.providers.get("deepseek").expect("deepseek entry next day");
+        assert_eq!(ds_next.today_requests, 1);
+        assert_eq!(ds_next.month_requests, 3);
+        assert_eq!(ds_next.current_rpm, 1);
+    }
+
+    #[test]
+    fn ledger_stores_deepseek_and_kimi_balances() {
+        let mut ledger = StoredUsageLedger::default();
+        let kimi_test = serde_json::json!({
+            "ok": true,
+            "provider": "kimi",
+            "balance_currency": "USD",
+            "balance_raw": 14.5,
+            "balance_usd": 14.5,
+            "credits_remaining": 14.5,
+            "balance_granted": 2.0,
+            "balance_topped_up": 12.5,
+            "can_use_paid_models": true,
+            "rate_limit_source": "api_balance"
+        });
+        apply_test_result_to_ledger(&mut ledger, "kimi", &kimi_test, "2026-11-14", "2026-11", 2_000_000);
+        let k = ledger.providers.get("kimi").expect("kimi entry");
+        assert_eq!(k.balance.as_ref().and_then(|b| b.balance_usd), Some(14.5));
+        assert_eq!(k.balance.as_ref().and_then(|b| b.balance_topped_up), Some(12.5));
+    }
 }
 

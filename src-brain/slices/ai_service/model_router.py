@@ -141,13 +141,14 @@ def _classify_task_intent_base(
         r"calendario|evento|eventos|reuni[oó]n|cita|junta|disponibilidad|hueco|"
         r"recordatorios|calculadora|safari|finder|"
         r"datos/|empresa/|agente/|habilidades/|comando|consola|terminal|script|"
+        r"rol|roles|skill|skills|habilidad|habilidades|aprende|preferencias|flujo|blueprint|arquitectura|proyecto|dise[nñ]a|configura|skills\.sh|"
         r"agenda|agendar|agendame|ag[ée]ndame|programa|programar|automatiza\w*|temporizador|reloj|alarma|recordatorio|"
         r"pantalla|ventana\s+activa|captura|ves\s+en|dice\s+en|qu[eé]\s+ves|mira\s+esto|"
         r"pdf|documento|informe|reporte|portada|factura|cotizaci[oó]n|contrato|cat[aá]logo|resumir|resume|extraer|imagen|foto|logo|generar?|exportar?|"
         r"orden\s+de\s+compra|reponer|csv|json)\b"
     )
     domain_ops_re = re.compile(
-        r"\b(revisa|inventario|stock|orden|compra|memoria|recuerda|regla|empresa|proveedores?)\b"
+        r"\b(revisa|inventario|stock|orden|compra|memoria|recuerda|regla|empresa|proveedores?|proyecto|misi[oó]n|objetivo|equipo|proceso|gustos)\b"
     )
     canvas_re = re.compile(
         r"\b(tabla|comparativa|comparaci[oó]n|cuadro|canvas|matriz|cronograma|"
@@ -156,6 +157,7 @@ def _classify_task_intent_base(
     deep_re = re.compile(
         r"\b(analiza|an[aá]lisis|estrategia|rentabilidad|margen|riesgos?\s+financieros?|"
         r"costeo|pron[oó]stico|por\s+qu[eé]|diagnostica|diagn[oó]stico|plan\s+detallado|"
+        r"arquitectura|dise[nñ]o\s+de\s+sistema|roadmap|investigaci[oó]n|"
         r"auditor[ií]a|optimiza|optimizaci[oó]n|eval[uú]a|evaluaci[oó]n|recomendaciones|"
         r"paso\s+a\s+paso|a\s+profundidad|frente\s+al\s+costo)\b"
     )

@@ -19,6 +19,7 @@ import {
 import { XoxDragMotion, XoxStar, XoxState } from "./XoxStar";
 import { QuickLiquidLayer } from "./QuickLiquidLayer";
 import { LiquidGlassBackdrop } from "./LiquidGlassBackdrop";
+import { MarkdownContent, renderInlineMarkdown } from "../utils/markdownRenderer";
 import { useAnimatedPresence } from "../hooks/useAnimatedPresence";
 import {
   CanvasArtifact,
@@ -34,11 +35,13 @@ import { ProviderIcon } from "../features/ai-service/ProviderIcon";
 import {
   AiConfigStatus,
   AiConnectionTestResult,
+  AiUsageLedger,
   AttachedContextItem,
   ChatTurnMessage,
   ClarificationSpec,
   OPENROUTER_PRESET_MODELS,
   OpenRouterModelOption,
+  computeProviderUsageSummary,
   detectApiKeyInText,
   detectVaultConfigRequest,
   extractErrorMessage,
@@ -46,11 +49,14 @@ import {
   formatModelDisplay,
   formatPricePerMillion,
   getAiConfigStatus,
+  getAiUsageLedger,
   getAvailableQuickModels,
+  getLocalDailyRequestCount,
   getProviderSpec,
   incrementLocalDailyRequestCount,
   loadWorkspaceContext,
   normalizeProviderIdClient,
+  onAiUsageUpdated,
   runXoxAiChatStream,
   saveAiConfig,
   testAiConnection,
@@ -150,6 +156,11 @@ export const QuickBar: React.FC = () => {
   const [permissionItems, setPermissionItems] = useState<CommandPermissionUiItem[]>([]);
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [inputExpanded, setInputExpanded] = useState<boolean>(false);
+  const [tableScrolled, setTableScrolled] = useState<boolean>(false);
+
+  useEffect(() => {
+    setTableScrolled(false);
+  }, [summonSeq, reply === null, quickCanvas === null]);
   const [localUser, setLocalUser] = useState<LocalUserProfile | null>(null);
   const [modelId, setModelId] = useState<string>(OPENROUTER_PRESET_MODELS[0].id);
   const [aiConfig, setAiConfig] = useState<AiConfigStatus>({
@@ -163,6 +174,7 @@ export const QuickBar: React.FC = () => {
   const activeProvider = normalizeProviderIdClient(aiConfig.provider);
   const activeSpec = getProviderSpec(activeProvider);
   const [accountUsage, setAccountUsage] = useState<AiConnectionTestResult | null>(null);
+  const [usageLedger, setUsageLedger] = useState<AiUsageLedger | null>(null);
   const [liveCatalog, setLiveCatalog] = useState<OpenRouterModelOption[]>([]);
   const [unavailableModelIds, setUnavailableModelIds] = useState<Set<string>>(() => new Set());
   const [showModels, setShowModels] = useState<boolean>(false);
@@ -486,14 +498,16 @@ export const QuickBar: React.FC = () => {
 
   const refreshQuickSession = useCallback(async () => {
     try {
-      const [cfg, savedUser, scrStatus] = await Promise.all([
+      const [cfg, savedUser, scrStatus, ledger] = await Promise.all([
         getAiConfigStatus(),
         getLocalUserProfile().catch(() => null),
         getScreenReaderStatus().catch(() => null),
+        getAiUsageLedger().catch(() => null),
       ]);
       setLocalUser(savedUser);
       setAiConfig(cfg);
       if (scrStatus) setScreenStatus(scrStatus);
+      if (ledger) setUsageLedger(ledger);
       if (cfg.modelId) setModelId(cfg.modelId);
       if (cfg.hasApiKey) {
         if (!accountUsageRef.current) {
@@ -544,6 +558,14 @@ export const QuickBar: React.FC = () => {
     let unlistenHidden: (() => void) | undefined;
     let unlistenRecenter: (() => void) | undefined;
     let unlistenAiConfig: (() => void) | undefined;
+    let unlistenAiUsage: (() => void) | undefined;
+
+    void onAiUsageUpdated((ledger) => {
+      if (!cancelled) setUsageLedger(ledger);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenAiUsage = fn;
+    });
 
     (async () => {
       try {
@@ -665,6 +687,7 @@ export const QuickBar: React.FC = () => {
       unlistenHidden?.();
       unlistenRecenter?.();
       unlistenAiConfig?.();
+      unlistenAiUsage?.();
     };
   }, [
     clearActionTimers,
@@ -1106,6 +1129,7 @@ export const QuickBar: React.FC = () => {
           if (catRes.models.length > 0) setLiveCatalog(catRes.models);
         });
       }
+      void getAiUsageLedger().then(setUsageLedger).catch(() => {});
       const replyFinalText =
         res.failoverNotice && res.reply && !res.reply.includes(res.failoverNotice)
           ? `> *Respaldo automático:* ${res.failoverNotice}\n\n${res.reply}`
@@ -1262,8 +1286,17 @@ export const QuickBar: React.FC = () => {
     finishDragSession(e.currentTarget, e.pointerId);
   };
 
+  const quickUsageSummary = computeProviderUsageSummary({
+    provider: activeProvider,
+    aiConfig,
+    accountUsage,
+    usageLedger,
+    requestsTodayFallback: getLocalDailyRequestCount(aiConfig.maskedKey),
+    modelId,
+  });
+
   const canUsePaidModels =
-    activeProvider !== "openrouter" ? true : (accountUsage?.can_use_paid_models ?? false);
+    activeProvider !== "openrouter" ? true : quickUsageSummary.canUsePaid;
   const modelOptions: OpenRouterModelOption[] = useMemo(
     () =>
       getAvailableQuickModels(
@@ -1350,12 +1383,12 @@ export const QuickBar: React.FC = () => {
           dismissGracefully();
         }
       }}
-      className="w-screen h-screen bg-transparent flex items-start justify-center pt-6 px-6 select-none overflow-hidden"
+      className="w-screen h-screen bg-transparent flex items-start justify-center pt-5 px-5 select-none overflow-hidden"
     >
       {/* Envoltorio de entrada/salida independiente de la física de arrastre */}
       <div
         key={summonSeq}
-        className={`w-full max-w-[620px] ${
+        className={`w-full max-w-[740px] ${
           isLeaving ? "quick-capsule-out" : "quick-capsule-in"
         }`}
       >
@@ -1776,12 +1809,8 @@ export const QuickBar: React.FC = () => {
                           <span>{activeSpec.shortName} ({modelOptions.length})</span>
                         </span>
                         <div className="flex items-center gap-1.5 shrink-0">
-                          <span className="font-mono">
-                            {activeProvider === "openrouter"
-                              ? canUsePaidModels
-                                ? "Con saldo"
-                                : "Gratis"
-                              : activeSpec.tierBadge}
+                          <span className="font-mono tabular-nums" title={quickUsageSummary.headline}>
+                            {quickUsageSummary.shortBadge}
                           </span>
                           {modelOptions.length > 4 && (
                             <button
@@ -1858,6 +1887,35 @@ export const QuickBar: React.FC = () => {
                           </button>
                         ))}
                       </div>
+
+                      {aiConfig.hasApiKey && (
+                        <div className="relative z-[1] mt-1.5 pt-1.5 px-2 pb-0.5 border-t border-white/[0.06] space-y-1">
+                          <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-200/80">
+                            <span className="truncate">{quickUsageSummary.sourceBadge}</span>
+                            <span className="font-mono text-zinc-100 shrink-0 tabular-nums">
+                              {quickUsageSummary.headline}
+                            </span>
+                          </div>
+                          {quickUsageSummary.hasMeterBar && (
+                            <progress
+                              className="xook-usage-progress"
+                              value={Math.max(0, Math.min(100, quickUsageSummary.pct))}
+                              max={100}
+                              aria-label={`${quickUsageSummary.tierLabel}: ${quickUsageSummary.headline}`}
+                              style={{
+                                ["--xook-progress-fill" as string]:
+                                  quickUsageSummary.meterMode === "used"
+                                    ? quickUsageSummary.pct >= 85
+                                      ? "rgba(251, 191, 36, 0.9)"
+                                      : "rgba(244, 244, 245, 0.8)"
+                                    : quickUsageSummary.pct <= 15
+                                      ? "rgba(244, 63, 94, 0.85)"
+                                      : "rgba(110, 231, 183, 0.85)",
+                              }}
+                            />
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1884,7 +1942,7 @@ export const QuickBar: React.FC = () => {
               <div
                 className={`${
                   hasQuickResult ? "toast-in" : "toast-out pointer-events-none"
-                } mt-2.5 space-y-2`}
+                } mt-2.5 space-y-2 max-h-[calc(100vh-115px)] overflow-y-auto xook-scroll`}
               >
                 <div
                   aria-hidden="true"
@@ -1897,39 +1955,27 @@ export const QuickBar: React.FC = () => {
                     </span>
                     <div
                       className={`${
-                        previewTableCanvas ? "max-h-[68px]" : "max-h-[145px]"
-                      } overflow-y-auto xook-scroll pr-1 text-xs text-zinc-100 leading-relaxed space-y-1 [text-shadow:0_1px_4px_rgba(4,8,18,0.6)] select-text min-w-0 flex-1`}
+                        previewTableCanvas ? "max-h-[136px]" : "max-h-[340px]"
+                      } overflow-y-auto xook-scroll pr-1.5 text-[13px] text-zinc-100 leading-relaxed [text-shadow:0_1px_4px_rgba(4,8,18,0.68)] select-text min-w-0 flex-1`}
                     >
                       {cleanedProseReply ? (
-                        cleanedProseReply.split("\n").map((line, lineIdx, arr) => {
-                          const trimmed = line.trim();
-                          if (!trimmed) return <div key={lineIdx} className="h-0.5" />;
-                          const isLast = lineIdx === arr.length - 1;
-                          const caret =
-                            isStreaming && isLast ? (
-                              <span className="inline-block w-1.5 h-3 ml-1 align-middle bg-indigo-200/85 animate-pulse rounded-xs" />
-                            ) : null;
-                          const cleanLine = trimmed
-                            .replace(/^#{1,3}\s+/, "")
-                            .replace(/^[-•*]\s+/, "• ");
-                          return (
-                            <p key={lineIdx}>
-                              {cleanLine.split(/(\*\*[^*]+\*\*)/g).map((seg, segIdx) =>
-                                seg.startsWith("**") && seg.endsWith("**") && seg.length > 4 ? (
-                                  <strong key={segIdx} className="font-semibold text-white">
-                                    {seg.slice(2, -2)}
-                                  </strong>
-                                ) : (
-                                  <React.Fragment key={segIdx}>{seg}</React.Fragment>
-                                )
-                              )}
-                              {caret}
-                            </p>
-                          );
-                        })
+                        <MarkdownContent
+                          text={cleanedProseReply}
+                          variant="liquid"
+                          compact
+                          streaming={isStreaming}
+                          className="space-y-1.5"
+                        />
                       ) : previewTableCanvas ? (
                         <p className="text-zinc-200 font-medium truncate">
-                          {previewTableCanvas.summary || previewTableCanvas.title}
+                          {renderInlineMarkdown(
+                            previewTableCanvas.summary || previewTableCanvas.title,
+                            {
+                              variant: "liquid",
+                              preserveLineBreaks: false,
+                              keyPrefix: "qsum",
+                            }
+                          )}
                         </p>
                       ) : permissionItems.length > 0 ? (
                         <p className="text-zinc-300 font-medium truncate">
@@ -2025,16 +2071,27 @@ export const QuickBar: React.FC = () => {
                 {previewTableCanvas && (
                   <div
                     data-no-drag="true"
+                    data-scrolled={tableScrolled ? "true" : undefined}
                     className="ml-7 quick-liquid-table rounded-xl overflow-hidden select-text"
                   >
-                    <div className="max-h-[132px] overflow-auto xook-scroll">
-                      <table className="w-full border-separate border-spacing-0 text-[11.5px]">
+                    <div
+                      tabIndex={0}
+                      role="region"
+                      aria-label={previewTableCanvas.title || "Tabla generada"}
+                      onScroll={(e) => {
+                        const scrolled = e.currentTarget.scrollTop > 2;
+                        setTableScrolled((prev) => (prev === scrolled ? prev : scrolled));
+                      }}
+                      className="max-h-[244px] overflow-auto xook-scroll focus:outline-none focus-visible:ring-1 focus-visible:ring-white/30"
+                    >
+                      <table className="w-full border-separate border-spacing-0 text-[12px]">
                         <thead className="sticky top-0 z-10 quick-liquid-table-head">
                           <tr>
                             {previewTableCanvas.columns.map((col) => (
                               <th
                                 key={col.id}
-                                className={`px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.04em] text-zinc-200/90 whitespace-nowrap ${
+                                scope="col"
+                                className={`px-3 py-2 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-zinc-100/95 whitespace-nowrap ${
                                   col.align === "right"
                                     ? "text-right"
                                     : col.align === "center"
@@ -2042,7 +2099,10 @@ export const QuickBar: React.FC = () => {
                                       : "text-left"
                                 }`}
                               >
-                                {col.label}
+                                {renderInlineMarkdown(col.label, {
+                                  variant: "liquid",
+                                  keyPrefix: `qth-${col.id}`,
+                                })}
                               </th>
                             ))}
                           </tr>
@@ -2085,7 +2145,14 @@ export const QuickBar: React.FC = () => {
                                             <Star className="w-2.5 h-2.5 text-indigo-100 fill-current" />
                                           </span>
                                         )}
-                                        <span>{cellVal || "—"}</span>
+                                        <span>
+                                          {cellVal
+                                            ? renderInlineMarkdown(cellVal, {
+                                                variant: "liquid",
+                                                keyPrefix: `qtd-${rIdx}-${col.id}`,
+                                              })
+                                            : "—"}
+                                        </span>
                                       </span>
                                     </td>
                                   );
@@ -2131,7 +2198,7 @@ export const QuickBar: React.FC = () => {
                       className="quick-liquid-btn inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium text-white/95 cursor-pointer"
                     >
                       <Table2 className="w-3 h-3 text-sky-100/90 shrink-0" />
-                      <span className="max-w-[250px] truncate">
+                      <span className="max-w-[340px] truncate">
                         {previewTableCanvas.title} ({previewTableCanvas.rows.length}{" "}
                         {previewTableCanvas.rows.length === 1 ? "fila" : "filas"})
                       </span>

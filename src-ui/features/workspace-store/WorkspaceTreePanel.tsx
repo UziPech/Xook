@@ -33,19 +33,24 @@ import {
 } from "./workspaceApi";
 import { WorkspacePermissionsSection } from "./WorkspacePermissionsSection";
 import {
+  DOMAIN_PRESETS,
   ParsedBusinessProfile,
   ParsedFactListDoc,
   ParsedSupplier,
+  ParsedUserPreferencesDoc,
   SUPPORTED_CURRENCIES,
   formatFriendlyZone,
   formatReadableFileSize,
+  getDomainUiLabels,
   isInternalWorkspaceEntry,
   parseBusinessProfile,
   parseMarkdownFactList,
   parseSuppliersFile,
+  parseUserPreferencesDoc,
   serializeBusinessProfile,
   serializeMarkdownFactList,
   serializeSuppliersFile,
+  serializeUserPreferencesDoc,
 } from "./workspaceMemorySchema";
 
 export interface SelectedWorkspaceFile {
@@ -89,40 +94,43 @@ interface WorkspaceTreePanelProps {
 
 type PanelViewMode = "simple" | "files";
 
-const ZONE_META: Record<
+function buildZoneMeta(domainType?: string, domainLabel?: string): Record<
   string,
   {
     label: string;
     subtitle: string;
     icon: React.FC<{ className?: string }>;
   }
-> = {
-  empresa: {
-    label: "Empresa y Reglas",
-    subtitle: "Requiere aprobación HITL para Xox",
-    icon: Store,
-  },
-  datos: {
-    label: "Datos del Negocio",
-    subtitle: "Fuentes para revisiones reales",
-    icon: Table2,
-  },
-  memoria: {
-    label: "Memoria de Xox",
-    subtitle: "Hechos y decisiones reales",
-    icon: Brain,
-  },
-  habilidades: {
-    label: "Habilidades",
-    subtitle: "Instrucciones operativas",
-    icon: Zap,
-  },
-  agente: {
-    label: "Espacio de Xox",
-    subtitle: "Carpetas, reportes y borradores",
-    icon: Sparkles,
-  },
-};
+> {
+  const labels = getDomainUiLabels(domainType, domainLabel);
+  return {
+    empresa: {
+      label: labels.empresaZoneLabel,
+      subtitle: labels.empresaZoneSubtitle,
+      icon: Store,
+    },
+    datos: {
+      label: labels.datosZoneLabel,
+      subtitle: labels.datosZoneSubtitle,
+      icon: Table2,
+    },
+    memoria: {
+      label: "Memoria de Xox",
+      subtitle: "Hechos y decisiones reales",
+      icon: Brain,
+    },
+    habilidades: {
+      label: "Habilidades y Preferencias",
+      subtitle: "Roles aprendidos, gustos, flujo y límites",
+      icon: Zap,
+    },
+    agente: {
+      label: "Espacio de Xox",
+      subtitle: "Carpetas, reportes y borradores",
+      icon: Sparkles,
+    },
+  };
+}
 
 function formatCompactPath(fullPath: string): string {
   const parts = fullPath.split(/[/\\]/).filter(Boolean);
@@ -188,9 +196,19 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
   const [savedToast, setSavedToast] = useState<string | null>(null);
 
   const [newRuleText, setNewRuleText] = useState("");
+  const [userPrefsDoc, setUserPrefsDoc] = useState<ParsedUserPreferencesDoc>({
+    likes: [],
+    workflows: [],
+    donts: [],
+  });
+  const [newPrefText, setNewPrefText] = useState<{ likes: string; workflows: string; donts: string }>({
+    likes: "",
+    workflows: "",
+    donts: "",
+  });
   const [factsDoc, setFactsDoc] = useState<ParsedFactListDoc>({
     title: "Memoria Viva",
-    subtitle: "Este archivo guarda hechos reales y acuerdos confirmados del negocio.",
+    subtitle: "Este archivo guarda hechos reales y acuerdos confirmados.",
     items: [],
   });
   const [newFactText, setNewFactText] = useState("");
@@ -201,6 +219,15 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
   const [supName, setSupName] = useState("");
   const [supDays, setSupDays] = useState("3");
   const [supContact, setSupContact] = useState("");
+
+  const domainLabels = useMemo(
+    () => getDomainUiLabels(profileDraft.domainType, profileDraft.domainLabel),
+    [profileDraft.domainType, profileDraft.domainLabel]
+  );
+  const zoneMeta = useMemo(
+    () => buildZoneMeta(profileDraft.domainType, profileDraft.domainLabel),
+    [profileDraft.domainType, profileDraft.domainLabel]
+  );
 
   const showSavedFeedback = (label: string) => {
     setSavedToast(label);
@@ -227,13 +254,24 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
     }
 
     try {
+      if (available.has("habilidades/perfil-usuario.md")) {
+        const f = await readWorkspaceFile("habilidades/perfil-usuario.md");
+        setUserPrefsDoc(parseUserPreferencesDoc(f.content));
+      } else {
+        setUserPrefsDoc({ likes: [], workflows: [], donts: [] });
+      }
+    } catch {
+      // Mantiene preferencias actuales
+    }
+
+    try {
       if (available.has("memoria/hechos.md")) {
         const f = await readWorkspaceFile("memoria/hechos.md");
         setFactsDoc(
           parseMarkdownFactList(
             f.content,
             `Memoria Viva — ${overview.active.name}`,
-            "Este archivo guarda hechos reales y acuerdos confirmados del negocio."
+            "Este archivo guarda hechos reales y acuerdos confirmados."
           )
         );
       }
@@ -353,6 +391,40 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
     } finally {
       setSavingSection(null);
     }
+  };
+
+  const handleSaveUserPrefsSection = async (nextDoc: ParsedUserPreferencesDoc, notice: string) => {
+    setSavingSection("userPrefs");
+    setPanelError(null);
+    try {
+      await onSaveFileContent("habilidades/perfil-usuario.md", serializeUserPreferencesDoc(nextDoc));
+      setUserPrefsDoc(nextDoc);
+      showSavedFeedback(notice);
+    } catch (err) {
+      setPanelError(err instanceof Error ? err.message : "No se pudieron guardar tus preferencias.");
+    } finally {
+      setSavingSection(null);
+    }
+  };
+
+  const handleAddUserPref = async (sectionKey: "likes" | "workflows" | "donts", e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = newPrefText[sectionKey].trim();
+    if (!clean) return;
+    const nextDoc: ParsedUserPreferencesDoc = {
+      ...userPrefsDoc,
+      [sectionKey]: [...userPrefsDoc[sectionKey], clean],
+    };
+    setNewPrefText((p) => ({ ...p, [sectionKey]: "" }));
+    await handleSaveUserPrefsSection(nextDoc, "Preferencia guardada");
+  };
+
+  const handleRemoveUserPref = async (sectionKey: "likes" | "workflows" | "donts", idx: number) => {
+    const nextDoc: ParsedUserPreferencesDoc = {
+      ...userPrefsDoc,
+      [sectionKey]: userPrefsDoc[sectionKey].filter((_, i) => i !== idx),
+    };
+    await handleSaveUserPrefsSection(nextDoc, "Preferencia actualizada");
   };
 
   const handleAddFact = async (e: React.FormEvent) => {
@@ -775,10 +847,10 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
             >
               <option value="agente/proyectos">Espacio de Xox / proyectos</option>
               <option value="agente">Espacio de Xox (raíz)</option>
-              <option value="datos">Datos del Negocio</option>
+              <option value="datos">{domainLabels.datosZoneLabel}</option>
               <option value="memoria">Memoria de Xox</option>
-              <option value="empresa/reglas">Empresa y Reglas / reglas</option>
-              <option value="habilidades">Habilidades</option>
+              <option value="empresa/reglas">{domainLabels.empresaZoneLabel} / reglas</option>
+              <option value="habilidades">Habilidades y Preferencias</option>
             </select>
             <div className="flex gap-1.5">
               <label htmlFor={`${uid}-folder-name`} className="sr-only">
@@ -830,7 +902,7 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
       {/* ========================================================================= */}
       {viewMode === "simple" ? (
         <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
-          {/* 1. Mi Negocio */}
+          {/* 1. Proyecto / Negocio y Rol Activo */}
           <details open className="xook-accordion rounded-xl border border-white/[0.08] bg-[#0b0c10]">
             <summary className="xook-accordion-summary min-h-[38px] px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-white/[0.03] rounded-xl transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:-outline-offset-2">
               <span className="flex items-center gap-2 min-w-0">
@@ -839,10 +911,15 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                   className="xook-accordion-chevron w-3.5 h-3.5 text-zinc-400 shrink-0"
                 />
                 <Store aria-hidden="true" className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-                <span className="text-xs font-medium text-zinc-100 truncate">Mi negocio</span>
+                <span className="text-xs font-medium text-zinc-100 truncate">
+                  {domainLabels.profileSectionTitle}
+                </span>
               </span>
-              <span className="text-[10.5px] text-zinc-400 shrink-0 truncate max-w-[115px]">
-                {formatCompactBudget(profileDraft.maxBudgetPerOrder, profileDraft.currency)}
+              <span className="text-[10.5px] text-zinc-400 shrink-0 truncate max-w-[130px]">
+                {profileDraft.activeRole ||
+                  (profileDraft.domainType === "business"
+                    ? formatCompactBudget(profileDraft.maxBudgetPerOrder, profileDraft.currency)
+                    : "Co-Constructor")}
               </span>
             </summary>
 
@@ -855,7 +932,7 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                   htmlFor={`${uid}-company`}
                   className="block text-[11px] font-medium text-zinc-400"
                 >
-                  Nombre del negocio
+                  {domainLabels.nameLabel}
                 </label>
                 <input
                   id={`${uid}-company`}
@@ -873,10 +950,178 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
                   <label
+                    htmlFor={`${uid}-domain-type`}
+                    className="block text-[11px] font-medium text-zinc-400"
+                  >
+                    Ámbito
+                  </label>
+                  <select
+                    id={`${uid}-domain-type`}
+                    name="domainType"
+                    value={profileDraft.domainType}
+                    onChange={(e) => {
+                      const nextDomain = e.target.value;
+                      setProfileDraft((p) => ({ ...p, domainType: nextDomain }));
+                      setProfileDirty(true);
+                    }}
+                    className="w-full min-h-[32px] px-2 py-1.5 rounded-lg bg-[#07080b] border border-white/[0.09] text-xs text-zinc-100 focus:outline-none focus:border-white/[0.24]"
+                  >
+                    {DOMAIN_PRESETS.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label
+                    htmlFor={`${uid}-active-role`}
+                    className="block text-[11px] font-medium text-zinc-400"
+                  >
+                    Rol de {profileDraft.agentName || "Xox"}
+                  </label>
+                  <input
+                    id={`${uid}-active-role`}
+                    name="activeRole"
+                    type="text"
+                    value={profileDraft.activeRole}
+                    placeholder="Ej. Arquitecto, Estratega..."
+                    onChange={(e) => {
+                      setProfileDraft((p) => ({ ...p, activeRole: e.target.value }));
+                      setProfileDirty(true);
+                    }}
+                    className="w-full min-h-[32px] px-2.5 py-1.5 rounded-lg bg-[#07080b] border border-white/[0.09] text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label
+                  htmlFor={`${uid}-mission`}
+                  className="block text-[11px] font-medium text-zinc-400"
+                >
+                  Objetivo / enfoque actual
+                </label>
+                <input
+                  id={`${uid}-mission`}
+                  name="mission"
+                  type="text"
+                  value={profileDraft.mission}
+                  placeholder="Ej. Lanzar MVP web, optimizar entregas, estudiar medicina..."
+                  onChange={(e) => {
+                    setProfileDraft((p) => ({ ...p, mission: e.target.value }));
+                    setProfileDirty(true);
+                  }}
+                  className="w-full min-h-[32px] px-2.5 py-1.5 rounded-lg bg-[#07080b] border border-white/[0.09] text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
+                />
+              </div>
+
+              {profileDraft.domainType === "business" ? (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label
+                        htmlFor={`${uid}-agent`}
+                        className="block text-[11px] font-medium text-zinc-400"
+                      >
+                        Asistente
+                      </label>
+                      <input
+                        id={`${uid}-agent`}
+                        name="agentName"
+                        type="text"
+                        value={profileDraft.agentName}
+                        onChange={(e) => {
+                          setProfileDraft((p) => ({ ...p, agentName: e.target.value }));
+                          setProfileDirty(true);
+                        }}
+                        className="w-full min-h-[32px] px-2.5 py-1.5 rounded-lg bg-[#07080b] border border-white/[0.09] text-xs text-zinc-100 focus:outline-none focus:border-white/[0.24] select-text"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label
+                        htmlFor={`${uid}-currency`}
+                        className="block text-[11px] font-medium text-zinc-400"
+                      >
+                        Moneda
+                      </label>
+                      <select
+                        id={`${uid}-currency`}
+                        name="currency"
+                        value={profileDraft.currency}
+                        onChange={(e) => {
+                          setProfileDraft((p) => ({ ...p, currency: e.target.value }));
+                          setProfileDirty(true);
+                        }}
+                        className="w-full min-h-[32px] px-2 py-1.5 rounded-lg bg-[#07080b] border border-white/[0.09] text-xs text-zinc-100 focus:outline-none focus:border-white/[0.24]"
+                      >
+                        {SUPPORTED_CURRENCIES.map((c) => (
+                          <option key={c.code} value={c.code}>
+                            {c.code}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label
+                        htmlFor={`${uid}-budget`}
+                        className="block text-[11px] font-medium text-zinc-400"
+                      >
+                        Tope por orden
+                      </label>
+                      <input
+                        id={`${uid}-budget`}
+                        name="maxBudgetPerOrder"
+                        type="text"
+                        inputMode="decimal"
+                        value={String(profileDraft.maxBudgetPerOrder)}
+                        onChange={(e) => {
+                          const val = Number(e.target.value.replace(/[^0-9.]/g, ""));
+                          setProfileDraft((p) => ({
+                            ...p,
+                            maxBudgetPerOrder: Number.isFinite(val) ? val : 0,
+                          }));
+                          setProfileDirty(true);
+                        }}
+                        className="w-full min-h-[32px] px-2.5 py-1.5 rounded-lg bg-[#07080b] border border-white/[0.09] text-xs text-zinc-100 focus:outline-none focus:border-white/[0.24] select-text"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label
+                        htmlFor={`${uid}-stock-days`}
+                        className="block text-[11px] font-medium text-zinc-400"
+                      >
+                        Mín. días stock
+                      </label>
+                      <input
+                        id={`${uid}-stock-days`}
+                        name="stockThresholdDays"
+                        type="text"
+                        inputMode="numeric"
+                        value={String(profileDraft.stockThresholdDays)}
+                        onChange={(e) => {
+                          const val = Math.max(1, parseInt(e.target.value.replace(/\D/g, "") || "1", 10));
+                          setProfileDraft((p) => ({ ...p, stockThresholdDays: val }));
+                          setProfileDirty(true);
+                        }}
+                        className="w-full min-h-[32px] px-2.5 py-1.5 rounded-lg bg-[#07080b] border border-white/[0.09] text-xs text-zinc-100 focus:outline-none focus:border-white/[0.24] select-text"
+                      />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-1">
+                  <label
                     htmlFor={`${uid}-agent`}
                     className="block text-[11px] font-medium text-zinc-400"
                   >
-                    Asistente
+                    Nombre del asistente
                   </label>
                   <input
                     id={`${uid}-agent`}
@@ -890,81 +1135,7 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                     className="w-full min-h-[32px] px-2.5 py-1.5 rounded-lg bg-[#07080b] border border-white/[0.09] text-xs text-zinc-100 focus:outline-none focus:border-white/[0.24] select-text"
                   />
                 </div>
-
-                <div className="space-y-1">
-                  <label
-                    htmlFor={`${uid}-currency`}
-                    className="block text-[11px] font-medium text-zinc-400"
-                  >
-                    Moneda
-                  </label>
-                  <select
-                    id={`${uid}-currency`}
-                    name="currency"
-                    value={profileDraft.currency}
-                    onChange={(e) => {
-                      setProfileDraft((p) => ({ ...p, currency: e.target.value }));
-                      setProfileDirty(true);
-                    }}
-                    className="w-full min-h-[32px] px-2 py-1.5 rounded-lg bg-[#07080b] border border-white/[0.09] text-xs text-zinc-100 focus:outline-none focus:border-white/[0.24]"
-                  >
-                    {SUPPORTED_CURRENCIES.map((c) => (
-                      <option key={c.code} value={c.code}>
-                        {c.code}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <label
-                    htmlFor={`${uid}-budget`}
-                    className="block text-[11px] font-medium text-zinc-400"
-                  >
-                    Tope por orden
-                  </label>
-                  <input
-                    id={`${uid}-budget`}
-                    name="maxBudgetPerOrder"
-                    type="text"
-                    inputMode="decimal"
-                    value={String(profileDraft.maxBudgetPerOrder)}
-                    onChange={(e) => {
-                      const val = Number(e.target.value.replace(/[^0-9.]/g, ""));
-                      setProfileDraft((p) => ({
-                        ...p,
-                        maxBudgetPerOrder: Number.isFinite(val) ? val : 0,
-                      }));
-                      setProfileDirty(true);
-                    }}
-                    className="w-full min-h-[32px] px-2.5 py-1.5 rounded-lg bg-[#07080b] border border-white/[0.09] text-xs text-zinc-100 focus:outline-none focus:border-white/[0.24] select-text"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label
-                    htmlFor={`${uid}-stock-days`}
-                    className="block text-[11px] font-medium text-zinc-400"
-                  >
-                    Mín. días stock
-                  </label>
-                  <input
-                    id={`${uid}-stock-days`}
-                    name="stockThresholdDays"
-                    type="text"
-                    inputMode="numeric"
-                    value={String(profileDraft.stockThresholdDays)}
-                    onChange={(e) => {
-                      const val = Math.max(1, parseInt(e.target.value.replace(/\D/g, "") || "1", 10));
-                      setProfileDraft((p) => ({ ...p, stockThresholdDays: val }));
-                      setProfileDirty(true);
-                    }}
-                    className="w-full min-h-[32px] px-2.5 py-1.5 rounded-lg bg-[#07080b] border border-white/[0.09] text-xs text-zinc-100 focus:outline-none focus:border-white/[0.24] select-text"
-                  />
-                </div>
-              </div>
+              )}
 
               <div className="flex justify-end pt-0.5">
                 <button
@@ -1059,6 +1230,102 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                   </button>
                 </div>
               </form>
+            </div>
+          </details>
+
+          {/* 2b. Tu Espacio: Gustos, Flujo de trabajo y Qué NO hacer */}
+          <details open className="xook-accordion rounded-xl border border-white/[0.08] bg-[#0b0c10]">
+            <summary className="xook-accordion-summary min-h-[38px] px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-white/[0.03] rounded-xl transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:-outline-offset-2">
+              <span className="flex items-center gap-2 min-w-0">
+                <ChevronRight
+                  aria-hidden="true"
+                  className="xook-accordion-chevron w-3.5 h-3.5 text-zinc-400 shrink-0"
+                />
+                <Zap aria-hidden="true" className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                <span className="text-xs font-medium text-zinc-100 truncate">
+                  Tu Espacio (Gustos, Flujo y Límites)
+                </span>
+              </span>
+              <span className="text-[10.5px] tabular-nums px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/[0.08] text-zinc-300 shrink-0">
+                {userPrefsDoc.likes.length + userPrefsDoc.workflows.length + userPrefsDoc.donts.length}
+              </span>
+            </summary>
+
+            <div className="px-3 pb-3 pt-2 border-t border-white/[0.06] space-y-3">
+              <p className="text-[11px] text-zinc-400 leading-relaxed">
+                {profileDraft.agentName || "Xox"} lee y actualiza este espacio (`habilidades/perfil-usuario.md`) para adaptarse a ti.
+              </p>
+
+              {(
+                [
+                  {
+                    key: "likes",
+                    title: "Gustos y estilo",
+                    placeholder: "Ej. Respuestas directas con ejemplos prácticos",
+                  },
+                  {
+                    key: "workflows",
+                    title: "Flujo de trabajo preferido",
+                    placeholder: "Ej. Primero validar esquema y luego editar",
+                  },
+                  {
+                    key: "donts",
+                    title: "Qué NO hacer",
+                    placeholder: "Ej. Nunca inventar datos ni borrar borradores útiles",
+                  },
+                ] as const
+              ).map((sec) => {
+                const list = userPrefsDoc[sec.key];
+                return (
+                  <div key={sec.key} className="space-y-1.5">
+                    <div className="text-[11px] font-medium text-zinc-300">{sec.title}</div>
+                    {list.length > 0 && (
+                      <ul className="space-y-1">
+                        {list.map((item, idx) => (
+                          <li
+                            key={`${sec.key}-${idx}`}
+                            className="group flex items-start justify-between gap-2 rounded-lg bg-[#07080b] border border-white/[0.07] px-2.5 py-1.5 text-[11px] text-zinc-200 leading-snug"
+                          >
+                            <span className="select-text">{item}</span>
+                            <button
+                              type="button"
+                              disabled={savingSection === "userPrefs"}
+                              onClick={() => void handleRemoveUserPref(sec.key, idx)}
+                              aria-label={`Quitar de ${sec.title}: ${item}`}
+                              title="Quitar"
+                              className="min-w-[22px] min-h-[22px] p-0.5 rounded text-zinc-500 hover:text-rose-200 hover:bg-white/[0.07] opacity-60 group-hover:opacity-100 focus-visible:opacity-100 transition-all cursor-pointer shrink-0 flex items-center justify-center"
+                            >
+                              <Trash2 aria-hidden="true" className="w-3 h-3" />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <form
+                      onSubmit={(e) => void handleAddUserPref(sec.key, e)}
+                      className="flex gap-1.5"
+                    >
+                      <input
+                        type="text"
+                        value={newPrefText[sec.key]}
+                        onChange={(e) =>
+                          setNewPrefText((p) => ({ ...p, [sec.key]: e.target.value }))
+                        }
+                        placeholder={sec.placeholder}
+                        aria-label={`Agregar a ${sec.title}`}
+                        className="flex-1 min-h-[30px] px-2.5 py-1 rounded-lg bg-[#07080b] border border-white/[0.09] text-[11px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!newPrefText[sec.key].trim() || savingSection === "userPrefs"}
+                        className="min-h-[30px] px-2.5 py-1 rounded-lg bg-white/[0.08] hover:bg-white/[0.14] border border-white/[0.1] text-[11px] font-medium text-white disabled:opacity-40 cursor-pointer shrink-0 inline-flex items-center gap-1"
+                      >
+                        <Plus aria-hidden="true" className="w-3 h-3" />
+                      </button>
+                    </form>
+                  </div>
+                );
+              })}
             </div>
           </details>
 
@@ -1161,8 +1428,9 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
             </div>
           </details>
 
-          {/* 4. Proveedores */}
-          <details className="xook-accordion rounded-xl border border-white/[0.08] bg-[#0b0c10]">
+          {/* 4. Proveedores (visible en negocios o si ya hay proveedores registrados) */}
+          {(profileDraft.domainType === "business" || suppliersList.length > 0) && (
+            <details className="xook-accordion rounded-xl border border-white/[0.08] bg-[#0b0c10]">
             <summary className="xook-accordion-summary min-h-[38px] px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-white/[0.03] rounded-xl transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:-outline-offset-2">
               <span className="flex items-center gap-2 min-w-0">
                 <ChevronRight
@@ -1296,9 +1564,10 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                 </button>
               )}
             </div>
-          </details>
+            </details>
+          )}
 
-          {/* 5. Documentos del negocio */}
+          {/* 5. Documentos */}
           <details className="xook-accordion rounded-xl border border-white/[0.08] bg-[#0b0c10]">
             <summary className="xook-accordion-summary min-h-[38px] px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-white/[0.03] rounded-xl transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:-outline-offset-2">
               <span className="flex items-center gap-2 min-w-0">
@@ -1347,7 +1616,7 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                             <span className="text-[11.5px] truncate">{entry.name}</span>
                           </span>
                           <span className="text-[10px] text-zinc-400 shrink-0">
-                            {formatFriendlyZone(entry)} · {formatReadableFileSize(entry.sizeBytes)}
+                            {formatFriendlyZone(entry, profileDraft.domainType)} · {formatReadableFileSize(entry.sizeBytes)}
                           </span>
                         </button>
                       </li>
@@ -1476,7 +1745,7 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
               const isSelected = selectedPath === entry.relativePath;
               const isHighlighted = highlightedPath === entry.relativePath;
               const isPinned = pinnedPaths.has(entry.relativePath);
-              const zoneInfo = entry.depth === 0 ? ZONE_META[entry.zone] : undefined;
+              const zoneInfo = entry.depth === 0 ? zoneMeta[entry.zone] : undefined;
               const ZoneIcon = zoneInfo?.icon;
 
               return (

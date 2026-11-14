@@ -37,6 +37,7 @@ import {
   canvasArtifactToCsv,
   canvasArtifactToMarkdown,
 } from "./canvasSchema";
+import { MarkdownContent, renderInlineMarkdown } from "../../utils/markdownRenderer";
 
 const canvasTableFeatures = tableFeatures({
   columnFilteringFeature,
@@ -97,8 +98,13 @@ function renderFormattedCellText(raw: string, isFirstCol: boolean): React.ReactN
     return <span className="text-zinc-600 italic">—</span>;
   }
 
-  // Si toda la celda viene envuelta en backticks (`ruta/archivo.pdf`), limpiarla y mostrarla como código legible
-  if (trimmed.startsWith("`") && trimmed.endsWith("`") && trimmed.length > 2 && !trimmed.slice(1, -1).includes("`")) {
+  // Si toda la celda viene envuelta en backticks (`ruta/archivo.pdf`), mostrarla como código legible
+  if (
+    trimmed.startsWith("`") &&
+    trimmed.endsWith("`") &&
+    trimmed.length > 2 &&
+    !trimmed.slice(1, -1).includes("`")
+  ) {
     const inner = trimmed.slice(1, -1).trim();
     return (
       <code className="inline-block px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.08] font-mono text-[11.5px] text-zinc-100 break-all leading-snug">
@@ -107,34 +113,23 @@ function renderFormattedCellText(raw: string, isFirstCol: boolean): React.ReactN
     );
   }
 
-  // Formatear fragmentos inline `código` y **negrita**
-  const parts = trimmed.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
-  return parts.map((part, idx) => {
-    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
-      return (
-        <strong key={idx} className="font-semibold text-white">
-          {part.slice(2, -2)}
-        </strong>
-      );
-    }
-    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
-      return (
-        <code
-          key={idx}
-          className="px-1.5 py-0.5 rounded bg-white/[0.05] border border-white/[0.08] font-mono text-[11.5px] text-zinc-100 break-all"
-        >
-          {part.slice(1, -1)}
-        </code>
-      );
-    }
-    if (isFirstCol && /[\\/]/.test(part) && part.length > 18) {
-      return (
-        <span key={idx} className="font-mono text-[11.5px] text-zinc-100 break-all">
-          {part}
-        </span>
-      );
-    }
-    return <React.Fragment key={idx}>{part}</React.Fragment>;
+  if (
+    isFirstCol &&
+    !/[`*_~\\<]/.test(trimmed) &&
+    /[\\/]/.test(trimmed) &&
+    trimmed.length > 18
+  ) {
+    return (
+      <span className="font-mono text-[11.5px] text-zinc-100 break-all">
+        {trimmed}
+      </span>
+    );
+  }
+
+  return renderInlineMarkdown(trimmed, {
+    variant: "default",
+    codeClassName:
+      "px-1.5 py-0.5 rounded bg-white/[0.05] border border-white/[0.08] font-mono text-[11.5px] text-zinc-100 break-all",
   });
 }
 
@@ -301,7 +296,14 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
         canvas.columns.map((col: CanvasColumn, colIndex: number) =>
           canvasColumnHelper.accessor((row) => row.cells[col.id] ?? "", {
         id: col.id,
-        header: col.label,
+        header: () => (
+          <>
+            {renderInlineMarkdown(col.label, {
+              variant: "default",
+              keyPrefix: `cvh-${col.id}`,
+            })}
+          </>
+        ),
         sortFn: (rowA, rowB, columnId) => {
           const aVal = String(rowA.getValue(columnId) ?? "");
           const bVal = String(rowB.getValue(columnId) ?? "");
@@ -802,9 +804,12 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                 <p className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-zinc-400 mb-1.5">
                   Notas de contexto
                 </p>
-                <div className="text-[12px] leading-relaxed text-zinc-300 whitespace-pre-wrap select-text">
-                  {extraMarkdownNotes}
-                </div>
+                <MarkdownContent
+                  text={extraMarkdownNotes}
+                  variant="default"
+                  compact
+                  className="space-y-1.5 text-[12px] leading-relaxed text-zinc-300 select-text"
+                />
               </div>
             )}
           </div>

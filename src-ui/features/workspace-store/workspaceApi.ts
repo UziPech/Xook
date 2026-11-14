@@ -27,6 +27,9 @@ export interface WorkspaceBusinessSummary {
   currency: string;
   stockThresholdDays: number;
   maxBudgetPerOrder: number;
+  domainType?: string;
+  domainLabel?: string;
+  activeRole?: string;
 }
 
 export interface WorkspacePatternItem {
@@ -836,6 +839,39 @@ export async function downloadWorkspaceFile(
     filename: String(raw?.filename ?? preferredName ?? "documento.pdf"),
     downloadedPath: String(raw?.downloadedPath ?? ""),
   };
+}
+
+export async function downloadCodeArtifact(
+  filename: string,
+  content: string
+): Promise<{ ok: boolean; filename: string; downloadedPath?: string }> {
+  const cleanName = filename.trim() || "codigo.txt";
+  if (isWorkspaceTauriRuntime()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const raw = await invoke<Record<string, unknown>>("download_text_artifact", {
+      filename: cleanName,
+      content,
+    });
+    return {
+      ok: Boolean(raw?.ok ?? true),
+      filename: String(raw?.filename ?? cleanName),
+      downloadedPath:
+        typeof raw?.downloadedPath === "string" ? raw.downloadedPath : undefined,
+    };
+  }
+  if (typeof document !== "undefined") {
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = cleanName;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  return { ok: true, filename: cleanName };
 }
 
 export function subscribeWorkspaceUpdated(

@@ -18,8 +18,8 @@ pub const QUICK_WINDOW_LABEL: &str = "quick";
 const TRAY_ID: &str = "xook-tray";
 const POS_STORE_FILENAME: &str = "quick-bar-pos.json";
 
-const QUICK_WIDTH: f64 = 700.0;
-const QUICK_HEIGHT: f64 = 435.0;
+const QUICK_WIDTH: f64 = 820.0;
+const QUICK_HEIGHT: f64 = 620.0;
 const CAPSULE_PAD_X: f64 = 36.0;
 const CAPSULE_TOP_OFFSET: f64 = 20.0;
 const CAPSULE_VISIBLE_BOTTOM: f64 = 112.0;
@@ -499,8 +499,10 @@ fn default_quick_logical_pos<R: Runtime>(app: &AppHandle<R>) -> Option<(f64, f64
         })
         .or_else(|| areas.first().copied())?;
 
-    let x = target_area.x + (target_area.w - QUICK_WIDTH) * 0.5;
-    let y = target_area.y + target_area.h * 0.16;
+    let x = target_area.x + (target_area.w - QUICK_WIDTH).max(0.0) * 0.5;
+    let preferred_y = target_area.y + target_area.h * 0.12;
+    let max_y = (target_area.y + target_area.h - QUICK_HEIGHT).max(target_area.y);
+    let y = preferred_y.min(max_y);
     Some((x, y))
 }
 
@@ -533,8 +535,12 @@ fn position_quick_on_active_monitor<R: Runtime>(app: &AppHandle<R>, quick: &Webv
                 )
             });
 
-        let x = work.position.x + ((work.size.width as i32 - win_size.width as i32) / 2);
-        let y = work.position.y + ((work.size.height as f64 * 0.16).round() as i32);
+        let max_x = work.position.x + (work.size.width as i32 - win_size.width as i32).max(0);
+        let x = (work.position.x + ((work.size.width as i32 - win_size.width as i32) / 2))
+            .clamp(work.position.x, max_x);
+        let preferred_y = work.position.y + ((work.size.height as f64 * 0.12).round() as i32);
+        let max_y = work.position.y + (work.size.height as i32 - win_size.height as i32).max(0);
+        let y = preferred_y.clamp(work.position.y, max_y);
         let _ = quick.set_position(Position::Physical(PhysicalPosition::new(x, y)));
     } else {
         let _ = quick.center();

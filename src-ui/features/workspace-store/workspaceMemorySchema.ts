@@ -7,7 +7,104 @@ export interface ParsedBusinessProfile {
   stockThresholdDays: number;
   maxBudgetPerOrder: number;
   businessRules: string[];
+  domainType: string;
+  domainLabel: string;
+  mission: string;
+  activeRole: string;
   rawObj: Record<string, unknown>;
+}
+
+export interface ParsedUserPreferencesDoc {
+  likes: string[];
+  workflows: string[];
+  donts: string[];
+}
+
+export const DOMAIN_PRESETS = [
+  { id: "general", label: "General / Multi-propósito" },
+  { id: "business", label: "Negocio / Operación y Ventas" },
+  { id: "software", label: "Software / Ingeniería" },
+  { id: "research", label: "Investigación / Estudio" },
+  { id: "personal", label: "Personal / Productividad" },
+  { id: "creative", label: "Creativo / Contenido" },
+  { id: "custom", label: "Personalizado" },
+] as const;
+
+export interface DomainUiLabels {
+  profileSectionTitle: string;
+  nameLabel: string;
+  empresaZoneLabel: string;
+  empresaZoneSubtitle: string;
+  datosZoneLabel: string;
+  datosZoneSubtitle: string;
+}
+
+export function getDomainUiLabels(domainType?: string, domainLabel?: string): DomainUiLabels {
+  switch ((domainType || "general").trim().toLowerCase()) {
+    case "business":
+      return {
+        profileSectionTitle: "Mi negocio",
+        nameLabel: "Nombre del negocio",
+        empresaZoneLabel: "Empresa y Reglas",
+        empresaZoneSubtitle: "Requiere aprobación HITL para Xox",
+        datosZoneLabel: "Datos del Negocio",
+        datosZoneSubtitle: "Fuentes para revisiones reales",
+      };
+    case "software":
+      return {
+        profileSectionTitle: "Proyecto de Software",
+        nameLabel: "Nombre del proyecto",
+        empresaZoneLabel: "Arquitectura y Reglas",
+        empresaZoneSubtitle: "Requiere aprobación HITL para Xox",
+        datosZoneLabel: "Specs y Datos",
+        datosZoneSubtitle: "Fuentes y definiciones del proyecto",
+      };
+    case "research":
+      return {
+        profileSectionTitle: "Investigación / Estudio",
+        nameLabel: "Nombre del proyecto o tema",
+        empresaZoneLabel: "Marco y Criterios",
+        empresaZoneSubtitle: "Requiere aprobación HITL para Xox",
+        datosZoneLabel: "Fuentes y Datos",
+        datosZoneSubtitle: "Documentos, datasets y notas",
+      };
+    case "personal":
+      return {
+        profileSectionTitle: "Espacio Personal",
+        nameLabel: "Nombre del espacio",
+        empresaZoneLabel: "Perfil y Reglas",
+        empresaZoneSubtitle: "Requiere aprobación HITL para Xox",
+        datosZoneLabel: "Recursos y Registros",
+        datosZoneSubtitle: "Archivos de referencia personal",
+      };
+    case "creative":
+      return {
+        profileSectionTitle: "Proyecto Creativo",
+        nameLabel: "Nombre del proyecto",
+        empresaZoneLabel: "Dirección y Reglas",
+        empresaZoneSubtitle: "Requiere aprobación HITL para Xox",
+        datosZoneLabel: "Recursos y Guiones",
+        datosZoneSubtitle: "Material base del proyecto",
+      };
+    case "custom":
+      return {
+        profileSectionTitle: domainLabel?.trim() || "Mi Espacio",
+        nameLabel: "Nombre del espacio",
+        empresaZoneLabel: "Contexto y Reglas",
+        empresaZoneSubtitle: "Requiere aprobación HITL para Xox",
+        datosZoneLabel: "Datos y Fuentes",
+        datosZoneSubtitle: "Archivos fuente del proyecto",
+      };
+    default:
+      return {
+        profileSectionTitle: "Proyecto o Espacio",
+        nameLabel: "Nombre del espacio / proyecto",
+        empresaZoneLabel: "Contexto y Reglas",
+        empresaZoneSubtitle: "Requiere aprobación HITL para Xox",
+        datosZoneLabel: "Datos y Fuentes",
+        datosZoneSubtitle: "Archivos y datos reales",
+      };
+  }
 }
 
 export interface ParsedSupplier {
@@ -47,6 +144,7 @@ const INTERNAL_FILES = new Set([
   "memoria/hechos.md",
   "memoria/patrones.json",
   "memoria/decisiones.jsonl",
+  "habilidades/perfil-usuario.md",
   "agente/notas-xox.md",
 ]);
 
@@ -64,19 +162,20 @@ export function isInternalWorkspaceEntry(entry: WorkspaceNodeEntry): boolean {
   return false;
 }
 
-export function formatFriendlyZone(entry: WorkspaceNodeEntry): string {
+export function formatFriendlyZone(entry: WorkspaceNodeEntry, domainType?: string): string {
+  const labels = getDomainUiLabels(domainType);
   if (entry.relativePath.startsWith("agente/reportes")) return "Reporte";
   if (entry.relativePath.startsWith("agente/revisiones")) return "Revisión";
-  if (entry.relativePath.startsWith("agente/ordenes")) return "Orden";
+  if (entry.relativePath.startsWith("agente/ordenes")) return "Entrega";
   if (entry.relativePath.startsWith("agente/adjuntos")) return "Adjunto";
   if (entry.relativePath.startsWith("agente/borradores")) return "Borrador";
-  if (entry.relativePath.startsWith("datos/ventas")) return "Ventas";
+  if (entry.relativePath.startsWith("datos/ventas")) return "Registros";
   if (entry.relativePath.startsWith("datos/documentos")) return "Documento";
   switch (entry.zone) {
     case "datos":
-      return "Datos";
+      return labels.datosZoneLabel;
     case "empresa":
-      return "Empresa";
+      return labels.empresaZoneLabel;
     case "memoria":
       return "Memoria";
     case "habilidades":
@@ -129,7 +228,7 @@ export function parseBusinessProfile(
     .filter(Boolean);
 
   return {
-    companyName: str("company_name", fallback?.companyName || "Mi Negocio"),
+    companyName: str("company_name", fallback?.companyName || "Mi Espacio"),
     agentName: str("agent_name", fallback?.agentName || "Xox"),
     currency: str("currency", fallback?.currency || "MXN").toUpperCase(),
     stockThresholdDays: Math.round(
@@ -137,6 +236,10 @@ export function parseBusinessProfile(
     ),
     maxBudgetPerOrder: num("max_budget_per_order", fallback?.maxBudgetPerOrder || 25000, 0),
     businessRules,
+    domainType: str("domain_type", fallback?.domainType || "general").toLowerCase(),
+    domainLabel: str("domain_label", fallback?.domainLabel || ""),
+    mission: str("mission", ""),
+    activeRole: str("active_role", fallback?.activeRole || "Asistente Co-Constructor"),
     rawObj,
   };
 }
@@ -144,7 +247,7 @@ export function parseBusinessProfile(
 export function serializeBusinessProfile(profile: ParsedBusinessProfile): string {
   const next: Record<string, unknown> = {
     ...profile.rawObj,
-    company_name: profile.companyName.trim() || "Mi Negocio",
+    company_name: profile.companyName.trim() || "Mi Espacio",
     agent_name: profile.agentName.trim() || "Xox",
     currency: profile.currency.trim().toUpperCase() || "MXN",
     stock_threshold_days: Math.max(1, Math.round(profile.stockThresholdDays || 7)),
@@ -153,7 +256,19 @@ export function serializeBusinessProfile(profile: ParsedBusinessProfile): string
       ? profile.rawObj.preferred_suppliers
       : [],
     business_rules: profile.businessRules.map((r) => r.trim()).filter(Boolean),
+    domain_type: (profile.domainType || "general").trim().toLowerCase() || "general",
+    active_role: profile.activeRole.trim() || "Asistente Co-Constructor",
   };
+  if (profile.domainLabel.trim()) {
+    next.domain_label = profile.domainLabel.trim();
+  } else {
+    delete next.domain_label;
+  }
+  if (profile.mission.trim()) {
+    next.mission = profile.mission.trim();
+  } else {
+    delete next.mission;
+  }
   return `${JSON.stringify(next, null, 2)}\n`;
 }
 
@@ -310,4 +425,64 @@ export function serializeMarkdownFactList(doc: ParsedFactListDoc): string {
     lines.push(`- ${item}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+export function parseUserPreferencesDoc(rawMd: string | undefined | null): ParsedUserPreferencesDoc {
+  const likes: string[] = [];
+  const workflows: string[] = [];
+  const donts: string[] = [];
+  let section: "" | "likes" | "workflows" | "donts" = "";
+
+  for (const rawLine of (rawMd ?? "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const low = line.toLowerCase();
+    if (line.startsWith("#")) {
+      if (low.includes("gusto") || low.includes("estilo") || low.includes("preferencia")) {
+        section = "likes";
+      } else if (low.includes("flujo") || low.includes("workflow") || low.includes("proceso")) {
+        section = "workflows";
+      } else if (low.includes("no hacer") || low.includes("evitar") || low.includes("límite") || low.includes("limite")) {
+        section = "donts";
+      } else {
+        section = "";
+      }
+      continue;
+    }
+    if (/^[-*•]\s+/.test(line) && section) {
+      const item = line.replace(/^[-*•]\s+/, "").trim();
+      if (!item) continue;
+      if (section === "likes") likes.push(item);
+      else if (section === "workflows") workflows.push(item);
+      else donts.push(item);
+    }
+  }
+
+  return { likes, workflows, donts };
+}
+
+export function serializeUserPreferencesDoc(doc: ParsedUserPreferencesDoc): string {
+  const clean = (arr: string[], fb: string) => {
+    const out = arr.map((s) => s.trim()).filter(Boolean);
+    return out.length ? out : [fb];
+  };
+  const likes = clean(doc.likes, "Español claro, directo y práctico.");
+  const workflows = clean(doc.workflows, "Validar datos reales del workspace antes de actuar.");
+  const donts = clean(doc.donts, "Nunca inventar información ni borrar archivos clave sin confirmación.");
+
+  return [
+    "# Perfil del Usuario, Gustos, Flujo y Límites",
+    "",
+    "Este espacio guía a **Xox** sobre tu forma de trabajar, preferencias y qué evitar.",
+    "",
+    "## Gustos y Estilo",
+    ...likes.map((x) => `- ${x}`),
+    "",
+    "## Flujo de Trabajo Preferido",
+    ...workflows.map((x) => `- ${x}`),
+    "",
+    "## Qué NO Hacer",
+    ...donts.map((x) => `- ${x}`),
+    "",
+  ].join("\n");
 }

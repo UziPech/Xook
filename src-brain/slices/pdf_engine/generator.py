@@ -404,6 +404,170 @@ def _make_full_bleed_cover_buffer(
     return buf
 
 
+_MD_FENCE_RE = re.compile(r"^([ \t]*)(`{3,}|~{3,})(.*)$")
+
+_PDF_LANG_LABELS: Dict[str, str] = {
+    "c": "C",
+    "h": "C",
+    "cpp": "C++",
+    "c++": "C++",
+    "cc": "C++",
+    "cxx": "C++",
+    "hpp": "C++",
+    "cuda": "CUDA",
+    "cs": "C#",
+    "c#": "C#",
+    "csharp": "C#",
+    "dotnet": "C#",
+    "fs": "F#",
+    "f#": "F#",
+    "fsharp": "F#",
+    "vb": "VB.NET",
+    "vbnet": "VB.NET",
+    "vb.net": "VB.NET",
+    "py": "Python",
+    "py3": "Python",
+    "python": "Python",
+    "python3": "Python",
+    "js": "JavaScript",
+    "javascript": "JavaScript",
+    "mjs": "JavaScript",
+    "cjs": "JavaScript",
+    "jsx": "JSX",
+    "ts": "TypeScript",
+    "typescript": "TypeScript",
+    "tsx": "TSX",
+    "rs": "Rust",
+    "rust": "Rust",
+    "go": "Go",
+    "golang": "Go",
+    "zig": "Zig",
+    "java": "Java",
+    "kt": "Kotlin",
+    "kotlin": "Kotlin",
+    "swift": "Swift",
+    "scala": "Scala",
+    "objc": "Objective-C",
+    "objective-c": "Objective-C",
+    "objectivec": "Objective-C",
+    "rb": "Ruby",
+    "ruby": "Ruby",
+    "php": "PHP",
+    "dart": "Dart",
+    "ex": "Elixir",
+    "elixir": "Elixir",
+    "hs": "Haskell",
+    "haskell": "Haskell",
+    "lua": "Lua",
+    "perl": "Perl",
+    "r": "R",
+    "jl": "Julia",
+    "julia": "Julia",
+    "matlab": "MATLAB",
+    "sql": "SQL",
+    "pgsql": "PostgreSQL",
+    "postgres": "PostgreSQL",
+    "postgresql": "PostgreSQL",
+    "mysql": "MySQL",
+    "sqlite": "SQLite",
+    "tsql": "T-SQL",
+    "html": "HTML",
+    "css": "CSS",
+    "scss": "SCSS",
+    "less": "Less",
+    "vue": "Vue",
+    "svelte": "Svelte",
+    "astro": "Astro",
+    "xml": "XML",
+    "svg": "SVG",
+    "json": "JSON",
+    "jsonc": "JSONC",
+    "yaml": "YAML",
+    "yml": "YAML",
+    "toml": "TOML",
+    "ini": "INI",
+    "env": "Env",
+    "dotenv": "Env",
+    "sh": "Shell",
+    "shell": "Shell",
+    "bash": "Bash",
+    "zsh": "Zsh",
+    "fish": "Fish",
+    "ps1": "PowerShell",
+    "pwsh": "PowerShell",
+    "powershell": "PowerShell",
+    "bat": "Batch",
+    "dos": "Batch",
+    "dockerfile": "Dockerfile",
+    "docker": "Dockerfile",
+    "makefile": "Makefile",
+    "make": "Makefile",
+    "cmake": "CMake",
+    "tf": "Terraform",
+    "hcl": "Terraform",
+    "terraform": "Terraform",
+    "sol": "Solidity",
+    "solidity": "Solidity",
+    "prisma": "Prisma",
+    "proto": "Protobuf",
+    "protobuf": "Protobuf",
+    "graphql": "GraphQL",
+    "gql": "GraphQL",
+    "glsl": "GLSL",
+    "wgsl": "WGSL",
+    "asm": "Assembly",
+    "x86asm": "Assembly",
+    "wasm": "WebAssembly",
+    "md": "Markdown",
+    "markdown": "Markdown",
+    "mdx": "MDX",
+    "tex": "LaTeX",
+    "latex": "LaTeX",
+    "mmd": "Mermaid",
+    "mermaid": "Mermaid",
+    "diff": "Diff",
+    "patch": "Diff",
+    "csv": "CSV",
+    "tsv": "TSV",
+    "plaintext": "Código",
+    "text": "Código",
+    "txt": "Código",
+}
+
+
+def _format_code_language_label(raw_lang: str) -> str:
+    cleaned = (raw_lang or "").strip().strip("{}")
+    cleaned = re.sub(r"^\.?language-", "", cleaned, flags=re.I)
+    if not cleaned:
+        return ""
+    lower = cleaned.lower()
+    if lower in _PDF_LANG_LABELS:
+        return _PDF_LANG_LABELS[lower]
+    return cleaned.upper() if len(cleaned) <= 4 else cleaned
+
+
+def _parse_fence_info_for_pdf(raw_info: str) -> Tuple[str, str]:
+    info = (raw_info or "").strip()
+    if not info:
+        return "", ""
+    caption = ""
+    attr = re.search(r'(?:title|file|filename|name|path)\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|(\S+))', info, re.I)
+    if attr:
+        caption = (attr.group(1) or attr.group(2) or attr.group(3) or "").strip()
+    parts = info.split()
+    first = re.sub(r"^\.?language-", "", parts[0].strip("{}"), flags=re.I)
+    lang = first
+    if ":" in first:
+        left, right = first.split(":", 1)
+        if "." in right or right.lower() in ("dockerfile", "makefile", ".env"):
+            lang = left or right
+            if not caption:
+                caption = right
+    elif not caption and len(parts) > 1 and "." in parts[1] and "=" not in parts[1]:
+        caption = parts[1].strip("\"'`")
+    return lang, caption
+
+
 def _parse_markdown_to_blocks(md_text: str) -> List[Dict[str, Any]]:
     blocks: List[Dict[str, Any]] = []
     lines = (md_text or "").replace("\r\n", "\n").split("\n")
@@ -488,19 +652,34 @@ def _parse_markdown_to_blocks(md_text: str) -> List[Dict[str, Any]]:
             blocks.append({"type": "numbered_list", "items": items_num})
             continue
 
-        if stripped.startswith("```"):
+        fence_match = _MD_FENCE_RE.match(raw)
+        if fence_match and not (fence_match.group(2)[0] == "`" and "`" in fence_match.group(3)):
             _flush_para()
-            fence_lang = stripped[3:].strip().split()[0] if len(stripped) > 3 and stripped[3:].strip() else ""
+            indent_len = len(fence_match.group(1))
+            fence_char = fence_match.group(2)[0]
+            fence_len = len(fence_match.group(2))
+            fence_lang, fence_cap = _parse_fence_info_for_pdf(fence_match.group(3))
+            close_re = re.compile(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$")
             code_lines: List[str] = []
             i += 1
-            while i < len(lines) and not lines[i].strip().startswith("```"):
-                code_lines.append(lines[i].rstrip("\r"))
+            while i < len(lines) and not close_re.match(lines[i]):
+                content_line = lines[i].rstrip("\r")
+                if indent_len > 0:
+                    strip_n = 0
+                    while strip_n < indent_len and strip_n < len(content_line) and content_line[strip_n] == " ":
+                        strip_n += 1
+                    if strip_n > 0:
+                        content_line = content_line[strip_n:]
+                code_lines.append(content_line)
                 i += 1
-            if i < len(lines) and lines[i].strip().startswith("```"):
+            if i < len(lines) and close_re.match(lines[i]):
                 i += 1
             code_body = "\n".join(code_lines).strip("\n")
             if code_body:
-                blocks.append({"type": "code", "language": fence_lang, "code": code_body})
+                blk_item: Dict[str, Any] = {"type": "code", "language": fence_lang, "code": code_body}
+                if fence_cap:
+                    blk_item["caption"] = fence_cap
+                blocks.append(blk_item)
             continue
 
         if stripped.startswith(">"):
@@ -1845,7 +2024,9 @@ def generate_pdf_document(
             raw_code = str(blk.get("code") or blk.get("text") or blk.get("content") or "").strip("\r\n")
             if not raw_code.strip():
                 continue
-            lang_label = _sanitize_text_for_pdf(blk.get("language") or blk.get("lang") or "").strip()
+            raw_lang = str(blk.get("language") or blk.get("lang") or "").strip()
+            formatted_lang = _format_code_language_label(raw_lang)
+            lang_label = _sanitize_text_for_pdf(formatted_lang).strip()
             cap_label = _sanitize_text_for_pdf(blk.get("caption") or blk.get("title") or "").strip()
             wrapped_lines: List[str] = []
             for src_line in raw_code.replace("\t", "    ").splitlines():
@@ -1866,7 +2047,7 @@ def generate_pdf_document(
             safe_code_text = _sanitize_text_for_pdf("\n".join(wrapped_lines))
             code_rows: List[List[Any]] = []
             if lang_label or cap_label:
-                hdr_txt = " · ".join([p for p in [lang_label.upper(), cap_label] if p])
+                hdr_txt = " · ".join([p for p in [lang_label, cap_label] if p])
                 code_rows.append([
                     Paragraph(
                         xml_escape(hdr_txt),

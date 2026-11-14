@@ -10,14 +10,29 @@ from __future__ import annotations
 
 import json
 import ssl
+import threading
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from slices.ai_service.provider_registry import build_provider_headers
+from slices.ai_service.provider_registry import build_provider_headers, parse_rate_limit_headers
 
 
 ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
+_TLS = threading.local()
+
+
+def _store_anthropic_headers(raw_headers: Any) -> Optional[Dict[str, Any]]:
+    parsed = parse_rate_limit_headers("anthropic", raw_headers) if raw_headers is not None else None
+    if parsed is not None:
+        _TLS.last_rate_limits = parsed
+    return parsed
+
+
+def consume_last_anthropic_rate_limits() -> Optional[Dict[str, Any]]:
+    val = getattr(_TLS, "last_rate_limits", None)
+    _TLS.last_rate_limits = None
+    return val
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -252,8 +267,12 @@ def anthropic_chat_completion(
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
+            _TLS.last_rate_limits = None
+            _store_anthropic_headers(getattr(resp, "headers", None))
             raw = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as err:
+        _TLS.last_rate_limits = None
+        _store_anthropic_headers(getattr(err, "headers", None))
         body = err.read().decode("utf-8", errors="replace")
         detail = body
         try:

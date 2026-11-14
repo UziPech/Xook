@@ -138,6 +138,7 @@ import {
   AiConfigStatus,
   AiConnectionTestResult,
   type AiProviderId,
+  type AiUsageLedger,
   type AttachedContextItem,
   ClarificationSpec,
   type GeneratedPdfArtifact,
@@ -145,6 +146,7 @@ import {
   OPENROUTER_PRESET_MODELS,
   OpenRouterModelOption,
   ThinkingStep,
+  computeProviderUsageSummary,
   detectApiKeyInText,
   detectKeySetupIntentWithProvider,
   detectVaultConfigRequest,
@@ -156,12 +158,14 @@ import {
   formatPricePerMillion,
   formatTokenCount,
   getAiConfigStatus,
+  getAiUsageLedger,
   getAvailableQuickModels,
   getLocalDailyRequestCount,
   getProviderSpec,
   incrementLocalDailyRequestCount,
   normalizeApiKey,
   normalizeProviderIdClient,
+  onAiUsageUpdated,
   runXoxAiChatStream,
   sanitizeGeneratedPdfArtifact,
   saveAiConfig,
@@ -565,6 +569,7 @@ export default function App() {
   };
   const [activeClarification, setActiveClarification] = useState<ClarificationSpec | null>(null);
   const [accountUsage, setAccountUsage] = useState<AiConnectionTestResult | null>(null);
+  const [usageLedger, setUsageLedger] = useState<AiUsageLedger | null>(null);
   const [catalogModels, setCatalogModels] = useState<OpenRouterModelOption[]>([]);
   const [loadingModels, setLoadingModels] = useState<boolean>(false);
   const [unavailableModelIds, setUnavailableModelIds] = useState<Set<string>>(() => new Set());
@@ -672,7 +677,14 @@ export default function App() {
       ? Math.min(100, Math.round((totalActiveTokens / modelContextWindow) * 1000) / 10)
       : 0;
 
-  const freeCatalogCount = activeProviderCatalog.filter((m) => m.is_free).length;
+  const computedUsage = computeProviderUsageSummary({
+    provider: activeProvider,
+    aiConfig,
+    accountUsage,
+    usageLedger,
+    requestsTodayFallback: requestsToday,
+    modelId,
+  });
 
   const usageSummary = (() => {
     const activeSlot = aiConfig.configuredProviders?.[activeProvider];
@@ -687,6 +699,8 @@ export default function App() {
         headline: "Sin conectar",
         detail: "Conecta uno o varios proveedores de IA",
         pct: 0,
+        meterMode: "unlimited" as const,
+        hasMeterBar: false,
         connected: false,
       };
     }
@@ -697,103 +711,31 @@ export default function App() {
         headline: activeSlot.quotaStatus === "exhausted" ? "Sin cuota" : "En espera",
         detail: activeSlot.quotaReason || `Respaldo automático ${aiConfig.autoFailover !== false ? "listo" : "inactivo"}${backupTag}`,
         pct: 100,
+        meterMode: "used" as const,
+        hasMeterBar: true,
         connected: true,
       };
     }
 
-    if (!accountUsage) {
-      return {
-        tierLabel: `${activeSpec.shortName}${backupTag}`,
-        headline: aiConfig.hasApiKey ? "Listo" : "Respaldo",
-        detail: `${requestsToday} ${requestsToday === 1 ? "consulta hoy" : "consultas hoy"} · ${activeSpec.tariffSummary}`,
-        pct: 0,
-        connected: true,
-      };
-    }
-
-    if (!accountUsage.ok) {
+    if (accountUsage && !accountUsage.ok && (!accountUsage.provider || normalizeProviderIdClient(accountUsage.provider) === activeProvider)) {
       return {
         tierLabel: `${activeSpec.shortName}${backupTag}`,
         headline: "Requiere revisión",
         detail: accountUsage.message || `Revisa tu conexión con ${activeSpec.shortName}`,
         pct: 100,
+        meterMode: "used" as const,
+        hasMeterBar: true,
         connected: true,
       };
     }
 
-    if (activeProvider === "deepseek") {
-      const bal = accountUsage.balance_usd;
-      return {
-        tierLabel: `DeepSeek${backupTag}`,
-        headline: typeof bal === "number" ? `$${bal.toFixed(2)} USD` : "Caché $0.003/1M",
-        detail: `${requestsToday} consultas hoy · Entrada $0.15/1M`,
-        pct: 0,
-        connected: true,
-      };
-    }
-
-    if (activeProvider !== "openrouter") {
-      return {
-        tierLabel: `${activeSpec.shortName}${backupTag}`,
-        headline: activeSpec.supportsPromptCache ? "Caché activo" : activeSpec.tierBadge,
-        detail: `${requestsToday} hoy · ${activeSpec.tariffSummary}`,
-        pct: 0,
-        connected: true,
-      };
-    }
-
-    if (accountUsage.can_use_paid_models) {
-      const dailySpent = accountUsage.usage_daily ?? 0;
-      const spentLabel =
-        dailySpent > 0 && dailySpent < 0.01 ? `$${dailySpent.toFixed(4)}` : `$${dailySpent.toFixed(2)}`;
-      const queryLabel = `${requestsToday} ${requestsToday === 1 ? "consulta" : "consultas"}`;
-
-      if (accountUsage.limit != null && accountUsage.limit > 0 && accountUsage.limit_remaining != null) {
-        const usedUsd = Math.max(0, accountUsage.limit - accountUsage.limit_remaining);
-        const pct = Math.min(100, Math.round((usedUsd / accountUsage.limit) * 100));
-        return {
-          tierLabel: `OpenRouter${backupTag}`,
-          headline: `$${accountUsage.limit_remaining.toFixed(2)} / $${accountUsage.limit.toFixed(2)}`,
-          detail: `Hoy: ${spentLabel} USD · ${queryLabel}`,
-          pct,
-          connected: true,
-        };
-      }
-      if (
-        accountUsage.credits_remaining != null &&
-        accountUsage.credits_total != null &&
-        accountUsage.credits_total > 0
-      ) {
-        const usedUsd = Math.max(0, accountUsage.credits_total - accountUsage.credits_remaining);
-        const pct = Math.min(100, Math.round((usedUsd / accountUsage.credits_total) * 100));
-        return {
-          tierLabel: `OpenRouter${backupTag}`,
-          headline: `$${accountUsage.credits_remaining.toFixed(2)} USD`,
-          detail: `Hoy: ${spentLabel} USD · ${queryLabel}`,
-          pct,
-          connected: true,
-        };
-      }
-      return {
-        tierLabel: `OpenRouter${backupTag}`,
-        headline: "Plan activo",
-        detail: `Hoy: ${spentLabel} USD · ${queryLabel}`,
-        pct: 0,
-        connected: true,
-      };
-    }
-
-    const dailyLimit = accountUsage.daily_free_limit || 50;
-    const rpmLimit = accountUsage.rpm_free_limit || 20;
-    const pct = Math.min(100, Math.round((requestsToday / dailyLimit) * 100));
     return {
-      tierLabel: `Gratis · OpenRouter${backupTag}`,
-      headline: `${requestsToday} de ${dailyLimit} hoy`,
-      detail:
-        freeCatalogCount > 0
-          ? `${freeCatalogCount} modelos disponibles · ${rpmLimit}/min`
-          : `Hasta ${rpmLimit} consultas por minuto`,
-      pct,
+      tierLabel: `${computedUsage.tierLabel}${backupTag}`,
+      headline: computedUsage.headline,
+      detail: computedUsage.subline,
+      pct: computedUsage.pct,
+      meterMode: computedUsage.meterMode,
+      hasMeterBar: computedUsage.hasMeterBar,
       connected: true,
     };
   })();
@@ -819,6 +761,8 @@ export default function App() {
       setLoadingModels(false);
     }
 
+    void getAiUsageLedger().then(setUsageLedger).catch(() => {});
+
     const hasKey = hasKeyOverride ?? aiConfig.hasApiKey;
     const keyScope = maskedKeyOverride !== undefined ? maskedKeyOverride : aiConfig.maskedKey;
     setRequestsToday(getLocalDailyRequestCount(keyScope));
@@ -827,6 +771,7 @@ export default function App() {
       try {
         const usageRes = await testAiConnection(targetPid);
         setAccountUsage(usageRes);
+        void getAiUsageLedger().then(setUsageLedger).catch(() => {});
         if (targetPid === "openrouter" && usageRes.ok && !usageRes.can_use_paid_models) {
           setModelId((curr) => {
             const info = formatModelDisplay(curr, latestCatalog);
@@ -1016,6 +961,26 @@ export default function App() {
       }
     }
     loadData();
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unsubUsage: (() => void) | null = null;
+    void getAiUsageLedger()
+      .then((ledger) => {
+        if (!disposed) setUsageLedger(ledger);
+      })
+      .catch(() => {});
+    void onAiUsageUpdated((ledger) => {
+      if (!disposed) setUsageLedger(ledger);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unsubUsage = fn;
+    });
+    return () => {
+      disposed = true;
+      unsubUsage?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -3199,6 +3164,7 @@ export default function App() {
       testAiConnection(finalPid)
         .then((u) => setAccountUsage(u))
         .catch(() => {});
+      void getAiUsageLedger().then(setUsageLedger).catch(() => {});
 
       const nextClarification = res.clarification ?? null;
       const nextVaultAction = res.vaultAction ?? undefined;
@@ -3535,7 +3501,13 @@ export default function App() {
     if (xoxState !== "idle" || greeting) return;
     setXoxState("success");
     setGreetingLeaving(false);
-    setGreeting("¡Hola! Soy Xox, tu copiloto de inventario.");
+    const agentName = workspaceOverview?.profile.agentName?.trim() || "Xox";
+    const activeRole = workspaceOverview?.profile.activeRole?.trim();
+    setGreeting(
+      activeRole
+        ? `¡Hola! Soy ${agentName} (${activeRole}). ¿En qué trabajamos hoy?`
+        : `¡Hola! Soy ${agentName}. ¿Qué construimos o revisamos hoy?`
+    );
     greetingTimers.current.forEach(clearTimeout);
     greetingTimers.current = [
       setTimeout(() => setGreetingLeaving(true), 3400),
@@ -4226,27 +4198,32 @@ export default function App() {
                           />
                         </button>
                       </div>
-                      <div
-                        className="w-full bg-white/[0.07] h-1 rounded-full overflow-hidden"
-                        role="progressbar"
-                        aria-label={usageSummary.tierLabel}
-                        aria-valuenow={usageSummary.pct}
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                      >
-                        <div
-                          className={`h-full rounded-full transition-all duration-300 ${
+                      <progress
+                        className="xook-usage-progress"
+                        value={
+                          usageSummary.hasMeterBar
+                            ? Math.max(0, Math.min(100, usageSummary.pct))
+                            : usageSummary.connected
+                              ? 100
+                              : 0
+                        }
+                        max={100}
+                        aria-label={`${usageSummary.tierLabel}: ${usageSummary.headline}`}
+                        style={{
+                          ["--xook-progress-fill" as string]:
                             accountUsage && !accountUsage.ok
-                              ? "bg-zinc-500"
-                              : usageSummary.pct >= 85
-                              ? "bg-zinc-100"
-                              : usageSummary.connected
-                              ? "bg-zinc-300"
-                              : "bg-zinc-600"
-                          }`}
-                          style={{ width: `${Math.max(usageSummary.connected ? 4 : 0, usageSummary.pct)}%` }}
-                        />
-                      </div>
+                              ? "rgba(244, 63, 94, 0.8)"
+                              : usageSummary.meterMode === "used"
+                                ? usageSummary.pct >= 85
+                                  ? "rgba(251, 191, 36, 0.9)"
+                                  : "rgba(244, 244, 245, 0.85)"
+                                : usageSummary.meterMode === "remaining"
+                                  ? usageSummary.pct <= 15
+                                    ? "rgba(244, 63, 94, 0.85)"
+                                    : "rgba(110, 231, 183, 0.85)"
+                                  : "rgba(212, 212, 216, 0.45)",
+                        }}
+                      />
                       <div className="mt-1.5 flex items-center justify-between gap-2 text-[10.5px] text-zinc-400">
                         <span className="truncate">{usageSummary.detail}</span>
                         <button
@@ -5062,10 +5039,32 @@ export default function App() {
                             </div>
 
                             <div className="mt-1.5 pt-1.5 border-t border-white/[0.08] space-y-1">
-                              {aiConfig.hasApiKey && (
-                                <div className="px-2.5 py-1 flex items-center justify-between text-[10.5px] text-zinc-300/80">
-                                  <span className="truncate">{usageSummary.tierLabel}</span>
-                                  <span className="font-mono text-zinc-100 shrink-0">{usageSummary.headline}</span>
+                              {hasAnyConfiguredKey && (
+                                <div className="px-2.5 py-1 space-y-1">
+                                  <div className="flex items-center justify-between gap-2 text-[10.5px] text-zinc-300/85">
+                                    <span className="truncate">{usageSummary.tierLabel}</span>
+                                    <span className="font-mono text-zinc-100 shrink-0 tabular-nums">
+                                      {usageSummary.headline}
+                                    </span>
+                                  </div>
+                                  {usageSummary.hasMeterBar && (
+                                    <progress
+                                      className="xook-usage-progress"
+                                      value={Math.max(0, Math.min(100, usageSummary.pct))}
+                                      max={100}
+                                      aria-label={`${usageSummary.tierLabel}: ${usageSummary.headline}`}
+                                      style={{
+                                        ["--xook-progress-fill" as string]:
+                                          usageSummary.meterMode === "used"
+                                            ? usageSummary.pct >= 85
+                                              ? "rgba(251, 191, 36, 0.9)"
+                                              : "rgba(244, 244, 245, 0.8)"
+                                            : usageSummary.pct <= 15
+                                              ? "rgba(244, 63, 94, 0.85)"
+                                              : "rgba(110, 231, 183, 0.85)",
+                                      }}
+                                    />
+                                  )}
                                 </div>
                               )}
                               <button
@@ -5395,6 +5394,7 @@ export default function App() {
         initialProvider={aiSettingsProvider}
         config={aiConfig}
         accountUsage={accountUsage}
+        usageLedger={usageLedger}
         catalogModels={catalogModels}
         requestsToday={requestsToday}
         onClose={() => setShowAiSettings(false)}
@@ -5411,6 +5411,7 @@ export default function App() {
             setUnavailableModelIds(new Set());
           }
         }}
+        onLedgerUpdated={setUsageLedger}
         onCatalogUpdated={(models) => {
           if (models.length > 0) {
             setCatalogModels(models);
@@ -5424,7 +5425,7 @@ export default function App() {
         defaultStoreName={
           workspaceOverview?.profile.companyName ||
           localUser?.storeName ||
-          "Mi Empresa"
+          "Mi Espacio"
         }
         onClose={() => setShowLocalAuth(false)}
         onUserUpdated={(updatedUser) => {

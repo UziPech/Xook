@@ -551,14 +551,61 @@ def _table_dict_to_markdown(tbl: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_FENCE_OPEN_RE = re.compile(r"^(\s*)(`{3,}|~{3,})(.*)$")
+_INLINE_CODE_RE = re.compile(r"(`+)(?:(?!\1)[^\n])+\1|`[^`\n]+`")
+
+
+def _stash_markdown_code(text: str) -> tuple[str, list[str]]:
+    stash: list[str] = []
+
+    def _push(raw: str) -> str:
+        idx = len(stash)
+        stash.append(raw)
+        return f"\ue000XOOKCODE_{idx}\ue001"
+
+    lines = text.split("\n")
+    out_lines: list[str] = []
+    i = 0
+    total = len(lines)
+
+    while i < total:
+        line = lines[i]
+        m = _FENCE_OPEN_RE.match(line)
+        fence_char = m.group(2)[0] if m else ""
+        fence_len = len(m.group(2)) if m else 0
+        info = m.group(3) if m else ""
+        valid_open = bool(m and not (fence_char == "`" and "`" in info))
+
+        if valid_open:
+            block_lines = [line]
+            i += 1
+            close_re = re.compile(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$")
+            while i < total:
+                block_lines.append(lines[i])
+                if close_re.match(lines[i]):
+                    i += 1
+                    break
+                i += 1
+            out_lines.append(_push("\n".join(block_lines)))
+            continue
+
+        out_lines.append(_INLINE_CODE_RE.sub(lambda match: _push(match.group(0)), line))
+        i += 1
+
+    return "\n".join(out_lines), stash
+
+
 def clean_visible_reply(text: str, *, strip_tables: bool = False) -> str:
     """
     Convierte cualquier tabla HTML (<table> / <tr> huérfano) en Markdown GFM limpio
     y elimina etiquetas residuales como </pdf> o wrappers de streaming antes de enviar a UI.
+    Preserva intactos los bloques de código (cerrados o abiertos en streaming).
     """
     out = (text or "").strip()
     if not out:
         return ""
+
+    out, code_stash = _stash_markdown_code(out)
 
     def _replace_html_block(match: re.Match[str]) -> str:
         parsed = _parse_html_table_fragment(match.group(0))
@@ -573,13 +620,6 @@ def clean_visible_reply(text: str, *, strip_tables: bool = False) -> str:
         out,
         flags=re.I,
     )
-    code_stash: list[str] = []
-
-    def _stash_code(match: re.Match[str]) -> str:
-        code_stash.append(match.group(0))
-        return f"\x00CODEBLOCK{len(code_stash) - 1}\x00"
-
-    out = re.sub(r"```[\s\S]*?```|`[^`\n]+`", _stash_code, out)
     out = re.sub(
         r"<\s*(?:/\s*)?(?:pdf|doc|document|response|respuesta|analysis|analisis|canvas|lienzo|acciones|actions|posta|reply|resp|table|thead|tbody|tfoot|tr|th|td)\b[^>]*>",
         "",
@@ -598,13 +638,13 @@ def clean_visible_reply(text: str, *, strip_tables: bool = False) -> str:
         out,
         flags=re.I,
     )
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
     if code_stash:
         out = re.sub(
-            r"\x00CODEBLOCK(\d+)\x00",
+            r"\ue000XOOKCODE_(\d+)\ue001",
             lambda m: code_stash[int(m.group(1))],
             out,
         )
-    out = re.sub(r"\n{3,}", "\n\n", out).strip()
     return out
 
 

@@ -31,10 +31,13 @@ import { ProviderIcon } from "./ProviderIcon";
 import {
   CanvasArtifact,
   cleanVisibleReply,
-  isMarkdownTableSeparator,
   markdownTableToCanvasArtifact,
-  parseMarkdownTableBlock,
 } from "../canvas/canvasSchema";
+import {
+  MarkdownContent,
+  type MarkdownTableBlock,
+  renderInlineMarkdown,
+} from "../../utils/markdownRenderer";
 import {
   AI_PROVIDER_LIST,
   AiProviderId,
@@ -117,30 +120,6 @@ interface ChatMessageListProps {
   ) => void;
 }
 
-function renderInlineFormatting(line: string): React.ReactNode[] {
-  const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
-  return parts.map((part, idx) => {
-    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
-      return (
-        <strong key={idx} className="font-semibold text-white">
-          {part.slice(2, -2)}
-        </strong>
-      );
-    }
-    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
-      return (
-        <code
-          key={idx}
-          className="px-1.5 py-0.5 rounded bg-white/[0.06] text-sky-200 font-mono text-[12px]"
-        >
-          {part.slice(1, -1)}
-        </code>
-      );
-    }
-    return <React.Fragment key={idx}>{part}</React.Fragment>;
-  });
-}
-
 function FormattedReply({
   text,
   streaming,
@@ -153,170 +132,114 @@ function FormattedReply({
   messageId?: string;
 }) {
   const normalizedText = cleanVisibleReply(text, { stripTables: false });
-  const lines = normalizedText.split("\n");
-  const blocks: React.ReactNode[] = [];
-  let i = 0;
 
-  while (i < lines.length) {
-    const trimmed = lines[i].trim();
-    if (!trimmed) {
-      blocks.push(<div key={`sp_${i}`} className="h-1" />);
-      i += 1;
-      continue;
-    }
-
-    // Detectar tabla Markdown GFM (encabezado + separador con pipes)
-    if (
-      i + 1 < lines.length &&
-      trimmed.includes("|") &&
-      isMarkdownTableSeparator(lines[i + 1])
-    ) {
-      const table = parseMarkdownTableBlock(lines.slice(i));
-      if (table) {
-        const consumedLines = 2 + table.rows.length;
-        const blockIdx = i;
-        blocks.push(
-          <div
-            key={`tbl_${blockIdx}`}
-            className="my-2 xook-liquid-table rounded-2xl overflow-hidden"
-          >
-            <div className="flex items-center justify-between px-3 py-2 bg-[#111318] border-b border-white/[0.08] text-[11px] text-zinc-300">
-              <span className="inline-flex items-center gap-2 font-medium text-zinc-100">
-                <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
-                  <Table2 className="w-2.5 h-2.5 text-zinc-200" />
-                </span>
-                <span>
-                  {table.rows.length} {table.rows.length === 1 ? "fila" : "filas"} ·{" "}
-                  {table.headers.length} columnas
-                </span>
-              </span>
-              {onOpenCanvas && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    onOpenCanvas(
-                      markdownTableToCanvasArtifact(table, {
-                        id: messageId ? `canvas_md_${messageId}_${blockIdx}` : undefined,
-                        title: "Tabla en Canvas",
-                      })
-                    )
-                  }
-                  className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-zinc-100 hover:text-white text-[10.5px] font-medium cursor-pointer"
-                >
-                  <ExternalLink className="w-2.5 h-2.5 text-zinc-300" />
-                  <span>Abrir en Canvas</span>
-                </button>
-              )}
-            </div>
-            <div tabIndex={0} role="region" aria-label="Tabla de datos" className="overflow-x-auto">
-              <table className="w-full table-auto text-left border-separate border-spacing-0 text-[12.5px]">
-                <caption className="sr-only">Tabla generada</caption>
-                <thead className="xook-liquid-table-head">
-                  <tr>
-                    {table.headers.map((h, hIdx) => (
-                      <th
-                        key={hIdx}
-                        scope="col"
-                        className={`px-3.5 py-2.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-zinc-200 whitespace-nowrap ${
-                          table.alignments[hIdx] === "right"
-                            ? "text-right"
-                            : table.alignments[hIdx] === "center"
-                              ? "text-center"
-                              : "text-left"
-                        }`}
-                      >
-                        {renderInlineFormatting(h)}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {table.rows.map((row, rIdx) => (
-                    <tr
-                      key={rIdx}
-                      className={`xook-liquid-row ${rIdx % 2 === 1 ? "is-alt" : ""}`}
-                    >
-                      {row.map((cell, cIdx) => (
-                        <td
-                          key={cIdx}
-                          className={`px-3.5 py-2.5 align-top text-zinc-200 ${
-                            table.alignments[cIdx] === "right"
-                              ? "text-right tabular-nums text-zinc-100 whitespace-nowrap"
-                              : table.alignments[cIdx] === "center"
-                                ? "text-center"
-                                : cIdx === 0
-                                  ? "text-left font-medium text-white"
-                                  : "text-left"
-                          }`}
-                        >
-                          {renderInlineFormatting(cell)}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        );
-        i += consumedLines;
-        continue;
-      }
-    }
-
-    const isLastLine = i === lines.length - 1;
-    const caret =
-      streaming && isLastLine ? (
-        <span className="inline-block w-1.5 h-3.5 ml-1 align-middle bg-sky-300/80 animate-pulse rounded-xs" />
-      ) : null;
-
-    if (/^#{1,3}\s+/.test(trimmed)) {
-      blocks.push(
-        <h4 key={i} className="text-[14.5px] font-semibold text-white pt-1">
-          {renderInlineFormatting(trimmed.replace(/^#{1,3}\s+/, ""))}
-          {caret}
-        </h4>
-      );
-    } else if (/^[-•*]\s+/.test(trimmed)) {
-      blocks.push(
-        <div key={i} className="flex items-start gap-2.5 pl-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-sky-300/75 mt-2 shrink-0" />
-          <span>
-            {renderInlineFormatting(trimmed.replace(/^[-•*]\s+/, ""))}
-            {caret}
+  const renderChatTable = (table: MarkdownTableBlock, blockIdx: number) => (
+    <div
+      key={`tbl_${blockIdx}`}
+      className="my-2 xook-liquid-table rounded-2xl overflow-hidden"
+    >
+      <div className="flex items-center justify-between px-3 py-2 bg-[#111318] border-b border-white/[0.08] text-[11px] text-zinc-300">
+        <span className="inline-flex items-center gap-2 font-medium text-zinc-100">
+          <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
+            <Table2 className="w-2.5 h-2.5 text-zinc-200" />
           </span>
-        </div>
-      );
-    } else {
-      const numMatch = trimmed.match(/^(\d+\.)\s+(.*)$/);
-      if (numMatch) {
-        blocks.push(
-          <div key={i} className="flex items-start gap-2 pl-1">
-            <span className="text-sky-300/80 font-mono text-[12.5px] mt-0.5 shrink-0">
-              {numMatch[1]}
-            </span>
-            <span>
-              {renderInlineFormatting(numMatch[2])}
-              {caret}
-            </span>
-          </div>
-        );
-      } else {
-        blocks.push(
-          <p key={i}>
-            {renderInlineFormatting(trimmed)}
-            {caret}
-          </p>
-        );
-      }
-    }
-    i += 1;
-  }
+          <span>
+            {table.rows.length} {table.rows.length === 1 ? "fila" : "filas"} ·{" "}
+            {table.headers.length} columnas
+          </span>
+        </span>
+        {onOpenCanvas && (
+          <button
+            type="button"
+            onClick={() =>
+              onOpenCanvas(
+                markdownTableToCanvasArtifact(table, {
+                  id: messageId ? `canvas_md_${messageId}_${blockIdx}` : undefined,
+                  title: "Tabla en Canvas",
+                })
+              )
+            }
+            className="quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-zinc-100 hover:text-white text-[10.5px] font-medium cursor-pointer"
+          >
+            <ExternalLink className="w-2.5 h-2.5 text-zinc-300" />
+            <span>Abrir en Canvas</span>
+          </button>
+        )}
+      </div>
+      <div
+        tabIndex={0}
+        role="region"
+        aria-label="Tabla de datos"
+        className="overflow-x-auto xook-scroll"
+      >
+        <table className="w-full table-auto text-left border-separate border-spacing-0 text-[12.5px]">
+          <caption className="sr-only">Tabla generada</caption>
+          <thead className="xook-liquid-table-head">
+            <tr>
+              {table.headers.map((h, hIdx) => (
+                <th
+                  key={hIdx}
+                  scope="col"
+                  className={`px-3.5 py-2.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-zinc-200 whitespace-nowrap ${
+                    table.alignments[hIdx] === "right"
+                      ? "text-right"
+                      : table.alignments[hIdx] === "center"
+                        ? "text-center"
+                        : "text-left"
+                  }`}
+                >
+                  {renderInlineMarkdown(h, {
+                    variant: "default",
+                    keyPrefix: `mth-${blockIdx}-${hIdx}`,
+                  })}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {table.rows.map((row, rIdx) => (
+              <tr
+                key={rIdx}
+                className={`xook-liquid-row ${rIdx % 2 === 1 ? "is-alt" : ""}`}
+              >
+                {row.map((cell, cIdx) => (
+                  <td
+                    key={cIdx}
+                    className={`px-3.5 py-2.5 align-top text-zinc-200 ${
+                      table.alignments[cIdx] === "right"
+                        ? "text-right tabular-nums text-zinc-100 whitespace-nowrap"
+                        : table.alignments[cIdx] === "center"
+                          ? "text-center"
+                          : cIdx === 0
+                            ? "text-left font-medium text-white"
+                            : "text-left"
+                    }`}
+                  >
+                    {cell
+                      ? renderInlineMarkdown(cell, {
+                          variant: "default",
+                          keyPrefix: `mtd-${blockIdx}-${rIdx}-${cIdx}`,
+                        })
+                      : "—"}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 
   return (
-    <div className="space-y-2 text-[14px] leading-relaxed text-zinc-200 select-text">
-      {blocks}
-    </div>
+    <MarkdownContent
+      text={normalizedText}
+      variant="default"
+      streaming={streaming}
+      caretClassName="inline-block w-1.5 h-3.5 ml-1 align-middle bg-sky-300/80 animate-pulse rounded-xs"
+      className="space-y-2 text-[14px] leading-relaxed text-zinc-200 select-text"
+      renderTable={renderChatTable}
+    />
   );
 }
 

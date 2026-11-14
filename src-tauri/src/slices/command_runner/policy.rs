@@ -120,7 +120,7 @@ const HARD_BLOCKED_PROGRAMS: &[&str] = &[
 
 const ALWAYS_ASK_ONCE_PROGRAMS: &[&str] = &[
     "curl", "wget", "nc", "ncat", "ssh", "scp", "rsync", "sftp", "sh", "bash", "zsh", "fish",
-    "dash", "rm", "rmdir", "mv", "chmod", "osascript", "perl", "ruby",
+    "dash", "rm", "rmdir", "mv", "chmod", "truncate", "unlink", "osascript", "perl", "ruby",
 ];
 
 const REMOTE_FETCH_PROGRAMS: &[&str] = &["curl", "wget", "fetch"];
@@ -129,9 +129,10 @@ const SCRIPT_EXEC_PROGRAMS: &[&str] = &[
 ];
 
 const MUTATING_PROGRAMS: &[&str] = &[
-    "rm", "rmdir", "mv", "cp", "mkdir", "touch", "chmod", "tee", "ln", "python", "python3",
-    "node", "sed", "awk", "sqlite3", "sh", "bash", "zsh", "fish", "dash", "osascript", "git",
-    "npm", "pnpm", "yarn", "cargo", "pip", "pip3", "uv", "perl", "ruby", "tar", "unzip", "zip",
+    "rm", "rmdir", "mv", "cp", "mkdir", "touch", "chmod", "truncate", "unlink", "tee", "ln",
+    "python", "python3", "node", "sed", "awk", "sqlite3", "sh", "bash", "zsh", "fish", "dash",
+    "osascript", "git", "npm", "pnpm", "yarn", "cargo", "pip", "pip3", "uv", "perl", "ruby", "tar",
+    "unzip", "zip",
 ];
 
 pub fn command_needs_ext_write(program: &str, uses_shell: bool) -> bool {
@@ -625,6 +626,40 @@ fn scope_dir_for_resolved_path(resolved: &Path, existed: bool) -> PathBuf {
     }
 }
 
+fn check_protected_workspace_mutation_target(
+    canon: &Path,
+    canon_ws: &Path,
+    prog: &str,
+) -> Result<(), String> {
+    if canon == canon_ws {
+        return Err(format!(
+            "Bloqueado por seguridad (Capa 1): '{prog}' no puede modificar ni eliminar la raíz del espacio de trabajo."
+        ));
+    }
+    let Ok(rel) = canon.strip_prefix(canon_ws) else {
+        return Ok(());
+    };
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    let zone = crate::slices::workspace_manager::sandbox::zone_from_rel_path(rel);
+    if zone == crate::slices::workspace_manager::sandbox::WorkspaceZone::Meta {
+        return Err(format!(
+            "Bloqueado por seguridad (Capa 1): '{prog}' no puede modificar `{rel_str}` (zona interna protegida)."
+        ));
+    }
+    if zone.is_hitl_protected() {
+        return Err(format!(
+            "Bloqueado por seguridad (Capa 1): '{prog}' no puede alterar `{rel_str}` (la zona `{}` requiere flujo HITL).",
+            zone.as_str()
+        ));
+    }
+    if let Some(kind) = crate::slices::workspace_manager::sandbox::is_protected_workspace_rel_path(rel) {
+        return Err(format!(
+            "Bloqueado por seguridad (Capa 1): '{prog}' no puede modificar ni eliminar `{rel_str}` ({kind})."
+        ));
+    }
+    Ok(())
+}
+
 fn inspect_stages_layer1(
     stages: &mut [ParsedCommandStage],
     uses_shell: bool,
@@ -773,8 +808,30 @@ fn inspect_stages_layer1(
         }
 
         // Inspección de todos los argumentos + targets de redirección
+        let mutates_all_arg_targets = matches!(
+            base_prog.as_str(),
+            "rm" | "rmdir" | "mv" | "chmod" | "truncate" | "unlink" | "tee" | "ln" | "touch" | "mkdir"
+        );
+        let sed_inplace = base_prog == "sed"
+            && stage
+                .args
+                .iter()
+                .any(|a| a == "-i" || a.starts_with("-i") || a == "--in-place");
+        let last_non_flag_idx = stage
+            .args
+            .iter()
+            .rposition(|a| !a.starts_with('-') && !a.trim().is_empty());
+
         for arg_idx in 0..stage.args.len() {
             let arg = stage.args[arg_idx].clone();
+            let is_cp_dest = base_prog == "cp"
+                && (Some(arg_idx) == last_non_flag_idx
+                    || (arg_idx > 0 && stage.args[arg_idx - 1] == "-t"));
+            let is_mutated_target_arg = !is_inline_script
+                && ((mutates_all_arg_targets && !arg.starts_with('-') && !arg.trim().is_empty())
+                    || is_cp_dest
+                    || (sed_inplace && !arg.starts_with('-') && !arg.trim().is_empty()));
+
             if has_relative_parent_traversal(&arg) {
                 return Err("Acceso denegado: no se permite navegación con '..' en comandos.".to_string());
             }
@@ -792,6 +849,9 @@ fn inspect_stages_layer1(
                     is_forbidden_secret_path(&canon, app_config_dir, Some(&canon_ws))
                 {
                     return Err(format!("Acceso denegado por seguridad: {reason}."));
+                }
+                if is_mutated_target_arg {
+                    check_protected_workspace_mutation_target(&canon, &canon_ws, &base_prog)?;
                 }
                 if !uses_shell
                     && is_bare
@@ -816,12 +876,19 @@ fn inspect_stages_layer1(
                 }
             } else if !arg.starts_with('-') && !arg.trim().is_empty() && !is_inline_script {
                 let candidate = cwd_abs.join(&arg);
-                if candidate.exists() {
+                if candidate.exists() || is_mutated_target_arg {
                     if let Ok((canon, existed)) = canonicalize_with_ancestor(&candidate) {
                         if let Some(reason) =
                             is_forbidden_secret_path(&canon, app_config_dir, Some(&canon_ws))
                         {
                             return Err(format!("Acceso denegado por seguridad: {reason}."));
+                        }
+                        if is_mutated_target_arg {
+                            check_protected_workspace_mutation_target(
+                                &canon,
+                                &canon_ws,
+                                &base_prog,
+                            )?;
                         }
                         let inside_ws = canon == canon_ws || canon.starts_with(&canon_ws);
                         if !inside_ws {
@@ -851,6 +918,7 @@ fn inspect_stages_layer1(
             if let Some(reason) = is_forbidden_secret_path(&canon, app_config_dir, Some(&canon_ws)) {
                 return Err(format!("Acceso denegado por seguridad: {reason}."));
             }
+            check_protected_workspace_mutation_target(&canon, &canon_ws, "redirección")?;
             let inside_ws = canon == canon_ws || canon.starts_with(&canon_ws);
             if !inside_ws {
                 let sdir = scope_dir_for_resolved_path(&canon, existed);
@@ -1653,6 +1721,46 @@ mod tests {
         assert!(matches!(evaluate_command(&root, "find . -delete", ".").verdict, PolicyVerdict::Deny(_)));
         assert!(matches!(evaluate_command(&root, "rm -r datos", ".").verdict, PolicyVerdict::Deny(_)));
         assert!(matches!(evaluate_command(&root, &format!("cat {ext_str}/.env"), ".").verdict, PolicyVerdict::Deny(_)));
+
+        // Protecciones estructurales, HITL y archivos núcleo en Layer 1
+        fs::create_dir_all(root.join("empresa")).unwrap();
+        fs::create_dir_all(root.join("datos/ventas")).unwrap();
+        fs::create_dir_all(root.join("agente/ordenes")).unwrap();
+        fs::create_dir_all(root.join("agente/proyectos")).unwrap();
+        fs::write(root.join("empresa/proveedores.json"), "[]").unwrap();
+        fs::write(root.join("empresa/perfil.json"), "{}").unwrap();
+        fs::write(root.join("agente/proyectos/tmp.txt"), "ok").unwrap();
+
+        assert!(matches!(
+            evaluate_command(&root, "rm empresa/proveedores.json", ".").verdict,
+            PolicyVerdict::Deny(_)
+        ));
+        assert!(matches!(
+            evaluate_command(&root, "rmdir datos/ventas", ".").verdict,
+            PolicyVerdict::Deny(_)
+        ));
+        assert!(matches!(
+            evaluate_command(&root, "mv agente/ordenes agente/proyectos", ".").verdict,
+            PolicyVerdict::Deny(_)
+        ));
+        assert!(matches!(
+            evaluate_command(&root, "echo '{}' > empresa/perfil.json", ".").verdict,
+            PolicyVerdict::Deny(_)
+        ));
+        assert!(matches!(
+            evaluate_command(&root, "truncate -s 0 empresa/perfil.json", ".").verdict,
+            PolicyVerdict::Deny(_)
+        ));
+        // Lectura de empresa/perfil.json no queda bloqueada por Capa 1 (solo pide confirmación por defecto)
+        assert_eq!(
+            evaluate_command(&root, "cat empresa/perfil.json", ".").verdict,
+            PolicyVerdict::Ask
+        );
+        // Archivo temporal en agente/proyectos sigue pidiendo confirmación normal (Ask)
+        assert_eq!(
+            evaluate_command(&root, "rm agente/proyectos/tmp.txt", ".").verdict,
+            PolicyVerdict::Ask
+        );
 
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&ext_dir);

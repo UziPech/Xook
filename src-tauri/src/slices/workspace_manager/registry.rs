@@ -56,6 +56,16 @@ pub struct WorkspaceProfileFile {
     pub max_budget_per_order: f64,
     pub preferred_suppliers: Vec<serde_json::Value>,
     pub business_rules: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mission: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_role: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +76,12 @@ pub struct WorkspaceBusinessSummary {
     pub currency: String,
     pub stock_threshold_days: u32,
     pub max_budget_per_order: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,15 +140,157 @@ pub fn save_registry<R: Runtime>(
     Ok(())
 }
 
-/// Crea de forma idempotente la estructura real de carpetas y archivos base de un espacio de trabajo.
-/// Nunca sobrescribe archivos que ya existan para proteger cambios del usuario o del agente.
-pub fn scaffold_workspace_dir(
+fn backup_slug_for_rel(rel_path: &str) -> String {
+    rel_path
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .replace('/', "__")
+}
+
+/// Valida que un archivo núcleo del workspace no esté truncado ni corrupto antes de respaldarlo o conservarlo.
+pub fn is_valid_core_file_content(rel_path: &str, raw: &str) -> bool {
+    let norm = rel_path
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_ascii_lowercase();
+    match norm.as_str() {
+        ".xook/workspace.json" | ".xook/permissions.json" | "empresa/perfil.json" | "memoria/patrones.json" => {
+            serde_json::from_str::<serde_json::Value>(raw)
+                .ok()
+                .and_then(|v| v.as_object().map(|m| !m.is_empty()))
+                .unwrap_or(false)
+        }
+        "empresa/proveedores.json" => serde_json::from_str::<serde_json::Value>(raw)
+            .ok()
+            .map(|v| match v {
+                serde_json::Value::Array(_) => true,
+                serde_json::Value::Object(m) => ["suppliers", "proveedores", "items"]
+                    .iter()
+                    .any(|k| m.get(*k).is_some_and(|x| x.is_array())),
+                _ => false,
+            })
+            .unwrap_or(false),
+        "memoria/decisiones.jsonl" => {
+            let lines: Vec<&str> = raw.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            !lines.is_empty()
+                && lines
+                    .iter()
+                    .all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok())
+        }
+        _ => !raw.trim().is_empty(),
+    }
+}
+
+/// Guarda una copia sombra segura en `.xook/backups/` si el archivo núcleo es válido.
+/// Nunca sobrescribe un respaldo sano con contenido vacío o inválido.
+pub fn snapshot_core_file(root: &Path, rel_path: &str) {
+    let target = root.join(rel_path);
+    let Ok(raw) = fs::read_to_string(&target) else {
+        return;
+    };
+    if !is_valid_core_file_content(rel_path, &raw) {
+        return;
+    }
+
+    let backups_dir = root.join(".xook/backups");
+    let slug = backup_slug_for_rel(rel_path);
+    let latest_path = backups_dir.join(format!("{slug}.latest"));
+    let prev_path = backups_dir.join(format!("{slug}.prev"));
+
+    if let Ok(existing_latest) = fs::read_to_string(&latest_path) {
+        if existing_latest == raw {
+            return;
+        }
+        if is_valid_core_file_content(rel_path, &existing_latest) {
+            let _ = write_string_atomic(&prev_path, &existing_latest);
+        }
+    }
+    let _ = write_string_atomic(&latest_path, &raw);
+}
+
+fn restore_core_file_from_backup(root: &Path, rel_path: &str) -> Option<String> {
+    let backups_dir = root.join(".xook/backups");
+    let slug = backup_slug_for_rel(rel_path);
+    for suffix in ["latest", "prev"] {
+        let cand = backups_dir.join(format!("{slug}.{suffix}"));
+        if let Ok(content) = fs::read_to_string(&cand) {
+            if is_valid_core_file_content(rel_path, &content) {
+                if write_string_atomic(&root.join(rel_path), &content).is_ok() {
+                    return Some(suffix.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn ensure_core_file_resilient(
+    root: &Path,
+    rel_path: &str,
+    default_content: &str,
+    allow_empty_initial: bool,
+    record_healing: bool,
+    healed_out: &mut Vec<String>,
+) -> Result<(), String> {
+    let target = root.join(rel_path);
+    if target.is_file() {
+        if let Ok(raw) = fs::read_to_string(&target) {
+            if is_valid_core_file_content(rel_path, &raw) {
+                snapshot_core_file(root, rel_path);
+                return Ok(());
+            }
+            if allow_empty_initial && raw.trim().is_empty() {
+                if let Some(tag) = restore_core_file_from_backup(root, rel_path) {
+                    if record_healing {
+                        healed_out.push(format!("{rel_path} (restaurado desde respaldo {tag})"));
+                    }
+                }
+                return Ok(());
+            }
+        }
+
+        if let Some(tag) = restore_core_file_from_backup(root, rel_path) {
+            if record_healing {
+                healed_out.push(format!("{rel_path} (restaurado desde respaldo {tag})"));
+            }
+            return Ok(());
+        }
+        write_string_atomic(&target, default_content)?;
+        snapshot_core_file(root, rel_path);
+        if record_healing {
+            healed_out.push(format!("{rel_path} (regenerado por corrupción/vacío)"));
+        }
+        return Ok(());
+    }
+
+    if let Some(tag) = restore_core_file_from_backup(root, rel_path) {
+        if record_healing {
+            healed_out.push(format!("{rel_path} (restaurado desde respaldo {tag})"));
+        }
+        return Ok(());
+    }
+    write_string_atomic(&target, default_content)?;
+    snapshot_core_file(root, rel_path);
+    if record_healing {
+        healed_out.push(format!("{rel_path} (regenerado)"));
+    }
+    Ok(())
+}
+
+/// Crea de forma idempotente y auto-reparable la estructura base de un espacio de trabajo.
+/// Si algún archivo núcleo fue eliminado o dañado externamente, prioriza restaurarlo desde
+/// `.xook/backups/` antes de regenerar una plantilla limpia, y devuelve la lista de rutas reparadas.
+pub fn scaffold_and_heal_workspace_dir(
     root: &Path,
     workspace_id: &str,
     display_name: &str,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
+    let already_initialized = root.join(".xook/workspace.json").exists();
     let dirs = [
         ".xook",
+        ".xook/backups",
         "empresa",
         "empresa/reglas",
         "datos",
@@ -163,109 +321,179 @@ pub fn scaffold_workspace_dir(
         display_name.trim().to_string()
     };
 
-    let manifest_path = root.join(".xook/workspace.json");
-    if !manifest_path.exists() {
-        let manifest = WorkspaceManifest {
-            id: workspace_id.to_string(),
-            name: clean_name.clone(),
-            schema_version: 1,
-            agent_name: "Xox".to_string(),
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        };
-        let json = serde_json::to_string_pretty(&manifest)
-            .map_err(|e| format!("Error generando workspace.json: {e}"))?;
-        write_string_atomic(&manifest_path, &json)?;
-    }
+    let mut healed = Vec::new();
 
-    let permissions_path = root.join(".xook/permissions.json");
-    if !permissions_path.exists() {
-        let permissions = WorkspacePermissionsConfig {
-            version: 1,
-            default_policy: "ask".to_string(),
-            rules: Vec::new(),
-            updated_at: now.clone(),
-        };
-        let json = serde_json::to_string_pretty(&permissions)
-            .map_err(|e| format!("Error generando permissions.json: {e}"))?;
-        write_string_atomic(&permissions_path, &json)?;
-    }
+    let manifest_default = serde_json::to_string_pretty(&WorkspaceManifest {
+        id: workspace_id.to_string(),
+        name: clean_name.clone(),
+        schema_version: 1,
+        agent_name: "Xox".to_string(),
+        created_at: now.clone(),
+        updated_at: now.clone(),
+    })
+    .map_err(|e| format!("Error generando workspace.json: {e}"))?;
+    ensure_core_file_resilient(
+        root,
+        ".xook/workspace.json",
+        &manifest_default,
+        false,
+        already_initialized,
+        &mut healed,
+    )?;
 
-    let profile_path = root.join("empresa/perfil.json");
-    if !profile_path.exists() {
-        let profile = WorkspaceProfileFile {
-            company_name: clean_name.clone(),
-            agent_name: "Xox".to_string(),
-            currency: "MXN".to_string(),
-            stock_threshold_days: 7,
-            max_budget_per_order: DEFAULT_WORKSPACE_BUDGET,
-            preferred_suppliers: Vec::new(),
-            business_rules: vec![
-                "Nunca ejecutar compras, borrados ni cambios de reglas sin autorización visual HITL.".to_string(),
-                "Basar cada revisión únicamente en archivos y registros reales de este espacio de trabajo.".to_string(),
-            ],
-        };
-        let json = serde_json::to_string_pretty(&profile)
-            .map_err(|e| format!("Error generando empresa/perfil.json: {e}"))?;
-        write_string_atomic(&profile_path, &json)?;
-    }
+    let permissions_default = serde_json::to_string_pretty(&WorkspacePermissionsConfig {
+        version: 1,
+        default_policy: "ask".to_string(),
+        rules: Vec::new(),
+        updated_at: now.clone(),
+    })
+    .map_err(|e| format!("Error generando permissions.json: {e}"))?;
+    ensure_core_file_resilient(
+        root,
+        ".xook/permissions.json",
+        &permissions_default,
+        false,
+        already_initialized,
+        &mut healed,
+    )?;
 
-    let suppliers_path = root.join("empresa/proveedores.json");
-    if !suppliers_path.exists() {
-        write_string_atomic(&suppliers_path, "[]\n")?;
-    }
+    let profile_default = serde_json::to_string_pretty(&WorkspaceProfileFile {
+        company_name: clean_name.clone(),
+        agent_name: "Xox".to_string(),
+        currency: "MXN".to_string(),
+        stock_threshold_days: 7,
+        max_budget_per_order: DEFAULT_WORKSPACE_BUDGET,
+        preferred_suppliers: Vec::new(),
+        business_rules: vec![
+            "Nunca ejecutar compras, borrados ni cambios estructurales sin autorización visual HITL.".to_string(),
+            "Basar cada análisis en archivos reales de este espacio de trabajo y adaptarse al ámbito y rol activo.".to_string(),
+        ],
+        domain_type: Some("general".to_string()),
+        domain_label: Some("General / Multi-propósito".to_string()),
+        mission: None,
+        active_role: Some("Asistente Co-Constructor".to_string()),
+        roles: Vec::new(),
+    })
+    .map_err(|e| format!("Error generando empresa/perfil.json: {e}"))?;
+    ensure_core_file_resilient(
+        root,
+        "empresa/perfil.json",
+        &profile_default,
+        false,
+        already_initialized,
+        &mut healed,
+    )?;
 
-    let rules_path = root.join("empresa/reglas/operacion.md");
-    if !rules_path.exists() {
-        let content = format!(
-            "# Reglas de Operación — {clean_name}\n\n\
-             Define aquí políticas de compras, topes de autorización, horarios o acuerdos con proveedores.\n\n\
-             - Toda modificación propuesta por **Xox** sobre `empresa/` o `datos/` requerirá tu aprobación visual.\n"
-        );
-        write_string_atomic(&rules_path, &content)?;
-    }
+    ensure_core_file_resilient(
+        root,
+        "empresa/proveedores.json",
+        "[]\n",
+        false,
+        already_initialized,
+        &mut healed,
+    )?;
 
-    let facts_path = root.join("memoria/hechos.md");
-    if !facts_path.exists() {
-        let content = format!(
-            "# Memoria Viva — {clean_name}\n\n\
-             Este archivo guarda hechos reales y acuerdos confirmados del negocio.\n"
-        );
-        write_string_atomic(&facts_path, &content)?;
-    }
+    let rules_default = format!(
+        "# Reglas de Operación — {clean_name}\n\n\
+         Define aquí políticas de compras, topes de autorización, horarios o acuerdos con proveedores.\n\n\
+         - Toda modificación propuesta por **Xox** sobre `empresa/` o `datos/` requerirá tu aprobación visual.\n"
+    );
+    ensure_core_file_resilient(
+        root,
+        "empresa/reglas/operacion.md",
+        &rules_default,
+        false,
+        already_initialized,
+        &mut healed,
+    )?;
 
-    let patterns_path = root.join("memoria/patrones.json");
-    if !patterns_path.exists() {
-        let patterns_json = serde_json::json!({
-            "patterns": [],
-            "updated_at": now,
-        });
-        write_string_atomic(
-            &patterns_path,
-            &serde_json::to_string_pretty(&patterns_json).unwrap_or_default(),
-        )?;
-    }
+    let facts_default = format!(
+        "# Memoria Viva — {clean_name}\n\n\
+         Este archivo guarda hechos reales y acuerdos confirmados del negocio.\n"
+    );
+    ensure_core_file_resilient(
+        root,
+        "memoria/hechos.md",
+        &facts_default,
+        false,
+        already_initialized,
+        &mut healed,
+    )?;
 
-    let decisions_path = root.join("memoria/decisiones.jsonl");
-    if !decisions_path.exists() {
-        write_string_atomic(&decisions_path, "")?;
-    }
+    let patterns_default = serde_json::to_string_pretty(&serde_json::json!({
+        "patterns": [],
+        "updated_at": now,
+    }))
+    .unwrap_or_default();
+    ensure_core_file_resilient(
+        root,
+        "memoria/patrones.json",
+        &patterns_default,
+        false,
+        already_initialized,
+        &mut healed,
+    )?;
 
-    let agent_note_path = root.join("agente/notas-xox.md");
-    if !agent_note_path.exists() {
-        let content = format!(
-            "# Espacio de Trabajo de Xox ({clean_name})\n\n\
-             Aquí **Xox** organiza sus subcarpetas y entregables:\n\
-             - `proyectos/`: análisis por tema o mes.\n\
-             - `borradores/`: propuestas pendientes de tu aprobación HITL.\n\
-             - `reportes/`: resúmenes y tablas exportadas.\n\
-             - `revisiones/`: historial legible de revisiones reales.\n\
-             - `ordenes/`: órdenes aprobadas.\n\
-             - `logs/`: bitácoras de comandos ejecutados con permiso.\n"
-        );
-        write_string_atomic(&agent_note_path, &content)?;
-    }
+    ensure_core_file_resilient(
+        root,
+        "memoria/decisiones.jsonl",
+        "",
+        true,
+        already_initialized,
+        &mut healed,
+    )?;
 
+    let agent_note_default = format!(
+        "# Espacio de Trabajo de Xox ({clean_name})\n\n\
+         Aquí **Xox** organiza sus subcarpetas y entregables:\n\
+         - `proyectos/`: análisis por tema, código o iniciativa.\n\
+         - `borradores/`: propuestas pendientes de tu aprobación HITL.\n\
+         - `reportes/`: resúmenes y tablas exportadas.\n\
+         - `revisiones/`: historial legible de revisiones reales.\n\
+         - `ordenes/`: órdenes o entregas aprobadas.\n\
+         - `logs/`: bitácoras de comandos ejecutados con permiso.\n"
+    );
+    ensure_core_file_resilient(
+        root,
+        "agente/notas-xox.md",
+        &agent_note_default,
+        false,
+        already_initialized,
+        &mut healed,
+    )?;
+
+    let user_profile_default = format!(
+        "# Perfil del Usuario — {clean_name}\n\n\
+         Espacio dedicado para adaptar a **Xox** según tu estilo, tu flujo de trabajo y tus límites.\n\n\
+         ## Gustos y Estilo\n\
+         - Español claro, directo y práctico.\n\n\
+         ## Flujo de Trabajo Preferido\n\
+         - Revisar el contexto y archivos reales antes de proponer cambios importantes.\n\
+         - Explicar pasos concretos y opciones claras cuando haya decisiones clave.\n\n\
+         ## Qué NO Hacer\n\
+         - Nunca inventar datos, métricas, archivos, resultados ni acciones no ejecutadas.\n\
+         - No asumir un solo giro o rol si el proyecto cambia de ámbito; preguntar o adaptarse.\n"
+    );
+    ensure_core_file_resilient(
+        root,
+        "habilidades/perfil-usuario.md",
+        &user_profile_default,
+        false,
+        already_initialized,
+        &mut healed,
+    )?;
+
+    Ok(healed)
+}
+
+/// Crea de forma idempotente la estructura real de carpetas y archivos base de un espacio de trabajo.
+/// Nunca sobrescribe archivos válidos que ya existan; si faltan o se corrompen, restaura desde respaldo o regenera.
+pub fn scaffold_workspace_dir(
+    root: &Path,
+    workspace_id: &str,
+    display_name: &str,
+) -> Result<(), String> {
+    let _ = scaffold_and_heal_workspace_dir(root, workspace_id, display_name)?;
     Ok(())
 }
 
@@ -304,6 +532,24 @@ pub fn read_business_summary(root: &Path, fallback_name: &str) -> WorkspaceBusin
                 .and_then(|v| v.as_f64())
                 .filter(|n| n.is_finite() && *n > 0.0)
                 .unwrap_or(DEFAULT_WORKSPACE_BUDGET);
+            let domain_type = val
+                .get("domain_type")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let domain_label = val
+                .get("domain_label")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let active_role = val
+                .get("active_role")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
 
             return WorkspaceBusinessSummary {
                 company_name,
@@ -311,6 +557,9 @@ pub fn read_business_summary(root: &Path, fallback_name: &str) -> WorkspaceBusin
                 currency,
                 stock_threshold_days,
                 max_budget_per_order,
+                domain_type,
+                domain_label,
+                active_role,
             };
         }
     }
@@ -321,6 +570,9 @@ pub fn read_business_summary(root: &Path, fallback_name: &str) -> WorkspaceBusin
         currency: "MXN".to_string(),
         stock_threshold_days: 7,
         max_budget_per_order: DEFAULT_WORKSPACE_BUDGET,
+        domain_type: None,
+        domain_label: None,
+        active_role: None,
     }
 }
 
@@ -384,6 +636,22 @@ fn unique_workspace_dir(base_dir: &Path, base_slug: &str) -> (String, PathBuf) {
     (fallback_slug, fallback_path)
 }
 
+fn ensure_and_audit_heal(root: &Path, ws_id: &str, ws_name: &str) -> Result<(), String> {
+    let healed = scaffold_and_heal_workspace_dir(root, ws_id, ws_name)?;
+    if !healed.is_empty() && root.join(".xook/xook.db").is_file() {
+        let detail = healed.join(", ");
+        crate::slices::task_ledger::store::try_record_audit_event_for_root(
+            root,
+            "system",
+            "workspace_self_healed",
+            &detail,
+            "meta",
+            Some("Auto-reparación al activar espacio de trabajo"),
+        );
+    }
+    Ok(())
+}
+
 pub fn ensure_active_workspace<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<(WorkspaceRegistry, WorkspaceEntry), String> {
@@ -395,7 +663,7 @@ pub fn ensure_active_workspace<R: Runtime>(
             let root = PathBuf::from(&registry.workspaces[pos].root_path);
             let ws_id = registry.workspaces[pos].id.clone();
             let ws_name = registry.workspaces[pos].name.clone();
-            scaffold_workspace_dir(&root, &ws_id, &ws_name)?;
+            ensure_and_audit_heal(&root, &ws_id, &ws_name)?;
             registry.workspaces[pos].last_opened_at = now;
             let active = registry.workspaces[pos].clone();
             save_registry(app, &registry)?;
@@ -405,7 +673,7 @@ pub fn ensure_active_workspace<R: Runtime>(
 
     if let Some(first) = registry.workspaces.first().cloned() {
         let root = PathBuf::from(&first.root_path);
-        scaffold_workspace_dir(&root, &first.id, &first.name)?;
+        ensure_and_audit_heal(&root, &first.id, &first.name)?;
         registry.active_workspace_id = Some(first.id.clone());
         if let Some(entry) = registry.workspaces.first_mut() {
             entry.last_opened_at = now;
@@ -541,6 +809,134 @@ mod tests {
         fs::write(root.join("memoria/hechos.md"), custom_fact).unwrap();
         scaffold_workspace_dir(&root, "ws_test", "Mi Negocio Real").expect("idempotent run ok");
         assert_eq!(fs::read_to_string(root.join("memoria/hechos.md")).unwrap(), custom_fact);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn self_heal_restores_deleted_or_zero_byte_core_files_from_shadow_backup() {
+        let root = std::env::temp_dir().join(format!(
+            "xook_heal_backup_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+
+        scaffold_and_heal_workspace_dir(&root, "ws_bk", "Café Norte").expect("initial scaffold");
+
+        let custom_profile = "{\"business_name\":\"Café Norte\",\"roles\":[\"Barista\",\"Gerente\"]}\n";
+        let custom_suppliers = "[{\"id\":\"sup_1\",\"name\":\"Tostadores del Sur\"}]\n";
+        let custom_facts = "# Hechos reales\n- Los domingos abre a las 9am.\n";
+        fs::write(root.join("empresa/perfil.json"), custom_profile).unwrap();
+        fs::write(root.join("empresa/proveedores.json"), custom_suppliers).unwrap();
+        fs::write(root.join("memoria/hechos.md"), custom_facts).unwrap();
+        snapshot_core_file(&root, "empresa/perfil.json");
+        snapshot_core_file(&root, "empresa/proveedores.json");
+        snapshot_core_file(&root, "memoria/hechos.md");
+
+        // Simular eliminación/corrupción externa
+        fs::remove_file(root.join("empresa/perfil.json")).unwrap();
+        fs::write(root.join("empresa/proveedores.json"), "").unwrap();
+        fs::write(root.join("memoria/hechos.md"), "   \n").unwrap();
+        fs::remove_dir_all(root.join("datos/ventas")).unwrap();
+        fs::remove_dir_all(root.join("datos/documentos")).unwrap();
+
+        let healed =
+            scaffold_and_heal_workspace_dir(&root, "ws_bk", "Café Norte").expect("heal ok");
+
+        assert_eq!(
+            fs::read_to_string(root.join("empresa/perfil.json")).unwrap(),
+            custom_profile
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("empresa/proveedores.json")).unwrap(),
+            custom_suppliers
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("memoria/hechos.md")).unwrap(),
+            custom_facts
+        );
+        assert!(root.join("datos/ventas").is_dir());
+        assert!(root.join("datos/documentos").is_dir());
+        assert!(healed.iter().any(|h| h.contains("empresa/perfil.json")));
+        assert!(healed.iter().any(|h| h.contains("empresa/proveedores.json")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn self_heal_falls_back_to_clean_template_when_no_backup_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "xook_heal_tpl_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+
+        scaffold_and_heal_workspace_dir(&root, "ws_tpl", "Panadería Sol").expect("initial scaffold");
+        let _ = fs::remove_dir_all(root.join(".xook/backups"));
+        fs::remove_file(root.join("empresa/proveedores.json")).unwrap();
+        fs::write(root.join("empresa/perfil.json"), "{corrupto").unwrap();
+
+        let healed =
+            scaffold_and_heal_workspace_dir(&root, "ws_tpl", "Panadería Sol").expect("heal ok");
+
+        let prov = fs::read_to_string(root.join("empresa/proveedores.json")).unwrap();
+        assert!(is_valid_core_file_content("empresa/proveedores.json", &prov));
+        let perfil = fs::read_to_string(root.join("empresa/perfil.json")).unwrap();
+        assert!(is_valid_core_file_content("empresa/perfil.json", &perfil));
+        assert!(healed.iter().any(|h| h.contains("empresa/proveedores.json")));
+        assert!(healed.iter().any(|h| h.contains("empresa/perfil.json")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn user_profile_slot_and_backward_compatible_summary() {
+        let root = std::env::temp_dir().join(format!(
+            "xook_user_slot_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+
+        scaffold_and_heal_workspace_dir(&root, "ws_slot", "Taller Creativo").expect("scaffold ok");
+        let user_profile_path = root.join("habilidades/perfil-usuario.md");
+        assert!(user_profile_path.is_file());
+        let user_md = fs::read_to_string(&user_profile_path).unwrap();
+        assert!(user_md.contains("## Gustos y Estilo"));
+        assert!(user_md.contains("## Flujo de Trabajo Preferido"));
+        assert!(user_md.contains("## Qué NO Hacer"));
+
+        // Preserva compatibilidad al deserializar un perfil legado sin campos multi-ámbito
+        let legacy_json = serde_json::json!({
+            "company_name": "Café Legado",
+            "agent_name": "Xox",
+            "currency": "MXN",
+            "stock_threshold_days": 5,
+            "max_budget_per_order": 500.0,
+            "preferred_suppliers": [],
+            "business_rules": ["Regla 1"]
+        });
+        let parsed: WorkspaceProfileFile = serde_json::from_value(legacy_json).expect("legacy ok");
+        assert!(parsed.domain_type.is_none());
+        assert!(parsed.active_role.is_none());
+
+        // Auto-curación si alguien borra habilidades/perfil-usuario.md
+        fs::remove_file(&user_profile_path).unwrap();
+        let healed = scaffold_and_heal_workspace_dir(&root, "ws_slot", "Taller Creativo").expect("heal ok");
+        assert!(user_profile_path.is_file());
+        assert!(healed.iter().any(|h| h.contains("habilidades/perfil-usuario.md")));
+
+        let summary = read_business_summary(&root, "Fallback");
+        assert_eq!(summary.domain_type.as_deref(), Some("general"));
+        assert_eq!(summary.active_role.as_deref(), Some("Asistente Co-Constructor"));
 
         let _ = fs::remove_dir_all(&root);
     }

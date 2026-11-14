@@ -13,10 +13,12 @@
     "clean:all": "bash scripts/clean-workspace.sh --all"
   },
   "dependencies": {
+    "@lobehub/icons-static-svg": "1.102.0",
     "@tanstack/react-table": "^9.3.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "clsx": "^2.1.1",
+    "lowlight": "^3.3.0",
     "lucide-react": "^1.72.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

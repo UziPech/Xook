@@ -3,10 +3,11 @@ use super::store::{
 };
 use crate::ai_vault;
 use crate::slices::workspace_manager::registry::{
-    read_business_summary, read_permissions_rule_count,
+    is_valid_core_file_content, read_business_summary, read_permissions_rule_count,
+    scaffold_and_heal_workspace_dir, snapshot_core_file,
 };
 use crate::slices::workspace_manager::sandbox::{
-    WorkspaceZone, resolve_inside_workspace, write_string_atomic,
+    WorkspaceZone, is_protected_workspace_rel_path, resolve_inside_workspace, write_string_atomic,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Local, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -1076,7 +1077,265 @@ pub fn recalculate_memory_patterns(
     });
     let pretty = serde_json::to_string_pretty(&body)
         .map_err(|e| format!("Error serializando memoria/patrones.json: {e}"))?;
-    write_string_atomic(&workspace_root.join("memoria/patrones.json"), &pretty)
+    let patrones_path = workspace_root.join("memoria/patrones.json");
+    write_string_atomic(&patrones_path, &pretty)?;
+    snapshot_core_file(workspace_root, "memoria/patrones.json");
+    Ok(())
+}
+
+fn read_workspace_identity(workspace_root: &Path) -> (String, String) {
+    let raw = fs::read_to_string(workspace_root.join(".xook/workspace.json")).ok();
+    let parsed = raw.and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    let ws_id = parsed
+        .as_ref()
+        .and_then(|v| v.get("id"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("default")
+        .to_string();
+    let ws_name = parsed
+        .as_ref()
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Mi Negocio")
+        .to_string();
+    (ws_id, ws_name)
+}
+
+fn normalize_rel_for_compare(raw: &str) -> String {
+    raw.trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn matches_target_rel_or_child(candidate: &str, clean_target: &str, is_dir: bool) -> bool {
+    let cand = normalize_rel_for_compare(candidate);
+    let target = normalize_rel_for_compare(clean_target);
+    if cand.is_empty() || target.is_empty() {
+        return false;
+    }
+    if cand == target {
+        return true;
+    }
+    is_dir && cand.starts_with(&format!("{target}/"))
+}
+
+fn check_delete_db_dependencies(
+    conn: &Connection,
+    clean_target: &str,
+    is_dir: bool,
+) -> Result<(), String> {
+    let mut pending_stmt = conn
+        .prepare(
+            "SELECT card_id, staging_payload_json FROM tasks \
+             WHERE status = 'pending' AND staging_payload_json IS NOT NULL",
+        )
+        .map_err(|e| format!("Error validando borradores activos: {e}"))?;
+    let pending_rows = pending_stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("Error leyendo borradores activos: {e}"))?;
+
+    for row in pending_rows.flatten() {
+        let (card_id, sp_raw) = row;
+        if let Ok(sp) = serde_json::from_str::<Value>(&sp_raw) {
+            for key in ["draftPath", "draft_path", "targetPath", "target_path"] {
+                if let Some(referenced) = sp.get(key).and_then(|v| v.as_str()) {
+                    if matches_target_rel_or_child(referenced, clean_target, is_dir) {
+                        return Err(format!(
+                            "`{clean_target}` está vinculado a la propuesta pendiente `{card_id}` y no puede eliminarse."
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut hist_stmt = conn
+        .prepare(
+            "SELECT id, execution_artifact_path FROM decision_history \
+             WHERE execution_artifact_path IS NOT NULL",
+        )
+        .map_err(|e| format!("Error validando historial de decisiones: {e}"))?;
+    let hist_rows = hist_stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("Error leyendo artefactos históricos: {e}"))?;
+
+    for row in hist_rows.flatten() {
+        let (hist_id, art_raw) = row;
+        let art_norm = normalize_rel_for_compare(&art_raw);
+        if matches_target_rel_or_child(&art_norm, clean_target, is_dir) {
+            return Err(format!(
+                "`{clean_target}` es evidencia de auditoría de la decisión `{hist_id}` y no puede eliminarse."
+            ));
+        }
+        // Proteger también el par hermano (.json <-> .md) en agente/ordenes/
+        if art_norm.ends_with(".json") {
+            let md_twin = format!("{}.md", art_norm.trim_end_matches(".json"));
+            if matches_target_rel_or_child(&md_twin, clean_target, is_dir) {
+                return Err(format!(
+                    "`{clean_target}` está vinculado al artefacto de auditoría `{art_norm}` (`{hist_id}`) y no puede eliminarse."
+                ));
+            }
+        } else if art_norm.ends_with(".md") {
+            let json_twin = format!("{}.json", art_norm.trim_end_matches(".md"));
+            if matches_target_rel_or_child(&json_twin, clean_target, is_dir) {
+                return Err(format!(
+                    "`{clean_target}` está vinculado al artefacto de auditoría `{art_norm}` (`{hist_id}`) y no puede eliminarse."
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn allocate_unique_trash_rel(
+    workspace_root: &Path,
+    now: DateTime<Utc>,
+    file_name: &str,
+) -> Result<(String, PathBuf), String> {
+    let base = format!(
+        "agente/.papelera/{}_{}_{}",
+        now.timestamp(),
+        now.timestamp_subsec_nanos(),
+        file_name
+    );
+    let (candidate, _, _) = resolve_inside_workspace(workspace_root, &base, false)?;
+    if !candidate.exists() {
+        return Ok((base, candidate));
+    }
+    for idx in 1..=999 {
+        let alt = format!(
+            "agente/.papelera/{}_{}_{}_{}",
+            now.timestamp(),
+            now.timestamp_subsec_nanos(),
+            idx,
+            file_name
+        );
+        let (alt_abs, _, _) = resolve_inside_workspace(workspace_root, &alt, false)?;
+        if !alt_abs.exists() {
+            return Ok((alt, alt_abs));
+        }
+    }
+    Err("No se pudo asignar una ruta única en agente/.papelera/".to_string())
+}
+
+/// Auto-repara estructura de carpetas/archivos núcleo y reconstruye `memoria/decisiones.jsonl` y
+/// `memoria/patrones.json` de forma determinística desde SQLite si faltan o fueron alterados.
+pub fn heal_workspace_from_db(
+    conn: &Connection,
+    workspace_root: &Path,
+    now: DateTime<Utc>,
+) -> Result<Vec<String>, String> {
+    let (ws_id, ws_name) = read_workspace_identity(workspace_root);
+    let mut healed = scaffold_and_heal_workspace_dir(workspace_root, &ws_id, &ws_name)?;
+
+    let db_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM decision_history", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    let decisions_path = workspace_root.join("memoria/decisiones.jsonl");
+    let existing_decisions = fs::read_to_string(&decisions_path).ok();
+    let (valid_line_count, all_lines_valid) = match existing_decisions.as_deref() {
+        Some(raw) => {
+            let lines: Vec<&str> = raw.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            let all_ok = lines
+                .iter()
+                .all(|l| serde_json::from_str::<Value>(l).is_ok());
+            (lines.len(), all_ok)
+        }
+        None => (0, true),
+    };
+
+    if db_count > 0 && (!decisions_path.is_file() || !all_lines_valid || valid_line_count < db_count as usize) {
+        let mut stmt = conn
+            .prepare(
+                "SELECT COALESCE(task_card_id, id), title, decision, notes, decided_at \
+                 FROM decision_history ORDER BY decided_at ASC, rowid ASC",
+            )
+            .map_err(|e| format!("Error reconstruyendo memoria/decisiones.jsonl: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(|e| format!("Error leyendo historial de decisiones: {e}"))?;
+
+        let mut lines_out = Vec::new();
+        for item in rows.flatten() {
+            let (card_id, title, decision, notes, decided_at) = item;
+            let entry = json!({
+                "timestamp": decided_at,
+                "workspace_id": ws_id,
+                "card_id": card_id,
+                "title": title,
+                "decision": decision,
+                "adjusted_qty": Value::Null,
+                "notes": notes,
+            });
+            if let Ok(line) = serde_json::to_string(&entry) {
+                lines_out.push(line);
+            }
+        }
+        let body = if lines_out.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", lines_out.join("\n"))
+        };
+        write_string_atomic(&decisions_path, &body)?;
+        snapshot_core_file(workspace_root, "memoria/decisiones.jsonl");
+        healed.retain(|entry| !entry.starts_with("memoria/decisiones.jsonl"));
+        healed.push("memoria/decisiones.jsonl (reconstruido desde SQLite)".to_string());
+    }
+
+    let patrones_path = workspace_root.join("memoria/patrones.json");
+    let patrones_raw = fs::read_to_string(&patrones_path).unwrap_or_default();
+    let stats_total = serde_json::from_str::<Value>(&patrones_raw)
+        .ok()
+        .and_then(|v| {
+            v.get("stats")
+                .and_then(|s| s.get("total_decisions"))
+                .and_then(|n| n.as_i64())
+                .or_else(|| v.get("total_decisions").and_then(|n| n.as_i64()))
+        })
+        .unwrap_or(0);
+
+    if !is_valid_core_file_content("memoria/patrones.json", &patrones_raw)
+        || (db_count > 0 && stats_total < db_count)
+    {
+        recalculate_memory_patterns(conn, workspace_root, now)?;
+        healed.retain(|entry| !entry.starts_with("memoria/patrones.json"));
+        healed.push("memoria/patrones.json (recalculado desde SQLite)".to_string());
+    }
+
+    if !healed.is_empty() {
+        let joined = healed.join(", ");
+        let _ = record_audit_event_conn(
+            conn,
+            "system",
+            "workspace_self_healed",
+            &joined,
+            "meta",
+            Some("Auto-regeneración segura desde respaldo/SQLite"),
+            now,
+        );
+    }
+
+    Ok(healed)
 }
 
 fn append_daily_journal(
@@ -1128,6 +1387,94 @@ pub struct HitlSideEffectInput<'a> {
     pub currency: Option<&'a str>,
     pub notes: Option<&'a str>,
     pub updated_proposal: Option<&'a Value>,
+}
+
+struct PreparedHitlWrite {
+    abs_target: PathBuf,
+    clean_rel: PathBuf,
+    clean_str: String,
+    zone: WorkspaceZone,
+    body: String,
+}
+
+fn prepare_hitl_write_item(
+    workspace_root: &Path,
+    item: &Value,
+) -> Result<Option<PreparedHitlWrite>, String> {
+    let Some(target_rel) = item
+        .get("targetPath")
+        .or_else(|| item.get("target_path"))
+        .and_then(|v| v.as_str())
+    else {
+        return Ok(None);
+    };
+    let (abs_target, clean_rel, zone) =
+        resolve_inside_workspace(workspace_root, target_rel, false)?;
+    let clean_str = clean_rel.to_string_lossy().replace('\\', "/");
+    if zone.is_protected_system() {
+        return Err(
+            "No está permitido sobrescribir archivos del sistema o la raíz del espacio de trabajo."
+                .to_string(),
+        );
+    }
+    if clean_str.eq_ignore_ascii_case("memoria/decisiones.jsonl")
+        || clean_str.eq_ignore_ascii_case("memoria/patrones.json")
+    {
+        return Err(format!(
+            "`{clean_str}` es administrado exclusivamente por el motor de auditoría."
+        ));
+    }
+    if abs_target.is_dir() {
+        return Err(format!("`{clean_str}` es una carpeta y no puede sobrescribirse."));
+    }
+    let draft_rel = item
+        .get("draftPath")
+        .or_else(|| item.get("draft_path"))
+        .and_then(|v| v.as_str());
+    let new_content = item
+        .get("newContent")
+        .or_else(|| item.get("new_content"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            draft_rel.and_then(|dr| {
+                resolve_inside_workspace(workspace_root, dr, true)
+                    .ok()
+                    .and_then(|(p, _, _)| fs::read_to_string(p).ok())
+            })
+        });
+    let Some(body) = new_content else {
+        return Ok(None);
+    };
+    if is_protected_workspace_rel_path(&clean_rel).is_some()
+        && !is_valid_core_file_content(&clean_str, &body)
+    {
+        return Err(format!(
+            "El contenido propuesto para `{clean_str}` está vacío o tiene estructura inválida."
+        ));
+    }
+    Ok(Some(PreparedHitlWrite {
+        abs_target,
+        clean_rel,
+        clean_str,
+        zone,
+        body,
+    }))
+}
+
+fn commit_hitl_write_item(
+    workspace_root: &Path,
+    prepared: &PreparedHitlWrite,
+) -> Result<bool, String> {
+    let is_core = is_protected_workspace_rel_path(&prepared.clean_rel).is_some();
+    if is_core {
+        snapshot_core_file(workspace_root, &prepared.clean_str);
+    }
+    write_string_atomic(&prepared.abs_target, &prepared.body)?;
+    if is_core {
+        snapshot_core_file(workspace_root, &prepared.clean_str);
+    }
+    Ok(prepared.zone == WorkspaceZone::Datos)
 }
 
 pub fn apply_post_hitl_side_effects(
@@ -1248,48 +1595,66 @@ pub fn apply_post_hitl_side_effects(
             generated_artifact = Some(rel_json);
         } else if kind == "file_edit" {
             if let Some(sp) = staging.as_ref() {
-                if let Some(target_rel) = sp
-                    .get("targetPath")
-                    .or_else(|| sp.get("target_path"))
-                    .and_then(|v| v.as_str())
-                {
-                    let (abs_target, clean_rel, zone) =
-                        resolve_inside_workspace(workspace_root, target_rel, false)?;
-                    if zone != WorkspaceZone::Meta {
-                        let draft_rel = sp
-                            .get("draftPath")
-                            .or_else(|| sp.get("draft_path"))
-                            .and_then(|v| v.as_str());
-                        let new_content = sp
-                            .get("newContent")
-                            .or_else(|| sp.get("new_content"))
-                            .and_then(|v| v.as_str())
-                            .map(str::to_string)
-                            .or_else(|| {
-                                draft_rel.and_then(|dr| {
-                                    resolve_inside_workspace(workspace_root, dr, true)
-                                        .ok()
-                                        .and_then(|(p, _, _)| fs::read_to_string(p).ok())
-                                })
-                            });
-                        if let Some(body) = new_content {
-                            write_string_atomic(&abs_target, &body)?;
-                            let clean_str = clean_rel.to_string_lossy().replace('\\', "/");
-                            if zone == WorkspaceZone::Datos {
-                                let _ = sync_datos_files_into_db(conn, workspace_root, now);
-                            }
-                            let _ = store::try_record_audit_event_for_root(
-                                workspace_root,
-                                payload.decided_by.unwrap_or("user"),
-                                "company_file_edited",
-                                &clean_str,
-                                zone.as_str(),
-                                Some(payload.title),
-                            );
-                            generated_artifact = Some(clean_str);
-                        }
+                if let Some(prepared) = prepare_hitl_write_item(workspace_root, sp)? {
+                    let touched_datos = commit_hitl_write_item(workspace_root, &prepared)?;
+                    if touched_datos {
+                        let _ = sync_datos_files_into_db(conn, workspace_root, now);
                     }
+                    let _ = store::try_record_audit_event_for_root(
+                        workspace_root,
+                        payload.decided_by.unwrap_or("user"),
+                        "company_file_edited",
+                        &prepared.clean_str,
+                        prepared.zone.as_str(),
+                        Some(payload.title),
+                    );
+                    generated_artifact = Some(prepared.clean_str);
                 }
+            }
+        } else if kind == "blueprint" {
+            if let Some(sp) = staging.as_ref() {
+                let raw_changes = sp
+                    .get("changes")
+                    .or_else(|| sp.get("files"))
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| "El blueprint no contiene una lista de cambios válida.".to_string())?;
+                if raw_changes.is_empty() {
+                    return Err("El blueprint no contiene cambios para aplicar.".to_string());
+                }
+                let mut prepared_items = Vec::with_capacity(raw_changes.len());
+                for item in raw_changes {
+                    let Some(prepared) = prepare_hitl_write_item(workspace_root, item)? else {
+                        return Err("Cada cambio del blueprint debe indicar ruta y contenido válido.".to_string());
+                    };
+                    prepared_items.push(prepared);
+                }
+                let mut touched_datos = false;
+                let mut applied_paths: Vec<String> = Vec::with_capacity(prepared_items.len());
+                for prepared in &prepared_items {
+                    if commit_hitl_write_item(workspace_root, prepared)? {
+                        touched_datos = true;
+                    }
+                    applied_paths.push(prepared.clean_str.clone());
+                }
+                if touched_datos {
+                    let _ = sync_datos_files_into_db(conn, workspace_root, now);
+                }
+                let primary_artifact = applied_paths
+                    .iter()
+                    .find(|p| p.eq_ignore_ascii_case("empresa/perfil.json"))
+                    .cloned()
+                    .or_else(|| applied_paths.first().cloned());
+                if let Some(ref primary) = primary_artifact {
+                    let _ = store::try_record_audit_event_for_root(
+                        workspace_root,
+                        payload.decided_by.unwrap_or("user"),
+                        "workspace_blueprint_applied",
+                        primary,
+                        "empresa",
+                        Some(payload.title),
+                    );
+                }
+                generated_artifact = primary_artifact;
             }
         } else if kind == "delete_path" {
             if let Some(sp) = staging.as_ref() {
@@ -1298,35 +1663,59 @@ pub fn apply_post_hitl_side_effects(
                     .or_else(|| sp.get("target_path"))
                     .and_then(|v| v.as_str())
                 {
-                    if let Ok((abs_target, clean_rel, zone)) =
-                        resolve_inside_workspace(workspace_root, target_rel, true)
-                    {
-                        if zone != WorkspaceZone::Meta && zone != WorkspaceZone::Root {
-                            let file_name = abs_target
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("archivo");
-                            let trash_rel =
-                                format!("agente/.papelera/{}_{}", now.timestamp(), file_name);
-                            let (abs_trash, _, _) =
-                                resolve_inside_workspace(workspace_root, &trash_rel, false)?;
-                            if let Some(parent) = abs_trash.parent() {
-                                let _ = fs::create_dir_all(parent);
-                            }
-                            if fs::rename(&abs_target, &abs_trash).is_ok() {
-                                let clean_str = clean_rel.to_string_lossy().replace('\\', "/");
-                                let _ = store::try_record_audit_event_for_root(
-                                    workspace_root,
-                                    payload.decided_by.unwrap_or("user"),
-                                    "path_trashed",
-                                    &clean_str,
-                                    zone.as_str(),
-                                    Some(&trash_rel),
-                                );
-                                generated_artifact = Some(trash_rel);
-                            }
-                        }
+                    let (abs_target, clean_rel, zone) =
+                        resolve_inside_workspace(workspace_root, target_rel, true)?;
+                    let clean_str = clean_rel.to_string_lossy().replace('\\', "/");
+                    if zone.is_protected_system() {
+                        return Err(
+                            "No está permitido eliminar la raíz ni archivos internos (.xook) del workspace."
+                                .to_string(),
+                        );
                     }
+                    if clean_str.starts_with("agente/.papelera")
+                        || clean_rel.components().any(|c| {
+                            matches!(
+                                c,
+                                std::path::Component::Normal(s)
+                                    if s.to_string_lossy().starts_with('.')
+                            )
+                        })
+                    {
+                        return Err(format!(
+                            "`{clean_str}` es un archivo oculto o interno del sistema y no puede eliminarse."
+                        ));
+                    }
+                    if is_protected_workspace_rel_path(&clean_rel).is_some() {
+                        return Err(format!(
+                            "`{clean_str}` forma parte de la estructura o archivos protegidos del workspace y no puede eliminarse."
+                        ));
+                    }
+                    check_delete_db_dependencies(conn, &clean_str, abs_target.is_dir())?;
+
+                    let file_name = abs_target
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("archivo");
+                    let (trash_rel, abs_trash) =
+                        allocate_unique_trash_rel(workspace_root, now, file_name)?;
+                    if let Some(parent) = abs_trash.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    fs::rename(&abs_target, &abs_trash).map_err(|e| {
+                        format!("No se pudo mover `{clean_str}` a agente/.papelera/: {e}")
+                    })?;
+                    if zone == WorkspaceZone::Datos {
+                        let _ = sync_datos_files_into_db(conn, workspace_root, now);
+                    }
+                    let _ = store::try_record_audit_event_for_root(
+                        workspace_root,
+                        payload.decided_by.unwrap_or("user"),
+                        "path_trashed",
+                        &clean_str,
+                        zone.as_str(),
+                        Some(&trash_rel),
+                    );
+                    generated_artifact = Some(trash_rel);
                 }
             }
         }
@@ -1484,6 +1873,375 @@ mod tests {
         let items = list_inventory_items(&conn).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].sku, "MOKA-1");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn heal_workspace_from_db_rebuilds_decisions_and_patterns_and_core_files() {
+        let root = temp_ws("heal_db");
+        let conn = open_workspace_db(&root).unwrap();
+        let now = Utc::now();
+        scaffold_and_heal_workspace_dir(&root, "heal_db", "Café Xook").unwrap();
+
+        conn.execute(
+            "INSERT INTO decision_history (id, task_card_id, title, category, decision, summary, decided_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "dec-1",
+                "card-1",
+                "Reabastecer café",
+                "abastecimiento",
+                "approved",
+                "Aprobado",
+                now.to_rfc3339()
+            ],
+        )
+        .unwrap();
+
+        // Simular eliminación/daño externo de estructura, perfil, decisiones y patrones
+        let _ = fs::remove_dir_all(root.join("datos/ventas"));
+        let _ = fs::write(root.join("empresa/proveedores.json"), "");
+        let _ = fs::remove_file(root.join("memoria/decisiones.jsonl"));
+        let _ = fs::write(root.join("memoria/patrones.json"), "{corrupt");
+
+        let healed = heal_workspace_from_db(&conn, &root, now).unwrap();
+        assert!(root.join("datos/ventas").is_dir());
+        assert!(is_valid_core_file_content(
+            "empresa/proveedores.json",
+            &fs::read_to_string(root.join("empresa/proveedores.json")).unwrap()
+        ));
+        let dec_raw = fs::read_to_string(root.join("memoria/decisiones.jsonl")).unwrap();
+        assert!(dec_raw.contains("card-1"));
+        let pat_raw = fs::read_to_string(root.join("memoria/patrones.json")).unwrap();
+        let pat_json: Value = serde_json::from_str(&pat_raw).unwrap();
+        assert_eq!(pat_json["stats"]["total_decisions"], 1);
+        assert!(healed.iter().any(|h| h.contains("memoria/decisiones.jsonl")));
+        assert!(healed.iter().any(|h| h.contains("memoria/patrones.json")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hitl_delete_and_edit_protect_core_structure_while_allowing_company_roles() {
+        let root = temp_ws("hitl_guards");
+        let mut conn = open_workspace_db(&root).unwrap();
+        let now = Utc::now();
+        scaffold_and_heal_workspace_dir(&root, "hitl_guards", "Café Xook").unwrap();
+
+        // 1) Bloquea eliminación de carpeta estructural y archivo núcleo
+        for forbidden in ["datos/ventas", "empresa/proveedores.json", "agente/ordenes"] {
+            let proposal = json!({
+                "cardId": "card-del-forbidden",
+                "stagingPayload": {
+                    "kind": "delete_path",
+                    "targetPath": forbidden
+                }
+            });
+            let mut hist = DecisionHistoryDto {
+                id: "h1".to_string(),
+                task_card_id: Some("card-del-forbidden".to_string()),
+                agenda_item_id: None,
+                title: "Eliminar".to_string(),
+                category: "regla".to_string(),
+                decision: "approved".to_string(),
+                summary: "Test".to_string(),
+                amount_label: None,
+                verified_cost: None,
+                currency: None,
+                execution_artifact_path: None,
+                notes: None,
+                decided_by: Some("user".to_string()),
+                decided_at: now.to_rfc3339(),
+                timestamp_label: "ahora".to_string(),
+            };
+            let res = apply_post_hitl_side_effects(
+                &mut conn,
+                &root,
+                HitlSideEffectInput {
+                    card_id: "card-del-forbidden",
+                    title: "Eliminar",
+                    category: "regla",
+                    summary: "Test",
+                    decided_by: Some("user"),
+                    adjusted_qty: None,
+                    verified_cost: None,
+                    currency: Some("MXN"),
+                    notes: None,
+                    updated_proposal: Some(&proposal),
+                },
+                "approved",
+                &mut hist,
+                now,
+            );
+            assert!(res.is_err(), "Debió bloquear eliminación de {forbidden}");
+        }
+
+        // 2) Bloquea borrador vinculado a propuesta pendiente y orden vinculada a decision_history
+        fs::write(root.join("agente/borradores/activo.draft"), "x").unwrap();
+        conn.execute(
+            "INSERT INTO tasks (card_id, title, category, urgency, status, staging_payload_json, proposal_json, created_at, updated_at)
+             VALUES ('c-pending', 'Edit', 'regla', 'media', 'pending', '{\"draftPath\":\"agente/borradores/activo.draft\"}', '{}', '2026-01-01', '2026-01-01')",
+            [],
+        ).unwrap();
+        let p_draft = json!({
+            "cardId": "del-draft",
+            "stagingPayload": {
+                "kind": "delete_path",
+                "targetPath": "agente/borradores/activo.draft"
+            }
+        });
+        let mut h_draft = DecisionHistoryDto {
+            id: "hd".to_string(),
+            task_card_id: Some("del-draft".to_string()),
+            agenda_item_id: None,
+            title: "Del draft".to_string(),
+            category: "regla".to_string(),
+            decision: "approved".to_string(),
+            summary: "".to_string(),
+            amount_label: None,
+            verified_cost: None,
+            currency: None,
+            execution_artifact_path: None,
+            notes: None,
+            decided_by: Some("user".to_string()),
+            decided_at: now.to_rfc3339(),
+            timestamp_label: "ahora".to_string(),
+        };
+        assert!(
+            apply_post_hitl_side_effects(
+                &mut conn,
+                &root,
+                HitlSideEffectInput {
+                    card_id: "del-draft",
+                    title: "Del draft",
+                    category: "regla",
+                    summary: "",
+                    decided_by: Some("user"),
+                    adjusted_qty: None,
+                    verified_cost: None,
+                    currency: None,
+                    notes: None,
+                    updated_proposal: Some(&p_draft),
+                },
+                "approved",
+                &mut h_draft,
+                now,
+            )
+            .is_err()
+        );
+
+        fs::write(root.join("agente/ordenes/OC-1.json"), "{}").unwrap();
+        fs::write(root.join("agente/ordenes/OC-1.md"), "# OC-1").unwrap();
+        conn.execute(
+            "INSERT INTO decision_history (id, task_card_id, title, category, decision, summary, execution_artifact_path, decided_at)
+             VALUES ('dh-oc1', 'c-oc1', 'OC', 'abastecimiento', 'approved', 'ok', 'agente/ordenes/OC-1.json', '2026-01-01')",
+            [],
+        ).unwrap();
+        assert!(
+            check_delete_db_dependencies(&conn, "agente/ordenes/OC-1.md", false).is_err(),
+            "Debe proteger el twin .md vinculado a una orden en decision_history"
+        );
+
+        // 3) Permite editar empresa/perfil.json agregando roles y rechaza JSON corrupto
+        let valid_profile = r#"{"business_name":"Café Xook","roles":[{"role":"Barista","can_approve":false}]}"#;
+        let p_edit = json!({
+            "cardId": "edit-roles",
+            "stagingPayload": {
+                "kind": "file_edit",
+                "targetPath": "empresa/perfil.json",
+                "newContent": valid_profile
+            }
+        });
+        let mut h_edit = DecisionHistoryDto {
+            id: "he".to_string(),
+            task_card_id: Some("edit-roles".to_string()),
+            agenda_item_id: None,
+            title: "Agregar roles".to_string(),
+            category: "regla".to_string(),
+            decision: "approved".to_string(),
+            summary: "".to_string(),
+            amount_label: None,
+            verified_cost: None,
+            currency: None,
+            execution_artifact_path: None,
+            notes: None,
+            decided_by: Some("user".to_string()),
+            decided_at: now.to_rfc3339(),
+            timestamp_label: "ahora".to_string(),
+        };
+        apply_post_hitl_side_effects(
+            &mut conn,
+            &root,
+            HitlSideEffectInput {
+                card_id: "edit-roles",
+                title: "Agregar roles",
+                category: "regla",
+                summary: "",
+                decided_by: Some("user"),
+                adjusted_qty: None,
+                verified_cost: None,
+                currency: None,
+                notes: None,
+                updated_proposal: Some(&p_edit),
+            },
+            "approved",
+            &mut h_edit,
+            now,
+        )
+        .unwrap();
+        assert!(fs::read_to_string(root.join("empresa/perfil.json"))
+            .unwrap()
+            .contains("Barista"));
+
+        let p_bad = json!({
+            "cardId": "edit-bad",
+            "stagingPayload": {
+                "kind": "file_edit",
+                "targetPath": "empresa/perfil.json",
+                "newContent": ""
+            }
+        });
+        let mut h_bad = h_edit.clone();
+        assert!(
+            apply_post_hitl_side_effects(
+                &mut conn,
+                &root,
+                HitlSideEffectInput {
+                    card_id: "edit-bad",
+                    title: "Corrupto",
+                    category: "regla",
+                    summary: "",
+                    decided_by: Some("user"),
+                    adjusted_qty: None,
+                    verified_cost: None,
+                    currency: None,
+                    notes: None,
+                    updated_proposal: Some(&p_bad),
+                },
+                "approved",
+                &mut h_bad,
+                now,
+            )
+            .is_err()
+        );
+
+        // 4) Permite mover archivo no protegido a papelera dos veces en el mismo instante sin colisión
+        for idx in 0..2 {
+            fs::write(root.join("datos/temporal.csv"), format!("a,b\n1,{idx}\n")).unwrap();
+            let p_del = json!({
+                "cardId": format!("del-ok-{idx}"),
+                "stagingPayload": {
+                    "kind": "delete_path",
+                    "targetPath": "datos/temporal.csv"
+                }
+            });
+            let mut h_ok = h_edit.clone();
+            apply_post_hitl_side_effects(
+                &mut conn,
+                &root,
+                HitlSideEffectInput {
+                    card_id: &format!("del-ok-{idx}"),
+                    title: "Archivar CSV",
+                    category: "regla",
+                    summary: "",
+                    decided_by: Some("user"),
+                    adjusted_qty: None,
+                    verified_cost: None,
+                    currency: None,
+                    notes: None,
+                    updated_proposal: Some(&p_del),
+                },
+                "approved",
+                &mut h_ok,
+                now,
+            )
+            .unwrap();
+        }
+        let trash_count = fs::read_dir(root.join("agente/.papelera")).unwrap().count();
+        assert_eq!(trash_count, 2);
+
+        // 5) Blueprint atómico: rechaza lote completo si algún archivo núcleo es inválido
+        let bad_bp = json!({
+            "cardId": "bp-bad",
+            "stagingPayload": {
+                "kind": "blueprint",
+                "changes": [
+                    { "targetPath": "empresa/roles.md", "newContent": "# Roles\n- Arquitecto\n" },
+                    { "targetPath": "empresa/perfil.json", "newContent": "{json_roto" }
+                ]
+            }
+        });
+        let mut h_bp_bad = h_edit.clone();
+        assert!(
+            apply_post_hitl_side_effects(
+                &mut conn,
+                &root,
+                HitlSideEffectInput {
+                    card_id: "bp-bad",
+                    title: "Blueprint inválido",
+                    category: "regla",
+                    summary: "",
+                    decided_by: Some("user"),
+                    adjusted_qty: None,
+                    verified_cost: None,
+                    currency: None,
+                    notes: None,
+                    updated_proposal: Some(&bad_bp),
+                },
+                "approved",
+                &mut h_bp_bad,
+                now,
+            )
+            .is_err()
+        );
+        assert!(!root.join("empresa/roles.md").exists(), "no debe crear archivos si otro falla");
+
+        // 6) Blueprint válido: escribe múltiples archivos de empresa/ y datos/ en un solo paso HITL
+        let ok_bp = json!({
+            "cardId": "bp-ok",
+            "stagingPayload": {
+                "kind": "blueprint",
+                "changes": [
+                    {
+                        "targetPath": "empresa/perfil.json",
+                        "newContent": "{\"company_name\":\"Estudio Nube\",\"agent_name\":\"Xox\",\"currency\":\"MXN\",\"stock_threshold_days\":7,\"max_budget_per_order\":1000,\"preferred_suppliers\":[],\"business_rules\":[],\"domain_type\":\"software\",\"active_role\":\"Arquitecto Técnico\"}"
+                    },
+                    {
+                        "targetPath": "empresa/roles.md",
+                        "newContent": "# Roles del Proyecto\n- Arquitecto Técnico\n- QA\n"
+                    },
+                    {
+                        "targetPath": "datos/backlog.csv",
+                        "newContent": "tarea,prioridad\nMVP,alta\n"
+                    }
+                ]
+            }
+        });
+        let mut h_bp_ok = h_edit;
+        apply_post_hitl_side_effects(
+            &mut conn,
+            &root,
+            HitlSideEffectInput {
+                card_id: "bp-ok",
+                title: "Configurar proyecto de software",
+                category: "regla",
+                summary: "",
+                decided_by: Some("user"),
+                adjusted_qty: None,
+                verified_cost: None,
+                currency: None,
+                notes: None,
+                updated_proposal: Some(&ok_bp),
+            },
+            "approved",
+            &mut h_bp_ok,
+            now,
+        )
+        .unwrap();
+        assert!(root.join("empresa/roles.md").is_file());
+        assert!(root.join("datos/backlog.csv").is_file());
+        assert_eq!(h_bp_ok.execution_artifact_path.as_deref(), Some("empresa/perfil.json"));
+
         let _ = fs::remove_dir_all(&root);
     }
 }

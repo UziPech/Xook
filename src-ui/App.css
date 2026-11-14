@@ -828,8 +828,78 @@ html[data-window-mode="quick"] body {
   color: rgba(244, 244, 245, 0.95);
 }
 
-/* Contenedor de tabla sobria en tonos negro/gris Liquid Glass */
-.quick-liquid-table,
+/* Tabla Liquid Glass translúcida para la barra flotante QuickBar (sin backdrop-filter) */
+.quick-liquid-table {
+  position: relative;
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(203, 213, 225, 0.036) 52%,
+    rgba(8, 13, 28, 0.24) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.145);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 0 rgba(125, 211, 252, 0.07),
+    0 10px 24px -12px rgba(2, 6, 23, 0.48);
+}
+
+.quick-liquid-table-head {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.105) 0%,
+    rgba(255, 255, 255, 0.035) 100%
+  );
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  transition:
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.quick-liquid-table[data-scrolled="true"] .quick-liquid-table-head {
+  background: linear-gradient(
+    180deg,
+    rgba(13, 20, 36, 0.88) 0%,
+    rgba(9, 14, 26, 0.84) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 6px 14px -8px rgba(2, 6, 23, 0.65);
+}
+
+.quick-liquid-table-head th {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  text-shadow: 0 1px 4px rgba(4, 8, 18, 0.72);
+}
+
+.quick-liquid-table-head th:last-child {
+  border-right: none;
+}
+
+.quick-liquid-table .xook-liquid-row td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.085);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  text-shadow: 0 1px 4px rgba(4, 8, 18, 0.68);
+}
+
+.quick-liquid-table .xook-liquid-row td:last-child {
+  border-right: none;
+}
+
+.quick-liquid-table .xook-liquid-row:last-child td {
+  border-bottom: none;
+}
+
+.quick-liquid-table .xook-liquid-row.is-alt td {
+  background: rgba(255, 255, 255, 0.032);
+}
+
+.quick-liquid-table .xook-liquid-row:hover td {
+  background: rgba(255, 255, 255, 0.075);
+}
+
+/* Contenedor de tabla sobria en tonos negro/gris Liquid Glass para ventana principal */
 .xook-liquid-table {
   position: relative;
   background: #0b0c10;
@@ -839,19 +909,16 @@ html[data-window-mode="quick"] body {
     0 8px 22px -10px rgba(0, 0, 0, 0.55);
 }
 
-.quick-liquid-table-head,
 .xook-liquid-table-head {
   background: #111318;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
-.quick-liquid-table-head th,
 .xook-liquid-table-head th {
   border-bottom: 1px solid rgba(255, 255, 255, 0.09);
   border-right: 1px solid rgba(255, 255, 255, 0.045);
 }
 
-.quick-liquid-table-head th:last-child,
 .xook-liquid-table-head th:last-child {
   border-right: none;
 }
@@ -1439,24 +1506,210 @@ dialog.xook-liquid-dialog[data-closing]::backdrop {
   overflow: hidden;
 }
 
+progress.xook-usage-progress {
+  display: block;
+  width: 100%;
+  height: var(--xook-progress-height, 0.25rem);
+  border: 0 solid;
+  border-radius: 9999px;
+  overflow: clip;
+  background-color: var(--xook-progress-track, rgba(255, 255, 255, 0.08));
+  color: var(--xook-progress-fill, rgba(228, 228, 231, 0.85));
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+progress.xook-usage-progress::-webkit-progress-bar {
+  background-color: var(--xook-progress-track, rgba(255, 255, 255, 0.08));
+}
+
+/* Mantener ::-webkit-progress-value y ::-moz-progress-bar separados */
+progress.xook-usage-progress::-webkit-progress-value {
+  background-color: var(--xook-progress-fill, rgba(228, 228, 231, 0.85));
+  border-radius: 9999px;
+  transition: width 260ms ease, background-color 200ms ease;
+}
+
+progress.xook-usage-progress::-moz-progress-bar {
+  background-color: var(--xook-progress-fill, rgba(228, 228, 231, 0.85));
+  border-radius: 9999px;
+}
+
 @media (forced-colors: active) {
   .xook-liquid-menu,
   dialog.xook-liquid-dialog {
     border: 1px solid CanvasText;
   }
 
+  progress.xook-usage-progress {
+    border: 1px solid CanvasText;
+  }
+
+  progress.xook-usage-progress::-webkit-progress-value {
+    background-color: Highlight;
+  }
+
+  progress.xook-usage-progress::-moz-progress-bar {
+    background-color: Highlight;
+  }
+
   .quick-liquid-option.is-selected {
     outline: 2px solid Highlight;
     outline-offset: -2px;
   }
+
+  .xook-code-action-btn {
+    border: 1px solid ButtonBorder;
+    background-color: ButtonFace;
+    color: ButtonText;
+  }
+
+  .xook-code-action-btn:focus-visible {
+    outline: 2px solid Highlight;
+  }
+}
+
+/* =========================================================================
+   Multi-Language Code Block Syntax Theme (Dark Obsidian + High Contrast)
+   ========================================================================= */
+
+.xook-code {
+  tab-size: 4;
+  font-variant-ligatures: none;
+  color: #e4e7ec;
+}
+
+.xook-code:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.55);
+  outline-offset: -2px;
+  border-radius: 0 0 12px 12px;
+}
+
+.xook-code .hljs-comment,
+.xook-code .hljs-quote {
+  color: #7c8594;
+  font-style: italic;
+}
+
+.xook-code .hljs-keyword,
+.xook-code .hljs-selector-tag,
+.xook-code .hljs-meta .hljs-keyword {
+  color: #a78bfa;
+}
+
+.xook-code .hljs-built_in,
+.xook-code .hljs-type,
+.xook-code .hljs-name {
+  color: #f87171;
+}
+
+.xook-code .hljs-title,
+.xook-code .hljs-title.class_,
+.xook-code .hljs-title.class_.inherited__,
+.xook-code .hljs-section {
+  color: #fbbf24;
+}
+
+.xook-code .hljs-title.function_,
+.xook-code .hljs-selector-class,
+.xook-code .hljs-selector-id {
+  color: #60a5fa;
+}
+
+.xook-code .hljs-string,
+.xook-code .hljs-meta .hljs-string,
+.xook-code .hljs-regexp {
+  color: #4ade80;
+}
+
+.xook-code .hljs-number,
+.xook-code .hljs-literal,
+.xook-code .hljs-symbol,
+.xook-code .hljs-bullet {
+  color: #c4b5fd;
+}
+
+.xook-code .hljs-attr,
+.xook-code .hljs-attribute,
+.xook-code .hljs-property {
+  color: #67e8f9;
+}
+
+.xook-code .hljs-variable,
+.xook-code .hljs-template-variable,
+.xook-code .hljs-params,
+.xook-code .hljs-subst {
+  color: #e2e8f0;
+}
+
+.xook-code .hljs-meta,
+.xook-code .hljs-doctag {
+  color: #38bdf8;
+}
+
+.xook-code .hljs-operator,
+.xook-code .hljs-punctuation {
+  color: #94a3b8;
+}
+
+.xook-code .hljs-tag {
+  color: #94a3b8;
+}
+
+.xook-code .hljs-addition {
+  color: #86efac;
+  background-color: rgba(34, 197, 94, 0.14);
+}
+
+.xook-code .hljs-deletion {
+  color: #fca5a5;
+  background-color: rgba(239, 68, 68, 0.14);
+}
+
+.xook-code .hljs-emphasis {
+  font-style: italic;
+}
+
+.xook-code .hljs-strong {
+  font-weight: 600;
+}
+
+.xook-code-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: 28px;
+  min-block-size: 28px;
+  padding: 4px;
+  border-radius: 8px;
+  color: #a1a1aa;
+  background: transparent;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.xook-code-action-btn:hover {
+  color: #f4f4f5;
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.xook-code-action-btn:active {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.xook-code-action-btn:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+  color: #f4f4f5;
 }
 
 @media (prefers-reduced-motion: reduce) {
+  progress.xook-usage-progress::-webkit-progress-value { transition: none; }
   .menu-in, .menu-out, .xox-mini-eye, .xook-dialog-tab-panel, .xook-catalog-swap, .xook-model-reveal { animation: none; }
   .xook-tree-item, .xook-node-highlight, .xook-save-flash, .xook-empty-float, .xook-task-card { animation: none; }
   .xook-chevron, .xook-expand-list, .xook-collapse-grid { transition: none; }
   .xox-bubble.is-leaving { opacity: 0; }
-  .input-bubble, .input-console, .sidebar-slot, .splitter-aurora-glass, .quick-capsule-shell, .quick-liquid-btn, .quick-liquid-btn-ready, .quick-liquid-option, .xook-liquid-row td, .xook-task-card, .xook-approve-btn, .xook-stepper-btn { transition: none; }
+  .input-bubble, .input-console, .sidebar-slot, .splitter-aurora-glass, .quick-capsule-shell, .quick-liquid-btn, .quick-liquid-btn-ready, .quick-liquid-option, .xook-liquid-row td, .xook-task-card, .xook-approve-btn, .xook-stepper-btn, .xook-code-action-btn { transition: none; }
   dialog.xook-liquid-dialog[open]:where(:not([data-closing])),
   dialog.xook-liquid-dialog[data-closing],
   dialog.xook-liquid-dialog[open]:where(:not([data-closing]))::backdrop,

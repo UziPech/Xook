@@ -34,6 +34,87 @@ impl WorkspaceZone {
     pub fn is_agent_autonomous(&self) -> bool {
         matches!(self, WorkspaceZone::Memoria | WorkspaceZone::Agente)
     }
+
+    pub fn is_hitl_protected(&self) -> bool {
+        matches!(
+            self,
+            WorkspaceZone::Empresa | WorkspaceZone::Datos | WorkspaceZone::Habilidades
+        )
+    }
+}
+
+pub const PROTECTED_STRUCTURAL_DIRS: &[&str] = &[
+    "empresa",
+    "empresa/reglas",
+    "datos",
+    "datos/ventas",
+    "datos/documentos",
+    "memoria",
+    "memoria/diario",
+    "habilidades",
+    "agente",
+    "agente/adjuntos",
+    "agente/proyectos",
+    "agente/borradores",
+    "agente/reportes",
+    "agente/revisiones",
+    "agente/ordenes",
+    "agente/logs",
+    "agente/.papelera",
+    "agente/.tmp_exports",
+];
+
+pub const PROTECTED_CORE_FILES: &[&str] = &[
+    "empresa/perfil.json",
+    "empresa/proveedores.json",
+    "empresa/reglas/operacion.md",
+    "memoria/hechos.md",
+    "memoria/patrones.json",
+    "memoria/decisiones.jsonl",
+    "habilidades/perfil-usuario.md",
+    "agente/notas-xox.md",
+];
+
+/// Indica si una ruta relativa dentro del workspace es estructural, interna, oculta o núcleo operativo
+/// y por lo tanto NO debe eliminarse ni moverse fuera de su ubicación.
+pub fn is_protected_workspace_rel_path(rel_path: &Path) -> Option<&'static str> {
+    let mut parts: Vec<String> = Vec::new();
+    for comp in rel_path.components() {
+        if let Component::Normal(os_str) = comp {
+            parts.push(os_str.to_string_lossy().to_ascii_lowercase());
+        }
+    }
+    if parts.is_empty() {
+        return Some("raíz del espacio de trabajo");
+    }
+    if parts[0] == ".xook" || parts[0].starts_with(".git") {
+        return Some("carpeta interna protegida del sistema");
+    }
+    if parts.iter().any(|p| p.starts_with('.')) {
+        return Some("archivo o carpeta oculta del sistema (dotfiles/papelera)");
+    }
+    if parts.iter().any(|p| p.contains(".tmp.")) {
+        return Some("archivo temporal interno");
+    }
+
+    let joined = parts.join("/");
+    if PROTECTED_STRUCTURAL_DIRS.contains(&joined.as_str()) {
+        return Some("carpeta estructural obligatoria del espacio de trabajo");
+    }
+    if PROTECTED_CORE_FILES.contains(&joined.as_str()) {
+        return Some("archivo núcleo de configuración, memoria o historial del negocio");
+    }
+    None
+}
+
+/// Igual que `is_protected_workspace_rel_path`, pero evaluando una ruta absoluta canonicalizada frente a `canonical_ws`.
+#[allow(dead_code)]
+pub fn is_protected_workspace_abs_path(canonical_target: &Path, canonical_ws: &Path) -> Option<&'static str> {
+    if canonical_target == canonical_ws {
+        return Some("raíz del espacio de trabajo");
+    }
+    let rel = canonical_target.strip_prefix(canonical_ws).ok()?;
+    is_protected_workspace_rel_path(rel)
 }
 
 pub fn zone_from_rel_path(rel_path: &Path) -> WorkspaceZone {
@@ -231,6 +312,51 @@ mod tests {
         assert_eq!(slugify_workspace_name("Café & Té S.A."), "cafe-te-s-a");
         assert_eq!(slugify_workspace_name("Xox"), "xox");
         assert_eq!(slugify_workspace_name("   "), "xox");
+    }
+
+    #[test]
+    fn protected_paths_block_core_structure_but_allow_custom_files() {
+        for protected in [
+            "",
+            ".xook/xook.db",
+            "empresa",
+            "empresa/perfil.json",
+            "empresa/proveedores.json",
+            "empresa/reglas",
+            "empresa/reglas/operacion.md",
+            "datos/ventas",
+            "datos/documentos",
+            "memoria/diario",
+            "memoria/hechos.md",
+            "memoria/patrones.json",
+            "memoria/decisiones.jsonl",
+            "agente/adjuntos",
+            "agente/ordenes",
+            "agente/notas-xox.md",
+            "agente/.DS_Store",
+            "agente/.papelera/viejo.txt",
+        ] {
+            assert!(
+                is_protected_workspace_rel_path(Path::new(protected)).is_some(),
+                "expected protected path: {protected}"
+            );
+        }
+
+        for allowed in [
+            "empresa/roles.md",
+            "empresa/reglas/politica_cajeros.md",
+            "datos/inventario.csv",
+            "datos/ventas/enero.csv",
+            "agente/adjuntos/tarea.pdf",
+            "agente/reportes/reporte_q1.pdf",
+            "agente/proyectos/demo.md",
+            "habilidades/mi_skill.md",
+        ] {
+            assert!(
+                is_protected_workspace_rel_path(Path::new(allowed)).is_none(),
+                "expected custom path to be deletable/editable: {allowed}"
+            );
+        }
     }
 }
 

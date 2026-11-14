@@ -1,4 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CodeBlockCard } from "../../utils/CodeBlockCard";
+import { getLanguageMetaForExtension } from "../../utils/codeLanguages";
+import { MarkdownContent } from "../../utils/markdownRenderer";
 import {
   AlignCenter,
   AlignLeft,
@@ -1572,13 +1575,35 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
                   </tbody>
                 </table>
               </div>
-            ) : (
-              <div className="rounded-2xl border border-white/[0.08] bg-zinc-950/80 p-5 shadow-inner">
-                <pre className="text-[12px] font-mono text-zinc-200 whitespace-pre-wrap break-words leading-relaxed select-text">
-                  {textDraft || "(Documento vacío)"}
-                </pre>
-              </div>
-            )}
+            ) : (() => {
+              const extLower = (state.fileExtension || "").trim().replace(/^\./, "").toLowerCase();
+              const docFilename = state.path.split("/").pop() || state.title;
+              const codeMeta = getLanguageMetaForExtension(extLower, docFilename);
+              if (extLower === "md" || extLower === "markdown") {
+                return (
+                  <div className="rounded-2xl border border-white/[0.08] bg-zinc-950/80 p-5 shadow-inner text-[13px] text-zinc-200 leading-relaxed select-text">
+                    <MarkdownContent text={textDraft || "(Documento vacío)"} variant="default" />
+                  </div>
+                );
+              }
+              if (textDraft && codeMeta && codeMeta.id !== "plaintext") {
+                return (
+                  <CodeBlockCard
+                    code={textDraft}
+                    language={codeMeta.id}
+                    filenameHint={docFilename}
+                    variant="default"
+                  />
+                );
+              }
+              return (
+                <div className="rounded-2xl border border-white/[0.08] bg-zinc-950/80 p-5 shadow-inner">
+                  <pre className="text-[12px] font-mono text-zinc-200 whitespace-pre-wrap break-words leading-relaxed select-text">
+                    {textDraft || "(Documento vacío)"}
+                  </pre>
+                </div>
+              );
+            })()}
           </div>
         )}
 

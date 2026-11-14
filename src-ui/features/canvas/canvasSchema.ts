@@ -164,6 +164,50 @@ function stripMarkdownTablesFromText(text: string): string {
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function stashMarkdownCodeForCleaning(text: string): { stashedText: string; stash: string[] } {
+  const stash: string[] = [];
+  const pushToken = (raw: string): string => {
+    const idx = stash.length;
+    stash.push(raw);
+    return `\uE000XOOKCODE_${idx}\uE001`;
+  };
+
+  const lines = text.split("\n");
+  const outLines: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const m = line.match(/^(\s*)(`{3,}|~{3,})(.*)$/);
+    const fenceChar = m ? m[2][0] : "";
+    const fenceLen = m ? m[2].length : 0;
+    const info = m ? m[3] : "";
+    const validOpen = Boolean(m && !(fenceChar === "`" && info.includes("`")));
+
+    if (validOpen) {
+      const blockLines: string[] = [line];
+      i += 1;
+      const closeRe = new RegExp(`^\\s*${fenceChar}{${fenceLen},}\\s*$`);
+      while (i < lines.length) {
+        blockLines.push(lines[i]);
+        if (closeRe.test(lines[i])) {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      outLines.push(pushToken(blockLines.join("\n")));
+      continue;
+    }
+
+    // Inline code spans on non-fenced lines
+    outLines.push(line.replace(/(`+)(?:(?!\1)[^\n])+\1|`[^`\n]+`/g, (match) => pushToken(match)));
+    i += 1;
+  }
+
+  return { stashedText: outLines.join("\n"), stash };
+}
+
 export function cleanVisibleReply(
   text: string,
   options?: { stripTables?: boolean }
@@ -172,6 +216,9 @@ export function cleanVisibleReply(
   if (!out) return "";
 
   const stripTables = Boolean(options?.stripTables);
+  const { stashedText, stash } = stashMarkdownCodeForCleaning(out);
+  out = stashedText;
+
   const replaceHtml = (fragment: string): string => {
     const parsed = parseHtmlTableFragment(fragment);
     if (!parsed) return "";
@@ -180,11 +227,6 @@ export function cleanVisibleReply(
 
   out = out.replace(/<table\b[^>]*>[\s\S]*?<\/table>/gi, replaceHtml);
   out = out.replace(/(?:<tr\b[^>]*>[\s\S]*?<\/tr>\s*)+(?:\s*<\/table>)?/gi, replaceHtml);
-  const codeStash: string[] = [];
-  out = out.replace(/```[\s\S]*?```|`[^`\n]+`/g, (match) => {
-    codeStash.push(match);
-    return `\x00CODEBLOCK${codeStash.length - 1}\x00`;
-  });
   out = out.replace(
     /<\s*(?:\/\s*)?(?:pdf|doc|document|response|respuesta|analysis|analisis|canvas|lienzo|acciones|actions|posta|reply|resp|table|thead|tbody|tfoot|tr|th|td)\b[^>]*>/gi,
     ""
@@ -197,13 +239,14 @@ export function cleanVisibleReply(
     /<\s*\/\s*(?:pdf|doc|document|response|respuesta|analysis|analisis|canvas|lienzo|acciones|actions|posta|reply|resp|res|answer|output|final)\s*$/gi,
     ""
   );
-  if (codeStash.length > 0) {
-    out = out.replace(/\x00CODEBLOCK(\d+)\x00/g, (_m, idx) => codeStash[Number(idx)] ?? "");
-  }
   if (stripTables) {
     out = stripMarkdownTablesFromText(out);
   }
-  return out.replace(/\n{3,}/g, "\n\n").trim();
+  out = out.replace(/\n{3,}/g, "\n\n").trim();
+  if (stash.length > 0) {
+    out = out.replace(/\uE000XOOKCODE_(\d+)\uE001/g, (_m, idx) => stash[Number(idx)] ?? "");
+  }
+  return out;
 }
 
 export function canvasHasCellData(canvas: CanvasArtifact | null | undefined): boolean {

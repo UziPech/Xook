@@ -30,16 +30,23 @@ import {
   AiConfigStatus,
   AiConnectionTestResult,
   AiProviderId,
+  AiUsageLedger,
   DEFAULT_FAILOVER_ORDER,
   OpenRouterModelOption,
+  computeProviderUsageSummary,
   fetchOpenRouterModels,
   formatContextLength,
   formatModelDisplay,
   formatPricePerMillion,
+  formatTokenCount,
   getAiConfigStatus,
+  getAiUsageLedger,
   getProviderSpec,
   normalizeApiKey,
+  onAiUsageUpdated,
+  resetProviderUsageLedger,
   saveAiConfig,
+  setProviderUsageLimits,
   testAiConnection,
 } from "./aiClient";
 
@@ -51,11 +58,13 @@ interface OpenRouterSettingsModalProps {
   initialProvider?: AiProviderId;
   config: AiConfigStatus;
   accountUsage: AiConnectionTestResult | null;
+  usageLedger?: AiUsageLedger | null;
   catalogModels: OpenRouterModelOption[];
   requestsToday: number;
   onClose: () => void;
   onConfigUpdated: (next: AiConfigStatus) => void;
   onUsageUpdated: (usage: AiConnectionTestResult | null) => void;
+  onLedgerUpdated?: (ledger: AiUsageLedger) => void;
   onCatalogUpdated: (models: OpenRouterModelOption[]) => void;
 }
 
@@ -69,11 +78,13 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
   initialProvider,
   config,
   accountUsage,
+  usageLedger: propUsageLedger,
   catalogModels,
   requestsToday,
   onClose,
   onConfigUpdated,
   onUsageUpdated,
+  onLedgerUpdated,
   onCatalogUpdated,
 }) => {
   const activeConfigProvider = normalizeProviderIdClient(config.provider);
@@ -81,6 +92,22 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
   const [selectedProvider, setSelectedProvider] = useState<AiProviderId>(
     initialProvider ?? activeConfigProvider
   );
+
+  const [internalLedger, setInternalLedger] = useState<AiUsageLedger | null>(
+    propUsageLedger ?? null
+  );
+  const effectiveLedger = propUsageLedger ?? internalLedger;
+
+  const [budgetInput, setBudgetInput] = useState<string>("");
+  const [dailyCapInput, setDailyCapInput] = useState<string>("");
+  const [rpmCapInput, setRpmCapInput] = useState<string>("");
+  const [tierModeInput, setTierModeInput] = useState<"auto" | "free" | "paid">("auto");
+  const [limitsError, setLimitsError] = useState<string | null>(null);
+  const [invalidLimitField, setInvalidLimitField] = useState<"budget" | "daily" | "rpm" | null>(
+    null
+  );
+  const [limitsSavedMsg, setLimitsSavedMsg] = useState<string | null>(null);
+  const [savingLimits, setSavingLimits] = useState<boolean>(false);
 
   const [apiKeyInput, setApiKeyInput] = useState<string>("");
   const [showKey, setShowKey] = useState<boolean>(false);
@@ -105,6 +132,9 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
   const dialogRef = useRef<HTMLDialogElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const keyInputRef = useRef<HTMLInputElement>(null);
+  const budgetInputRef = useRef<HTMLInputElement>(null);
+  const dailyCapInputRef = useRef<HTMLInputElement>(null);
+  const rpmCapInputRef = useRef<HTMLInputElement>(null);
   const listScrollRef = useRef<HTMLDivElement>(null);
   const pressedOutsideRef = useRef<boolean>(false);
   const closeSeqRef = useRef<number>(0);
@@ -137,6 +167,60 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
   const selectedQuotaStatus = selectedSlot?.quotaStatus ?? "ready";
   const selectedQuotaReason = selectedSlot?.quotaReason ?? null;
   const selectedCooldownUntil = selectedSlot?.cooldownUntilMs ?? null;
+  const selectedRegion = (selectedSlot?.apiRegion || (selectedProvider === "kimi" ? "ai" : null)) ?? null;
+
+  useEffect(() => {
+    if (propUsageLedger) setInternalLedger(propUsageLedger);
+  }, [propUsageLedger]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let alive = true;
+    void getAiUsageLedger().then((next) => {
+      if (!alive) return;
+      setInternalLedger(next);
+      onLedgerUpdated?.(next);
+    });
+    let unsub: (() => void) | null = null;
+    void onAiUsageUpdated((next) => {
+      if (!alive) return;
+      setInternalLedger(next);
+      onLedgerUpdated?.(next);
+    }).then((fn) => {
+      unsub = fn;
+    });
+    return () => {
+      alive = false;
+      if (unsub) unsub();
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    const savedLimits = effectiveLedger?.providers?.[selectedProvider]?.limits;
+    setBudgetInput(
+      typeof savedLimits?.monthlyBudgetUsd === "number" && savedLimits.monthlyBudgetUsd > 0
+        ? String(savedLimits.monthlyBudgetUsd)
+        : ""
+    );
+    setDailyCapInput(
+      typeof savedLimits?.dailyRequestLimit === "number" && savedLimits.dailyRequestLimit > 0
+        ? String(savedLimits.dailyRequestLimit)
+        : ""
+    );
+    setRpmCapInput(
+      typeof savedLimits?.rpmLimit === "number" && savedLimits.rpmLimit > 0
+        ? String(savedLimits.rpmLimit)
+        : ""
+    );
+    setTierModeInput(
+      savedLimits?.tierMode === "free" || savedLimits?.tierMode === "paid"
+        ? savedLimits.tierMode
+        : "auto"
+    );
+    setLimitsError(null);
+    setInvalidLimitField(null);
+    setLimitsSavedMsg(null);
+  }, [selectedProvider, isOpen, effectiveLedger?.providers?.[selectedProvider]?.limits]);
 
   useEffect(() => {
     if (catalogModels.length > 0 && activeConfigProvider === "openrouter") {
@@ -258,13 +342,28 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
       ? accountUsage
       : null;
 
-  const canUsePaid =
-    selectedProvider === "openrouter"
-      ? (effectiveUsage?.can_use_paid_models ?? false)
-      : true;
-  const isFreeTier = effectiveUsage?.is_free_tier ?? selectedSpec.supportsFreeTier;
-  const dailyFreeCap = effectiveUsage?.daily_free_limit ?? (isFreeTier ? 50 : 1000);
-  const rpmFreeCap = effectiveUsage?.rpm_free_limit ?? 20;
+  const selectedSummary = useMemo(
+    () =>
+      computeProviderUsageSummary({
+        provider: selectedProvider,
+        aiConfig: config,
+        accountUsage: effectiveUsage,
+        usageLedger: effectiveLedger,
+        requestsTodayFallback: selectedProvider === activeConfigProvider ? requestsToday : 0,
+        modelId: selectedModelId,
+      }),
+    [
+      selectedProvider,
+      config,
+      effectiveUsage,
+      effectiveLedger,
+      activeConfigProvider,
+      requestsToday,
+      selectedModelId,
+    ]
+  );
+
+  const canUsePaid = selectedSummary.canUsePaid;
 
   const currentCatalogModels = catalogByProvider[selectedProvider] ?? [];
 
@@ -376,6 +475,9 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
       const check = await testAiConnection(selectedProvider);
       setTestResultsByProvider((prev) => ({ ...prev, [selectedProvider]: check }));
       onUsageUpdated(check.ok ? check : null);
+      const nextLedger = await getAiUsageLedger();
+      setInternalLedger(nextLedger);
+      onLedgerUpdated?.(nextLedger);
       void fetchOpenRouterModels(false, true, selectedProvider).then((res) => {
         if (res.models.length > 0) {
           setCatalogByProvider((prev) => ({ ...prev, [selectedProvider]: res.models }));
@@ -407,9 +509,111 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
       if (selectedProvider === activeConfigProvider) {
         onUsageUpdated(res.ok ? res : null);
       }
+      const nextLedger = await getAiUsageLedger();
+      setInternalLedger(nextLedger);
+      onLedgerUpdated?.(nextLedger);
     } finally {
       setTesting(false);
     }
+  };
+
+  const handleChangeKimiRegion = async (region: "ai" | "cn") => {
+    setSaving(true);
+    try {
+      const updated = await saveAiConfig({
+        targetProvider: "kimi",
+        apiRegion: region,
+      });
+      onConfigUpdated(updated);
+      if (selectedHasKey) {
+        setTesting(true);
+        const res = await testAiConnection("kimi");
+        setTestResultsByProvider((prev) => ({ ...prev, kimi: res }));
+        if (activeConfigProvider === "kimi") {
+          onUsageUpdated(res.ok ? res : null);
+        }
+        const nextLedger = await getAiUsageLedger();
+        setInternalLedger(nextLedger);
+        onLedgerUpdated?.(nextLedger);
+      }
+    } finally {
+      setSaving(false);
+      setTesting(false);
+    }
+  };
+
+  const handleSaveLimits = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLimitsError(null);
+    setInvalidLimitField(null);
+    setLimitsSavedMsg(null);
+
+    const trimmedBudget = budgetInput.trim();
+    const trimmedDaily = dailyCapInput.trim();
+    const trimmedRpm = rpmCapInput.trim();
+
+    let monthlyBudgetUsd: number | null = null;
+    if (trimmedBudget) {
+      const parsed = Number(trimmedBudget.replace(",", "."));
+      if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 100000) {
+        setInvalidLimitField("budget");
+        setLimitsError("Ingresa un presupuesto mensual válido en USD mayor a 0.");
+        budgetInputRef.current?.focus();
+        return;
+      }
+      monthlyBudgetUsd = Math.round(parsed * 10000) / 10000;
+    }
+
+    let dailyRequestLimit: number | null = null;
+    if (trimmedDaily) {
+      const parsed = Number(trimmedDaily);
+      if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+        setInvalidLimitField("daily");
+        setLimitsError("El límite diario debe ser un número entero positivo.");
+        dailyCapInputRef.current?.focus();
+        return;
+      }
+      dailyRequestLimit = parsed;
+    }
+
+    let rpmLimit: number | null = null;
+    if (trimmedRpm) {
+      const parsed = Number(trimmedRpm);
+      if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+        setInvalidLimitField("rpm");
+        setLimitsError("El límite RPM debe ser un número entero positivo.");
+        rpmCapInputRef.current?.focus();
+        return;
+      }
+      rpmLimit = parsed;
+    }
+
+    setSavingLimits(true);
+    try {
+      const nextLedger = await setProviderUsageLimits({
+        provider: selectedProvider,
+        monthlyBudgetUsd,
+        dailyRequestLimit,
+        rpmLimit,
+        tierMode: tierModeInput === "auto" ? null : tierModeInput,
+      });
+      setInternalLedger(nextLedger);
+      onLedgerUpdated?.(nextLedger);
+      setLimitsSavedMsg("Límites locales guardados.");
+    } catch (err) {
+      setLimitsError(err instanceof Error ? err.message : "No se pudieron guardar los límites.");
+    } finally {
+      setSavingLimits(false);
+    }
+  };
+
+  const handleResetLocalCounters = async () => {
+    setLimitsError(null);
+    setLimitsSavedMsg(null);
+    const nextLedger = await resetProviderUsageLedger(selectedProvider);
+    setInternalLedger(nextLedger);
+    onLedgerUpdated?.(nextLedger);
+    setLimitsSavedMsg(`Conteo local reiniciado para ${selectedSpec.shortName}.`);
   };
 
   const handleClearKey = async () => {
@@ -544,25 +748,6 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
     (s) => config.configuredProviders?.[s.id]?.hasApiKey
   ).length;
 
-  const hasKeyLimit = typeof effectiveUsage?.limit === "number" && effectiveUsage.limit > 0;
-  const hasAccountCredits =
-    typeof effectiveUsage?.credits_total === "number" && effectiveUsage.credits_total > 0;
-
-  let limitSummaryPct = 0;
-  if (hasKeyLimit && effectiveUsage?.limit) {
-    const used =
-      effectiveUsage.usage ??
-      Math.max(0, effectiveUsage.limit - (effectiveUsage.limit_remaining ?? 0));
-    limitSummaryPct = Math.min(100, Math.round((used / effectiveUsage.limit) * 100));
-  } else if (hasAccountCredits && effectiveUsage?.credits_total) {
-    limitSummaryPct = Math.min(
-      100,
-      Math.round(((effectiveUsage.credits_usage ?? 0) / effectiveUsage.credits_total) * 100)
-    );
-  } else if (selectedHasKey && selectedProvider === "openrouter") {
-    limitSummaryPct = Math.min(100, Math.round((requestsToday / dailyFreeCap) * 100));
-  }
-
   return (
     <dialog
       ref={dialogRef}
@@ -690,8 +875,8 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
               </div>
             </div>
 
-            {/* Selector Liquid Glass de los 6 proveedores + tarifa rápida */}
-            <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+            {/* Selector Liquid Glass de los 7 proveedores + tarifa rápida */}
+            <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-1.5">
               {AI_PROVIDER_LIST.map((spec) => {
                 const slot = config.configuredProviders?.[spec.id];
                 const isViewing = selectedProvider === spec.id;
@@ -867,19 +1052,7 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                           canUsePaid ? "bg-emerald-300/90" : "bg-sky-200/85"
                         }`}
                       />
-                      <span className="truncate">
-                        {selectedProvider === "deepseek" && typeof effectiveUsage.balance_usd === "number"
-                          ? `DeepSeek saldo: $${effectiveUsage.balance_usd.toFixed(2)} USD`
-                          : selectedProvider === "openrouter"
-                            ? canUsePaid
-                              ? hasKeyLimit
-                                ? `$${(effectiveUsage.limit_remaining ?? 0).toFixed(2)} disponibles`
-                                : hasAccountCredits
-                                  ? `$${(effectiveUsage.credits_remaining ?? 0).toFixed(2)} créditos`
-                                  : "OpenRouter con saldo"
-                              : `Plan gratuito · ${requestsToday}/${dailyFreeCap} hoy · ${rpmFreeCap}/min`
-                            : `${selectedSpec.shortName} conectado · ${selectedMaskedKey}`}
-                      </span>
+                      <span className="truncate">{selectedSummary.headline}</span>
                     </div>
                     <button
                       type="button"
@@ -1155,14 +1328,46 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                     </button>
                   </div>
 
-                  <button
-                    type="submit"
-                    disabled={!apiKeyInput.trim() || saving}
-                    className="quick-liquid-btn-ready px-3.5 py-2 rounded-xl text-xs font-semibold disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed shrink-0"
-                  >
-                    {saving ? "Guardando..." : "Guardar"}
-                  </button>
-                </form>
+                    <button
+                      type="submit"
+                      disabled={!apiKeyInput.trim() || saving}
+                      className="quick-liquid-btn-ready px-3.5 py-2 rounded-xl text-xs font-semibold disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed shrink-0"
+                    >
+                      {saving ? "Guardando..." : "Guardar"}
+                    </button>
+                  </form>
+
+                  {selectedProvider === "kimi" && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <span className="text-[11px] text-zinc-300/85">
+                        Región API de Moonshot / Kimi:
+                      </span>
+                      <div className="inline-flex items-center gap-1" role="group" aria-label="Región API de Kimi">
+                        <button
+                          type="button"
+                          aria-pressed={selectedRegion !== "cn"}
+                          onClick={() => void handleChangeKimiRegion("ai")}
+                          disabled={saving || testing}
+                          className={`quick-liquid-option px-2.5 py-1 rounded-full text-[11px] cursor-pointer ${
+                            selectedRegion !== "cn" ? "is-selected text-white" : "text-zinc-300"
+                          }`}
+                        >
+                          Global · api.moonshot.ai
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={selectedRegion === "cn"}
+                          onClick={() => void handleChangeKimiRegion("cn")}
+                          disabled={saving || testing}
+                          className={`quick-liquid-option px-2.5 py-1 rounded-full text-[11px] cursor-pointer ${
+                            selectedRegion === "cn" ? "is-selected text-white" : "text-zinc-300"
+                          }`}
+                        >
+                          China · api.moonshot.cn
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                 <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
                   <span className="text-zinc-300/80 flex items-center gap-1.5">
@@ -1251,65 +1456,314 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                   )}
               </section>
 
-              {/* Bloque 2: Métricas de uso (OpenRouter o saldo DeepSeek si disponible) */}
-              {selectedHasKey &&
-                selectedProvider === "openrouter" &&
-                effectiveUsage && (
-                  <section className="space-y-2.5 pt-3 border-t border-white/[0.08]">
+              {/* Bloque 2: Uso real, saldo API, rate-limits HTTP y límites configurables por proveedor */}
+              {selectedHasKey && (
+                <section className="space-y-2.5 pt-3 border-t border-white/[0.08]">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-200 flex items-center gap-2">
                       <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
                         <Activity className="w-3 h-3 text-white/85" />
                       </span>
-                      Límites y saldo en OpenRouter
+                      Uso y límites · {selectedSpec.shortName}
                     </span>
-                    <div className="quick-liquid-subcard p-3 rounded-xl space-y-2.5">
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        <div className="p-2 rounded-lg bg-white/[0.03] border border-white/[0.07]">
-                          <div className="text-[10px] uppercase tracking-wider text-zinc-400">
-                            {hasKeyLimit
-                              ? "Disponible en clave"
-                              : hasAccountCredits
-                                ? "Saldo restante"
-                                : "Solicitudes hoy"}
-                          </div>
-                          <div className="text-sm font-mono font-semibold text-white mt-0.5 tabular-nums">
-                            {hasKeyLimit
-                              ? `$${(effectiveUsage.limit_remaining ?? 0).toFixed(2)}`
-                              : hasAccountCredits
-                                ? `$${(effectiveUsage.credits_remaining ?? 0).toFixed(2)}`
-                                : `${requestsToday} / ${dailyFreeCap}`}
-                          </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/[0.1] text-zinc-200/90">
+                      {selectedSummary.sourceBadge}
+                    </span>
+                  </div>
+
+                  <div className="quick-liquid-subcard p-3 rounded-xl space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.07]">
+                        <div className="text-[10px] uppercase tracking-wider text-zinc-400">
+                          {selectedSummary.balanceAmount !== null
+                            ? "Saldo real API"
+                            : selectedSummary.monthlyBudgetUsd !== null
+                              ? "Consumo mes vs tope"
+                              : selectedSummary.dailyLimit !== null
+                                ? "Solicitudes hoy"
+                                : "Consumo mes est."}
                         </div>
-                        <div className="p-2 rounded-lg bg-white/[0.03] border border-white/[0.07]">
-                          <div className="text-[10px] uppercase tracking-wider text-zinc-400">
-                            Límite RPM gratis
-                          </div>
-                          <div className="text-sm font-mono font-semibold text-zinc-100 mt-0.5 tabular-nums">
-                            {rpmFreeCap} req/min
-                          </div>
+                        <div className="text-sm font-mono font-semibold text-white mt-0.5 tabular-nums">
+                          {selectedSummary.balanceAmount !== null
+                            ? selectedSummary.shortBadge
+                            : selectedSummary.monthlyBudgetUsd !== null
+                              ? `$${selectedSummary.monthCostUsd.toFixed(3)} / $${selectedSummary.monthlyBudgetUsd.toFixed(2)}`
+                              : selectedSummary.dailyLimit !== null
+                                ? `${selectedSummary.todayRequests} / ${selectedSummary.dailyLimit}`
+                                : `$${selectedSummary.monthCostUsd.toFixed(4)}`}
                         </div>
-                        <div className="p-2 rounded-lg bg-white/[0.03] border border-white/[0.07]">
-                          <div className="text-[10px] uppercase tracking-wider text-zinc-400">
-                            Gasto en clave
+                        {(selectedSummary.balanceGranted !== null || selectedSummary.balanceToppedUp !== null) && (
+                          <div className="text-[10px] text-zinc-400 mt-0.5 font-mono tabular-nums">
+                            {selectedSummary.balanceToppedUp !== null
+                              ? `Recarga ${selectedSummary.balanceToppedUp.toFixed(2)}`
+                              : ""}
+                            {selectedSummary.balanceToppedUp !== null && selectedSummary.balanceGranted !== null
+                              ? " · "
+                              : ""}
+                            {selectedSummary.balanceGranted !== null
+                              ? `Bono ${selectedSummary.balanceGranted.toFixed(2)}`
+                              : ""}
                           </div>
-                          <div className="text-sm font-mono font-semibold text-zinc-100 mt-0.5 tabular-nums">
-                            ${(effectiveUsage.usage ?? 0).toFixed(2)}
-                          </div>
+                        )}
+                      </div>
+
+                      <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.07]">
+                        <div className="text-[10px] uppercase tracking-wider text-zinc-400">
+                          {selectedSummary.effectiveRpmLimit !== null
+                            ? "Ventana RPM"
+                            : selectedSummary.tpmLimit !== null
+                              ? "Ventana TPM"
+                              : "Actividad reciente"}
+                        </div>
+                        <div className="text-sm font-mono font-semibold text-zinc-100 mt-0.5 tabular-nums">
+                          {selectedSummary.effectiveRpmLimit !== null
+                            ? selectedSummary.effectiveRpmRemaining !== null
+                              ? `${selectedSummary.effectiveRpmRemaining} / ${selectedSummary.effectiveRpmLimit} disp.`
+                              : `${selectedSummary.currentRpm} / ${selectedSummary.effectiveRpmLimit} rpm`
+                            : `${selectedSummary.currentRpm} req/min`}
+                        </div>
+                        <div className="text-[10px] text-zinc-400 mt-0.5 font-mono tabular-nums truncate">
+                          {selectedSummary.tpmLimit !== null && selectedSummary.tpmRemaining !== null
+                            ? `TPM ${formatTokenCount(selectedSummary.tpmRemaining)}/${formatTokenCount(selectedSummary.tpmLimit)}`
+                            : selectedSummary.rpmResetText || "Medición últimos 60s"}
                         </div>
                       </div>
-                      <div className="h-1.5 w-full rounded-full bg-white/[0.08] overflow-hidden">
-                        <div
-                          className={`h-full rounded-full transition-all duration-300 ${
-                            limitSummaryPct >= 85 ? "bg-amber-300/85" : "bg-white/75"
-                          }`}
-                          style={{
-                            width: `${Math.max(limitSummaryPct, limitSummaryPct > 0 ? 4 : 0)}%`,
-                          }}
-                        />
+
+                      <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.07]">
+                        <div className="text-[10px] uppercase tracking-wider text-zinc-400">
+                          Tokens y costo hoy
+                        </div>
+                        <div className="text-sm font-mono font-semibold text-zinc-100 mt-0.5 tabular-nums">
+                          {selectedSummary.todayRequests} req · {formatTokenCount(selectedSummary.todayTokens)}
+                        </div>
+                        <div className="text-[10px] text-zinc-400 mt-0.5 font-mono tabular-nums truncate">
+                          Est. ${selectedSummary.todayCostUsd.toFixed(4)}
+                          {selectedSummary.todayCachedTokens > 0
+                            ? ` · Caché ${formatTokenCount(selectedSummary.todayCachedTokens)}`
+                            : ` · Mes $${selectedSummary.monthCostUsd.toFixed(3)}`}
+                        </div>
                       </div>
                     </div>
-                  </section>
-                )}
+
+                    {selectedSummary.hasMeterBar ? (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-2 text-[10.5px] text-zinc-300">
+                          <span className="truncate">{selectedSummary.headline}</span>
+                          <span className="font-mono tabular-nums text-zinc-200 shrink-0">
+                            {selectedSummary.pct}%{" "}
+                            {selectedSummary.meterMode === "remaining" ? "disp." : "usado"}
+                          </span>
+                        </div>
+                        <progress
+                          className="xook-usage-progress"
+                          value={Math.max(0, Math.min(100, selectedSummary.pct))}
+                          max={100}
+                          aria-label={`${selectedSummary.headline} (${selectedSummary.pct}% ${
+                            selectedSummary.meterMode === "remaining" ? "disponible" : "usado"
+                          })`}
+                          style={{
+                            ["--xook-progress-fill" as string]:
+                              selectedSummary.meterMode === "used"
+                                ? selectedSummary.pct >= 85
+                                  ? "rgba(251, 191, 36, 0.9)"
+                                  : "rgba(255, 255, 255, 0.8)"
+                                : selectedSummary.pct <= 15
+                                  ? "rgba(244, 63, 94, 0.85)"
+                                  : "rgba(110, 231, 183, 0.85)",
+                          }}
+                        />
+                        <p className="text-[10.5px] text-zinc-400">{selectedSummary.subline}</p>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-zinc-400">{selectedSummary.subline}</p>
+                    )}
+
+                    {/* Formulario explícito para límites propios por proveedor */}
+                    <form
+                      onSubmit={(e) => void handleSaveLimits(e)}
+                      aria-labelledby="xook-limits-form-title"
+                      noValidate
+                      className="space-y-2.5 pt-2.5 border-t border-white/[0.08]"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          id="xook-limits-form-title"
+                          className="text-[10.5px] font-semibold uppercase tracking-wider text-zinc-300"
+                        >
+                          Tus límites / presupuesto en {selectedSpec.shortName}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void handleResetLocalCounters()}
+                          className="quick-liquid-btn inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] text-zinc-300 hover:text-white cursor-pointer"
+                        >
+                          <RotateCcw className="w-2.5 h-2.5" />
+                          <span>Reiniciar conteo</span>
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <div className="space-y-1">
+                          <label
+                            htmlFor="xook-limit-budget"
+                            className="block text-[10px] text-zinc-400"
+                          >
+                            Presupuesto mes (USD)
+                          </label>
+                          <input
+                            ref={budgetInputRef}
+                            id="xook-limit-budget"
+                            name="monthlyBudgetUsd"
+                            type="text"
+                            inputMode="decimal"
+                            value={budgetInput}
+                            onChange={(e) => {
+                              setBudgetInput(e.target.value);
+                              if (invalidLimitField === "budget") {
+                                setInvalidLimitField(null);
+                                setLimitsError(null);
+                              } else if (limitsSavedMsg) {
+                                setLimitsSavedMsg(null);
+                              }
+                            }}
+                            aria-invalid={invalidLimitField === "budget" ? true : undefined}
+                            aria-describedby="xook-limits-feedback"
+                            placeholder="Ej. 5.00"
+                            className={`quick-liquid-input w-full px-2.5 py-1.5 rounded-lg text-[11px] font-mono text-zinc-100 placeholder:text-zinc-500 focus:outline-none select-text ${
+                              invalidLimitField === "budget" ? "border-rose-400/70" : ""
+                            }`}
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label
+                            htmlFor="xook-limit-daily"
+                            className="block text-[10px] text-zinc-400"
+                          >
+                            Tope diario (req)
+                          </label>
+                          <input
+                            ref={dailyCapInputRef}
+                            id="xook-limit-daily"
+                            name="dailyRequestLimit"
+                            type="text"
+                            inputMode="numeric"
+                            value={dailyCapInput}
+                            onChange={(e) => {
+                              setDailyCapInput(e.target.value);
+                              if (invalidLimitField === "daily") {
+                                setInvalidLimitField(null);
+                                setLimitsError(null);
+                              } else if (limitsSavedMsg) {
+                                setLimitsSavedMsg(null);
+                              }
+                            }}
+                            aria-invalid={invalidLimitField === "daily" ? true : undefined}
+                            aria-describedby="xook-limits-feedback"
+                            placeholder={selectedProvider === "gemini" ? "Ej. 1000" : "Opcional"}
+                            className={`quick-liquid-input w-full px-2.5 py-1.5 rounded-lg text-[11px] font-mono text-zinc-100 placeholder:text-zinc-500 focus:outline-none select-text ${
+                              invalidLimitField === "daily" ? "border-rose-400/70" : ""
+                            }`}
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label
+                            htmlFor="xook-limit-rpm"
+                            className="block text-[10px] text-zinc-400"
+                          >
+                            Tope RPM
+                          </label>
+                          <input
+                            ref={rpmCapInputRef}
+                            id="xook-limit-rpm"
+                            name="rpmLimit"
+                            type="text"
+                            inputMode="numeric"
+                            value={rpmCapInput}
+                            onChange={(e) => {
+                              setRpmCapInput(e.target.value);
+                              if (invalidLimitField === "rpm") {
+                                setInvalidLimitField(null);
+                                setLimitsError(null);
+                              } else if (limitsSavedMsg) {
+                                setLimitsSavedMsg(null);
+                              }
+                            }}
+                            aria-invalid={invalidLimitField === "rpm" ? true : undefined}
+                            aria-describedby="xook-limits-feedback"
+                            placeholder={selectedProvider === "groq" ? "Ej. 30" : "Opcional"}
+                            className={`quick-liquid-input w-full px-2.5 py-1.5 rounded-lg text-[11px] font-mono text-zinc-100 placeholder:text-zinc-500 focus:outline-none select-text ${
+                              invalidLimitField === "rpm" ? "border-rose-400/70" : ""
+                            }`}
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label
+                            htmlFor="xook-limit-tier"
+                            className="block text-[10px] text-zinc-400"
+                          >
+                            Plan de cuenta
+                          </label>
+                          <select
+                            id="xook-limit-tier"
+                            name="tierMode"
+                            value={tierModeInput}
+                            onChange={(e) => {
+                              setTierModeInput(
+                                e.target.value === "free" || e.target.value === "paid"
+                                  ? e.target.value
+                                  : "auto"
+                              );
+                              if (limitsSavedMsg) setLimitsSavedMsg(null);
+                            }}
+                            aria-describedby="xook-limits-feedback"
+                            className="quick-liquid-input w-full px-2 py-1.5 rounded-lg text-[11px] text-zinc-100 bg-transparent focus:outline-none"
+                          >
+                            <option value="auto" className="bg-zinc-900 text-zinc-100">
+                              Auto (API)
+                            </option>
+                            <option value="free" className="bg-zinc-900 text-zinc-100">
+                              Gratis (Free)
+                            </option>
+                            <option value="paid" className="bg-zinc-900 text-zinc-100">
+                              Pago (Paid)
+                            </option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div
+                          id="xook-limits-feedback"
+                          aria-live="polite"
+                          className="min-w-0 text-[10.5px]"
+                        >
+                          {limitsError ? (
+                            <span role="alert" className="text-rose-300">
+                              {limitsError}
+                            </span>
+                          ) : limitsSavedMsg ? (
+                            <span className="text-emerald-300">{limitsSavedMsg}</span>
+                          ) : (
+                            <span className="text-zinc-400">
+                              Se combina con los headers reales del proveedor cuando existan.
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="submit"
+                          disabled={savingLimits}
+                          className="quick-liquid-btn-ready px-3 py-1.5 rounded-lg text-[11px] font-semibold cursor-pointer disabled:opacity-45 shrink-0"
+                        >
+                          {savingLimits ? "Guardando..." : "Guardar límites"}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </section>
+              )}
 
               {/* Bloque 3: Respaldo automático por cuota y orden de failover */}
               <section className="space-y-2.5 pt-3 border-t border-white/[0.08]">
