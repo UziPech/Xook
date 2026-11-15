@@ -1,6 +1,8 @@
 cffi==2.0.0
 charset-normalizer==3.5.2
 cryptography==50.0.2
+numpy==2.0.2
+onnxruntime==1.19.2
 pdfminer.six==20251107
 pdfplumber==0.11.8
 pillow==11.3.0

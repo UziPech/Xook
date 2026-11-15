@@ -181,7 +181,7 @@ export const AI_PROVIDERS: Record<AiProviderId, AiProviderSpec> = {
     inputPriceHint: "$0.00 (free)",
     outputPriceHint: "$0.00 (free)",
     cachePriceHint: "Según modelo",
-    rateLimitNote: "50 req/día sin saldo (1,000/día al recargar $5+); 20 RPM.",
+    rateLimitNote: "50 req/día sin saldo (1,000/día con $10+ en créditos); 20 RPM.",
     keyPrefixHint: "sk-or-v1-...",
     docsUrl: "https://openrouter.ai/keys",
     supportsPromptCache: false,
@@ -665,6 +665,7 @@ export interface ProviderRateLimitsSnapshot {
   retryAfterSec?: number | null;
   dailyLimit?: number | null;
   dailyRemaining?: number | null;
+  dailyResetAtMs?: number | null;
 }
 
 export interface ProviderBalanceSnapshot {
@@ -2032,9 +2033,9 @@ export async function testAiConnection(provider?: string): Promise<AiConnectionT
       balance_raw: creditsRemaining,
       balance_currency: creditsRemaining !== null ? "USD" : null,
       can_use_paid_models: canUsePaid,
-      rate_limit_source: "api_balance",
+      rate_limit_source: canUsePaid ? "api_balance" : "openrouter_free_tier",
       rate_limits: headerLimits,
-      daily_free_limit: isFreeTier ? 50 : 1000,
+      daily_free_limit: creditsTotal !== null && creditsTotal >= 10 ? 1000 : 50,
       rpm_free_limit: 20,
       message: "Conexión verificada con OpenRouter.",
     };
@@ -2073,6 +2074,7 @@ function parseDurationResetMs(val: string | null, nowMs: number): number | null 
   }
   const pure = Number(s);
   if (Number.isFinite(pure)) {
+    if (pure >= 1_000_000_000_000) return Math.round(pure);
     return pure > 1_000_000_000 ? Math.round(pure * 1000) : Math.round(nowMs + pure * 1000);
   }
   let sec = 0;
@@ -2115,6 +2117,7 @@ export function normalizeRateLimitsSnapshot(raw: unknown): ProviderRateLimitsSna
     retryAfterSec: pickNum("retryAfterSec", "retry_after_sec"),
     dailyLimit: pickNum("dailyLimit", "daily_limit"),
     dailyRemaining: pickNum("dailyRemaining", "daily_remaining"),
+    dailyResetAtMs: pickNum("dailyResetAtMs", "daily_reset_at_ms"),
   };
   const hasAny =
     snap.rpmLimit !== null ||
@@ -2136,13 +2139,16 @@ export function parseBrowserRateLimitHeaders(
   const pid = normalizeProviderIdClient(providerId);
   const rpmLimit =
     parseNumericHeader(headers.get("anthropic-ratelimit-requests-limit")) ??
-    parseNumericHeader(headers.get("x-ratelimit-limit-requests"));
+    parseNumericHeader(headers.get("x-ratelimit-limit-requests")) ??
+    parseNumericHeader(headers.get("x-ratelimit-limit"));
   const rpmRemaining =
     parseNumericHeader(headers.get("anthropic-ratelimit-requests-remaining")) ??
-    parseNumericHeader(headers.get("x-ratelimit-remaining-requests"));
+    parseNumericHeader(headers.get("x-ratelimit-remaining-requests")) ??
+    parseNumericHeader(headers.get("x-ratelimit-remaining"));
   const rpmResetAtMs =
     parseDurationResetMs(headers.get("anthropic-ratelimit-requests-reset"), nowMs) ??
-    parseDurationResetMs(headers.get("x-ratelimit-reset-requests"), nowMs);
+    parseDurationResetMs(headers.get("x-ratelimit-reset-requests"), nowMs) ??
+    parseDurationResetMs(headers.get("x-ratelimit-reset"), nowMs);
   const tpmLimit =
     parseNumericHeader(headers.get("anthropic-ratelimit-tokens-limit")) ??
     parseNumericHeader(headers.get("x-ratelimit-limit-tokens"));
@@ -2258,6 +2264,251 @@ function readBrowserUsageLedger(): AiUsageLedger {
   }
 }
 
+const BROWSER_OBSERVED_RL_KEY = "xook_observed_rate_limits_v1";
+
+function utcDayStamp(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function cleanExpiredRateLimits(
+  rl: ProviderRateLimitsSnapshot | null | undefined,
+  nowMs = Date.now()
+): ProviderRateLimitsSnapshot | null {
+  if (!rl) return null;
+  const copy: ProviderRateLimitsSnapshot = { ...rl };
+  const updatedMs = copy.updatedAtMs ?? null;
+  const rpmExpired =
+    (copy.rpmResetAtMs !== null && copy.rpmResetAtMs !== undefined && copy.rpmResetAtMs <= nowMs) ||
+    ((copy.rpmResetAtMs === null || copy.rpmResetAtMs === undefined) &&
+      updatedMs !== null &&
+      nowMs - updatedMs > 70_000);
+  if (rpmExpired) {
+    copy.rpmRemaining = null;
+    copy.rpmResetAtMs = null;
+  }
+  const dailyExpired =
+    (copy.dailyResetAtMs !== null && copy.dailyResetAtMs !== undefined && copy.dailyResetAtMs <= nowMs) ||
+    (updatedMs !== null && utcDayStamp(updatedMs) !== utcDayStamp(nowMs));
+  if (dailyExpired) {
+    copy.dailyRemaining = null;
+    copy.dailyResetAtMs = null;
+  }
+  return copy;
+}
+
+function mergeRateLimitSnapshots(
+  prev: ProviderRateLimitsSnapshot | null | undefined,
+  next: ProviderRateLimitsSnapshot | null | undefined,
+  nowMs = Date.now()
+): ProviderRateLimitsSnapshot | null {
+  const a = cleanExpiredRateLimits(prev, nowMs);
+  const b = cleanExpiredRateLimits(next, nowMs);
+  if (!a) return b;
+  if (!b) return a;
+  const out: ProviderRateLimitsSnapshot = { ...a };
+  if (b.dailyLimit !== null && b.dailyLimit !== undefined && out.rpmLimit === b.dailyLimit) {
+    out.rpmLimit = null;
+    out.rpmRemaining = null;
+    out.rpmResetAtMs = null;
+  }
+  const keys: Array<keyof ProviderRateLimitsSnapshot> = [
+    "source",
+    "updatedAtMs",
+    "rpmLimit",
+    "rpmRemaining",
+    "rpmResetAtMs",
+    "tpmLimit",
+    "tpmRemaining",
+    "tpmResetAtMs",
+    "itpmLimit",
+    "itpmRemaining",
+    "otpmLimit",
+    "otpmRemaining",
+    "retryAfterSec",
+    "dailyLimit",
+    "dailyRemaining",
+    "dailyResetAtMs",
+  ];
+  for (const key of keys) {
+    const val = b[key];
+    if (val !== null && val !== undefined) {
+      (out as Record<string, unknown>)[key] = val;
+    }
+  }
+  return out;
+}
+
+function readObservedRateLimits(nowMs = Date.now()): Record<string, ProviderRateLimitsSnapshot> {
+  try {
+    const raw = localStorage.getItem(BROWSER_OBSERVED_RL_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, ProviderRateLimitsSnapshot> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      const cleaned = cleanExpiredRateLimits(normalizeRateLimitsSnapshot(v), nowMs);
+      if (cleaned) out[normalizeProviderIdClient(k)] = cleaned;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function recordObservedRateLimit(
+  providerId: string,
+  rawRl: unknown,
+  emitUpdate = true
+): ProviderRateLimitsSnapshot | null {
+  const pid = normalizeProviderIdClient(providerId);
+  const nowMs = Date.now();
+  const incoming = normalizeRateLimitsSnapshot(rawRl);
+  if (!incoming) return null;
+  const withTime: ProviderRateLimitsSnapshot = {
+    ...incoming,
+    updatedAtMs: incoming.updatedAtMs ?? nowMs,
+  };
+  const all = readObservedRateLimits(nowMs);
+  const merged = mergeRateLimitSnapshots(all[pid], withTime, nowMs);
+  if (!merged) return null;
+  all[pid] = merged;
+  try {
+    localStorage.setItem(BROWSER_OBSERVED_RL_KEY, JSON.stringify(all));
+    if (emitUpdate) {
+      window.dispatchEvent(
+        new CustomEvent<AiUsageLedger>(BROWSER_USAGE_EVENT, {
+          detail: readBrowserUsageLedger(),
+        })
+      );
+    }
+  } catch {
+    // Ignorar error de almacenamiento privado
+  }
+  return merged;
+}
+
+function resolveEffectiveRateLimits(
+  pid: string,
+  ledgerOrLiveRl: ProviderRateLimitsSnapshot | null | undefined,
+  nowMs = Date.now()
+): ProviderRateLimitsSnapshot | null {
+  const cleanPrimary = cleanExpiredRateLimits(ledgerOrLiveRl, nowMs);
+  const obs = readObservedRateLimits(nowMs)[normalizeProviderIdClient(pid)] ?? null;
+  if (!cleanPrimary) return obs;
+  if (!obs) return cleanPrimary;
+  const obsTs = obs.updatedAtMs ?? 0;
+  const priTs = cleanPrimary.updatedAtMs ?? 0;
+  return obsTs >= priTs
+    ? mergeRateLimitSnapshots(cleanPrimary, obs, nowMs)
+    : mergeRateLimitSnapshots(obs, cleanPrimary, nowMs);
+}
+
+function parseBrowserOpenRouterErrorRateLimits(
+  errPayloadOrText: unknown,
+  headers?: Headers | null,
+  nowMs = Date.now()
+): ProviderRateLimitsSnapshot | null {
+  let obj: Record<string, unknown> | null = null;
+  let rawText = "";
+  if (errPayloadOrText && typeof errPayloadOrText === "object") {
+    obj = errPayloadOrText as Record<string, unknown>;
+    rawText = JSON.stringify(obj);
+  } else if (typeof errPayloadOrText === "string") {
+    rawText = errPayloadOrText;
+    const idx = rawText.indexOf("{");
+    if (idx >= 0) {
+      try {
+        const parsed = JSON.parse(rawText.slice(idx)) as unknown;
+        if (parsed && typeof parsed === "object") obj = parsed as Record<string, unknown>;
+      } catch {
+        obj = null;
+      }
+    }
+  }
+  const errObj =
+    obj?.error && typeof obj.error === "object"
+      ? (obj.error as Record<string, unknown>)
+      : obj;
+  const meta =
+    errObj?.metadata && typeof errObj.metadata === "object"
+      ? (errObj.metadata as Record<string, unknown>)
+      : null;
+  const rawMetaHdrs =
+    meta?.headers && typeof meta.headers === "object"
+      ? (meta.headers as Record<string, unknown>)
+      : null;
+  let metaHeaders: Headers | null = null;
+  if (rawMetaHdrs) {
+    metaHeaders = new Headers();
+    for (const [k, v] of Object.entries(rawMetaHdrs)) {
+      if (v !== null && v !== undefined) metaHeaders.set(k, String(v));
+    }
+  }
+
+  const hdrRl = headers ? parseBrowserRateLimitHeaders(headers, "openrouter") : null;
+  const metaRl = metaHeaders ? parseBrowserRateLimitHeaders(metaHeaders, "openrouter") : null;
+  const merged = mergeRateLimitSnapshots(hdrRl, metaRl, nowMs);
+
+  const detailMsg =
+    typeof errObj?.message === "string"
+      ? errObj.message
+      : typeof errObj?.type === "string"
+        ? errObj.type
+        : rawText;
+  const low = `${detailMsg} ${rawText}`.toLowerCase();
+  const isDaily =
+    low.includes("free-models-per-day") ||
+    low.includes("per-day") ||
+    low.includes("per_day") ||
+    low.includes("per day") ||
+    low.includes("daily limit") ||
+    low.includes("requests per day");
+  const isRpm =
+    !isDaily &&
+    (low.includes("free-models-per-min") ||
+      low.includes("per-min") ||
+      low.includes("per_min") ||
+      low.includes("per-minute") ||
+      low.includes("requests per minute"));
+
+  const out: ProviderRateLimitsSnapshot = merged ? { ...merged } : {};
+  if (isDaily) {
+    if (out.dailyLimit == null && out.rpmLimit != null) {
+      out.dailyLimit = out.rpmLimit;
+      out.rpmLimit = null;
+    }
+    if (out.dailyRemaining == null && out.rpmRemaining != null) {
+      out.dailyRemaining = out.rpmRemaining;
+      out.rpmRemaining = null;
+    }
+    if (out.dailyResetAtMs == null && out.rpmResetAtMs != null) {
+      out.dailyResetAtMs = out.rpmResetAtMs;
+      out.rpmResetAtMs = null;
+    }
+    if (out.dailyRemaining == null && low.includes("free-models-per-day")) {
+      out.dailyRemaining = 0;
+    }
+    if (out.dailyLimit == null && low.includes("add 10 credits to unlock 1000")) {
+      out.dailyLimit = 50;
+    }
+  } else if (isRpm) {
+    if (out.rpmRemaining == null && low.includes("free-models-per-min")) out.rpmRemaining = 0;
+    if (out.rpmLimit == null && low.includes("free-models-per-min")) out.rpmLimit = 20;
+  }
+
+  const hasSignal =
+    out.rpmLimit != null ||
+    out.rpmRemaining != null ||
+    out.rpmResetAtMs != null ||
+    out.dailyLimit != null ||
+    out.dailyRemaining != null ||
+    out.dailyResetAtMs != null ||
+    out.retryAfterSec != null;
+  if (!hasSignal) return null;
+  out.source = metaRl ? "api_429_metadata" : "api_429_headers";
+  out.updatedAtMs = nowMs;
+  return out;
+}
+
 function writeBrowserUsageLedger(ledger: AiUsageLedger): void {
   try {
     localStorage.setItem(BROWSER_USAGE_LEDGER_KEY, JSON.stringify(ledger));
@@ -2305,7 +2556,10 @@ function recordBrowserTestConnectionUsage(result: AiConnectionTestResult): void 
     nowMs
   );
   const normRl = normalizeRateLimitsSnapshot(result.rate_limits);
-  if (normRl) entry.rateLimits = normRl;
+  if (normRl) {
+    entry.rateLimits = normRl;
+    recordObservedRateLimit(pid, normRl, false);
+  }
   entry.balance = {
     currency: result.balance_currency ?? result.currency ?? (result.credits_remaining !== null ? "USD" : null),
     balanceRaw: result.balance_raw ?? result.balance_usd ?? result.credits_remaining ?? null,
@@ -2533,6 +2787,31 @@ export interface ProviderUsageSummary {
   dailyRemaining: number | null;
 }
 
+/**
+ * Devuelve el relleno CSS de la barra de cuota/saldo según su estado.
+ * En estado saludable usa el degradado estelar de Xox (blanco hielo #E0F2FE a #7DD3FC).
+ */
+export function getUsageMeterFillColor({
+  meterMode,
+  pct,
+  hasError = false,
+}: {
+  meterMode: ProviderUsageSummary["meterMode"];
+  pct: number;
+  hasError?: boolean;
+}): string {
+  if (hasError) return "rgba(244, 63, 94, 0.85)";
+  if (meterMode === "used") {
+    return pct >= 85 ? "rgba(251, 191, 36, 0.9)" : "rgba(244, 244, 245, 0.85)";
+  }
+  if (meterMode === "remaining") {
+    return pct <= 15
+      ? "rgba(244, 63, 94, 0.85)"
+      : "linear-gradient(90deg, rgba(224, 242, 254, 0.92), rgba(125, 211, 252, 0.9))";
+  }
+  return "rgba(212, 212, 216, 0.45)";
+}
+
 function formatMoneyAmount(amount: number, currency?: string | null): string {
   const cur = (currency || "USD").toUpperCase();
   const abs = Math.abs(amount);
@@ -2636,39 +2915,47 @@ export function computeProviderUsageSummary(params: {
         ? true
         : liveTest?.is_free_tier ?? bal?.isFreeTier ?? spec.supportsFreeTier;
 
-  const rpmResetText = formatResetEta(rl?.rpmResetAtMs);
-  const tpmLimit = rl?.tpmLimit ?? null;
-  const tpmRemaining = rl?.tpmRemaining ?? null;
+  const nowMs = Date.now();
+  const activeRl = resolveEffectiveRateLimits(pid, rl, nowMs);
+  const rpmResetText = formatResetEta(activeRl?.rpmResetAtMs);
+  const tpmLimit = activeRl?.tpmLimit ?? null;
+  const tpmRemaining = activeRl?.tpmRemaining ?? null;
+
+  const isOpenRouterFreeActive =
+    pid === "openrouter" &&
+    (tierOverride === "free" ||
+      (tierOverride !== "paid" &&
+        (balanceAmount === 0 || (!canUsePaid && (isFreeTier || balanceAmount === null)))));
 
   const effectiveRpmLimit =
-    rl?.rpmLimit ??
+    activeRl?.rpmLimit ??
     userRpmCap ??
     (pid === "groq" && isFreeTier
       ? 30
       : pid === "gemini" && isFreeTier
         ? 15
-        : pid === "openrouter" && isFreeTier
+        : pid === "openrouter" && (isFreeTier || isOpenRouterFreeActive)
           ? 20
           : null);
   const effectiveRpmRemaining =
-    rl?.rpmRemaining !== null && rl?.rpmRemaining !== undefined
-      ? rl.rpmRemaining
+    activeRl?.rpmRemaining !== null && activeRl?.rpmRemaining !== undefined
+      ? activeRl.rpmRemaining
       : effectiveRpmLimit !== null
         ? Math.max(0, effectiveRpmLimit - currentRpm)
         : null;
 
   const defaultDailyRef =
-    pid === "openrouter" && isFreeTier
+    pid === "openrouter" && (isFreeTier || isOpenRouterFreeActive)
       ? creditsTotal !== null && creditsTotal >= 10
         ? 1000
         : 50
       : pid === "gemini" && isFreeTier
         ? 1000
         : null;
-  const dailyLimit = rl?.dailyLimit ?? userDailyCap ?? defaultDailyRef;
+  const dailyLimit = activeRl?.dailyLimit ?? userDailyCap ?? defaultDailyRef;
   const dailyRemaining =
-    rl?.dailyRemaining !== null && rl?.dailyRemaining !== undefined
-      ? rl.dailyRemaining
+    activeRl?.dailyRemaining !== null && activeRl?.dailyRemaining !== undefined
+      ? activeRl.dailyRemaining
       : dailyLimit !== null
         ? Math.max(0, dailyLimit - todayRequests)
         : null;
@@ -2714,17 +3001,25 @@ export function computeProviderUsageSummary(params: {
 
   // 1. OpenRouter
   if (pid === "openrouter") {
-    if (keyLimit !== null && keyLimit > 0 && keyLimitRemaining !== null) {
+    const hasPositiveBalance = balanceAmount !== null && balanceAmount > 0;
+    const hasValidKeyLimit =
+      keyLimit !== null &&
+      keyLimit > 0 &&
+      keyLimitRemaining !== null &&
+      tierOverride !== "free" &&
+      (canUsePaid || balanceAmount === null || hasPositiveBalance);
+
+    if (hasValidKeyLimit) {
       const pct = Math.max(0, Math.min(100, Math.round((keyLimitRemaining / keyLimit) * 100)));
       return {
         provider: pid,
         providerName: spec.shortName,
         sourceKind: "api_balance",
         sourceBadge: "API OpenRouter",
-        tierLabel: isFreeTier ? "OpenRouter Free" : "OpenRouter Pro",
+        tierLabel: isFreeTier && !hasPositiveBalance ? "OpenRouter Free" : "OpenRouter Pro",
         headline: `${formatUsdShort(keyLimitRemaining)} / ${formatUsdShort(keyLimit)} disp.`,
         shortBadge: formatUsdShort(keyLimitRemaining),
-        subline: `Uso hoy: ${todayRequests} req · Mes est.: ${formatUsdShort(monthCostUsd)}`,
+        subline: `Hoy: ${todayRequests} req · ${formatTokenCount(todayTokens)} tok · Mes ${formatUsdShort(monthCostUsd)}`,
         pct,
         meterMode: "remaining",
         hasMeterBar: true,
@@ -2753,7 +3048,13 @@ export function computeProviderUsageSummary(params: {
         dailyRemaining,
       };
     }
-    if (balanceAmount !== null) {
+    const hasPaidBudgetOverride =
+      monthlyBudgetUsd !== null &&
+      monthlyBudgetUsd > 0 &&
+      tierOverride !== "free" &&
+      (canUsePaid || hasPositiveBalance || tierOverride === "paid");
+
+    if (balanceAmount !== null && (hasPositiveBalance || tierOverride === "paid" || hasPaidBudgetOverride)) {
       const hasBudget = monthlyBudgetUsd !== null && monthlyBudgetUsd > 0;
       const pct = hasBudget
         ? Math.max(0, Math.min(100, Math.round((monthCostUsd / monthlyBudgetUsd!) * 100)))
@@ -2801,18 +3102,55 @@ export function computeProviderUsageSummary(params: {
         dailyRemaining,
       };
     }
-    const cap = dailyLimit ?? 50;
-    const rem = Math.max(0, cap - todayRequests);
-    const pct = Math.max(0, Math.min(100, Math.round((rem / cap) * 100)));
+    const cap = dailyLimit ?? (creditsTotal !== null && creditsTotal >= 10 ? 1000 : 50);
+    const isServerRpmThrottled = Boolean(
+      activeRl?.rpmLimit &&
+        activeRl.rpmLimit > 0 &&
+        activeRl.rpmRemaining === 0 &&
+        (!activeRl.rpmResetAtMs || activeRl.rpmResetAtMs > nowMs)
+    );
+    const rem = dailyRemaining ?? Math.max(0, cap - todayRequests);
+    const pct = isServerRpmThrottled
+      ? 0
+      : Math.max(0, Math.min(100, Math.round((rem / cap) * 100)));
+    const utcMidnightMs = (Math.floor(nowMs / 86_400_000) + 1) * 86_400_000;
+    const dailyResetText = formatResetEta(
+      activeRl?.dailyResetAtMs ?? (rem === 0 ? utcMidnightMs : null)
+    );
+    const confirmedByKey = Boolean(liveTest?.ok || bal?.updatedAtMs);
+    const hasServerDaily =
+      activeRl?.dailyLimit !== null &&
+      activeRl?.dailyLimit !== undefined &&
+      activeRl?.dailyRemaining !== null &&
+      activeRl?.dailyRemaining !== undefined;
+    const rpmCap = effectiveRpmLimit ?? 20;
+    const rpmDisp = effectiveRpmRemaining ?? Math.max(0, rpmCap - currentRpm);
+    const freeSourceKind: ProviderUsageSummary["sourceKind"] = userDailyCap
+      ? "user_daily_cap"
+      : hasServerDaily
+        ? "api_headers"
+        : "reference_tier";
+    const freeSourceBadge = userDailyCap
+      ? "Límite local"
+      : hasServerDaily
+        ? "Límite OpenRouter"
+        : confirmedByKey
+          ? "Tier OpenRouter"
+          : "Tier gratis ref.";
+    const freeHeadline = isServerRpmThrottled
+      ? `Límite RPM: 0 / ${activeRl!.rpmLimit} RPM${rpmResetText ? ` · ${rpmResetText}` : ""}`
+      : rem === 0 && dailyResetText
+        ? `0 / ${cap} req · ${dailyResetText}`
+        : `Gratis hoy: ${rem} / ${cap} req`;
     return {
       provider: pid,
       providerName: spec.shortName,
-      sourceKind: userDailyCap ? "user_daily_cap" : "reference_tier",
-      sourceBadge: userDailyCap ? "Límite local" : "Tier gratis ref.",
-      tierLabel: `OpenRouter ${cap === 1000 ? "Free 1K" : "Free"}`,
-      headline: `Gratis hoy: ${rem} / ${cap} restantes`,
+      sourceKind: freeSourceKind,
+      sourceBadge: freeSourceBadge,
+      tierLabel: `OpenRouter ${cap >= 1000 ? "Free 1K" : "Free"}`,
+      headline: freeHeadline,
       shortBadge: `${rem}/${cap} hoy`,
-      subline: `${todayRequests} envíos hoy · máx ${effectiveRpmLimit ?? 20} RPM`,
+      subline: `Hoy: ${todayRequests}/${cap} req · ${formatTokenCount(todayTokens)} tok · ${rpmDisp}/${rpmCap} RPM`,
       pct,
       meterMode: "remaining",
       hasMeterBar: true,
@@ -4167,6 +4505,12 @@ export async function runXoxAiChatStream(
       const evt = payload.event;
       if (evt.type === "phase" && evt.xox_state) {
         callbacks?.onPhase?.(evt.xox_state, evt.label);
+      } else if (evt.type === "rate_limit_update" && evt.rate_limits) {
+        const evtProvider =
+          typeof evt.provider === "string" && evt.provider.trim()
+            ? evt.provider
+            : req.providerOverride ?? "openrouter";
+        recordObservedRateLimit(evtProvider, evt.rate_limits, true);
       } else if (evt.type === "provider_failover") {
         callbacks?.onProviderFailover?.({
           fromProvider: String(evt.from_provider ?? ""),
@@ -4538,11 +4882,24 @@ export async function runXoxAiChatStream(
         break;
       }
       let errText = "";
+      let errJson: {
+        error?: { message?: string; metadata?: { headers?: Record<string, string> } };
+      } | null = null;
       try {
-        const j = (await attemptResp.json()) as { error?: { message?: string } };
-        errText = j.error?.message ?? "";
+        errJson = (await attemptResp.json()) as {
+          error?: { message?: string; metadata?: { headers?: Record<string, string> } };
+        };
+        errText = errJson.error?.message ?? "";
       } catch {
         // Ignorar
+      }
+      const errRl =
+        activeBrowserPid === "openrouter"
+          ? parseBrowserOpenRouterErrorRateLimits(errJson ?? errText, attemptResp.headers)
+          : parsedRl;
+      if (errRl) {
+        browserRateLimits = errRl;
+        recordObservedRateLimit(activeBrowserPid, errRl, true);
       }
       if (
         includeTools &&
@@ -4934,10 +5291,17 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
       total_tokens?: number;
       cost?: number;
     };
-    error?: { message?: string };
+    error?: { message?: string; metadata?: { headers?: Record<string, string> } };
   };
   if (!resp.ok) {
-    throw new Error(mapFriendlyHttpError(resp.status, data.error?.message));
+    const errRl =
+      activePid === "openrouter"
+        ? parseBrowserOpenRouterErrorRateLimits(data, resp.headers)
+        : browserRateLimits;
+    if (errRl) recordObservedRateLimit(activePid, errRl, true);
+    throw new Error(
+      mapFriendlyHttpError(resp.status, data.error?.message, AI_PROVIDERS[activePid]?.name)
+    );
   }
 
   const latencyMs = Math.round(performance.now() - started);

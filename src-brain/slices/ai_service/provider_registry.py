@@ -980,6 +980,131 @@ def parse_gemini_quota_error(err_body_or_detail: str) -> Optional[Dict[str, Any]
     return out
 
 
+def parse_openrouter_rate_limit_error(
+    err_body_or_obj: Any,
+    headers_map: Any = None,
+    *,
+    now_ms: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Extrae límites reales de OpenRouter desde headers HTTP y `error.metadata.headers` en respuestas 429/error,
+    distinguiendo cuotas diarias (`free-models-per-day`) de límites por minuto (`free-models-per-min`).
+    """
+    cur_now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+    parsed_json: Optional[Dict[str, Any]] = None
+    raw_text = ""
+    if isinstance(err_body_or_obj, dict):
+        parsed_json = err_body_or_obj
+        raw_text = json.dumps(err_body_or_obj, ensure_ascii=False)
+    elif err_body_or_obj is not None:
+        raw_text = str(err_body_or_obj).strip()
+        json_start = raw_text.find("{")
+        if json_start >= 0:
+            try:
+                cand = json.loads(raw_text[json_start:])
+                if isinstance(cand, dict):
+                    parsed_json = cand
+            except Exception:
+                parsed_json = None
+
+    err_obj: Dict[str, Any] = {}
+    meta_headers: Optional[Dict[str, Any]] = None
+    if parsed_json:
+        err_obj = (
+            parsed_json.get("error")
+            if isinstance(parsed_json.get("error"), dict)
+            else parsed_json
+        )
+        meta = err_obj.get("metadata") if isinstance(err_obj.get("metadata"), dict) else None
+        if isinstance(meta, dict) and isinstance(meta.get("headers"), dict):
+            meta_headers = meta["headers"]
+
+    detail_msg = str(err_obj.get("message") or err_obj.get("type") or raw_text or "")
+    low = f"{detail_msg} {raw_text}".lower()
+
+    hdr_rl = (
+        parse_rate_limit_headers("openrouter", headers_map, now_ms=cur_now_ms)
+        if headers_map is not None
+        else None
+    )
+    meta_rl = (
+        parse_rate_limit_headers("openrouter", meta_headers, now_ms=cur_now_ms)
+        if meta_headers is not None
+        else None
+    )
+
+    merged: Dict[str, Any] = {}
+    if hdr_rl:
+        merged.update({k: v for k, v in hdr_rl.items() if v is not None})
+    if meta_rl:
+        merged.update({k: v for k, v in meta_rl.items() if v is not None})
+
+    is_daily = any(
+        tok in low
+        for tok in (
+            "free-models-per-day",
+            "per-day",
+            "per_day",
+            "per day",
+            "daily limit",
+            "requests per day",
+            "rpd",
+        )
+    )
+    is_rpm = (not is_daily) and any(
+        tok in low
+        for tok in (
+            "free-models-per-min",
+            "per-min",
+            "per_min",
+            "per min",
+            "per-minute",
+            "per minute",
+            "requests per minute",
+            "rpm",
+        )
+    )
+
+    if is_daily:
+        if merged.get("daily_limit") is None and merged.get("rpm_limit") is not None:
+            merged["daily_limit"] = merged.pop("rpm_limit")
+        if merged.get("daily_remaining") is None and "rpm_remaining" in merged:
+            merged["daily_remaining"] = merged.pop("rpm_remaining")
+        if merged.get("daily_reset_at_ms") is None and "rpm_reset_at_ms" in merged:
+            merged["daily_reset_at_ms"] = merged.pop("rpm_reset_at_ms")
+        if merged.get("daily_remaining") is None and "free-models-per-day" in low:
+            merged["daily_remaining"] = 0
+        if merged.get("daily_limit") is None and "add 10 credits to unlock 1000" in low:
+            merged["daily_limit"] = 50
+    elif is_rpm:
+        if merged.get("rpm_remaining") is None and "free-models-per-min" in low:
+            merged["rpm_remaining"] = 0
+        if merged.get("rpm_limit") is None and "free-models-per-min" in low:
+            merged["rpm_limit"] = 20
+
+    has_signal = any(
+        merged.get(k) is not None
+        for k in (
+            "rpm_limit",
+            "rpm_remaining",
+            "rpm_reset_at_ms",
+            "tpm_limit",
+            "tpm_remaining",
+            "daily_limit",
+            "daily_remaining",
+            "daily_reset_at_ms",
+            "retry_after_sec",
+        )
+    )
+    if not has_signal:
+        return None
+
+    merged["provider"] = "openrouter"
+    merged["source"] = "api_429_metadata" if meta_rl else "api_429_headers"
+    merged["updated_at_ms"] = cur_now_ms
+    return merged
+
+
 def _lookup_model_tariff(provider: str, model_id: str) -> Optional[Dict[str, Any]]:
     mid = str(model_id or "").strip()
     if not mid:
@@ -1126,7 +1251,9 @@ def classify_provider_error(
             "tokens per day",
             "requests per day",
             "per_day",
+            "per-day",
             "perday",
+            "free-models-per-day",
             "free limit",
         )
     ):

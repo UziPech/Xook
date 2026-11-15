@@ -18,8 +18,10 @@ import {
 } from "lucide-react";
 import { XoxDragMotion, XoxStar, XoxState } from "./XoxStar";
 import { QuickLiquidLayer } from "./QuickLiquidLayer";
+import { JellyPillTrack } from "./JellyPillTrack";
 import { LiquidGlassBackdrop } from "./LiquidGlassBackdrop";
 import { MarkdownContent, renderInlineMarkdown } from "../utils/markdownRenderer";
+import { getQuickBarPlaceholder } from "../utils/xoxGreetings";
 import { useAnimatedPresence } from "../hooks/useAnimatedPresence";
 import {
   CanvasArtifact,
@@ -53,6 +55,7 @@ import {
   getAvailableQuickModels,
   getLocalDailyRequestCount,
   getProviderSpec,
+  getUsageMeterFillColor,
   incrementLocalDailyRequestCount,
   loadWorkspaceContext,
   normalizeProviderIdClient,
@@ -162,6 +165,15 @@ export const QuickBar: React.FC = () => {
     setTableScrolled(false);
   }, [summonSeq, reply === null, quickCanvas === null]);
   const [localUser, setLocalUser] = useState<LocalUserProfile | null>(null);
+  const quickPlaceholder = useMemo(
+    () =>
+      getQuickBarPlaceholder({
+        isStreaming,
+        userName: localUser?.name,
+        seed: summonSeq,
+      }),
+    [isStreaming, localUser?.name, summonSeq]
+  );
   const [modelId, setModelId] = useState<string>(OPENROUTER_PRESET_MODELS[0].id);
   const [aiConfig, setAiConfig] = useState<AiConfigStatus>({
     provider: "openrouter",
@@ -1536,7 +1548,7 @@ export const QuickBar: React.FC = () => {
                     }
                   }}
                   disabled={isStreaming}
-                  placeholder={isStreaming ? "Procesando..." : "Escribe a Xox..."}
+                  placeholder={quickPlaceholder}
                   className="input-bubble w-full resize-none overflow-y-auto bg-transparent text-[15px] leading-relaxed text-white placeholder:text-zinc-200/65 [text-shadow:0_1px_5px_rgba(4,8,18,0.68)] focus:outline-none py-1 cursor-text select-text disabled:opacity-50"
                 />
               </div>
@@ -1703,39 +1715,50 @@ export const QuickBar: React.FC = () => {
                           />
                         </button>
 
-                        <div className="px-1 pt-0.5 flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void setScreenReaderConfig({ captureMode: "display" }).then((st) => {
-                                if (st) setScreenStatus(st);
-                              });
-                            }}
-                            className={`flex-1 inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded-xl text-[10.5px] font-medium text-white cursor-pointer ${
-                              (screenStatus?.captureMode || "display") === "display"
-                                ? "quick-liquid-chip-active"
-                                : "quick-liquid-chip"
-                            }`}
+                        <div className="px-1 pt-0.5">
+                          <JellyPillTrack
+                            activeKey={screenStatus?.captureMode === "window" ? "window" : "display"}
+                            role="group"
+                            aria-label="Modo de captura de pantalla"
+                            pillRadius="9999px"
+                            variant="quick"
+                            className="grid grid-cols-2 gap-1 p-0.5 rounded-full"
                           >
-                            <Monitor className="w-3 h-3" />
-                            <span>Pantalla</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void setScreenReaderConfig({ captureMode: "window" }).then((st) => {
-                                if (st) setScreenStatus(st);
-                              });
-                            }}
-                            className={`flex-1 inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded-xl text-[10.5px] font-medium text-white cursor-pointer ${
-                              screenStatus?.captureMode === "window"
-                                ? "quick-liquid-chip-active"
-                                : "quick-liquid-chip"
-                            }`}
-                          >
-                            <AppWindow className="w-3 h-3" />
-                            <span>Ventana</span>
-                          </button>
+                            <button
+                              type="button"
+                              aria-pressed={(screenStatus?.captureMode || "display") === "display"}
+                              onClick={() => {
+                                void setScreenReaderConfig({ captureMode: "display" }).then((st) => {
+                                  if (st) setScreenStatus(st);
+                                });
+                              }}
+                              className={`xook-jelly-tab inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded-full text-[10.5px] font-medium cursor-pointer ${
+                                (screenStatus?.captureMode || "display") === "display"
+                                  ? "text-white"
+                                  : "text-zinc-300/80 hover:text-white"
+                              }`}
+                            >
+                              <Monitor className="w-3 h-3" />
+                              <span>Pantalla</span>
+                            </button>
+                            <button
+                              type="button"
+                              aria-pressed={screenStatus?.captureMode === "window"}
+                              onClick={() => {
+                                void setScreenReaderConfig({ captureMode: "window" }).then((st) => {
+                                  if (st) setScreenStatus(st);
+                                });
+                              }}
+                              className={`xook-jelly-tab inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded-full text-[10.5px] font-medium cursor-pointer ${
+                                screenStatus?.captureMode === "window"
+                                  ? "text-white"
+                                  : "text-zinc-300/80 hover:text-white"
+                              }`}
+                            >
+                              <AppWindow className="w-3 h-3" />
+                              <span>Ventana</span>
+                            </button>
+                          </JellyPillTrack>
                         </div>
 
                         {screenStatus?.activeAppName && (
@@ -1903,14 +1926,10 @@ export const QuickBar: React.FC = () => {
                               max={100}
                               aria-label={`${quickUsageSummary.tierLabel}: ${quickUsageSummary.headline}`}
                               style={{
-                                ["--xook-progress-fill" as string]:
-                                  quickUsageSummary.meterMode === "used"
-                                    ? quickUsageSummary.pct >= 85
-                                      ? "rgba(251, 191, 36, 0.9)"
-                                      : "rgba(244, 244, 245, 0.8)"
-                                    : quickUsageSummary.pct <= 15
-                                      ? "rgba(244, 63, 94, 0.85)"
-                                      : "rgba(110, 231, 183, 0.85)",
+                                ["--xook-progress-fill" as string]: getUsageMeterFillColor({
+                                  meterMode: quickUsageSummary.meterMode,
+                                  pct: quickUsageSummary.pct,
+                                }),
                               }}
                             />
                           )}

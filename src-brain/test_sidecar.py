@@ -3195,6 +3195,181 @@ def test_multi_language_code_formatting_and_fence_protection():
     print("✅ Formato multi-lenguaje, fences streaming, _StreamTagRouter y PDF parser verificados.")
 
 
+def test_openrouter_rate_limits_and_free_tier_key():
+    """Verifica OpenRouter /key + /credits (50 vs 1,000 req/día, 20 RPM) y metadata.headers 429."""
+    import io
+    import tempfile
+    import urllib.error
+    import urllib.request
+    from unittest.mock import patch
+    from slices.ai_service import openrouter_client
+    from slices.ai_service.model_router import clear_router_runtime_state
+    from slices.ai_service.provider_registry import (
+        classify_provider_error,
+        parse_openrouter_rate_limit_error,
+    )
+
+    # 1. 429 JSON error.metadata.headers para free-models-per-day (50/día)
+    daily_429 = {
+        "error": {
+            "message": "Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day.",
+            "code": 429,
+            "metadata": {
+                "headers": {
+                    "X-RateLimit-Limit": "50",
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": "1775520000000",
+                }
+            },
+        }
+    }
+    parsed_daily = parse_openrouter_rate_limit_error(
+        daily_429,
+        headers_map={
+            "X-RateLimit-Limit": "50",
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": "1775520000000",
+        },
+        now_ms=1_775_500_000_000,
+    )
+    assert parsed_daily is not None
+    assert parsed_daily.get("daily_limit") == 50, parsed_daily
+    assert parsed_daily.get("daily_remaining") == 0, parsed_daily
+    assert parsed_daily.get("daily_reset_at_ms") == 1775520000000, parsed_daily
+    assert "rpm_limit" not in parsed_daily, f"No debía contaminar rpm_limit: {parsed_daily}"
+    cls_daily = classify_provider_error(daily_429["error"]["message"], "openrouter")
+    assert cls_daily["kind"] == "quota_exhausted", cls_daily
+
+    # 2. 429 JSON error.metadata.headers para free-models-per-min (20 RPM)
+    rpm_429 = {
+        "error": {
+            "message": "Rate limit exceeded: free-models-per-min.",
+            "code": 429,
+            "metadata": {
+                "headers": {
+                    "X-RateLimit-Limit": "20",
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": "1775504620000",
+                }
+            },
+        }
+    }
+    parsed_rpm = parse_openrouter_rate_limit_error(rpm_429, now_ms=1_775_504_600_000)
+    assert parsed_rpm is not None
+    assert parsed_rpm.get("rpm_limit") == 20, parsed_rpm
+    assert parsed_rpm.get("rpm_remaining") == 0, parsed_rpm
+    assert parsed_rpm.get("rpm_reset_at_ms") == 1775504620000, parsed_rpm
+    cls_rpm = classify_provider_error(rpm_429["error"]["message"], "openrouter", retry_after_sec=20)
+    assert cls_rpm["kind"] == "rate_limited", cls_rpm
+
+    # 3. _store_http_rate_limits + _extract_http_error_detail en HTTP 429 diario limpia rpm_limit falso
+    openrouter_client._clear_http_rate_limits("openrouter")
+    fake_err = urllib.error.HTTPError(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        code=429,
+        msg="Too Many Requests",
+        hdrs={
+            "X-RateLimit-Limit": "50",
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": "1775520000000",
+        },
+        fp=io.BytesIO(json.dumps(daily_429).encode("utf-8")),
+    )
+    openrouter_client._store_http_rate_limits("openrouter", fake_err.headers)
+    detail = openrouter_client._extract_http_error_detail(fake_err, provider="openrouter")
+    assert "free-models-per-day" in detail
+    stored = openrouter_client._consume_http_rate_limits("openrouter")
+    assert stored is not None
+    assert stored.get("daily_limit") == 50 and stored.get("daily_remaining") == 0, stored
+    assert "rpm_limit" not in stored, f"Quedó rpm_limit contaminado en TLS: {stored}"
+
+    # 4. test_openrouter_key: cuenta gratis ($0), cuenta con >=$10 comprados gastados ($0), y key cap USD
+    def _fake_or_free(url, method="GET", api_key=None, payload=None, timeout=15):
+        if url.endswith("/key"):
+            return {"data": {"label": "free-key", "is_free_tier": True, "limit": None, "limit_remaining": None, "usage": 0}}
+        if url.endswith("/credits"):
+            return {"data": {"total_credits": 0.0, "total_usage": 0.0}}
+        raise AssertionError(url)
+
+    with patch.object(openrouter_client, "_http_json", side_effect=_fake_or_free):
+        res_free = openrouter_client.test_openrouter_key("sk-or-v1-testfree1234567890")
+        assert res_free["ok"] is True
+        assert res_free["can_use_paid_models"] is False
+        assert res_free["balance_usd"] == 0.0
+        assert res_free["daily_free_limit"] == 50
+        assert res_free["rpm_free_limit"] == 20
+        assert res_free["rate_limit_source"] == "openrouter_free_tier", res_free
+
+    def _fake_or_1k_spent(url, method="GET", api_key=None, payload=None, timeout=15):
+        if url.endswith("/key"):
+            return {"data": {"label": "spent-10", "is_free_tier": False, "limit": None, "limit_remaining": None, "usage": 10.0}}
+        if url.endswith("/credits"):
+            return {"data": {"total_credits": 10.0, "total_usage": 10.0}}
+        raise AssertionError(url)
+
+    with patch.object(openrouter_client, "_http_json", side_effect=_fake_or_1k_spent):
+        res_1k = openrouter_client.test_openrouter_key("sk-or-v1-testspent1234567890")
+        assert res_1k["ok"] is True
+        assert res_1k["can_use_paid_models"] is False
+        assert res_1k["daily_free_limit"] == 1000, res_1k
+        assert res_1k["rate_limit_source"] == "openrouter_free_tier", res_1k
+
+    def _fake_or_capped(url, method="GET", api_key=None, payload=None, timeout=15):
+        if url.endswith("/key"):
+            return {"data": {"label": "cap-key", "is_free_tier": False, "limit": 5.0, "limit_remaining": 3.25, "usage": 1.75}}
+        if url.endswith("/credits"):
+            return {"data": {"total_credits": 10.0, "total_usage": 2.0}}
+        raise AssertionError(url)
+
+    with patch.object(openrouter_client, "_http_json", side_effect=_fake_or_capped):
+        res_cap = openrouter_client.test_openrouter_key("sk-or-v1-testcapped1234567890")
+        assert res_cap["ok"] is True
+        assert res_cap["can_use_paid_models"] is True
+        assert res_cap["limit"] == 5.0 and res_cap["limit_remaining"] == 3.25
+        assert res_cap["rate_limit_source"] == "api_key_limit", res_cap
+
+    # 5. stream_agent_completion emite rate_limit_update en OpenRouter 429 metadata.headers
+    clear_router_runtime_state()
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "empresa").mkdir(parents=True, exist_ok=True)
+        (ws / "habilidades").mkdir(parents=True, exist_ok=True)
+        events = []
+
+        def fake_or_429_urlopen(req, context=None, timeout=None):
+            raise urllib.error.HTTPError(
+                url=req.full_url,
+                code=429,
+                msg="Too Many Requests",
+                hdrs={},
+                fp=io.BytesIO(json.dumps(daily_429).encode("utf-8")),
+            )
+
+        with patch.object(urllib.request, "urlopen", side_effect=fake_or_429_urlopen):
+            raised = False
+            try:
+                openrouter_client.stream_agent_completion(
+                    api_key="sk-or-v1-teststream1234567890",
+                    model_id="openrouter/free",
+                    user_message="Hola",
+                    history=[],
+                    context_dir=ws / "empresa",
+                    skills_dir=ws / "habilidades",
+                    emit_event=events.append,
+                    workspace_root=str(ws),
+                    provider="openrouter",
+                    auto_failover=False,
+                )
+            except RuntimeError:
+                raised = True
+        assert raised, "Debía lanzar RuntimeError cuando OpenRouter devuelve 429 sin respaldo."
+        rl_evts = [ev for ev in events if ev.get("type") == "rate_limit_update"]
+        assert rl_evts and rl_evts[-1]["rate_limits"]["daily_limit"] == 50, events
+        assert rl_evts[-1]["rate_limits"]["daily_remaining"] == 0, events
+
+    print("✅ Límites OpenRouter (/key, /credits, 50 vs 1,000 req/día, 20 RPM y 429 metadata) verificados.")
+
+
 if __name__ == "__main__":
     test_sidecar_ping_and_inventory()
     test_canvas_schema_and_stream_router()
@@ -3213,4 +3388,5 @@ if __name__ == "__main__":
     test_adaptive_roles_user_space_skills_hub_and_blueprint()
     test_kimi_provider_rate_limits_and_usage_accounting()
     test_multi_language_code_formatting_and_fence_protection()
+    test_openrouter_rate_limits_and_free_tier_key()
 

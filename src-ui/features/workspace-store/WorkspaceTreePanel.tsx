@@ -32,6 +32,7 @@ import {
   readWorkspaceFile,
 } from "./workspaceApi";
 import { WorkspacePermissionsSection } from "./WorkspacePermissionsSection";
+import { JellyPillTrack } from "../../components/JellyPillTrack";
 import {
   DOMAIN_PRESETS,
   ParsedBusinessProfile,
@@ -644,19 +645,21 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
           </button>
 
           <div className="flex items-center gap-1 shrink-0">
-            <div
+            <JellyPillTrack
+              activeKey={viewMode}
               role="group"
               aria-label="Modo de visualización"
-              className="flex items-center p-0.5 rounded-lg bg-[#0b0c10] border border-white/[0.08]"
+              pillRadius="9999px"
+              className="flex items-center gap-0.5 p-0.5 rounded-full"
             >
               <button
                 type="button"
                 aria-pressed={viewMode === "simple"}
                 onClick={() => setViewMode("simple")}
-                className={`min-h-[24px] px-2.5 py-0.5 rounded-md text-[10.5px] font-medium transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 ${
+                className={`xook-jelly-tab min-h-[24px] px-2.5 py-0.5 rounded-full text-[10.5px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 ${
                   viewMode === "simple"
-                    ? "bg-white/[0.1] text-white border border-white/[0.12]"
-                    : "text-zinc-400 hover:text-zinc-200 border border-transparent"
+                    ? "text-white"
+                    : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
                 Guía
@@ -665,15 +668,15 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                 type="button"
                 aria-pressed={viewMode === "files"}
                 onClick={() => setViewMode("files")}
-                className={`min-h-[24px] px-2.5 py-0.5 rounded-md text-[10.5px] font-medium transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 ${
+                className={`xook-jelly-tab min-h-[24px] px-2.5 py-0.5 rounded-full text-[10.5px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 ${
                   viewMode === "files"
-                    ? "bg-white/[0.1] text-white border border-white/[0.12]"
-                    : "text-zinc-400 hover:text-zinc-200 border border-transparent"
+                    ? "text-white"
+                    : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
                 Archivos
               </button>
-            </div>
+            </JellyPillTrack>
 
             {viewMode === "files" && (
               <button

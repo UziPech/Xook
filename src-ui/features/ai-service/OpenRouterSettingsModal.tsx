@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { LiquidGlassBackdrop } from "../../components/LiquidGlassBackdrop";
+import { JellyPillTrack } from "../../components/JellyPillTrack";
 import { waitTopLayerAnimations } from "../../utils/topLayerDialog";
 import { ProviderIcon, normalizeProviderIdClient } from "./ProviderIcon";
 import {
@@ -42,6 +43,7 @@ import {
   getAiConfigStatus,
   getAiUsageLedger,
   getProviderSpec,
+  getUsageMeterFillColor,
   normalizeApiKey,
   onAiUsageUpdated,
   resetProviderUsageLedger,
@@ -828,19 +830,22 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
               </div>
 
               <div className="flex items-center gap-2 ml-auto">
-                <div
+                <JellyPillTrack
+                  activeKey={activeTab}
                   role="tablist"
                   aria-label="Secciones de configuración de IA"
-                  className="quick-liquid-subcard inline-flex items-center p-0.5 rounded-full gap-0.5"
+                  pillRadius="9999px"
+                  variant="quick"
+                  className="inline-flex items-center p-0.5 rounded-full gap-0.5"
                 >
                   <button
                     type="button"
                     role="tab"
                     aria-selected={activeTab === "models"}
                     onClick={() => setActiveTab("models")}
-                    className={`px-3 py-1 rounded-full text-[11px] font-medium transition-colors cursor-pointer ${
+                    className={`xook-jelly-tab px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer ${
                       activeTab === "models"
-                        ? "quick-liquid-chip-active text-white"
+                        ? "text-white"
                         : "text-zinc-300/80 hover:text-white"
                     }`}
                   >
@@ -851,9 +856,9 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                     role="tab"
                     aria-selected={activeTab === "account"}
                     onClick={() => setActiveTab("account")}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium transition-colors cursor-pointer ${
+                    className={`xook-jelly-tab inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer ${
                       activeTab === "account"
-                        ? "quick-liquid-chip-active text-white"
+                        ? "text-white"
                         : "text-zinc-300/80 hover:text-white"
                     }`}
                   >
@@ -862,7 +867,7 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                     )}
                     <span>Claves y respaldo</span>
                   </button>
-                </div>
+                </JellyPillTrack>
 
                 <button
                   type="button"
@@ -1342,14 +1347,23 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                       <span className="text-[11px] text-zinc-300/85">
                         Región API de Moonshot / Kimi:
                       </span>
-                      <div className="inline-flex items-center gap-1" role="group" aria-label="Región API de Kimi">
+                      <JellyPillTrack
+                        activeKey={selectedRegion === "cn" ? "cn" : "ai"}
+                        role="group"
+                        aria-label="Región API de Kimi"
+                        pillRadius="9999px"
+                        variant="quick"
+                        className="inline-flex items-center p-0.5 rounded-full gap-0.5"
+                      >
                         <button
                           type="button"
                           aria-pressed={selectedRegion !== "cn"}
                           onClick={() => void handleChangeKimiRegion("ai")}
                           disabled={saving || testing}
-                          className={`quick-liquid-option px-2.5 py-1 rounded-full text-[11px] cursor-pointer ${
-                            selectedRegion !== "cn" ? "is-selected text-white" : "text-zinc-300"
+                          className={`xook-jelly-tab px-2.5 py-1 rounded-full text-[11px] cursor-pointer ${
+                            selectedRegion !== "cn"
+                              ? "text-white font-medium"
+                              : "text-zinc-300 hover:text-white"
                           }`}
                         >
                           Global · api.moonshot.ai
@@ -1359,13 +1373,15 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                           aria-pressed={selectedRegion === "cn"}
                           onClick={() => void handleChangeKimiRegion("cn")}
                           disabled={saving || testing}
-                          className={`quick-liquid-option px-2.5 py-1 rounded-full text-[11px] cursor-pointer ${
-                            selectedRegion === "cn" ? "is-selected text-white" : "text-zinc-300"
+                          className={`xook-jelly-tab px-2.5 py-1 rounded-full text-[11px] cursor-pointer ${
+                            selectedRegion === "cn"
+                              ? "text-white font-medium"
+                              : "text-zinc-300 hover:text-white"
                           }`}
                         >
                           China · api.moonshot.cn
                         </button>
-                      </div>
+                      </JellyPillTrack>
                     </div>
                   )}
 
@@ -1562,14 +1578,10 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                             selectedSummary.meterMode === "remaining" ? "disponible" : "usado"
                           })`}
                           style={{
-                            ["--xook-progress-fill" as string]:
-                              selectedSummary.meterMode === "used"
-                                ? selectedSummary.pct >= 85
-                                  ? "rgba(251, 191, 36, 0.9)"
-                                  : "rgba(255, 255, 255, 0.8)"
-                                : selectedSummary.pct <= 15
-                                  ? "rgba(244, 63, 94, 0.85)"
-                                  : "rgba(110, 231, 183, 0.85)",
+                            ["--xook-progress-fill" as string]: getUsageMeterFillColor({
+                              meterMode: selectedSummary.meterMode,
+                              pct: selectedSummary.pct,
+                            }),
                           }}
                         />
                         <p className="text-[10.5px] text-zinc-400">{selectedSummary.subline}</p>

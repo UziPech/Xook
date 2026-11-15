@@ -38,6 +38,7 @@ import {
   canvasArtifactToMarkdown,
 } from "./canvasSchema";
 import { MarkdownContent, renderInlineMarkdown } from "../../utils/markdownRenderer";
+import { JellyPillTrack } from "../../components/JellyPillTrack";
 
 const canvasTableFeatures = tableFeatures({
   columnFilteringFeature,
@@ -482,14 +483,21 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
 
           <div className="flex items-center gap-1.5 shrink-0">
             {canvas.columns.length > 0 && (
-              <div className="flex items-center rounded-xl bg-white/[0.035] border border-white/[0.08] p-0.5">
+              <JellyPillTrack
+                activeKey={viewMode}
+                role="group"
+                aria-label="Modo de visualización de Canvas"
+                pillRadius="9999px"
+                className="flex items-center gap-0.5 rounded-full p-0.5"
+              >
                 <button
                   type="button"
+                  aria-pressed={viewMode === "table"}
                   onClick={() => setViewMode("table")}
                   title="Vista interactiva"
-                  className={`px-2 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer ${
+                  className={`xook-jelly-tab px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer ${
                     viewMode === "table"
-                      ? "bg-white/[0.11] text-white"
+                      ? "text-white"
                       : "text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
@@ -497,18 +505,19 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                 </button>
                 <button
                   type="button"
+                  aria-pressed={viewMode === "markdown"}
                   onClick={() => setViewMode("markdown")}
                   title="Vista Markdown"
-                  className={`px-2 py-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer inline-flex items-center gap-1 ${
+                  className={`xook-jelly-tab px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer inline-flex items-center gap-1 ${
                     viewMode === "markdown"
-                      ? "bg-white/[0.11] text-white"
+                      ? "text-white"
                       : "text-zinc-400 hover:text-zinc-200"
                   }`}
                 >
                   <Code2 className="w-3 h-3" />
                   <span>Texto</span>
                 </button>
-              </div>
+              </JellyPillTrack>
             )}
 
             <button

@@ -257,6 +257,142 @@
   color: #ffffff;
 }
 
+/* Segmented Jelly Pill Track & Monochrome Liquid Glass Thumb (alineado a .liquid-glass-hero + .quick-liquid-btn) */
+.xook-jelly-track {
+  position: relative;
+  isolation: isolate;
+}
+
+.xook-jelly-track--glass {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.042) 0%,
+    rgba(255, 255, 255, 0.014) 52%,
+    rgba(255, 255, 255, 0.005) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  box-shadow:
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.13),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.5),
+    0 6px 16px -8px rgba(0, 0, 0, 0.55);
+}
+
+/* QuickBar & WKWebView transparent surfaces cannot use backdrop-filter cleanly */
+.xook-jelly-track--quick {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.05) 0%,
+    rgba(255, 255, 255, 0.018) 52%,
+    rgba(255, 255, 255, 0.008) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow:
+    inset 0 1px 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 1px 0 rgba(0, 0, 0, 0.45);
+}
+
+.xook-jelly-pill-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: var(--jelly-radius, 9999px);
+  transform-origin: center center;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.092) 0%,
+    rgba(255, 255, 255, 0.052) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.21),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.22),
+    0 4px 10px -3px rgba(0, 0, 0, 0.36);
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.xook-jelly-track:hover .xook-jelly-pill-thumb {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.11) 0%,
+    rgba(255, 255, 255, 0.068) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.21);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.24),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.24),
+    0 4px 10px -3px rgba(0, 0, 0, 0.42);
+}
+
+.xook-jelly-pill-thumb::after {
+  content: "";
+  position: absolute;
+  inset: 0 -14px auto -14px;
+  height: 44%;
+  border-radius: 999px;
+  pointer-events: none;
+  background: radial-gradient(
+    54% 100% at 50% 0%,
+    rgba(255, 255, 255, 0.09) 0%,
+    rgba(255, 255, 255, 0.02) 55%,
+    transparent 80%
+  );
+  transform: translate3d(var(--jelly-glint-x, 0px), 0, 0);
+}
+
+.xook-jelly-pill-thumb--quick {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.102) 0%,
+    rgba(255, 255, 255, 0.06) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.22),
+    0 4px 10px -3px rgba(0, 0, 0, 0.34);
+}
+
+.xook-jelly-track:hover .xook-jelly-pill-thumb--quick {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.12) 0%,
+    rgba(255, 255, 255, 0.075) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.23);
+}
+
+.xook-jelly-tab {
+  position: relative;
+  z-index: 1;
+  border: 1px solid transparent;
+  transition: color 0.18s ease, opacity 0.18s ease;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .xook-jelly-tab {
+    transition:
+      color 0.18s ease,
+      opacity 0.18s ease,
+      transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .xook-jelly-tab:active {
+    transform: scale(0.97);
+  }
+}
+
 /* Texto "ocupado" de Xox: gris con una línea de brillo blanco que lo recorre */
 .xox-shimmer {
   color: transparent;
@@ -1514,25 +1650,25 @@ progress.xook-usage-progress {
   border-radius: 9999px;
   overflow: clip;
   background-color: var(--xook-progress-track, rgba(255, 255, 255, 0.08));
-  color: var(--xook-progress-fill, rgba(228, 228, 231, 0.85));
   -webkit-appearance: none;
   appearance: none;
 }
 
 progress.xook-usage-progress::-webkit-progress-bar {
-  background-color: var(--xook-progress-track, rgba(255, 255, 255, 0.08));
+  background: transparent;
 }
 
 /* Mantener ::-webkit-progress-value y ::-moz-progress-bar separados */
 progress.xook-usage-progress::-webkit-progress-value {
-  background-color: var(--xook-progress-fill, rgba(228, 228, 231, 0.85));
+  background: var(--xook-progress-fill, rgba(228, 228, 231, 0.85));
   border-radius: 9999px;
-  transition: width 260ms ease, background-color 200ms ease;
+  transition: inline-size 260ms ease, width 260ms ease, background-color 200ms ease;
 }
 
 progress.xook-usage-progress::-moz-progress-bar {
-  background-color: var(--xook-progress-fill, rgba(228, 228, 231, 0.85));
+  background: var(--xook-progress-fill, rgba(228, 228, 231, 0.85));
   border-radius: 9999px;
+  transition: inline-size 260ms ease;
 }
 
 @media (forced-colors: active) {
@@ -1546,11 +1682,11 @@ progress.xook-usage-progress::-moz-progress-bar {
   }
 
   progress.xook-usage-progress::-webkit-progress-value {
-    background-color: Highlight;
+    background: Highlight;
   }
 
   progress.xook-usage-progress::-moz-progress-bar {
-    background-color: Highlight;
+    background: Highlight;
   }
 
   .quick-liquid-option.is-selected {
@@ -1566,6 +1702,27 @@ progress.xook-usage-progress::-moz-progress-bar {
 
   .xook-code-action-btn:focus-visible {
     outline: 2px solid Highlight;
+  }
+
+  .xook-jelly-track--glass,
+  .xook-jelly-track--quick {
+    background: Canvas;
+    border: 1px solid CanvasText;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .xook-jelly-pill-thumb {
+    border: 2px solid Highlight;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .xook-jelly-pill-thumb::after {
+    display: none;
   }
 }
 
@@ -1705,11 +1862,14 @@ progress.xook-usage-progress::-moz-progress-bar {
 
 @media (prefers-reduced-motion: reduce) {
   progress.xook-usage-progress::-webkit-progress-value { transition: none; }
+  progress.xook-usage-progress::-moz-progress-bar { transition: none; }
   .menu-in, .menu-out, .xox-mini-eye, .xook-dialog-tab-panel, .xook-catalog-swap, .xook-model-reveal { animation: none; }
   .xook-tree-item, .xook-node-highlight, .xook-save-flash, .xook-empty-float, .xook-task-card { animation: none; }
   .xook-chevron, .xook-expand-list, .xook-collapse-grid { transition: none; }
   .xox-bubble.is-leaving { opacity: 0; }
-  .input-bubble, .input-console, .sidebar-slot, .splitter-aurora-glass, .quick-capsule-shell, .quick-liquid-btn, .quick-liquid-btn-ready, .quick-liquid-option, .xook-liquid-row td, .xook-task-card, .xook-approve-btn, .xook-stepper-btn, .xook-code-action-btn { transition: none; }
+  .input-bubble, .input-console, .sidebar-slot, .splitter-aurora-glass, .quick-capsule-shell, .quick-liquid-btn, .quick-liquid-btn-ready, .quick-liquid-option, .xook-liquid-row td, .xook-task-card, .xook-approve-btn, .xook-stepper-btn, .xook-code-action-btn, .xook-jelly-pill-thumb { transition: none; }
+  .xook-jelly-tab { transition: color 0.12s ease, opacity 0.12s ease; }
+  .xook-jelly-tab:active { transform: none; }
   dialog.xook-liquid-dialog[open]:where(:not([data-closing])),
   dialog.xook-liquid-dialog[data-closing],
   dialog.xook-liquid-dialog[open]:where(:not([data-closing]))::backdrop,

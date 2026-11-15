@@ -43,6 +43,7 @@ from slices.ai_service.provider_registry import (
     normalize_provider_id,
     order_provider_failover_chain,
     parse_gemini_quota_error,
+    parse_openrouter_rate_limit_error,
     parse_rate_limit_headers,
     resolve_provider_base_url,
     select_equivalent_model_for_provider,
@@ -642,18 +643,64 @@ def _build_headers(api_key: Optional[str] = None, provider: str = "openrouter") 
     return build_provider_headers(provider, api_key, referer=APP_REFERER, title=APP_TITLE)
 
 
-def _extract_http_error_detail(err: urllib.error.HTTPError) -> str:
+def _extract_http_error_info(
+    err: urllib.error.HTTPError,
+    provider: str = "openrouter",
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Lee el cuerpo de `HTTPError` una sola vez y extrae mensaje + rate limits/429 metadata."""
     body = err.read().decode("utf-8", errors="replace")
     detail = body
+    parsed_obj: Optional[Dict[str, Any]] = None
     try:
-        parsed = json.loads(body)
-        if isinstance(parsed.get("error"), dict):
-            detail = parsed["error"].get("message") or parsed["error"].get("type") or body
-        else:
-            detail = parsed.get("message") or body
+        cand = json.loads(body)
+        if isinstance(cand, dict):
+            parsed_obj = cand
+            if isinstance(cand.get("error"), dict):
+                detail = cand["error"].get("message") or cand["error"].get("type") or body
+            else:
+                detail = cand.get("message") or body
     except Exception:
         pass
-    return f"HTTP {err.code}: {detail}"
+
+    pid = normalize_provider_id(provider)
+    hdr_map = getattr(err, "headers", None)
+    err_limits: Optional[Dict[str, Any]] = None
+    if pid == "openrouter":
+        err_limits = parse_openrouter_rate_limit_error(
+            parsed_obj if parsed_obj is not None else body,
+            hdr_map,
+        )
+    elif pid == "gemini":
+        hdr_rl = parse_rate_limit_headers(pid, hdr_map) if hdr_map is not None else None
+        gem_rl = parse_gemini_quota_error(body)
+        err_limits = _merge_rate_limits(hdr_rl, gem_rl)
+    elif hdr_map is not None:
+        err_limits = parse_rate_limit_headers(pid, hdr_map)
+
+    return f"HTTP {err.code}: {detail}", err_limits
+
+
+def _extract_http_error_detail(
+    err: urllib.error.HTTPError,
+    provider: str = "openrouter",
+) -> str:
+    detail_msg, err_limits = _extract_http_error_info(err, provider=provider)
+    if err_limits:
+        pid = normalize_provider_id(provider)
+        bucket = getattr(_HTTP_TLS, "rate_limits_by_provider", None)
+        if not isinstance(bucket, dict):
+            bucket = {}
+            _HTTP_TLS.rate_limits_by_provider = bucket
+        prev = bucket.get(pid)
+        if isinstance(prev, dict) and err_limits.get("daily_limit") is not None:
+            # Evita conservar un rpm_limit genérico falso proveniente de headers 429 diarios
+            prev = dict(prev)
+            if prev.get("rpm_limit") == err_limits.get("daily_limit"):
+                prev.pop("rpm_limit", None)
+                prev.pop("rpm_remaining", None)
+                prev.pop("rpm_reset_at_ms", None)
+        bucket[pid] = _merge_rate_limits(prev, err_limits)
+    return detail_msg
 
 
 _HTTP_TLS = threading.local()
@@ -820,7 +867,7 @@ def _provider_http_json(
             return json.loads(raw)
     except urllib.error.HTTPError as err:
         _store_http_rate_limits(pid, getattr(err, "headers", None))
-        raise RuntimeError(_extract_http_error_detail(err)) from err
+        raise RuntimeError(_extract_http_error_detail(err, provider=pid)) from err
     except urllib.error.URLError as err:
         raise RuntimeError(f"Error de red al conectar con {spec['name']}: {err.reason}") from err
 
@@ -949,6 +996,37 @@ def test_openrouter_key(api_key: str) -> Dict[str, Any]:
         else:
             can_use_paid = not is_free_tier
 
+        has_key_cap = (
+            isinstance(limit_val, (int, float))
+            and float(limit_val) > 0
+            and limit_remaining is not None
+        )
+        # OpenRouter otorga 1,000 req/día en modelos :free con >= $10 USD comprados; de lo contrario 50/día
+        daily_free_limit = (
+            1000
+            if (credits_total is not None and float(credits_total) >= 10.0)
+            else 50
+        )
+        rpm_free_limit = 20
+        key_rate_limit = data.get("rate_limit")
+        if isinstance(key_rate_limit, dict):
+            try:
+                rl_req = int(key_rate_limit.get("requests") or 0)
+                rl_intv = str(key_rate_limit.get("interval") or "").strip().lower()
+                if rl_req > 0:
+                    if rl_intv in ("60s", "1m", "1min"):
+                        rpm_free_limit = rl_req
+                    elif rl_intv in ("10s", "10sec"):
+                        rpm_free_limit = max(rpm_free_limit, rl_req)
+            except Exception:
+                pass
+
+        rate_limit_source = (
+            "api_key_limit"
+            if has_key_cap and (can_use_paid or credits_remaining is None)
+            else ("api_balance" if can_use_paid else "openrouter_free_tier")
+        )
+
         clear_provider_cooldown("openrouter")
         out: Dict[str, Any] = {
             "ok": True,
@@ -969,11 +1047,13 @@ def test_openrouter_key(api_key: str) -> Dict[str, Any]:
             "balance_currency": "USD" if credits_remaining is not None else None,
             "balance_raw": credits_remaining,
             "can_use_paid_models": can_use_paid,
-            "daily_free_limit": 50 if is_free_tier else 1000,
-            "rpm_free_limit": 20,
-            "rate_limit_source": "api_balance",
+            "daily_free_limit": daily_free_limit,
+            "rpm_free_limit": rpm_free_limit,
+            "rate_limit_source": rate_limit_source,
             "message": "Conexión verificada con OpenRouter.",
         }
+        if isinstance(key_rate_limit, dict):
+            out["key_rate_limit"] = key_rate_limit
         if header_limits:
             out["rate_limits"] = header_limits
         return out
@@ -3982,10 +4062,19 @@ def stream_agent_completion(
                     rate_limits_data = _merge_rate_limits(rate_limits_data, hdr_limits)
                 break
             except urllib.error.HTTPError as err:
-                err_limits = parse_rate_limit_headers(active_provider, getattr(err, "headers", None))
+                detail_msg, err_limits = _extract_http_error_info(err, active_provider)
                 if err_limits:
                     rate_limits_data = _merge_rate_limits(rate_limits_data, err_limits)
-                detail_msg = _extract_http_error_detail(err)
+                    try:
+                        emit_event(
+                            {
+                                "type": "rate_limit_update",
+                                "provider": active_provider,
+                                "rate_limits": err_limits,
+                            }
+                        )
+                    except Exception:
+                        pass
                 lower_msg = detail_msg.lower()
                 err_info = classify_provider_error(
                     detail_msg,
@@ -4503,10 +4592,19 @@ def stream_agent_completion(
                 break
             raise _friendly_http_error(err, active_provider) from err
         except urllib.error.HTTPError as err:
-            err_limits = parse_rate_limit_headers(active_provider, getattr(err, "headers", None))
+            detail_msg, err_limits = _extract_http_error_info(err, active_provider)
             if err_limits:
                 rate_limits_data = _merge_rate_limits(rate_limits_data, err_limits)
-            detail_msg = _extract_http_error_detail(err)
+                try:
+                    emit_event(
+                        {
+                            "type": "rate_limit_update",
+                            "provider": active_provider,
+                            "rate_limits": err_limits,
+                        }
+                    )
+                except Exception:
+                    pass
             err_info = classify_provider_error(
                 detail_msg,
                 active_provider,

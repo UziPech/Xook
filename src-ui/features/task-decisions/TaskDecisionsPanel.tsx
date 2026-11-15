@@ -28,6 +28,7 @@ import {
   formatRelativeTarget,
 } from "./taskSchema";
 import { TaskCardRenderer } from "./TaskCardRenderer";
+import { JellyPillTrack } from "../../components/JellyPillTrack";
 
 export type TaskPanelTab = "pending" | "agenda" | "completed";
 
@@ -284,13 +285,20 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
           onSubmit={handleQuickSubmit}
           className="panel-fade-in p-3 border-b border-white/[0.06] bg-white/[0.02] space-y-2.5"
         >
-          <div className="grid grid-cols-3 gap-1 bg-black/40 p-1 rounded-xl border border-white/[0.06]">
+          <JellyPillTrack
+            activeKey={creatorKind}
+            role="group"
+            aria-label="Tipo de registro rápido"
+            pillRadius="9999px"
+            className="grid grid-cols-3 gap-1 p-1 rounded-full"
+          >
             <button
               type="button"
+              aria-pressed={creatorKind === "schedule"}
               onClick={() => setCreatorKind("schedule")}
-              className={`py-1 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+              className={`xook-jelly-tab py-1 rounded-full text-[11px] font-medium flex items-center justify-center gap-1 cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 ${
                 creatorKind === "schedule"
-                  ? "bg-white/[0.1] text-white"
+                  ? "text-white"
                   : "text-zinc-400 hover:text-zinc-200"
               }`}
             >
@@ -299,10 +307,11 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
             </button>
             <button
               type="button"
+              aria-pressed={creatorKind === "timer"}
               onClick={() => setCreatorKind("timer")}
-              className={`py-1 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+              className={`xook-jelly-tab py-1 rounded-full text-[11px] font-medium flex items-center justify-center gap-1 cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 ${
                 creatorKind === "timer"
-                  ? "bg-white/[0.1] text-white"
+                  ? "text-white"
                   : "text-zinc-400 hover:text-zinc-200"
               }`}
             >
@@ -311,17 +320,18 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
             </button>
             <button
               type="button"
+              aria-pressed={creatorKind === "note"}
               onClick={() => setCreatorKind("note")}
-              className={`py-1 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+              className={`xook-jelly-tab py-1 rounded-full text-[11px] font-medium flex items-center justify-center gap-1 cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 ${
                 creatorKind === "note"
-                  ? "bg-white/[0.1] text-white"
+                  ? "text-white"
                   : "text-zinc-400 hover:text-zinc-200"
               }`}
             >
               <StickyNote className="w-3 h-3 text-zinc-300" />
               <span>Nota</span>
             </button>
-          </div>
+          </JellyPillTrack>
 
           <input
             type="text"
@@ -479,57 +489,121 @@ export const TaskDecisionsPanel: React.FC<TaskDecisionsPanelProps> = ({
       )}
 
       {/* Selector de Pestañas: Por aceptar · Agenda · Hechas */}
-      <div className="p-2 border-b border-white/[0.06] bg-black/40 grid grid-cols-3 gap-1">
-        <button
-          type="button"
-          onClick={() => onTabChange("pending")}
-          className={`py-1.5 px-2 rounded-lg text-[11px] font-medium transition-all flex items-center justify-center gap-1 cursor-pointer ${
-            activeTab === "pending"
-              ? "bg-white/[0.1] text-white shadow-sm border border-white/15"
-              : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]"
-          }`}
+      <div className="px-2 py-1.5 border-b border-white/[0.06] bg-black/40">
+        <JellyPillTrack
+          activeKey={activeTab}
+          role="tablist"
+          aria-label="Secciones de tareas y decisiones"
+          pillRadius="9999px"
+          className="grid grid-cols-3 gap-1 p-1 rounded-full"
+          onKeyDown={(e) => {
+            const order: TaskPanelTab[] = ["pending", "agenda", "completed"];
+            const idx = order.indexOf(activeTab);
+            if (idx < 0) return;
+            let next: TaskPanelTab | null = null;
+            if (e.key === "ArrowRight") next = order[(idx + 1) % order.length];
+            else if (e.key === "ArrowLeft") next = order[(idx - 1 + order.length) % order.length];
+            else if (e.key === "Home") next = order[0];
+            else if (e.key === "End") next = order[order.length - 1];
+            if (!next) return;
+            e.preventDefault();
+            onTabChange(next);
+            document.getElementById(`xook-tasks-tab-${next}`)?.focus();
+          }}
         >
-          <Clock className="w-3 h-3 hidden @[315px]:inline shrink-0" />
-          <span className="truncate">Por aceptar</span>
-          <span className="text-[10px] font-mono tabular-nums px-1.5 rounded-full bg-white/[0.08] text-zinc-200">
-            {tasks.length}
-          </span>
-        </button>
+          <button
+            id="xook-tasks-tab-pending"
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "pending"}
+            tabIndex={activeTab === "pending" ? 0 : -1}
+            onClick={() => onTabChange("pending")}
+            className={`xook-jelly-tab py-1.5 px-1.5 rounded-full text-[11px] font-medium flex items-center justify-center gap-1 cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-1 ${
+              activeTab === "pending"
+                ? "text-white"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            <Clock
+              className={`w-3 h-3 hidden @[315px]:inline shrink-0 transition-colors duration-200 ${
+                activeTab === "pending" ? "text-zinc-200" : "text-zinc-500"
+              }`}
+            />
+            <span className="truncate">Por aceptar</span>
+            <span
+              className={`text-[10px] font-mono tabular-nums px-1.5 rounded-full transition-colors duration-200 ${
+                activeTab === "pending"
+                  ? "bg-white/[0.12] text-white"
+                  : "bg-white/[0.07] text-zinc-300"
+              }`}
+            >
+              {tasks.length}
+            </span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => onTabChange("agenda")}
-          className={`py-1.5 px-2 rounded-lg text-[11px] font-medium transition-all flex items-center justify-center gap-1 cursor-pointer ${
-            activeTab === "agenda"
-              ? "bg-white/[0.1] text-white shadow-sm border border-white/15"
-              : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]"
-          }`}
-        >
-          <CalendarClock className="w-3 h-3 text-zinc-400 hidden @[315px]:inline shrink-0" />
-          <span className="truncate">Agenda</span>
-          <span className="inline-flex items-center gap-1 text-[10px] font-mono tabular-nums px-1.5 rounded-full bg-white/[0.08] text-zinc-200">
-            {hasRunningTimer && (
-              <span className="w-1.5 h-1.5 rounded-full bg-zinc-200 animate-pulse" />
-            )}
-            {agendaItems.length}
-          </span>
-        </button>
+          <button
+            id="xook-tasks-tab-agenda"
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "agenda"}
+            tabIndex={activeTab === "agenda" ? 0 : -1}
+            onClick={() => onTabChange("agenda")}
+            className={`xook-jelly-tab py-1.5 px-1.5 rounded-full text-[11px] font-medium flex items-center justify-center gap-1 cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-1 ${
+              activeTab === "agenda"
+                ? "text-white"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            <CalendarClock
+              className={`w-3 h-3 hidden @[315px]:inline shrink-0 transition-colors duration-200 ${
+                activeTab === "agenda" ? "text-zinc-200" : "text-zinc-500"
+              }`}
+            />
+            <span className="truncate">Agenda</span>
+            <span
+              className={`inline-flex items-center gap-1 text-[10px] font-mono tabular-nums px-1.5 rounded-full transition-colors duration-200 ${
+                activeTab === "agenda"
+                  ? "bg-white/[0.12] text-white"
+                  : "bg-white/[0.07] text-zinc-300"
+              }`}
+            >
+              {hasRunningTimer && (
+                <span className="w-1.5 h-1.5 rounded-full bg-zinc-200 animate-pulse" />
+              )}
+              {agendaItems.length}
+            </span>
+          </button>
 
-        <button
-          type="button"
-          onClick={() => onTabChange("completed")}
-          className={`py-1.5 px-2 rounded-lg text-[11px] font-medium transition-all flex items-center justify-center gap-1 cursor-pointer ${
-            activeTab === "completed"
-              ? "bg-white/[0.1] text-white shadow-sm border border-white/15"
-              : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.03]"
-          }`}
-        >
-          <CheckCheck className="w-3 h-3 text-zinc-400 hidden @[315px]:inline shrink-0" />
-          <span className="truncate">Hechas</span>
-          <span className="text-[10px] font-mono tabular-nums px-1.5 rounded-full bg-white/[0.08] text-zinc-200">
-            {historyItems.length}
-          </span>
-        </button>
+          <button
+            id="xook-tasks-tab-completed"
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "completed"}
+            tabIndex={activeTab === "completed" ? 0 : -1}
+            onClick={() => onTabChange("completed")}
+            className={`xook-jelly-tab py-1.5 px-1.5 rounded-full text-[11px] font-medium flex items-center justify-center gap-1 cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-1 ${
+              activeTab === "completed"
+                ? "text-white"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            <CheckCheck
+              className={`w-3 h-3 hidden @[315px]:inline shrink-0 transition-colors duration-200 ${
+                activeTab === "completed" ? "text-zinc-200" : "text-zinc-500"
+              }`}
+            />
+            <span className="truncate">Hechas</span>
+            <span
+              className={`text-[10px] font-mono tabular-nums px-1.5 rounded-full transition-colors duration-200 ${
+                activeTab === "completed"
+                  ? "bg-white/[0.12] text-white"
+                  : "bg-white/[0.07] text-zinc-300"
+              }`}
+            >
+              {historyItems.length}
+            </span>
+          </button>
+        </JellyPillTrack>
       </div>
 
       {/* Cinta discreta cuando hay un reloj corriendo mientras ves otra pestaña */}

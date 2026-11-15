@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CodeBlockCard } from "../../utils/CodeBlockCard";
+import { JellyPillTrack } from "../../components/JellyPillTrack";
 import { getLanguageMetaForExtension } from "../../utils/codeLanguages";
 import { MarkdownContent } from "../../utils/markdownRenderer";
 import {
@@ -690,10 +691,12 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
         {/* Selector directo Vista / Editar + Botón único X para cerrar y liberar el visor */}
         <div className="flex items-center gap-1.5 shrink-0">
           {state && !isDraftingLive && isPdfDocument && (
-            <div
+            <JellyPillTrack
+              activeKey={viewerMode}
               role="group"
               aria-label="Modo de visualización y edición en vista previa"
-              className="inline-flex items-center rounded-xl bg-zinc-950/90 border border-white/[0.08] p-0.5"
+              pillRadius="9999px"
+              className="inline-flex items-center gap-0.5 rounded-full p-0.5"
             >
               <button
                 type="button"
@@ -703,10 +706,10 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
                   setSelectedPatchId(null);
                   setAddingNewTextMode(false);
                 }}
-                className={`px-2 py-0.5 rounded-lg text-[10.5px] font-medium inline-flex items-center gap-1 transition-all cursor-pointer ${
+                className={`xook-jelly-tab px-2.5 py-0.5 rounded-full text-[10.5px] font-medium inline-flex items-center gap-1 cursor-pointer ${
                   viewerMode === "view"
-                    ? "bg-zinc-800/95 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] border border-white/[0.1]"
-                    : "text-zinc-400 hover:text-zinc-200 border border-transparent"
+                    ? "text-white"
+                    : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
                 <Eye className="w-3 h-3" />
@@ -717,32 +720,34 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
                 aria-pressed={viewerMode === "edit_page"}
                 onClick={() => setViewerMode("edit_page")}
                 title="Haz clic sobre cualquier texto en la vista previa para editarlo o borrarlo"
-                className={`px-2 py-0.5 rounded-lg text-[10.5px] font-medium inline-flex items-center gap-1 transition-all cursor-pointer ${
+                className={`xook-jelly-tab px-2.5 py-0.5 rounded-full text-[10.5px] font-medium inline-flex items-center gap-1 cursor-pointer ${
                   viewerMode === "edit_page"
-                    ? "bg-zinc-800/95 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] border border-white/[0.1]"
-                    : "text-zinc-400 hover:text-zinc-200 border border-transparent"
+                    ? "text-white"
+                    : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
                 <Pencil className="w-3 h-3" />
                 <span>Editar</span>
               </button>
-            </div>
+            </JellyPillTrack>
           )}
 
           {state && !isDraftingLive && isTextDocument && (
-            <div
+            <JellyPillTrack
+              activeKey={isEditingTextFile ? "edit" : "view"}
               role="group"
               aria-label="Modo de archivo"
-              className="inline-flex items-center rounded-xl bg-zinc-950/90 border border-white/[0.08] p-0.5"
+              pillRadius="9999px"
+              className="inline-flex items-center gap-0.5 rounded-full p-0.5"
             >
               <button
                 type="button"
                 aria-pressed={!isEditingTextFile}
                 onClick={() => setIsEditingTextFile(false)}
-                className={`px-2 py-0.5 rounded-lg text-[10.5px] font-medium inline-flex items-center gap-1 transition-all cursor-pointer ${
+                className={`xook-jelly-tab px-2.5 py-0.5 rounded-full text-[10.5px] font-medium inline-flex items-center gap-1 cursor-pointer ${
                   !isEditingTextFile
-                    ? "bg-zinc-800/95 text-white border border-white/[0.1]"
-                    : "text-zinc-400 hover:text-zinc-200 border border-transparent"
+                    ? "text-white"
+                    : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
                 <Eye className="w-3 h-3" />
@@ -752,16 +757,16 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
                 type="button"
                 aria-pressed={isEditingTextFile}
                 onClick={() => setIsEditingTextFile(true)}
-                className={`px-2 py-0.5 rounded-lg text-[10.5px] font-medium inline-flex items-center gap-1 transition-all cursor-pointer ${
+                className={`xook-jelly-tab px-2.5 py-0.5 rounded-full text-[10.5px] font-medium inline-flex items-center gap-1 cursor-pointer ${
                   isEditingTextFile
-                    ? "bg-zinc-800/95 text-white border border-white/[0.1]"
-                    : "text-zinc-400 hover:text-zinc-200 border border-transparent"
+                    ? "text-white"
+                    : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
                 <Pencil className="w-3 h-3" />
                 <span>Editar</span>
               </button>
-            </div>
+            </JellyPillTrack>
           )}
 
           <button

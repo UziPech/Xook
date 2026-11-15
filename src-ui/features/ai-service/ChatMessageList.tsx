@@ -22,9 +22,11 @@ import {
   RotateCcw,
   ShieldCheck,
   Sparkles,
+  Square,
   Table2,
   ThumbsDown,
   ThumbsUp,
+  Volume2,
 } from "lucide-react";
 import { XoxStar, XoxState } from "../../components/XoxStar";
 import { ProviderIcon } from "./ProviderIcon";
@@ -118,6 +120,11 @@ interface ChatMessageListProps {
     requestId: string,
     decision: CommandPermissionDecisionKind
   ) => void;
+  ttsEnabled?: boolean;
+  ttsModelsInstalled?: boolean;
+  ttsLoadingMessageId?: string | null;
+  ttsPlayingMessageId?: string | null;
+  onSpeakMessage?: (msg: UiChatMessage) => void;
 }
 
 function FormattedReply({
@@ -506,6 +513,11 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   onOpenAiVaultModal,
   permissionItems = [],
   onResolvePermission,
+  ttsEnabled = false,
+  ttsModelsInstalled = false,
+  ttsLoadingMessageId = null,
+  ttsPlayingMessageId = null,
+  onSpeakMessage,
 }) => {
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -1091,6 +1103,38 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                       <Copy className="w-3.5 h-3.5" />
                     )}
                   </button>
+                  {onSpeakMessage && !msg.isError && (
+                    <button
+                      type="button"
+                      onClick={() => onSpeakMessage(msg)}
+                      title={
+                        ttsLoadingMessageId === msg.id
+                          ? "Preparando voz..."
+                          : ttsPlayingMessageId === msg.id
+                            ? "Detener lectura en voz alta"
+                            : ttsEnabled && ttsModelsInstalled
+                              ? "Escuchar respuesta"
+                              : "Activar voz en Configuraciones"
+                      }
+                      className={`p-1.5 rounded-lg transition-colors cursor-pointer inline-flex items-center gap-1 ${
+                        ttsPlayingMessageId === msg.id
+                          ? "text-emerald-300 bg-emerald-500/12"
+                          : ttsLoadingMessageId === msg.id
+                            ? "text-indigo-200 bg-white/[0.06]"
+                            : ttsEnabled && ttsModelsInstalled
+                              ? "hover:text-zinc-200 hover:bg-white/[0.05]"
+                              : "opacity-65 hover:opacity-100 hover:text-zinc-200 hover:bg-white/[0.05]"
+                      }`}
+                    >
+                      {ttsLoadingMessageId === msg.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : ttsPlayingMessageId === msg.id ? (
+                        <Square className="w-3 h-3 fill-current" />
+                      ) : (
+                        <Volume2 className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useId } from "react";
+import React, { useState, useEffect, useMemo, useRef, useId } from "react";
 import { 
   CheckCircle2, 
   Brain, 
@@ -23,11 +23,21 @@ import {
   Table2,
   UserCircle2,
   Image as ImageIcon,
+  Settings,
 } from "lucide-react";
 import { XoxStar, XoxState } from "./components/XoxStar";
 import { XookWordmark } from "./components/XookBrand";
+import { JellyPillTrack } from "./components/JellyPillTrack";
 import { LiquidGlassBackdrop } from "./components/LiquidGlassBackdrop";
 import { useAnimatedPresence } from "./hooks/useAnimatedPresence";
+import {
+  DEFAULT_IDLE_GREETING,
+  getChatInputPlaceholder,
+  getHeroGreeting,
+  getTimeOfDayBand,
+  getXoxBubbleGreeting,
+  isSameLocalDay,
+} from "./utils/xoxGreetings";
 import {
   CanvasArtifact,
   canvasHasCellData,
@@ -162,6 +172,7 @@ import {
   getAvailableQuickModels,
   getLocalDailyRequestCount,
   getProviderSpec,
+  getUsageMeterFillColor,
   incrementLocalDailyRequestCount,
   normalizeApiKey,
   normalizeProviderIdClient,
@@ -171,6 +182,18 @@ import {
   saveAiConfig,
   testAiConnection,
 } from "./features/ai-service/aiClient";
+import {
+  SettingsModal,
+  type SettingsTabId,
+} from "./features/settings/SettingsModal";
+import {
+  getTtsStatus,
+  isTauriTtsRuntime,
+  subscribeTtsEvents,
+  ttsPlayer,
+  type TtsPlaybackSnapshot,
+  type TtsStatus,
+} from "./features/tts-voice/ttsClient";
 
 const BINARY_IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|tiff?|heic)$/i;
 const OFFICE_DOC_EXT_SET = new Set([
@@ -493,11 +516,11 @@ export default function App() {
   
   // Estado de Xox (Mascota Digital y Orquestador Estelar)
   const [xoxState, setXoxState] = useState<XoxState>("idle");
-  const [xoxMessage, setXoxMessage] = useState<string>("¿En qué puedo ayudarte?");
+  const [xoxMessage, setXoxMessage] = useState<string>(DEFAULT_IDLE_GREETING);
   
   // Estados para paneles laterales, tareas y visor de documentos dedicado
-  const [showLeftSidebar, setShowLeftSidebar] = useState<boolean>(true);
-  const [showRightSidebar, setShowRightSidebar] = useState<boolean>(true);
+  const [showLeftSidebar, setShowLeftSidebar] = useState<boolean>(false);
+  const [showRightSidebar, setShowRightSidebar] = useState<boolean>(false);
   const [showDocViewer, setShowDocViewer] = useState<boolean>(false);
   const [pdfPanelState, setPdfPanelState] = useState<PdfWorkspacePanelState | null>(null);
   const [pdfDraftProgress, setPdfDraftProgress] = useState<PdfDraftProgressEvent | null>(null);
@@ -559,6 +582,19 @@ export default function App() {
   const [aiSettingsProvider, setAiSettingsProvider] = useState<AiProviderId | undefined>(undefined);
   const [expandModelMenu, setExpandModelMenu] = useState<boolean>(false);
 
+  const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabId>("voice");
+  const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null);
+  const [ttsPlayback, setTtsPlayback] = useState<TtsPlaybackSnapshot>(() => ttsPlayer.getSnapshot());
+  const ttsStatusRef = useRef<TtsStatus | null>(null);
+  ttsStatusRef.current = ttsStatus;
+  const wasTtsSpeakingRef = useRef<boolean>(false);
+
+  const openSettings = (tab: SettingsTabId = "voice") => {
+    setSettingsInitialTab(tab);
+    setShowSettingsModal(true);
+  };
+
   const openAiSettings = (
     tab: OpenRouterSettingsTab = "models",
     provider?: AiProviderId
@@ -604,6 +640,16 @@ export default function App() {
   const [greetingLeaving, setGreetingLeaving] = useState<boolean>(false);
   const [summonSeq, setSummonSeq] = useState<number>(0);
   const greetingTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const lastBubbleMessageRef = useRef<string | null>(null);
+  const [homeGreetingSlot, setHomeGreetingSlot] = useState<{
+    seed: number;
+    nowMs: number;
+    avoidText: string | null;
+  }>(() => ({
+    seed: Math.floor(Math.random() * 100_000),
+    nowMs: Date.now(),
+    avoidText: null,
+  }));
   const xoxPhaseTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const isChatStreamingRef = useRef<boolean>(false);
   isChatStreamingRef.current = isChatStreaming;
@@ -631,8 +677,136 @@ export default function App() {
     () => () => {
       greetingTimers.current.forEach(clearTimeout);
       clearXoxPhaseTimers();
+      ttsPlayer.stop();
     },
     []
+  );
+
+  // Estado inicial de voz local y suscripción al reproductor
+  useEffect(() => {
+    let active = true;
+    void getTtsStatus()
+      .then((fresh) => {
+        if (active) setTtsStatus(fresh);
+      })
+      .catch(() => {});
+
+    const unsubPlayer = ttsPlayer.subscribe(setTtsPlayback);
+    let unsubEvents = () => {};
+    void subscribeTtsEvents({
+      onStatusUpdated: (next) => {
+        if (active) setTtsStatus(next);
+      },
+    }).then((fn) => {
+      unsubEvents = fn;
+    });
+
+    return () => {
+      active = false;
+      unsubPlayer();
+      unsubEvents();
+    };
+  }, []);
+
+  // Sincroniza animación de habla de Xox con la reproducción real de audio
+  useEffect(() => {
+    if (ttsPlayback.isPlaying) {
+      wasTtsSpeakingRef.current = true;
+      clearXoxPhaseTimers();
+      setXoxState("talking");
+      setXoxMessage("Hablando...");
+    } else if (wasTtsSpeakingRef.current) {
+      wasTtsSpeakingRef.current = false;
+      if (!isChatStreamingRef.current) {
+        setXoxState((s) => (s === "talking" ? "idle" : s));
+        setXoxMessage("¿En qué puedo ayudarte?");
+      }
+    }
+
+    if (ttsPlayback.error) {
+      setStatusMessage(ttsPlayback.error);
+      const t = setTimeout(() => setStatusMessage(null), 4200);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [ttsPlayback.isPlaying, ttsPlayback.error]);
+
+  const handleSpeakMessage = (msg: UiChatMessage) => {
+    const current = ttsStatusRef.current;
+    const isDesktop = isTauriTtsRuntime();
+    const canSpeak = isDesktop
+      ? Boolean(current?.config.enabled && current?.modelsInstalled)
+      : Boolean(current?.config.enabled);
+
+    if (!canSpeak) {
+      openSettings("voice");
+      setStatusMessage(
+        isDesktop && !current?.modelsInstalled
+          ? "Descarga y activa la voz local en Configuraciones → Voz."
+          : "Activa la voz en Configuraciones → Voz para escuchar mensajes."
+      );
+      setTimeout(() => setStatusMessage(null), 4000);
+      return;
+    }
+
+    void ttsPlayer.playMessage(
+      msg.id,
+      cleanVisibleReply(msg.content, { stripTables: false }),
+      {
+        voiceId: current?.config.voiceId,
+        speed: current?.config.speed,
+      }
+    );
+  };
+
+  // Actualiza la franja horaria del saludo si el usuario vuelve más tarde al Home
+  useEffect(() => {
+    const syncGreetingClock = () => {
+      if (document.visibilityState === "hidden") return;
+      const now = new Date();
+      setHomeGreetingSlot((prev) => {
+        const prevDate = new Date(prev.nowMs);
+        if (
+          getTimeOfDayBand(prevDate) === getTimeOfDayBand(now) &&
+          isSameLocalDay(prevDate, now)
+        ) {
+          return prev;
+        }
+        return {
+          seed: Math.floor(Math.random() * 100_000),
+          nowMs: now.getTime(),
+          avoidText: null,
+        };
+      });
+    };
+    document.addEventListener("visibilitychange", syncGreetingClock);
+    window.addEventListener("focus", syncGreetingClock);
+    return () => {
+      document.removeEventListener("visibilitychange", syncGreetingClock);
+      window.removeEventListener("focus", syncGreetingClock);
+    };
+  }, []);
+
+  const heroGreeting = useMemo(
+    () =>
+      getHeroGreeting({
+        userName: localUser?.name,
+        now: new Date(homeGreetingSlot.nowMs),
+        seed: homeGreetingSlot.seed,
+        avoidText: homeGreetingSlot.avoidText,
+      }),
+    [localUser?.name, homeGreetingSlot]
+  );
+
+  const chatInputPlaceholder = useMemo(
+    () =>
+      getChatInputPlaceholder({
+        isStreaming: isChatStreaming,
+        isDragging: isDraggingOverChat,
+        hasMessages: chatMessages.length > 0,
+        seed: homeGreetingSlot.seed,
+      }),
+    [isChatStreaming, isDraggingOverChat, chatMessages.length, homeGreetingSlot.seed]
   );
   const lastMsg = chatMessages[chatMessages.length - 1];
   const lastMsgStreamLen = (lastMsg?.content?.length ?? 0) + (lastMsg?.reasoning?.length ?? 0);
@@ -1053,7 +1227,12 @@ export default function App() {
     setActiveCanvas(null);
     setShowCanvas(false);
     setXoxState("idle");
-    setXoxMessage("¿En qué puedo ayudarte?");
+    setXoxMessage(DEFAULT_IDLE_GREETING);
+    setHomeGreetingSlot({
+      seed: Math.floor(Math.random() * 100_000),
+      nowMs: Date.now(),
+      avoidText: heroGreeting,
+    });
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
@@ -2741,11 +2920,22 @@ export default function App() {
 
     const startedMessages = [...baseMessages, userMsg, assistantPlaceholder];
     clearXoxPhaseTimers();
+    ttsPlayer.stop();
     const readingStartedAt = performance.now();
     const READING_MIN_MS = 750;
     let latestPhase: XoxState = "reading";
     let hasEnteredTalking = false;
     let talkingStartedAt = 0;
+    let streamedReplyText = "";
+    let startedStreamSpeech = false;
+    const isAutoSpeakReady = () => {
+      const cfg = ttsStatusRef.current;
+      return (
+        Boolean(cfg?.config.enabled) &&
+        Boolean(cfg?.config.autoPlay) &&
+        (!isTauriTtsRuntime() || Boolean(cfg?.modelsInstalled))
+      );
+    };
 
     setChatMessages(startedMessages);
     setIsChatStreaming(true);
@@ -3063,6 +3253,20 @@ export default function App() {
               latestPhase = "talking";
               setXoxState("talking");
             }
+            streamedReplyText += delta;
+            if (isAutoSpeakReady()) {
+              const visibleSoFar = cleanVisibleReply(streamedReplyText, { stripTables: false });
+              if (!startedStreamSpeech && visibleSoFar.trim().length > 0) {
+                startedStreamSpeech = true;
+                ttsPlayer.beginStreamSession(assistantMsgId, {
+                  voiceId: ttsStatusRef.current?.config.voiceId,
+                  speed: ttsStatusRef.current?.config.speed,
+                });
+              }
+              if (startedStreamSpeech) {
+                ttsPlayer.pushStreamText(assistantMsgId, visibleSoFar);
+              }
+            }
             setChatMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantMsgId
@@ -3260,13 +3464,35 @@ export default function App() {
         );
       };
 
+      const latestTts = ttsStatusRef.current;
+      const shouldAutoSpeak =
+        isAutoSpeakReady() &&
+        !nextClarification &&
+        replyWithFailover.trim().length > 0;
+
+      let spokenQueued = false;
+      if (shouldAutoSpeak) {
+        const finalSpeechSource =
+          startedStreamSpeech && res.reply.trim().length > 0 ? res.reply : replyWithFailover;
+        spokenQueued = ttsPlayer.finishStreamSession(
+          assistantMsgId,
+          cleanVisibleReply(finalSpeechSource, { stripTables: false }),
+          {
+            voiceId: latestTts?.config.voiceId,
+            speed: latestTts?.config.speed,
+          }
+        );
+      } else if (startedStreamSpeech) {
+        ttsPlayer.stop();
+      }
+
       if (generatedCount > 0) {
         setXoxState("syncing");
         setXoxMessage("Organizando tarjetas en Tareas...");
         xoxPhaseTimersRef.current.push(
           setTimeout(() => finishMood(2800), 850)
         );
-      } else {
+      } else if (!shouldAutoSpeak || !spokenQueued) {
         const TALKING_MIN_MS = 1100;
         const talkElapsed = talkingStartedAt ? performance.now() - talkingStartedAt : 0;
         const talkWait = talkingStartedAt
@@ -3292,6 +3518,9 @@ export default function App() {
       }
     } catch (err) {
       clearXoxPhaseTimers();
+      if (startedStreamSpeech) {
+        ttsPlayer.stop();
+      }
       const recoveredTurnPdf = lastPdfByTurnRef.current[assistantMsgId];
       if (recoveredTurnPdf) {
         setPdfDraftProgress(null);
@@ -3501,13 +3730,16 @@ export default function App() {
     if (xoxState !== "idle" || greeting) return;
     setXoxState("success");
     setGreetingLeaving(false);
-    const agentName = workspaceOverview?.profile.agentName?.trim() || "Xox";
-    const activeRole = workspaceOverview?.profile.activeRole?.trim();
-    setGreeting(
-      activeRole
-        ? `¡Hola! Soy ${agentName} (${activeRole}). ¿En qué trabajamos hoy?`
-        : `¡Hola! Soy ${agentName}. ¿Qué construimos o revisamos hoy?`
-    );
+    const bubbleMessage = getXoxBubbleGreeting({
+      agentName: workspaceOverview?.profile.agentName,
+      activeRole: workspaceOverview?.profile.activeRole,
+      userName: localUser?.name,
+      inActiveChat: chatMessages.length > 0,
+      pendingTasksCount: tasks.length,
+      lastMessage: lastBubbleMessageRef.current,
+    });
+    lastBubbleMessageRef.current = bubbleMessage;
+    setGreeting(bubbleMessage);
     greetingTimers.current.forEach(clearTimeout);
     greetingTimers.current = [
       setTimeout(() => setGreetingLeaving(true), 3400),
@@ -4068,10 +4300,12 @@ export default function App() {
               
               {/* Cabecera del Panel con Tabs Contexto / Chats */}
               <div className="px-2.5 py-2 border-b border-white/[0.06] flex items-center justify-between gap-2 bg-[#090a0e]">
-                <div
+                <JellyPillTrack
+                  activeKey={leftTab}
                   role="tablist"
                   aria-label="Secciones del panel lateral"
-                  className="flex items-center gap-1 p-0.5 rounded-lg bg-white/[0.03] border border-white/[0.07]"
+                  pillRadius="9999px"
+                  className="flex items-center gap-1 p-0.5 rounded-full"
                   onKeyDown={(e) => {
                     if (
                       e.key === "ArrowLeft" ||
@@ -4106,14 +4340,14 @@ export default function App() {
                     aria-selected={leftTab === "context"}
                     tabIndex={leftTab === "context" ? 0 : -1}
                     onClick={() => setLeftTab("context")}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
+                    className={`xook-jelly-tab flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
                       leftTab === "context"
-                        ? "bg-white/[0.1] text-white border border-white/[0.12]"
-                        : "border border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+                        ? "text-white"
+                        : "text-zinc-400 hover:text-zinc-200"
                     }`}
                   >
                     <FolderOpen
-                      className={`w-3.5 h-3.5 ${
+                      className={`w-3.5 h-3.5 transition-colors duration-200 ${
                         leftTab === "context" ? "text-zinc-200" : "text-zinc-500"
                       }`}
                     />
@@ -4126,25 +4360,31 @@ export default function App() {
                     aria-selected={leftTab === "chats"}
                     tabIndex={leftTab === "chats" ? 0 : -1}
                     onClick={() => setLeftTab("chats")}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
+                    className={`xook-jelly-tab flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
                       leftTab === "chats"
-                        ? "bg-white/[0.1] text-white border border-white/[0.12]"
-                        : "border border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04]"
+                        ? "text-white"
+                        : "text-zinc-400 hover:text-zinc-200"
                     }`}
                   >
                     <MessageSquare
-                      className={`w-3.5 h-3.5 ${
+                      className={`w-3.5 h-3.5 transition-colors duration-200 ${
                         leftTab === "chats" ? "text-zinc-200" : "text-zinc-500"
                       }`}
                     />
                     <span>Chats</span>
                     {conversations.length > 0 && (
-                      <span className="text-[10px] font-mono tabular-nums text-zinc-300 bg-white/[0.07] px-1.5 py-0.2 rounded-md">
+                      <span
+                        className={`text-[10px] font-mono tabular-nums px-1.5 py-0.2 rounded-full transition-colors duration-200 ${
+                          leftTab === "chats"
+                            ? "bg-white/[0.12] text-white"
+                            : "bg-white/[0.07] text-zinc-300"
+                        }`}
+                      >
                         {conversations.length}
                       </span>
                     )}
                   </button>
-                </div>
+                </JellyPillTrack>
 
                 {leftTab === "chats" && (conversations.length > 0 || chatMessages.length > 0) ? (
                   <button
@@ -4210,18 +4450,11 @@ export default function App() {
                         max={100}
                         aria-label={`${usageSummary.tierLabel}: ${usageSummary.headline}`}
                         style={{
-                          ["--xook-progress-fill" as string]:
-                            accountUsage && !accountUsage.ok
-                              ? "rgba(244, 63, 94, 0.8)"
-                              : usageSummary.meterMode === "used"
-                                ? usageSummary.pct >= 85
-                                  ? "rgba(251, 191, 36, 0.9)"
-                                  : "rgba(244, 244, 245, 0.85)"
-                                : usageSummary.meterMode === "remaining"
-                                  ? usageSummary.pct <= 15
-                                    ? "rgba(244, 63, 94, 0.85)"
-                                    : "rgba(110, 231, 183, 0.85)"
-                                  : "rgba(212, 212, 216, 0.45)",
+                          ["--xook-progress-fill" as string]: getUsageMeterFillColor({
+                            meterMode: usageSummary.meterMode,
+                            pct: usageSummary.pct,
+                            hasError: Boolean(accountUsage && !accountUsage.ok),
+                          }),
                         }}
                       />
                       <div className="mt-1.5 flex items-center justify-between gap-2 text-[10.5px] text-zinc-400">
@@ -4417,21 +4650,43 @@ export default function App() {
 
               {/* Pie del Panel Lateral */}
               <div className="px-3 py-2 border-t border-white/[0.06] bg-[#090a0e] text-[11px] text-zinc-400 flex items-center justify-between gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowLocalAuth(true)}
-                  className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors truncate cursor-pointer rounded focus-visible:outline-2 focus-visible:outline-white/60"
-                  title="Configurar perfil de usuario local"
-                >
-                  <UserCircle2
-                    className={`w-3.5 h-3.5 shrink-0 ${
-                      localUser ? "text-zinc-300" : "text-zinc-500"
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowLocalAuth(true)}
+                    className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors truncate cursor-pointer rounded focus-visible:outline-2 focus-visible:outline-white/60 min-w-0"
+                    title="Configurar perfil de usuario local"
+                  >
+                    <UserCircle2
+                      className={`w-3.5 h-3.5 shrink-0 ${
+                        localUser ? "text-zinc-300" : "text-zinc-500"
+                      }`}
+                    />
+                    <span className="truncate">
+                      {localUser ? localUser.name : "Sin perfil local"}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => openSettings("voice")}
+                    aria-label="Configuraciones"
+                    title="Configuraciones (Voz, Pantalla, IA, Perfil)"
+                    className={`p-1 rounded-md border flex items-center gap-1 transition-all cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-white/60 ${
+                      showSettingsModal
+                        ? "bg-white/[0.08] text-white border-white/[0.12]"
+                        : "bg-transparent text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.06]"
                     }`}
-                  />
-                  <span className="truncate">
-                    {localUser ? localUser.name : "Sin perfil local"}
-                  </span>
-                </button>
+                  >
+                    <Settings className="w-3.5 h-3.5" />
+                    {ttsStatus?.config.enabled && (
+                      <span
+                        className="w-1.5 h-1.5 rounded-full bg-emerald-300 shrink-0"
+                        title="Voz activada"
+                      />
+                    )}
+                  </button>
+                </div>
                 <span className="text-zinc-400 font-medium flex items-center gap-1.5 shrink-0 truncate max-w-[140px]">
                   <Check
                     className={`w-3 h-3 shrink-0 ${
@@ -4583,9 +4838,7 @@ export default function App() {
                   {/* Saludo Humano Amplio y Protagonista (espacio reservado fijo para evitar saltos verticales) */}
                   <div className="relative z-10 space-y-2.5 max-w-2xl px-4 flex flex-col items-center">
                     <h1 className="text-2xl sm:text-3xl lg:text-[34px] font-semibold leading-tight text-white tracking-tight select-text">
-                      {localUser
-                        ? `Hola ${localUser.name.split(" ")[0]}, ¿en qué puedo ayudarte?`
-                        : "¿En qué puedo ayudarte?"}
+                      {heroGreeting}
                     </h1>
 
                     <div className="min-h-[28px] flex items-center justify-center">
@@ -4676,6 +4929,11 @@ export default function App() {
                     onResolvePermission={(reqId, decision) =>
                       void handleResolvePermission(reqId, decision)
                     }
+                    ttsEnabled={Boolean(ttsStatus?.config.enabled)}
+                    ttsModelsInstalled={Boolean(ttsStatus?.modelsInstalled)}
+                    ttsLoadingMessageId={ttsPlayback.loadingMessageId}
+                    ttsPlayingMessageId={ttsPlayback.playingMessageId}
+                    onSpeakMessage={handleSpeakMessage}
                   />
                 </div>
               )}
@@ -4897,13 +5155,7 @@ export default function App() {
                         }
                       }}
                       disabled={isChatStreaming}
-                      placeholder={
-                        isChatStreaming
-                          ? "Procesando..."
-                          : isDraggingOverChat
-                          ? "Suelta tu PDF, imagen o archivo aquí..."
-                          : "Escribe a Xox (o arrastra PDFs e imágenes)..."
-                      }
+                      placeholder={chatInputPlaceholder}
                       className="input-bubble flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-sm sm:text-base text-zinc-100 placeholder:text-zinc-500 focus:outline-none py-1.5 px-1 font-normal leading-relaxed disabled:opacity-50 select-text"
                     />
 
@@ -5054,14 +5306,10 @@ export default function App() {
                                       max={100}
                                       aria-label={`${usageSummary.tierLabel}: ${usageSummary.headline}`}
                                       style={{
-                                        ["--xook-progress-fill" as string]:
-                                          usageSummary.meterMode === "used"
-                                            ? usageSummary.pct >= 85
-                                              ? "rgba(251, 191, 36, 0.9)"
-                                              : "rgba(244, 244, 245, 0.8)"
-                                            : usageSummary.pct <= 15
-                                              ? "rgba(244, 63, 94, 0.85)"
-                                              : "rgba(110, 231, 183, 0.85)",
+                                        ["--xook-progress-fill" as string]: getUsageMeterFillColor({
+                                          meterMode: usageSummary.meterMode,
+                                          pct: usageSummary.pct,
+                                        }),
                                       }}
                                     />
                                   )}
@@ -5435,6 +5683,24 @@ export default function App() {
               ? `Sesión local activa: ${updatedUser.name} (${updatedUser.storeName})`
               : "Sesión local cerrada."
           );
+        }}
+      />
+
+      <SettingsModal
+        isOpen={showSettingsModal}
+        initialTab={settingsInitialTab}
+        onClose={() => setShowSettingsModal(false)}
+        ttsStatus={ttsStatus}
+        onTtsStatusChanged={setTtsStatus}
+        aiConfig={aiConfig}
+        modelCatalog={catalogModels}
+        localUser={localUser}
+        activeWorkspaceId={workspaceOverview?.active.id ?? null}
+        onOpenAiSettings={(tab) => openAiSettings(tab ?? "models")}
+        onOpenLocalAuth={() => setShowLocalAuth(true)}
+        onStatusNotice={(msg) => {
+          setStatusMessage(msg);
+          setTimeout(() => setStatusMessage(null), 3800);
         }}
       />
     </div>

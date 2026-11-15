@@ -10,6 +10,7 @@ pub fn run() {
         .manage(quick_summon::SummonState::default())
         .manage(slices::command_runner::runner::CommandPermissionBroker::default())
         .manage(slices::screen_context::watcher::ScreenContextState::default())
+        .manage(slices::tts_voice::worker::TtsWorkerState::default())
         .setup(|app| {
             if let Ok((_, active)) =
                 slices::workspace_manager::registry::ensure_active_workspace(app.handle())
@@ -104,7 +105,13 @@ pub fn run() {
             slices::screen_context::commands::capture_screen_context_now,
             slices::screen_context::commands::query_screen_memory_cmd,
             slices::screen_context::commands::clear_screen_memory_cmd,
-            slices::screen_context::commands::get_unified_memory_context_cmd
+            slices::screen_context::commands::get_unified_memory_context_cmd,
+            slices::tts_voice::commands::get_tts_status_cmd,
+            slices::tts_voice::commands::save_tts_config_cmd,
+            slices::tts_voice::commands::download_tts_models_cmd,
+            slices::tts_voice::commands::delete_tts_models_cmd,
+            slices::tts_voice::commands::unload_tts_worker_cmd,
+            slices::tts_voice::commands::synthesize_tts_speech_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

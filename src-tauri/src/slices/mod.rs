@@ -5,6 +5,7 @@ pub mod host_fs;
 pub mod scheduler;
 pub mod screen_context;
 pub mod task_ledger;
+pub mod tts_voice;
 pub mod workspace_manager;
 
 
