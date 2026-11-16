@@ -28,7 +28,7 @@ import {
   ThumbsUp,
   Volume2,
 } from "lucide-react";
-import { XoxStar, XoxState } from "../../components/XoxStar";
+import { XoxStar, XoxSilhouetteIcon, XoxState, type XoxAccentPreset } from "../../components/XoxStar";
 import { ProviderIcon } from "./ProviderIcon";
 import {
   CanvasArtifact,
@@ -81,10 +81,12 @@ export interface UiChatMessage {
   vaultPrompt?: VaultPromptSpec;
   actionButton?: {
     label: string;
-    kind: "open_settings" | "save_pending_key" | "open_clarification";
+    kind: "open_settings" | "save_pending_key" | "open_clarification" | "open_xox_studio";
     provider?: AiProviderId;
     cardId?: string;
     clarification?: ClarificationSpec;
+    studioTab?: "identity" | "voice" | "skills" | "rules";
+    skillSlug?: string;
   };
 }
 
@@ -125,6 +127,11 @@ interface ChatMessageListProps {
   ttsLoadingMessageId?: string | null;
   ttsPlayingMessageId?: string | null;
   onSpeakMessage?: (msg: UiChatMessage) => void;
+  accentPreset?: XoxAccentPreset | string;
+  agentName?: string;
+  xoxAwayInStudio?: boolean;
+  xoxTravelPhase?: "idle" | "to-studio" | "from-studio";
+  glideSeq?: number;
 }
 
 function FormattedReply({
@@ -506,6 +513,11 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   onRevealPdfFolder,
   onXoxClick,
   onAction,
+  accentPreset = "classic",
+  agentName = "Xox",
+  xoxAwayInStudio = false,
+  xoxTravelPhase = "idle",
+  glideSeq = 0,
   onOpenTasksTab,
   onRegenerateMessage,
   onRateMessage,
@@ -620,16 +632,33 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
           .replace(/<\s*(?:\/\s*)?(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions|posta|reply|resp)\s*(?:>|$)/gi, "")
           .trim();
 
+        const laneTravelClass =
+          xoxTravelPhase === "to-studio"
+            ? "xox-stage-away"
+            : xoxTravelPhase === "from-studio"
+              ? "xox-stage-home"
+              : "";
+
         return (
           <div key={msg.id} className="flex items-start gap-2 @md:gap-3 @lg:gap-4 @5xl:gap-6">
-            {/* Mascota Xox: carril izquierdo responsive con escala fluida en pantalla completa */}
-            <div className="shrink-0 self-start sticky top-4 @md:top-5 @5xl:top-6 w-[110px] @sm:w-[130px] @md:w-[150px] @lg:w-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] flex justify-center">
+            {/* Mascota Xox: carril izquierdo responsive con deslizamiento suave hacia/desde Espacio de Xox */}
+            <div
+              className={`xox-chat-lane-slot shrink-0 self-start sticky top-4 @md:top-5 @5xl:top-6 w-[110px] @sm:w-[130px] @md:w-[150px] @lg:w-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] flex justify-center ${
+                xoxAwayInStudio ? "is-away" : ""
+              }`}
+            >
               {isActiveGuideTurn ? (
-                <div className="relative shrink-0 -my-1 @md:-my-2 @5xl:-my-3 select-none pointer-events-none">
+                <div
+                  className={`relative shrink-0 -my-1 @md:-my-2 @5xl:-my-3 select-none pointer-events-none ${laneTravelClass}`}
+                >
                   <XoxStar
                     state={xoxState}
                     responsive
                     hitArea="star"
+                    accentPreset={accentPreset}
+                    glideTrigger={glideSeq}
+                    glideDir={xoxTravelPhase === "to-studio" ? "right" : "left"}
+                    active={!xoxAwayInStudio || xoxTravelPhase !== "to-studio"}
                     className="w-[110px] h-[110px] @sm:w-[130px] @sm:h-[130px] @md:w-[150px] @md:h-[150px] @lg:w-[174px] @lg:h-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] @2xl:h-[clamp(198px,19.5cqi,264px)]"
                     summonTrigger={summonTrigger}
                     onClick={onXoxClick}
@@ -651,7 +680,11 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                   )}
                 </div>
               ) : (
-                <div className="w-9 h-9 @md:w-10 @md:h-10 @5xl:w-11 @5xl:h-11 rounded-full bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mt-0.5">
+                <div
+                  className={`w-9 h-9 @md:w-10 @md:h-10 @5xl:w-11 @5xl:h-11 rounded-full bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mt-0.5 transition-opacity duration-200 ${
+                    xoxAwayInStudio ? "opacity-0" : "opacity-100"
+                  }`}
+                >
                   <XoxMiniGlyph />
                 </div>
               )}
@@ -662,7 +695,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
               {/* Cabecera sutil del turno */}
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-xs @md:text-[13px] font-medium text-white">Xox</span>
+                  <span className="text-xs @md:text-[13px] font-medium text-white">{agentName}</span>
                   {phaseLabel ? (
                     <span className="text-[11px] xox-shimmer inline-block font-medium truncate">
                       {phaseLabel}
@@ -1042,6 +1075,8 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                   >
                     {msg.actionButton.kind === "open_clarification" ? (
                       <HelpCircle className="w-3 h-3 text-zinc-400" />
+                    ) : msg.actionButton.kind === "open_xox_studio" ? (
+                      <XoxSilhouetteIcon className="w-3.5 h-3.5 text-zinc-100" />
                     ) : (
                       <KeyRound className="w-3 h-3 text-zinc-400" />
                     )}
@@ -1051,7 +1086,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
               )}
 
               {/* Barra discreta de acciones estilo Antigravity/Gemini */}
-              {!msg.isStreaming && msg.content.trim() && !msg.actionButton && (
+              {!msg.isStreaming && msg.content.trim() && (!msg.actionButton || msg.actionButton.kind === "open_xox_studio") && (
                 <div className="flex items-center gap-1 pt-0.5 text-zinc-500">
                   {onRateMessage && (
                     <>

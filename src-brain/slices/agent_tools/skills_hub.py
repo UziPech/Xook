@@ -125,9 +125,13 @@ def _atomic_write_text(path: Path, content: str) -> None:
     os.replace(str(tmp_path), str(path))
 
 
-def _append_skill_audit(workspace_root: Path, action: str, detail: Dict[str, Any]) -> None:
+def _append_skill_audit(audit_root: Path, action: str, detail: Dict[str, Any], *, is_config_dir: bool = False) -> None:
     try:
-        log_path = workspace_root / SKILLS_AUDIT_LOG_REL
+        log_path = (
+            audit_root / "xox-backups" / "skills-audit.jsonl"
+            if is_config_dir
+            else audit_root / SKILLS_AUDIT_LOG_REL
+        )
         log_path.parent.mkdir(parents=True, exist_ok=True)
         entry = {
             "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(),
@@ -138,6 +142,94 @@ def _append_skill_audit(workspace_root: Path, action: str, detail: Dict[str, Any
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
+def load_global_xox_profile(xox_config_dir: Optional[Path]) -> Dict[str, Any]:
+    """Lee `xox-profile.json` del directorio global de configuración si existe."""
+    defaults: Dict[str, Any] = {
+        "agentName": "Xox",
+        "activeRole": "Asistente Co-Constructor",
+        "personality": "Cercano, claro, práctico y directo.",
+        "toneTags": ["Cercano", "Directo", "Práctico"],
+        "initialInstructions": "",
+        "globalRules": [],
+        "likes": [],
+        "workflows": [],
+        "donts": [],
+        "accentPreset": "classic",
+    }
+    if xox_config_dir is None:
+        return defaults
+    profile_path = xox_config_dir / "xox-profile.json"
+    if not profile_path.is_file():
+        return defaults
+    try:
+        loaded = json.loads(profile_path.read_text(encoding="utf-8", errors="replace"))
+        if isinstance(loaded, dict):
+            return {**defaults, **loaded}
+    except Exception:
+        pass
+    return defaults
+
+
+def save_global_xox_profile_fallback(
+    xox_config_dir: Path,
+    patch: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Fallback local para actualizar `xox-profile.json` cuando no hay puente IPC activo."""
+    current = load_global_xox_profile(xox_config_dir)
+    list_mode = str(patch.get("list_mode") or "merge").strip().lower()
+
+    def _merge_list(existing: List[str], incoming: Optional[List[str]]) -> List[str]:
+        if incoming is None:
+            return list(existing)
+        clean_in = _normalize_clean_bullets([str(x) for x in incoming], max_items=30)
+        if list_mode == "replace":
+            return clean_in
+        if list_mode == "remove":
+            rem = {i.lower() for i in clean_in}
+            return [e for e in existing if e.lower() not in rem]
+        return _normalize_clean_bullets([*existing, *clean_in], max_items=30)
+
+    next_prof = dict(current)
+    for py_k, js_k in (
+        ("agent_name", "agentName"),
+        ("active_role", "activeRole"),
+        ("personality", "personality"),
+        ("accent_preset", "accentPreset"),
+    ):
+        val = patch.get(py_k) if patch.get(py_k) is not None else patch.get(js_k)
+        if isinstance(val, str) and val.strip():
+            next_prof[js_k] = val.strip()
+
+    init_inst = patch.get("initial_instructions") if patch.get("initial_instructions") is not None else patch.get("initialInstructions")
+    if isinstance(init_inst, str):
+        next_prof["initialInstructions"] = init_inst.strip()[:3000]
+
+    tone_tags = patch.get("tone_tags") if patch.get("tone_tags") is not None else patch.get("toneTags")
+    if isinstance(tone_tags, list):
+        next_prof["toneTags"] = _normalize_clean_bullets([str(x) for x in tone_tags], max_items=8)
+
+    for py_k, js_k in (
+        ("global_rules", "globalRules"),
+        ("likes", "likes"),
+        ("workflows", "workflows"),
+        ("donts", "donts"),
+    ):
+        inc = patch.get(py_k) if patch.get(py_k) is not None else patch.get(js_k)
+        if isinstance(inc, list):
+            next_prof[js_k] = _merge_list(list(current.get(js_k) or []), inc)
+
+    next_prof["updatedAt"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    profile_path = xox_config_dir / "xox-profile.json"
+    if profile_path.is_file():
+        try:
+            backup = xox_config_dir / "xox-backups" / "xox-profile.json.bak"
+            _atomic_write_text(backup, profile_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            pass
+    _atomic_write_text(profile_path, json.dumps(next_prof, ensure_ascii=False, indent=2) + "\n")
+    return {"ok": True, "profile": next_prof}
 
 
 def is_official_publisher(source_slug: str) -> Tuple[bool, str]:
@@ -387,39 +479,31 @@ def update_user_preferences_doc(
     }
 
 
-def save_learned_skill(
-    workspace_root: Path,
+def build_skill_markdown(
     *,
-    name: str,
+    slug: str,
+    title: str,
     description: str,
-    instructions: str,
+    instructions: str = "",
     role: str = "",
     domain: str = "general",
     user_preferences: Optional[List[str]] = None,
     workflow_steps: Optional[List[str]] = None,
     do_not_do: Optional[List[str]] = None,
     source: str = "learned-from-user",
-) -> Dict[str, Any]:
-    """Guarda o actualiza una skill aprendida en `habilidades/<slug>/SKILL.md`."""
-    clean_name = re.sub(r"\s+", " ", (name or "").strip())
-    clean_desc = re.sub(r"\s+", " ", (description or "").strip())
-    clean_inst = (instructions or "").strip()
-    if not clean_name or not clean_desc:
-        return {"ok": False, "error": "`name` y `description` son obligatorios."}
-    if not clean_inst and not (user_preferences or workflow_steps or do_not_do):
-        return {
-            "ok": False,
-            "error": "Proporciona instrucciones, pasos de flujo o reglas claras para guardar la habilidad.",
-        }
-
-    slug = slugify_skill_name(clean_name)
-    rel_path = f"habilidades/{slug}/SKILL.md"
+    enabled: bool = True,
+) -> str:
+    """Construye un documento `SKILL.md` estructurado y legible a partir de bloques simples."""
     now_iso = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+    clean_title = re.sub(r"\s+", " ", (title or slug).strip())
+    clean_desc = re.sub(r"\s+", " ", (description or "").strip()).replace('"', "'")
+    clean_inst = (instructions or "").strip()
 
     fm_lines = [
         "---",
         f'name: "{slug}"',
-        f'description: "{clean_desc.replace(chr(34), chr(39))}"',
+        f'title: "{clean_title.replace(chr(34), chr(39))}"',
+        f'description: "{clean_desc}"',
     ]
     if role.strip():
         fm_lines.append(f'role: "{role.strip().replace(chr(34), chr(39))}"')
@@ -427,11 +511,12 @@ def save_learned_skill(
         fm_lines.append(f'domain: "{domain.strip().replace(chr(34), chr(39))}"')
     fm_lines.extend(
         [
+            f"enabled: {'true' if enabled else 'false'}",
             f'source: "{(source or "learned-from-user").strip()}"',
             f'updated_at: "{now_iso}"',
             "---",
             "",
-            f"# {clean_name}",
+            f"# {clean_title}",
             "",
             f"**Propósito:** {clean_desc}",
         ]
@@ -450,7 +535,116 @@ def save_learned_skill(
     if clean_inst:
         fm_lines.extend(["", "## Criterios e Instrucciones", clean_inst])
 
-    rendered = "\n".join(fm_lines).rstrip() + "\n"
+    return "\n".join(fm_lines).rstrip() + "\n"
+
+
+def _parse_skill_sections_from_body(body: str) -> Dict[str, Any]:
+    """Extrae bloques amigables (gustos, pasos, qué no hacer, notas) desde el cuerpo Markdown."""
+    prefs: List[str] = []
+    steps: List[str] = []
+    donts: List[str] = []
+    extra_lines: List[str] = []
+    title = ""
+    description = ""
+
+    section = "extra"
+    for raw_line in (body or "").splitlines():
+        s = raw_line.strip()
+        if s.startswith("# ") and not title:
+            title = s[2:].strip()
+            continue
+        if s.lower().startswith("**propósito:**") and not description:
+            description = s.split(":**", 1)[-1].strip()
+            continue
+        if s.startswith("## "):
+            heading = s[3:].strip().lower()
+            if "gusto" in heading or "estilo" in heading or "preferencia" in heading:
+                section = "prefs"
+            elif "flujo" in heading or "paso" in heading or "workflow" in heading:
+                section = "steps"
+            elif "no hacer" in heading or "evitar" in heading or "límite" in heading or "limite" in heading:
+                section = "donts"
+            elif "criterio" in heading or "instruccion" in heading or "indicacion" in heading:
+                section = "instructions"
+            else:
+                section = "extra"
+                extra_lines.append(raw_line)
+            continue
+
+        if section in ("prefs", "steps", "donts") and s.startswith(("-", "*", "•")):
+            item = s.lstrip("-*• ").strip()
+            if item:
+                if section == "prefs":
+                    prefs.append(item)
+                elif section == "steps":
+                    steps.append(item)
+                else:
+                    donts.append(item)
+            continue
+
+        if section == "instructions" or section == "extra":
+            extra_lines.append(raw_line)
+
+    return {
+        "title": title,
+        "description": description,
+        "user_preferences": prefs,
+        "workflow_steps": steps,
+        "do_not_do": donts,
+        "instructions": "\n".join(extra_lines).strip(),
+    }
+
+
+def save_learned_skill(
+    workspace_root: Path,
+    *,
+    name: str,
+    description: str,
+    instructions: str,
+    role: str = "",
+    domain: str = "general",
+    user_preferences: Optional[List[str]] = None,
+    workflow_steps: Optional[List[str]] = None,
+    do_not_do: Optional[List[str]] = None,
+    source: str = "learned-from-user",
+    skills_root: Optional[Path] = None,
+    scope: str = "workspace",
+    enabled: bool = True,
+    slug_override: str = "",
+    audit_root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Guarda o actualiza una skill aprendida en `xox-skills/<slug>/SKILL.md` o `habilidades/<slug>/SKILL.md`."""
+    clean_name = re.sub(r"\s+", " ", (name or "").strip())
+    clean_desc = re.sub(r"\s+", " ", (description or "").strip())
+    clean_inst = (instructions or "").strip()
+    if not clean_name or not clean_desc:
+        return {"ok": False, "error": "`name` y `description` son obligatorios."}
+    if not clean_inst and not (user_preferences or workflow_steps or do_not_do):
+        return {
+            "ok": False,
+            "error": "Proporciona instrucciones, pasos de flujo o reglas claras para guardar la habilidad.",
+        }
+
+    slug = slugify_skill_name(slug_override or clean_name)
+    is_global = scope == "global" and skills_root is not None
+    rel_path = (
+        f"global:xox-skills/{slug}/SKILL.md"
+        if is_global
+        else f"habilidades/{slug}/SKILL.md"
+    )
+    rendered = build_skill_markdown(
+        slug=slug,
+        title=clean_name,
+        description=clean_desc,
+        instructions=clean_inst,
+        role=role,
+        domain=domain,
+        user_preferences=user_preferences,
+        workflow_steps=workflow_steps,
+        do_not_do=do_not_do,
+        source=source,
+        enabled=enabled,
+    )
     findings = scan_skill_security(rendered)
     if findings:
         return {
@@ -459,37 +653,122 @@ def save_learned_skill(
             "security_findings": findings,
         }
 
-    target = workspace_root / rel_path
+    target = (skills_root / slug / "SKILL.md") if is_global and skills_root is not None else (workspace_root / rel_path)
     _atomic_write_text(target, rendered)
     _append_skill_audit(
-        workspace_root,
+        audit_root or workspace_root,
         "skill_learned",
-        {"path": rel_path, "slug": slug, "role": role.strip(), "domain": domain.strip()},
+        {"path": rel_path, "slug": slug, "scope": scope, "role": role.strip(), "domain": domain.strip()},
+        is_config_dir=is_global and audit_root is not None,
     )
     return {
         "ok": True,
         "slug": slug,
+        "scope": "global" if is_global else "workspace",
         "path": rel_path,
         "name": clean_name,
         "description": clean_desc,
         "role": role.strip(),
         "domain": domain.strip(),
+        "enabled": enabled,
+        "raw_markdown": rendered,
+    }
+
+
+def update_existing_skill(
+    *,
+    slug: str,
+    target_path: Path,
+    rel_path: str,
+    scope: str,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    instructions: Optional[str] = None,
+    role: Optional[str] = None,
+    domain: Optional[str] = None,
+    user_preferences: Optional[List[str]] = None,
+    workflow_steps: Optional[List[str]] = None,
+    do_not_do: Optional[List[str]] = None,
+    enabled: Optional[bool] = None,
+    audit_root: Optional[Path] = None,
+    is_config_dir: bool = False,
+) -> Dict[str, Any]:
+    """Actualiza campos puntuales o el estado (`enabled`) de una skill existente sin perder el resto."""
+    if not target_path.is_file():
+        return {"ok": False, "error": f"No existe la habilidad '{slug}' en {scope}."}
+    raw = target_path.read_text(encoding="utf-8", errors="replace")
+    meta, body = parse_skill_frontmatter(raw)
+    parsed = _parse_skill_sections_from_body(body)
+
+    next_title = re.sub(r"\s+", " ", (name or meta.get("title") or parsed["title"] or meta.get("name") or slug).strip())
+    next_desc = re.sub(r"\s+", " ", (description if description is not None else (meta.get("description") or parsed["description"] or "")).strip())
+    next_role = (role if role is not None else meta.get("role", "")).strip()
+    next_domain = (domain if domain is not None else meta.get("domain", "general")).strip() or "general"
+    next_prefs = user_preferences if user_preferences is not None else parsed["user_preferences"]
+    next_steps = workflow_steps if workflow_steps is not None else parsed["workflow_steps"]
+    next_donts = do_not_do if do_not_do is not None else parsed["do_not_do"]
+    next_inst = instructions.strip() if instructions is not None else parsed["instructions"]
+    cur_enabled_str = meta.get("enabled", "true").strip().lower()
+    cur_enabled = cur_enabled_str not in ("false", "0", "no", "off")
+    next_enabled = cur_enabled if enabled is None else bool(enabled)
+
+    rendered = build_skill_markdown(
+        slug=slugify_skill_name(slug),
+        title=next_title,
+        description=next_desc or f"Habilidad personalizada: {next_title}",
+        instructions=next_inst,
+        role=next_role,
+        domain=next_domain,
+        user_preferences=next_prefs,
+        workflow_steps=next_steps,
+        do_not_do=next_donts,
+        source=meta.get("source") or "learned-from-user",
+        enabled=next_enabled,
+    )
+    findings = scan_skill_security(rendered)
+    if findings:
+        return {
+            "ok": False,
+            "error": "La actualización fue bloqueada por seguridad: " + "; ".join(findings),
+            "security_findings": findings,
+        }
+
+    _atomic_write_text(target_path, rendered)
+    if audit_root is not None:
+        _append_skill_audit(
+            audit_root,
+            "skill_updated",
+            {"path": rel_path, "slug": slug, "scope": scope, "enabled": next_enabled},
+            is_config_dir=is_config_dir,
+        )
+    return {
+        "ok": True,
+        "slug": slugify_skill_name(slug),
+        "scope": scope,
+        "path": rel_path,
+        "name": next_title,
+        "description": next_desc,
+        "role": next_role,
+        "domain": next_domain,
+        "enabled": next_enabled,
+        "raw_markdown": rendered,
     }
 
 
 def index_workspace_skills(
-    workspace_root: Path,
+    workspace_root: Optional[Path],
     *,
     built_in_skills_dir: Optional[Path] = None,
+    global_skills_dir: Optional[Path] = None,
     active_role: str = "",
 ) -> Dict[str, Any]:
-    """Genera un índice compacto de skills de `habilidades/` (progressive disclosure)."""
+    """Genera un índice compacto de skills globales + del workspace (progressive disclosure)."""
     entries: List[Dict[str, Any]] = []
     seen_rel = set()
     active_norm = slugify_skill_name(active_role) if active_role.strip() else ""
     active_low = active_role.strip().lower()
 
-    def _collect_md(path: Path, rel_str: str, builtin: bool = False) -> None:
+    def _collect_md(path: Path, rel_str: str, *, scope: str, builtin: bool = False) -> None:
         if rel_str in seen_rel:
             return
         seen_rel.add(rel_str)
@@ -501,8 +780,10 @@ def index_workspace_skills(
             return
         meta, body = parse_skill_frontmatter(raw)
         fallback_slug = path.parent.name if path.name.upper() == "SKILL.MD" else path.stem
-        name = meta.get("name") or fallback_slug
-        slug = slugify_skill_name(name)
+        slug = slugify_skill_name(fallback_slug or meta.get("name") or "skill")
+        name = meta.get("title") or meta.get("name") or fallback_slug
+        enabled_raw = meta.get("enabled", "true").strip().lower()
+        is_enabled = enabled_raw not in ("false", "0", "no", "off")
         desc = meta.get("description") or ""
         if not desc and body:
             for line in body.splitlines():
@@ -513,7 +794,8 @@ def index_workspace_skills(
         role_val = meta.get("role", "")
         domain_val = meta.get("domain", "")
         is_active = bool(
-            active_low
+            is_enabled
+            and active_low
             and (
                 active_low == role_val.lower()
                 or active_low == name.lower()
@@ -528,32 +810,46 @@ def index_workspace_skills(
                 "description": desc[:200],
                 "role": role_val,
                 "domain": domain_val,
-                "source": meta.get("source", "builtin" if builtin else "workspace"),
+                "scope": scope,
+                "source": meta.get("source", scope),
                 "rel_path": rel_str,
                 "builtin": builtin,
+                "enabled": is_enabled,
                 "active_match": is_active,
                 "body": body[:2400] if is_active else "",
+                "full_body": body[:2400] if is_enabled else "",
             }
         )
 
-    hab_dir = workspace_root / "habilidades"
-    if hab_dir.is_dir():
-        for skill_md in sorted(hab_dir.glob("*/SKILL.md")):
-            rel = f"habilidades/{skill_md.parent.name}/SKILL.md"
-            _collect_md(skill_md, rel, builtin=False)
-        for root_md in sorted(hab_dir.glob("*.md")):
-            if root_md.name.lower() in ("perfil-usuario.md", "readme.md"):
-                continue
-            _collect_md(root_md, f"habilidades/{root_md.name}", builtin=False)
+    if global_skills_dir is not None and global_skills_dir.is_dir():
+        for skill_md in sorted(global_skills_dir.glob("*/SKILL.md")):
+            rel = f"global:xox-skills/{skill_md.parent.name}/SKILL.md"
+            _collect_md(skill_md, rel, scope="global", builtin=False)
+
+    if workspace_root is not None:
+        hab_dir = workspace_root / "habilidades"
+        if hab_dir.is_dir():
+            for skill_md in sorted(hab_dir.glob("*/SKILL.md")):
+                rel = f"habilidades/{skill_md.parent.name}/SKILL.md"
+                _collect_md(skill_md, rel, scope="workspace", builtin=False)
+            for root_md in sorted(hab_dir.glob("*.md")):
+                if root_md.name.lower() in ("perfil-usuario.md", "readme.md"):
+                    continue
+                _collect_md(root_md, f"habilidades/{root_md.name}", scope="workspace", builtin=False)
 
     if built_in_skills_dir is not None and built_in_skills_dir.is_dir():
         for skill_md in sorted(built_in_skills_dir.glob("*/SKILL.md")):
             rel = f"builtin:skills/{skill_md.parent.name}/SKILL.md"
-            _collect_md(skill_md, rel, builtin=True)
+            _collect_md(skill_md, rel, scope="builtin", builtin=True)
 
+    user_prof = (
+        load_user_preferences_doc(workspace_root)
+        if workspace_root is not None
+        else {"exists": False, "path": USER_PROFILE_REL, "raw": "", "likes": [], "workflows": [], "donts": [], "compact_prompt": ""}
+    )
     return {
         "skills": entries,
-        "user_profile": load_user_preferences_doc(workspace_root),
+        "user_profile": user_prof,
     }
 
 
@@ -655,6 +951,9 @@ def install_official_skill(
     skill_id: str,
     local_slug: str = "",
     http_get: Optional[Callable[[str, int], Tuple[int, str]]] = None,
+    skills_root: Optional[Path] = None,
+    scope: str = "workspace",
+    audit_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Descarga un `SKILL.md` oficial, ejecuta escaneo estático de seguridad y lo guarda en `habilidades/`."""
     clean_source = (source or "").strip().strip("/")
@@ -730,33 +1029,38 @@ def install_official_skill(
 
     meta, _ = parse_skill_frontmatter(fetched_md)
     slug = slugify_skill_name(local_slug or meta.get("name") or clean_skill_id)
-    rel_path = f"habilidades/{slug}/SKILL.md"
+    is_global = scope == "global" and skills_root is not None
+    rel_path = f"global:xox-skills/{slug}/SKILL.md" if is_global else f"habilidades/{slug}/SKILL.md"
     provenance_header = f"<!-- Fuente oficial verificada: https://skills.sh/{clean_source}/{clean_skill_id} ({fetched_url}) -->\n"
     if fetched_md.lstrip().startswith("---"):
         final_md = fetched_md.rstrip() + "\n\n" + provenance_header
     else:
         desc = meta.get("description") or f"Habilidad oficial importada desde {clean_source}/{clean_skill_id}"
         final_md = (
-            f'---\nname: "{slug}"\ndescription: "{desc}"\n'
-            f'source: "official:{clean_source}/{clean_skill_id}"\n---\n\n'
+            f'---\nname: "{slug}"\ntitle: "{meta.get("title") or clean_skill_id}"\ndescription: "{desc}"\n'
+            f'enabled: true\nsource: "official:{clean_source}/{clean_skill_id}"\n---\n\n'
             f"{provenance_header}\n{fetched_md.rstrip()}\n"
         )
 
-    _atomic_write_text(workspace_root / rel_path, final_md)
+    target_file = (skills_root / slug / "SKILL.md") if is_global and skills_root is not None else (workspace_root / rel_path)
+    _atomic_write_text(target_file, final_md)
     _append_skill_audit(
-        workspace_root,
+        audit_root or workspace_root,
         "official_skill_installed",
         {
             "path": rel_path,
+            "scope": "global" if is_global else "workspace",
             "source": clean_source,
             "publisher": owner,
             "skill_id": clean_skill_id,
             "fetched_url": fetched_url,
         },
+        is_config_dir=is_global and audit_root is not None,
     )
     return {
         "ok": True,
         "slug": slug,
+        "scope": "global" if is_global else "workspace",
         "path": rel_path,
         "source": clean_source,
         "publisher": owner,

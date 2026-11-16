@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from slices.agent_tools import AGENT_TOOL_DEFS, WorkspaceToolExecutor
-from slices.agent_tools.skills_hub import index_workspace_skills
+from slices.agent_tools.skills_hub import index_workspace_skills, load_global_xox_profile
 from slices.ai_service.anthropic_adapter import (
     ANTHROPIC_BASE_URL,
     anthropic_chat_completion,
@@ -1416,6 +1416,9 @@ def _build_system_prompt(
     workspace_root: Optional[Path] = None,
     unified_memory: Optional[Dict[str, Any]] = None,
     user_message: str = "",
+    xox_config_dir: Optional[Path] = None,
+    global_xox_profile: Optional[Dict[str, Any]] = None,
+    tts_config: Optional[Dict[str, Any]] = None,
 ) -> str:
     ws_active = workspace_root is not None and workspace_root.is_dir()
     unified_facts = unified_memory.get("facts") if isinstance(unified_memory, dict) else None
@@ -1452,9 +1455,22 @@ def _build_system_prompt(
         ws_tree = []
         roles_md_text = ""
 
+    g_prof = (
+        load_global_xox_profile(xox_config_dir)
+        if xox_config_dir is not None and (xox_config_dir / "xox-profile.json").is_file()
+        else (global_xox_profile if isinstance(global_xox_profile, dict) else {})
+    )
+    global_agent_name = str(g_prof.get("agentName") or "").strip()
+    agent_name = global_agent_name or str(profile.get("agent_name") or "").strip() or "Xox"
+    global_role = str(g_prof.get("activeRole") or "").strip()
+
     domain_type = str(profile.get("domain_type") or "general").strip() or "general"
     domain_label = str(profile.get("domain_label") or "").strip()
-    active_role = str(profile.get("active_role") or "Asistente Co-Constructor").strip()
+    ws_role = str(profile.get("active_role") or "").strip()
+    if ws_role and ws_role != "Asistente Co-Constructor":
+        active_role = ws_role
+    else:
+        active_role = global_role or ws_role or "Asistente Co-Constructor"
     mission = str(profile.get("mission") or "").strip()
     defined_roles = profile.get("roles") if isinstance(profile.get("roles"), list) else []
 
@@ -1462,10 +1478,12 @@ def _build_system_prompt(
     skill_md_path = skills_dir / "inventory-advisor" / "SKILL.md"
     skill_text = skill_md_path.read_text(encoding="utf-8") if (inventory_enabled and skill_md_path.exists()) else ""
 
-    if ws_active and workspace_root is not None:
+    global_skills_dir = (xox_config_dir / "xox-skills") if xox_config_dir is not None else None
+    if (ws_active and workspace_root is not None) or (global_skills_dir is not None and global_skills_dir.is_dir()):
         skills_bundle = index_workspace_skills(
-            workspace_root,
+            workspace_root if ws_active else None,
             built_in_skills_dir=skills_dir,
+            global_skills_dir=global_skills_dir,
             active_role=active_role,
         )
     else:
@@ -1476,19 +1494,26 @@ def _build_system_prompt(
     skills_index_lines: List[str] = []
     active_skills_bodies: List[str] = []
     msg_low = (user_message or "").lower()
-    for sk in indexed_skills[:20]:
+    for sk in indexed_skills[:25]:
+        if sk.get("enabled") is False:
+            continue
         sk_slug = str(sk.get("slug") or "")
         sk_name = str(sk.get("name") or sk_slug)
         sk_desc = str(sk.get("description") or "")
         sk_role = str(sk.get("role") or "")
         sk_rel = str(sk.get("rel_path") or "")
+        sk_scope = str(sk.get("scope") or "workspace")
         if sk_slug == "inventory-advisor" and not inventory_enabled:
             skills_index_lines.append(f"- `{sk_slug}` ({sk_rel}): [bajo demanda para inventario/compras] {sk_desc}")
             continue
+        scope_tag = " [Global]" if sk_scope == "global" else ""
         role_tag = f" | Rol: {sk_role}" if sk_role else ""
-        skills_index_lines.append(f"- `{sk_name}` (`{sk_rel}`{role_tag}): {sk_desc}")
-        if (sk.get("active_match") or (sk_slug and sk_slug in msg_low)) and sk.get("body"):
-            active_skills_bodies.append(f"### Habilidad activa: {sk_name}\n{sk['body']}")
+        skills_index_lines.append(f"- `{sk_name}` (`{sk_rel}`{scope_tag}{role_tag}): {sk_desc}")
+        body_to_inject = sk.get("body") or (
+            sk.get("full_body") if (sk_scope == "global" or (sk_slug and sk_slug in msg_low)) else ""
+        )
+        if (sk.get("active_match") or sk_scope == "global" or (sk_slug and sk_slug in msg_low)) and body_to_inject:
+            active_skills_bodies.append(f"### Habilidad activa: {sk_name}\n{body_to_inject}")
     if skill_text:
         active_skills_bodies.append(f"### Habilidad condicional activa: inventory-advisor\n{skill_text[:1400]}")
 
@@ -1651,10 +1676,12 @@ HERRAMIENTAS DEL ESPACIO DE TRABAJO Y EQUIPO DEL USUARIO (OBLIGATORIO CUANDO OPE
 - Para crear o editar archivos:
   * Dentro de `agente/` o `memoria/`: usa `workspace_mkdir`, `workspace_write_file`, `workspace_edit_file` y `memory_record_fact` (y `memory_search` para recordar hechos sin truncado). Nunca dejes en blanco ni intentes sobrescribir `memoria/decisiones.jsonl` o `memoria/patrones.json`.
   * Dentro de `empresa/`, `datos/` o `habilidades/`: puedes actualizar configuraciones del proyecto o negocio (por ejemplo definir `domain_type`, `active_role`, `roles` o `mission` en `empresa/perfil.json`, crear `empresa/roles.md`, actualizar `empresa/proveedores.json` o reglas en `empresa/reglas/`) usando `propose_company_file_edit` (o `workspace_edit_file`), o usa **`propose_workspace_blueprint`** cuando estés co-construyendo o reestructurando varios archivos de `empresa/` y `datos/` en una sola tarjeta HITL.
-  * APRENDIZAJE, PREFERENCIAS DEL USUARIO Y SKILLS OFICIALES (`habilidades/`):
-    - `update_user_preferences`: guarda gustos/estilo, flujo de trabajo preferido y límites de "qué NO hacer" en `habilidades/perfil-usuario.md`.
-    - `learn_skill`: destila y guarda en `habilidades/<slug>/SKILL.md` nuevas habilidades, roles o procesos aprendidos directamente del usuario (validados por seguridad).
-    - `discover_official_skills` e `install_official_skill`: busca capacidades en `skills.sh` filtrando ESTRICTAMENTE a publicadores oficiales verificados (`anthropics`, `vercel-labs`, `google`, `google-gemini`, `modelcontextprotocol`, `agentskills`, `openai`, etc.) y las guarda tras pasar escaneo anti-inyección en `habilidades/<slug>/SKILL.md`.
+  * APRENDIZAJE, PERSONALIZACIÓN GLOBAL DEL ASISTENTE Y SKILLS (`Espacio de Xox`):
+    - `customize_xox`: actualiza directamente tu perfil global (nombre `agent_name`, rol `active_role`, personalidad/tono `personality`/`tone_tags`, prompt inicial `initial_instructions`, color `accent_preset`, reglas globales `global_rules`, gustos/límites globales `likes`/`workflows`/`donts` y voz local `voice_id`/`speed`/`voice_enabled`/`auto_play`).
+    - `update_user_preferences`: guarda gustos/estilo, flujo de trabajo preferido y límites de "qué NO hacer" (tanto globales como en `habilidades/perfil-usuario.md`).
+    - `learn_skill` y `update_skill`: crean, editan bloques o activan/pausan habilidades (`global` por defecto para todos los espacios, o `workspace` en `habilidades/<slug>/SKILL.md`), validadas por seguridad.
+    - `discover_official_skills` e `install_official_skill`: busca capacidades en `skills.sh` filtrando ESTRICTAMENTE a publicadores oficiales verificados (`anthropics`, `vercel-labs`, `google`, `google-gemini`, `modelcontextprotocol`, `agentskills`, `openai`, etc.) y las guarda tras pasar escaneo anti-inyección.
+    - SIEMPRE que edites tu nombre, personalidad, voz, reglas o alguna habilidad a petición del usuario, explícale claramente en tu respuesta qué cambiaste y dile que puede verlo o seguir editándolo en su **Espacio de Xox**.
   * Fuera del workspace (`~/...`, `/...`, `C:\\...`): usa `workspace_edit_file`, `workspace_write_file` o `workspace_mkdir` pasando la ruta explícita; el Guardián mostrará vista previa y pedirá confirmación al usuario.
 - PROTECCIÓN DE ESTRUCTURA Y LIMPIEZA SEGURA (`propose_delete_path`):
   * JAMÁS propongas eliminar, mover ni "limpiar" carpetas estructurales del workspace (`empresa/`, `empresa/reglas/`, `datos/`, `datos/ventas/`, `datos/documentos/`, `memoria/`, `memoria/diario/`, `habilidades/`, `agente/`, `agente/adjuntos/`, `agente/proyectos/`, `agente/borradores/`, `agente/reportes/`, `agente/revisiones/`, `agente/ordenes/`, `agente/logs/`), aunque estén vacías: son ranuras base de XOOK.
@@ -1702,6 +1729,41 @@ HERRAMIENTAS DEL ESPACIO DE TRABAJO Y EQUIPO DEL USUARIO (OBLIGATORIO CUANDO OPE
         domain_block_lines.append(f"- Definición en `empresa/roles.md`:\n{roles_md_text}")
     domain_ctx_section = "\n".join(domain_block_lines)
 
+    global_identity_lines: List[str] = []
+    g_pers = str(g_prof.get("personality") or "").strip()
+    g_tags = [str(t).strip() for t in (g_prof.get("toneTags") or []) if str(t).strip()]
+    g_init = str(g_prof.get("initialInstructions") or "").strip()
+    g_rules = [str(r).strip() for r in (g_prof.get("globalRules") or []) if str(r).strip()]
+    g_likes = [str(x).strip() for x in (g_prof.get("likes") or []) if str(x).strip()]
+    g_workflows = [str(x).strip() for x in (g_prof.get("workflows") or []) if str(x).strip()]
+    g_donts = [str(x).strip() for x in (g_prof.get("donts") or []) if str(x).strip()]
+
+    if g_pers:
+        global_identity_lines.append(f"- Personalidad: {g_pers}")
+    if g_tags:
+        global_identity_lines.append(f"- Tono preferido: {', '.join(g_tags)}")
+    if g_init:
+        global_identity_lines.append(f"- Prompt inicial personalizado:\n{g_init}")
+    if g_rules:
+        global_identity_lines.append("- Reglas globales obligatorias: " + " | ".join(g_rules[:12]))
+    if g_likes:
+        global_identity_lines.append("- Gustos globales del usuario: " + " | ".join(g_likes[:10]))
+    if g_workflows:
+        global_identity_lines.append("- Flujo global preferido: " + " | ".join(g_workflows[:10]))
+    if g_donts:
+        global_identity_lines.append("- Qué NO hacer (global): " + " | ".join(g_donts[:12]))
+    if isinstance(tts_config, dict) and tts_config.get("voiceId"):
+        v_id = str(tts_config.get("voiceId") or "lola")
+        v_spd = tts_config.get("speed", 1.0)
+        v_en = "activada" if tts_config.get("enabled") else "apagada"
+        global_identity_lines.append(f"- Voz configurada: {v_id} ({v_en}, velocidad {v_spd}x)")
+
+    global_identity_section = (
+        "\n\nPERFIL GLOBAL Y PROMPT INICIAL DEL ASISTENTE:\n" + "\n".join(global_identity_lines)
+        if global_identity_lines
+        else ""
+    )
+
     user_pref_section = ""
     if user_pref_compact:
         user_pref_section = (
@@ -1712,16 +1774,16 @@ HERRAMIENTAS DEL ESPACIO DE TRABAJO Y EQUIPO DEL USUARIO (OBLIGATORIO CUANDO OPE
     skills_index_section = ""
     if skills_index_lines:
         skills_index_section = (
-            "\n\nÍNDICE DE HABILIDADES DISPONIBLES (`habilidades/` — usa `workspace_read` si necesitas el detalle de otra skill):\n"
+            "\n\nÍNDICE DE HABILIDADES DISPONIBLES (globales + del espacio):\n"
             + "\n".join(skills_index_lines)
         )
     if active_skills_bodies:
         skills_index_section += "\n\nHABILIDADES ACTIVAS EN ESTE TURNO:\n" + "\n\n".join(active_skills_bodies)
 
     # Orden optimizado para Prompt Caching / Disk KV Cache (prefijo estático al inicio, contexto volátil al final)
-    return f"""Eres Xox, el agente inteligente y co-constructor operativo de propósito múltiple de XOOK.
+    return f"""Eres {agent_name}, el agente inteligente y co-constructor operativo de propósito múltiple de XOOK.
 Hablas SIEMPRE en español claro, humano, directo y útil (o en el idioma que pida el usuario).
-Puedes operar en cualquier ámbito — negocio/empresa, ingeniería de software, investigación/estudio, productividad personal o proyectos creativos — adaptando tu rol, tono y herramientas al objetivo real del usuario en lugar de asumir un giro fijo.
+Puedes operar en cualquier ámbito — negocio/empresa, ingeniería de software, investigación/estudio, productividad personal o proyectos creativos — adaptando tu rol, tono y herramientas al objetivo real del usuario en lugar de asumir un giro fijo.{global_identity_section}
 
 {output_rules}
 
@@ -2731,6 +2793,9 @@ def _validate_and_build_messages(
     workspace_root: Optional[Path] = None,
     unified_memory: Optional[Dict[str, Any]] = None,
     provider: str = "openrouter",
+    xox_config_dir: Optional[Path] = None,
+    global_xox_profile: Optional[Dict[str, Any]] = None,
+    tts_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str, List[Dict[str, Any]]]:
     pid = normalize_provider_id(provider)
     spec = get_provider_spec(pid)
@@ -2756,6 +2821,9 @@ def _validate_and_build_messages(
         workspace_root=workspace_root,
         unified_memory=unified_memory,
         user_message=user_message,
+        xox_config_dir=xox_config_dir,
+        global_xox_profile=global_xox_profile,
+        tts_config=tts_config,
     )
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
@@ -3155,9 +3223,13 @@ def run_agent_completion(
     auto_failover: bool = True,
     failover_order: Optional[List[str]] = None,
     provider_region: Optional[str] = None,
+    xox_config_dir: Optional[str] = None,
+    global_xox_profile: Optional[Dict[str, Any]] = None,
+    tts_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     primary_provider = normalize_provider_id(provider)
     ws_path = Path(workspace_root).resolve() if workspace_root and Path(workspace_root).is_dir() else None
+    cfg_path = Path(xox_config_dir).resolve() if xox_config_dir else None
     key, chosen_model, messages = _validate_and_build_messages(
         api_key=api_key,
         model_id=model_id,
@@ -3174,6 +3246,9 @@ def run_agent_completion(
         workspace_root=ws_path,
         unified_memory=unified_memory,
         provider=primary_provider,
+        xox_config_dir=cfg_path,
+        global_xox_profile=global_xox_profile,
+        tts_config=tts_config,
     )
 
     executor = (
@@ -3182,6 +3257,7 @@ def run_agent_completion(
             emit_event=None,
             command_bridge=command_bridge,
             active_secrets=_collect_active_secrets(key, provider_credentials),
+            xox_config_dir=cfg_path,
         )
         if ws_path is not None
         else None
@@ -3697,6 +3773,7 @@ def run_agent_completion(
         "usage": final_usage,
         "latency_ms": latency_ms,
         "workspace_mutated": bool(executor.workspace_mutated) if executor else False,
+        "xox_customizations": list(executor.xox_customizations) if executor else [],
         "exhausted_providers": exhausted_providers,
         "failover_events": failover_events,
     }
@@ -3765,9 +3842,13 @@ def stream_agent_completion(
     auto_failover: bool = True,
     failover_order: Optional[List[str]] = None,
     provider_region: Optional[str] = None,
+    xox_config_dir: Optional[str] = None,
+    global_xox_profile: Optional[Dict[str, Any]] = None,
+    tts_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     primary_provider = normalize_provider_id(provider)
     ws_path = Path(workspace_root).resolve() if workspace_root and Path(workspace_root).is_dir() else None
+    cfg_path = Path(xox_config_dir).resolve() if xox_config_dir else None
     if ws_path is not None:
         sources = [
             rel for rel in ("empresa/perfil.json", "empresa/proveedores.json", "memoria/hechos.md", "memoria/patrones.json")
@@ -3807,6 +3888,9 @@ def stream_agent_completion(
         workspace_root=ws_path,
         unified_memory=unified_memory,
         provider=primary_provider,
+        xox_config_dir=cfg_path,
+        global_xox_profile=global_xox_profile,
+        tts_config=tts_config,
     )
 
     executor = (
@@ -3815,6 +3899,7 @@ def stream_agent_completion(
             emit_event=emit_event,
             command_bridge=command_bridge,
             active_secrets=_collect_active_secrets(key, provider_credentials),
+            xox_config_dir=cfg_path,
         )
         if ws_path is not None
         else None
@@ -4883,6 +4968,7 @@ def stream_agent_completion(
         "usage": final_stream_usage,
         "latency_ms": latency_ms,
         "workspace_mutated": bool(executor.workspace_mutated) if executor else False,
+        "xox_customizations": list(executor.xox_customizations) if executor else [],
         "exhausted_providers": exhausted_providers,
         "failover_events": failover_events,
     }

@@ -26,7 +26,10 @@ from slices.agent_tools.skills_hub import (
     USER_PROFILE_REL,
     discover_official_skills,
     install_official_skill,
+    save_global_xox_profile_fallback,
     save_learned_skill,
+    slugify_skill_name,
+    update_existing_skill,
     update_user_preferences_doc,
 )
 
@@ -1061,21 +1064,26 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
         "function": {
             "name": "learn_skill",
             "description": (
-                "Aprende y guarda una nueva habilidad, rol operativo o flujo reutilizable directamente en "
-                "`habilidades/<slug>/SKILL.md` tras pasar validación de seguridad. Úsala cuando el usuario te enseñe "
-                "cómo prefiere trabajar, te pida adoptar un nuevo rol o quiera estandarizar un proceso."
+                "Aprende y guarda una nueva habilidad, rol operativo o flujo reutilizable tras pasar validación "
+                "de seguridad. Por defecto la guarda como habilidad global para todos los espacios (o en `habilidades/` "
+                "si `scope='workspace'`). Úsala cuando el usuario te enseñe cómo prefiere trabajar o quiera crear una skill."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Nombre claro de la habilidad (ej. 'Arquitecto Backend', 'Control de Calidad')."},
                     "description": {"type": "string", "description": "Propósito breve y cuándo activarse automáticamente."},
-                    "instructions": {"type": "string", "description": "Pasos operativos, criterios y formato de entrega en Markdown."},
+                    "instructions": {"type": "string", "description": "Pasos operativos, criterios y formato de entrega."},
                     "role": {"type": "string", "description": "Nombre del rol asociado si aplica."},
                     "domain": {
                         "type": "string",
                         "enum": ["general", "business", "software", "research", "personal", "creative", "custom"],
                         "description": "Ámbito principal donde aplica la habilidad.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["global", "workspace"],
+                        "description": "Alcance: 'global' para todos los espacios (preferido) o 'workspace' solo para este proyecto.",
                     },
                     "user_preferences": {
                         "type": "array",
@@ -1094,10 +1102,83 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
                     },
                     "sync_global_user_profile": {
                         "type": "boolean",
-                        "description": "Si true, fusiona también gustos/flujo/no-hacer generales en `habilidades/perfil-usuario.md`.",
+                        "description": "Si true, fusiona también gustos/flujo/no-hacer generales en el perfil global.",
                     },
                 },
                 "required": ["name", "description", "instructions"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_skill",
+            "description": (
+                "Edita una habilidad existente (nombre, propósito, pasos, qué evitar, notas o activar/pausar con `enabled`) "
+                "sin perder el resto de sus bloques. Después explica al usuario exactamente qué cambiaste."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slug": {"type": "string", "description": "Identificador o nombre de la skill existente."},
+                    "scope": {
+                        "type": "string",
+                        "enum": ["global", "workspace"],
+                        "description": "Dónde vive la habilidad (si se omite, busca en global y luego en workspace).",
+                    },
+                    "name": {"type": "string", "description": "Nuevo título visible (opcional)."},
+                    "description": {"type": "string", "description": "Nuevo propósito breve (opcional)."},
+                    "role": {"type": "string", "description": "Nuevo rol asociado (opcional)."},
+                    "workflow_steps": {"type": "array", "items": {"type": "string"}, "description": "Lista actualizada de pasos (opcional)."},
+                    "do_not_do": {"type": "array", "items": {"type": "string"}, "description": "Lista actualizada de límites/qué evitar (opcional)."},
+                    "user_preferences": {"type": "array", "items": {"type": "string"}, "description": "Preferencias específicas (opcional)."},
+                    "instructions": {"type": "string", "description": "Indicaciones adicionales actualizadas (opcional)."},
+                    "enabled": {"type": "boolean", "description": "true para activarla, false para pausarla."},
+                },
+                "required": ["slug"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "customize_xox",
+            "description": (
+                "Actualiza la configuración global del asistente (nombre, rol, personalidad/prompt inicial, tono, "
+                "color de estrella, reglas globales, gustos/límites y voz local) cuando el usuario te pida cambiar "
+                "cómo te llamas, cómo hablas, qué voz usas o tus instrucciones base. Informa siempre al usuario qué modificaste."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "Nuevo nombre del asistente (ej. 'Xox', 'Maya', 'Atlas')."},
+                    "active_role": {"type": "string", "description": "Rol global principal del asistente."},
+                    "personality": {"type": "string", "description": "Descripción breve del carácter y tono de respuesta."},
+                    "tone_tags": {"type": "array", "items": {"type": "string"}, "description": "Etiquetas cortas de estilo (ej. ['Cercano', 'Directo'])."},
+                    "initial_instructions": {"type": "string", "description": "Instrucciones base del prompt inicial global."},
+                    "accent_preset": {
+                        "type": "string",
+                        "enum": ["classic", "violet", "emerald", "amber", "rose"],
+                        "description": "Color visual de aura de la estrella en reposo.",
+                    },
+                    "global_rules": {"type": "array", "items": {"type": "string"}, "description": "Reglas globales que siempre debes cumplir."},
+                    "likes": {"type": "array", "items": {"type": "string"}, "description": "Gustos o preferencias globales del usuario."},
+                    "workflows": {"type": "array", "items": {"type": "string"}, "description": "Pasos de flujo preferido globales."},
+                    "donts": {"type": "array", "items": {"type": "string"}, "description": "Qué NO hacer globalmente."},
+                    "list_mode": {
+                        "type": "string",
+                        "enum": ["merge", "replace", "remove"],
+                        "description": "Cómo combinar listas como `global_rules`, `likes`, `workflows`, `donts` (default 'merge').",
+                    },
+                    "voice_id": {
+                        "type": "string",
+                        "enum": ["lola", "rafael", "alba", "estelle", "marius", "jean"],
+                        "description": "Voz local en español del asistente.",
+                    },
+                    "speed": {"type": "number", "description": "Velocidad de habla entre 0.85 y 1.25."},
+                    "voice_enabled": {"type": "boolean", "description": "Activar o apagar la voz local."},
+                    "auto_play": {"type": "boolean", "description": "Si true, habla automáticamente al responder."},
+                },
             },
         },
     },
@@ -1208,15 +1289,37 @@ class WorkspaceToolExecutor:
         emit_event: Optional[Callable[[Dict[str, Any]], None]] = None,
         command_bridge: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         active_secrets: Optional[List[str]] = None,
+        xox_config_dir: Optional[Path] = None,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
+        self.xox_config_dir = xox_config_dir.resolve() if xox_config_dir is not None else None
         self.emit_event = emit_event
         self.command_bridge = command_bridge
         self.active_secrets = [s for s in (active_secrets or []) if isinstance(s, str) and len(s) >= 8]
         self.staged_tasks: List[Dict[str, Any]] = []
         self.generated_pdfs: List[Dict[str, Any]] = []
         self.transient_tool_images: List[Dict[str, Any]] = []
+        self.xox_customizations: List[Dict[str, Any]] = []
         self.workspace_mutated = False
+
+    def _emit_xox_customized(
+        self,
+        *,
+        section: str,
+        summary: str,
+        slug: str = "",
+        changed: Optional[List[str]] = None,
+    ) -> None:
+        ev = {
+            "type": "xox_customized",
+            "section": section,
+            "summary": summary,
+            "slug": slug,
+            "changed": list(changed or []),
+        }
+        self.xox_customizations.append(ev)
+        if self.emit_event:
+            self.emit_event(ev)
 
     def _emit_workspace_changed(self, path: str, action: str) -> None:
         self.workspace_mutated = True
@@ -1276,6 +1379,8 @@ class WorkspaceToolExecutor:
             "query_screen_memory": self._tool_query_screen_memory,
             "memory_search": self._tool_memory_search,
             "learn_skill": self._tool_learn_skill,
+            "update_skill": self._tool_update_skill,
+            "customize_xox": self._tool_customize_xox,
             "update_user_preferences": self._tool_update_user_preferences,
             "discover_official_skills": self._tool_discover_official_skills,
             "install_official_skill": self._tool_install_official_skill,
@@ -2500,10 +2605,33 @@ class WorkspaceToolExecutor:
             "La búsqueda unificada de memoria requiere la app de escritorio activa.",
         )
 
+    def _apply_global_profile_patch(self, patch: Dict[str, Any]) -> Dict[str, Any]:
+        if self.command_bridge is not None:
+            return self._require_bridge(
+                "update_xox_profile",
+                "xox",
+                patch,
+                "La actualización del perfil global requiere la app de escritorio activa.",
+            )
+        if self.xox_config_dir is None:
+            return {"ok": False, "error": "No se especificó `xox_config_dir` para guardar perfil global."}
+        return save_global_xox_profile_fallback(self.xox_config_dir, patch)
+
+    def _default_skill_scope(self, requested_scope: Any) -> str:
+        raw = str(requested_scope or "").strip().lower()
+        if raw in ("global", "workspace"):
+            if raw == "global" and self.xox_config_dir is None and self.command_bridge is None:
+                return "workspace"
+            return raw
+        return "global" if (self.xox_config_dir is not None or self.command_bridge is not None) else "workspace"
+
     def _tool_learn_skill(self, args: Dict[str, Any]) -> Dict[str, Any]:
         likes = args.get("user_preferences") if isinstance(args.get("user_preferences"), list) else None
         steps = args.get("workflow_steps") if isinstance(args.get("workflow_steps"), list) else None
         donts = args.get("do_not_do") if isinstance(args.get("do_not_do"), list) else None
+        scope = self._default_skill_scope(args.get("scope"))
+        skills_root = (self.xox_config_dir / "xox-skills") if (scope == "global" and self.xox_config_dir is not None) else None
+
         res = save_learned_skill(
             self.workspace_root,
             name=str(args.get("name") or ""),
@@ -2514,11 +2642,47 @@ class WorkspaceToolExecutor:
             user_preferences=[str(x) for x in likes] if likes is not None else None,
             workflow_steps=[str(x) for x in steps] if steps is not None else None,
             do_not_do=[str(x) for x in donts] if donts is not None else None,
+            skills_root=skills_root,
+            scope=scope,
+            audit_root=self.xox_config_dir if scope == "global" else self.workspace_root,
         )
         if not res.get("ok"):
             return res
-        self._emit_workspace_changed(str(res["path"]), "learn_skill")
+
+        if self.command_bridge is not None:
+            rpc_res = self._require_bridge(
+                "save_xox_skill",
+                "xox",
+                {
+                    "scope": scope,
+                    "slug": str(res["slug"]),
+                    "name": str(res["name"]),
+                    "raw_markdown": str(res.get("raw_markdown") or ""),
+                },
+                "No se pudo sincronizar la habilidad con la interfaz.",
+            )
+            if not rpc_res.get("ok"):
+                return rpc_res
+
+        if scope == "workspace":
+            self._emit_workspace_changed(str(res["path"]), "learn_skill")
+        self._emit_xox_customized(
+            section="skills",
+            slug=str(res["slug"]),
+            summary=f"Nueva habilidad: {res['name']}",
+            changed=["skills"],
+        )
+
         if bool(args.get("sync_global_user_profile")) and (likes or steps or donts):
+            if self.xox_config_dir is not None or self.command_bridge is not None:
+                self._apply_global_profile_patch(
+                    {
+                        "likes": [str(x) for x in likes] if likes else None,
+                        "workflows": [str(x) for x in steps] if steps else None,
+                        "donts": [str(x) for x in donts] if donts else None,
+                        "list_mode": "merge",
+                    }
+                )
             pref_res = update_user_preferences_doc(
                 self.workspace_root,
                 likes=[str(x) for x in likes] if likes else None,
@@ -2531,21 +2695,218 @@ class WorkspaceToolExecutor:
                 res["user_profile_updated"] = True
         return res
 
+    def _tool_update_skill(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        raw_slug = str(args.get("slug") or "").strip()
+        if not raw_slug:
+            return {"ok": False, "error": "Indica `slug` de la habilidad a actualizar."}
+        slug = slugify_skill_name(raw_slug)
+
+        req_scope = str(args.get("scope") or "").strip().lower()
+        candidates: List[Tuple[str, Path, str, bool]] = []
+        if req_scope in ("", "global") and self.xox_config_dir is not None:
+            candidates.append(
+                (
+                    "global",
+                    self.xox_config_dir / "xox-skills" / slug / "SKILL.md",
+                    f"global:xox-skills/{slug}/SKILL.md",
+                    True,
+                )
+            )
+        if req_scope in ("", "workspace"):
+            candidates.append(
+                (
+                    "workspace",
+                    self.workspace_root / "habilidades" / slug / "SKILL.md",
+                    f"habilidades/{slug}/SKILL.md",
+                    False,
+                )
+            )
+
+        chosen = next((c for c in candidates if c[1].is_file()), None)
+        if chosen is None:
+            return {"ok": False, "error": f"No encontré la habilidad '{slug}' para editar."}
+
+        scope, target_path, rel_path, is_cfg = chosen
+        likes = [str(x) for x in args["user_preferences"]] if isinstance(args.get("user_preferences"), list) else None
+        steps = [str(x) for x in args["workflow_steps"]] if isinstance(args.get("workflow_steps"), list) else None
+        donts = [str(x) for x in args["do_not_do"]] if isinstance(args.get("do_not_do"), list) else None
+
+        res = update_existing_skill(
+            slug=slug,
+            target_path=target_path,
+            rel_path=rel_path,
+            scope=scope,
+            name=str(args["name"]) if isinstance(args.get("name"), str) else None,
+            description=str(args["description"]) if isinstance(args.get("description"), str) else None,
+            instructions=str(args["instructions"]) if isinstance(args.get("instructions"), str) else None,
+            role=str(args["role"]) if isinstance(args.get("role"), str) else None,
+            domain=str(args["domain"]) if isinstance(args.get("domain"), str) else None,
+            user_preferences=likes,
+            workflow_steps=steps,
+            do_not_do=donts,
+            enabled=bool(args["enabled"]) if isinstance(args.get("enabled"), bool) else None,
+            audit_root=self.xox_config_dir if is_cfg else self.workspace_root,
+            is_config_dir=is_cfg,
+        )
+        if not res.get("ok"):
+            return res
+
+        if self.command_bridge is not None:
+            rpc_res = self._require_bridge(
+                "save_xox_skill",
+                "xox",
+                {
+                    "scope": scope,
+                    "slug": slug,
+                    "name": str(res["name"]),
+                    "raw_markdown": str(res.get("raw_markdown") or ""),
+                },
+                "No se pudo reflejar la habilidad actualizada.",
+            )
+            if not rpc_res.get("ok"):
+                return rpc_res
+
+        if scope == "workspace":
+            self._emit_workspace_changed(rel_path, "update_skill")
+        self._emit_xox_customized(
+            section="skills",
+            slug=slug,
+            summary=f"Habilidad actualizada: {res['name']}",
+            changed=["skills"],
+        )
+        return res
+
+    def _tool_customize_xox(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from slices.agent_tools.skills_hub import scan_skill_security
+
+        profile_keys = (
+            "agent_name",
+            "active_role",
+            "personality",
+            "tone_tags",
+            "initial_instructions",
+            "accent_preset",
+            "global_rules",
+            "likes",
+            "workflows",
+            "donts",
+        )
+        profile_patch: Dict[str, Any] = {}
+        for k in profile_keys:
+            if k in args and args[k] is not None:
+                profile_patch[k] = args[k]
+        if "list_mode" in args and args["list_mode"] is not None:
+            profile_patch["list_mode"] = str(args["list_mode"])
+
+        # Escaneo anti-inyección / anti-exfiltración en textos libres del prompt inicial o reglas
+        text_blobs: List[str] = []
+        for k in ("agent_name", "active_role", "personality", "initial_instructions"):
+            v = profile_patch.get(k)
+            if isinstance(v, str) and v.strip():
+                text_blobs.append(v)
+        for k in ("global_rules", "likes", "workflows", "donts"):
+            v = profile_patch.get(k)
+            if isinstance(v, list):
+                text_blobs.extend(str(x) for x in v if str(x).strip())
+        if text_blobs:
+            sec_findings = scan_skill_security("\n".join(text_blobs))
+            if sec_findings:
+                return {
+                    "ok": False,
+                    "error": "Personalización bloqueada por seguridad: " + "; ".join(sec_findings),
+                }
+
+        voice_patch: Dict[str, Any] = {}
+        if isinstance(args.get("voice_id"), str) and args["voice_id"].strip():
+            voice_patch["voice_id"] = args["voice_id"].strip().lower()
+        if isinstance(args.get("speed"), (int, float)):
+            voice_patch["speed"] = float(args["speed"])
+        if isinstance(args.get("voice_enabled"), bool):
+            voice_patch["enabled"] = args["voice_enabled"]
+        if isinstance(args.get("auto_play"), bool):
+            voice_patch["auto_play"] = args["auto_play"]
+
+        if not profile_patch and not voice_patch:
+            return {"ok": False, "error": "Indica al menos un cambio de identidad, reglas, gustos o voz."}
+
+        out: Dict[str, Any] = {"ok": True}
+        changed_sections: List[str] = []
+
+        if profile_patch:
+            prof_res = self._apply_global_profile_patch(profile_patch)
+            if not prof_res.get("ok"):
+                return prof_res
+            out["profile"] = prof_res.get("profile")
+            has_identity = any(
+                k in profile_patch
+                for k in ("agent_name", "active_role", "personality", "tone_tags", "initial_instructions", "accent_preset")
+            )
+            has_rules = any(k in profile_patch for k in ("global_rules", "likes", "workflows", "donts"))
+            if has_identity:
+                changed_sections.append("identity")
+            if has_rules:
+                changed_sections.append("rules")
+
+        if voice_patch:
+            if self.command_bridge is None:
+                return {
+                    "ok": False,
+                    "error": "Cambiar la configuración de voz requiere la app de escritorio activa.",
+                }
+            voice_res = self._require_bridge(
+                "set_tts_voice_config",
+                "tts",
+                voice_patch,
+                "Cambiar la voz requiere la app de escritorio activa.",
+            )
+            if not voice_res.get("ok"):
+                return voice_res
+            out["voice"] = voice_res.get("config")
+            changed_sections.append("voice")
+
+        primary_section = changed_sections[0] if changed_sections else "identity"
+        out["changed_sections"] = changed_sections
+        self._emit_xox_customized(
+            section=primary_section,
+            summary="Configuración de Xox actualizada",
+            changed=changed_sections,
+        )
+        return out
+
     def _tool_update_user_preferences(self, args: Dict[str, Any]) -> Dict[str, Any]:
         likes = [str(x) for x in args["likes"]] if isinstance(args.get("likes"), list) else None
         workflows = [str(x) for x in args["workflows"]] if isinstance(args.get("workflows"), list) else None
         donts = [str(x) for x in args["donts"]] if isinstance(args.get("donts"), list) else None
         if likes is None and workflows is None and donts is None:
             return {"ok": False, "error": "Indica al menos un elemento en `likes`, `workflows` o `donts`."}
+        mode = str(args.get("mode") or "merge")
         res = update_user_preferences_doc(
             self.workspace_root,
             likes=likes,
             workflows=workflows,
             donts=donts,
-            mode=str(args.get("mode") or "merge"),
+            mode=mode,
         )
-        if res.get("ok"):
-            self._emit_workspace_changed(USER_PROFILE_REL, "update_user_preferences")
+        if not res.get("ok"):
+            return res
+        self._emit_workspace_changed(USER_PROFILE_REL, "update_user_preferences")
+
+        if self.xox_config_dir is not None or self.command_bridge is not None:
+            global_res = self._apply_global_profile_patch(
+                {
+                    "likes": likes,
+                    "workflows": workflows,
+                    "donts": donts,
+                    "list_mode": mode,
+                }
+            )
+            if global_res.get("ok"):
+                res["global_profile_updated"] = True
+                self._emit_xox_customized(
+                    section="rules",
+                    summary="Preferencias globales actualizadas",
+                    changed=["rules"],
+                )
         return res
 
     def _tool_discover_official_skills(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -2556,14 +2917,26 @@ class WorkspaceToolExecutor:
         return discover_official_skills(str(args.get("query") or ""), limit=limit)
 
     def _tool_install_official_skill(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        scope = self._default_skill_scope(args.get("scope"))
+        skills_root = (self.xox_config_dir / "xox-skills") if (scope == "global" and self.xox_config_dir is not None) else None
         res = install_official_skill(
             self.workspace_root,
             source=str(args.get("source") or ""),
             skill_id=str(args.get("skill_id") or ""),
             local_slug=str(args.get("local_slug") or ""),
+            skills_root=skills_root,
+            scope=scope,
+            audit_root=self.xox_config_dir if scope == "global" else self.workspace_root,
         )
         if res.get("ok"):
-            self._emit_workspace_changed(str(res["path"]), "install_official_skill")
+            if scope == "workspace":
+                self._emit_workspace_changed(str(res["path"]), "install_official_skill")
+            self._emit_xox_customized(
+                section="skills",
+                slug=str(res.get("slug") or ""),
+                summary=f"Habilidad oficial instalada: {res.get('skill_id')}",
+                changed=["skills"],
+            )
         return res
 
     def _tool_propose_workspace_blueprint(self, args: Dict[str, Any]) -> Dict[str, Any]:

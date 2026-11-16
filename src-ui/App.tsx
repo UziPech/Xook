@@ -25,7 +25,26 @@ import {
   Image as ImageIcon,
   Settings,
 } from "lucide-react";
-import { XoxStar, XoxState } from "./components/XoxStar";
+import {
+  XoxStar,
+  XoxSilhouetteIcon,
+  XoxState,
+  XOX_ACCENT_PRESETS,
+  resolveXoxAccentPreset,
+  type XoxAccentPreset,
+} from "./components/XoxStar";
+import {
+  XoxStudioPanel,
+  type XoxStudioTabId,
+} from "./features/xox-studio/XoxStudioPanel";
+import {
+  DEFAULT_GLOBAL_XOX_PROFILE,
+  getGlobalXoxProfile,
+  listXoxSkills,
+  subscribeGlobalXoxProfile,
+  type GlobalXoxProfile,
+  type XoxSkillEntry,
+} from "./features/xox-studio/xoxStudioApi";
 import { XookWordmark } from "./components/XookBrand";
 import { JellyPillTrack } from "./components/JellyPillTrack";
 import { LiquidGlassBackdrop } from "./components/LiquidGlassBackdrop";
@@ -385,9 +404,13 @@ const XOX_MINI_STAR_PATH =
 function XoxHeaderFace({
   state,
   onClick,
+  agentName = "Xox",
+  accentPreset = "classic",
 }: {
   state: XoxState;
   onClick?: () => void;
+  agentName?: string;
+  accentPreset?: string;
 }) {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const ids = {
@@ -395,6 +418,7 @@ function XoxHeaderFace({
     rim: `xox-mini-rim-${uid}`,
     core: `xox-mini-core-${uid}`,
   };
+  const accentSpec = XOX_ACCENT_PRESETS[resolveXoxAccentPreset(accentPreset)];
   const isAlert = state === "alert";
   const isSuccess = state === "success";
   const isSyncing = state === "syncing";
@@ -405,27 +429,29 @@ function XoxHeaderFace({
     ? "#34D399"
     : isSyncing
     ? "#2DD4BF"
-    : "#38BDF8";
+    : isThinking
+    ? "#38BDF8"
+    : accentSpec.glow;
 
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label="Xox, mascota de XOOK"
-      title="Xox · Haz clic para saludar"
+      aria-label={`${agentName}, asistente de XOOK`}
+      title={`${agentName} · Haz clic para saludar`}
       className="w-[26px] h-[26px] flex items-center justify-center cursor-pointer transition-transform hover:scale-110 active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/50 rounded-full"
     >
       <svg viewBox="55 52 130 126" className="w-full h-full" aria-hidden="true">
         <defs>
           <linearGradient id={ids.body} x1="65" y1="60" x2="175" y2="170" gradientUnits="userSpaceOnUse">
             <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.34" />
-            <stop offset="45%" stopColor="#BAE6FD" stopOpacity="0.18" />
-            <stop offset="100%" stopColor="#38BDF8" stopOpacity="0.24" />
+            <stop offset="45%" stopColor={accentSpec.rim} stopOpacity="0.18" />
+            <stop offset="100%" stopColor={accentSpec.glow} stopOpacity="0.24" />
           </linearGradient>
           <linearGradient id={ids.rim} x1="62" y1="58" x2="176" y2="172" gradientUnits="userSpaceOnUse">
             <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.92" />
-            <stop offset="50%" stopColor="#BAE6FD" stopOpacity="0.6" />
-            <stop offset="100%" stopColor="#38BDF8" stopOpacity="0.38" />
+            <stop offset="50%" stopColor={accentSpec.rim} stopOpacity="0.6" />
+            <stop offset="100%" stopColor={accentSpec.mid} stopOpacity="0.38" />
           </linearGradient>
           <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor={isThinking || isAlert || isSuccess || isSyncing ? coreColor : "#FFFFFF"} stopOpacity="0.55" />
@@ -517,11 +543,77 @@ export default function App() {
   // Estado de Xox (Mascota Digital y Orquestador Estelar)
   const [xoxState, setXoxState] = useState<XoxState>("idle");
   const [xoxMessage, setXoxMessage] = useState<string>(DEFAULT_IDLE_GREETING);
+  const [globalXoxProfile, setGlobalXoxProfile] = useState<GlobalXoxProfile>(
+    DEFAULT_GLOBAL_XOX_PROFILE
+  );
+  const [xoxSkills, setXoxSkills] = useState<XoxSkillEntry[]>([]);
+  const [showXoxStudio, setShowXoxStudio] = useState<boolean>(false);
+  const [xoxStudioTab, setXoxStudioTab] = useState<XoxStudioTabId>("identity");
+  const [highlightedSkillSlug, setHighlightedSkillSlug] = useState<string | null>(null);
+  const [previewAccentPreset, setPreviewAccentPreset] = useState<XoxAccentPreset | null>(null);
+  const [xoxTravelPhase, setXoxTravelPhase] = useState<"idle" | "to-studio" | "from-studio">("idle");
+  const [xoxGlideSeq, setXoxGlideSeq] = useState<number>(0);
+  const [xoxExitingStage, setXoxExitingStage] = useState<boolean>(false);
+  const prevShowStudioRef = useRef<boolean>(false);
+
+  const effectiveAgentName =
+    globalXoxProfile.agentName.trim() || workspaceOverview?.profile.agentName || "Xox";
+  const effectiveAccentPreset = resolveXoxAccentPreset(globalXoxProfile.accentPreset);
+  const displayAccentPreset =
+    showXoxStudio && previewAccentPreset ? previewAccentPreset : effectiveAccentPreset;
+
+  useEffect(() => {
+    if (prevShowStudioRef.current === showXoxStudio) return;
+    prevShowStudioRef.current = showXoxStudio;
+    if (showXoxStudio) {
+      setXoxTravelPhase("to-studio");
+      setXoxExitingStage(true);
+      setXoxGlideSeq((n) => n + 1);
+      const t = window.setTimeout(() => setXoxExitingStage(false), 480);
+      return () => window.clearTimeout(t);
+    }
+    setXoxExitingStage(false);
+    setXoxTravelPhase("from-studio");
+    setXoxGlideSeq((n) => n + 1);
+    setPreviewAccentPreset(null);
+    return undefined;
+  }, [showXoxStudio]);
+
+  const refreshXoxStudioData = async () => {
+    try {
+      const [prof, skillsList] = await Promise.all([
+        getGlobalXoxProfile(),
+        listXoxSkills(),
+      ]);
+      setGlobalXoxProfile(prof);
+      setXoxSkills(skillsList);
+    } catch {
+      // Ignora error transitorio en carga inicial
+    }
+  };
+
+  const openXoxStudio = (
+    tab: XoxStudioTabId = "identity",
+    skillSlug?: string | null
+  ) => {
+    setShowCanvas(false);
+    setShowDocViewer(false);
+    setXoxStudioTab(tab);
+    setHighlightedSkillSlug(skillSlug ?? null);
+    setShowXoxStudio(true);
+    void refreshXoxStudioData();
+  };
   
   // Estados para paneles laterales, tareas y visor de documentos dedicado
   const [showLeftSidebar, setShowLeftSidebar] = useState<boolean>(false);
   const [showRightSidebar, setShowRightSidebar] = useState<boolean>(false);
   const [showDocViewer, setShowDocViewer] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (showDocViewer) {
+      setShowXoxStudio(false);
+    }
+  }, [showDocViewer]);
   const [pdfPanelState, setPdfPanelState] = useState<PdfWorkspacePanelState | null>(null);
   const [pdfDraftProgress, setPdfDraftProgress] = useState<PdfDraftProgressEvent | null>(null);
   const [taskTab, setTaskTab] = useState<TaskPanelTab>("pending");
@@ -693,6 +785,8 @@ export default function App() {
 
     const unsubPlayer = ttsPlayer.subscribe(setTtsPlayback);
     let unsubEvents = () => {};
+    let unsubXoxProfile = () => {};
+    void refreshXoxStudioData();
     void subscribeTtsEvents({
       onStatusUpdated: (next) => {
         if (active) setTtsStatus(next);
@@ -700,11 +794,21 @@ export default function App() {
     }).then((fn) => {
       unsubEvents = fn;
     });
+    void subscribeGlobalXoxProfile((nextProf) => {
+      if (!active) return;
+      setGlobalXoxProfile(nextProf);
+      void listXoxSkills().then((list) => {
+        if (active) setXoxSkills(list);
+      }).catch(() => {});
+    }).then((fn) => {
+      unsubXoxProfile = fn;
+    });
 
     return () => {
       active = false;
       unsubPlayer();
       unsubEvents();
+      unsubXoxProfile();
     };
   }, []);
 
@@ -1308,6 +1412,7 @@ export default function App() {
         })
         .catch(() => {});
       void refreshInventoryAndReview();
+      void refreshXoxStudioData();
     });
 
     const unsubReview = subscribeReviewUpdated((result) => {
@@ -1890,6 +1995,10 @@ export default function App() {
     }
     if (action.kind === "open_clarification" && action.clarification) {
       setActiveClarification(action.clarification);
+      return;
+    }
+    if (action.kind === "open_xox_studio") {
+      openXoxStudio(action.studioTab ?? "identity", action.skillSlug);
       return;
     }
     if (action.kind === "save_pending_key" && action.cardId) {
@@ -3281,6 +3390,7 @@ export default function App() {
           },
           onCanvas: (canvas) => {
             const withSource: CanvasArtifact = { ...canvas, sourceMessageId: assistantMsgId };
+            setShowXoxStudio(false);
             setActiveCanvas(withSource);
             setShowCanvas(true);
             setChatMessages((prev) =>
@@ -3288,6 +3398,15 @@ export default function App() {
                 m.id === assistantMsgId ? { ...m, canvas: withSource } : m
               )
             );
+          },
+          onXoxCustomized: (evt) => {
+            void refreshXoxStudioData();
+            if (evt.section === "voice") {
+              void getTtsStatus().then(setTtsStatus).catch(() => {});
+            }
+            if (evt.slug) {
+              setHighlightedSkillSlug(evt.slug);
+            }
           },
           onVaultAction: (vaultAction) => {
             setChatMessages((prev) =>
@@ -3328,6 +3447,7 @@ export default function App() {
         ? { ...res.canvas, sourceMessageId: assistantMsgId }
         : undefined;
       if (finalCanvas) {
+        setShowXoxStudio(false);
         setActiveCanvas(finalCanvas);
         setShowCanvas(true);
       }
@@ -3377,6 +3497,10 @@ export default function App() {
         res.failoverNotice && res.reply && !res.reply.includes(res.failoverNotice)
           ? `> *Nota de respaldo automático:* ${res.failoverNotice}\n\n${res.reply}`
           : res.reply;
+      const lastCust =
+        res.xoxCustomizations && res.xoxCustomizations.length > 0
+          ? res.xoxCustomizations[res.xoxCustomizations.length - 1]
+          : undefined;
       const finalMessages = chatMessagesRef.current.map((m) => {
         if (m.id !== assistantMsgId) return m;
         const resolvedVault = nextVaultAction ?? m.vaultPrompt;
@@ -3414,7 +3538,14 @@ export default function App() {
                   kind: "open_settings" as const,
                   provider: resolvedVault.provider,
                 }
-              : m.actionButton,
+              : lastCust
+                ? {
+                    label: `Ver cambio en Espacio de ${effectiveAgentName}`,
+                    kind: "open_xox_studio" as const,
+                    studioTab: lastCust.section,
+                    skillSlug: lastCust.slug,
+                  }
+                : m.actionButton,
         };
       });
       setChatMessages(finalMessages);
@@ -3442,6 +3573,12 @@ export default function App() {
       setIsChatStreaming(false);
       if (res.workspaceMutated && isTauriEnv) {
         void handleRefreshWorkspace();
+      }
+      if (res.xoxCustomizations && res.xoxCustomizations.length > 0) {
+        void refreshXoxStudioData();
+        if (res.xoxCustomizations.some((c) => c.section === "voice")) {
+          void getTtsStatus().then(setTtsStatus).catch(() => {});
+        }
       }
 
       const finalMood: XoxState = res.xoxMood === "alert" ? "alert" : "success";
@@ -3731,8 +3868,8 @@ export default function App() {
     setXoxState("success");
     setGreetingLeaving(false);
     const bubbleMessage = getXoxBubbleGreeting({
-      agentName: workspaceOverview?.profile.agentName,
-      activeRole: workspaceOverview?.profile.activeRole,
+      agentName: effectiveAgentName,
+      activeRole: globalXoxProfile.activeRole || workspaceOverview?.profile.activeRole,
       userName: localUser?.name,
       inActiveChat: chatMessages.length > 0,
       pendingTasksCount: tasks.length,
@@ -3769,12 +3906,14 @@ export default function App() {
   const leftPresence = useAnimatedPresence(showLeftSidebar, 270);
   const rightPresence = useAnimatedPresence(showRightSidebar, 270);
   const canvasPresence = useAnimatedPresence(showCanvas && Boolean(activeCanvas), 220);
+  const studioPresence = useAnimatedPresence(showXoxStudio, 220);
   const docViewerPresence = useAnimatedPresence(
     showDocViewer && Boolean(pdfPanelState || pdfDraftProgress),
     220
   );
 
   const handleOpenCanvas = (canvas: CanvasArtifact) => {
+    setShowXoxStudio(false);
     setActiveCanvas(canvas);
     setShowCanvas(true);
   };
@@ -4225,13 +4364,49 @@ export default function App() {
           <div className="h-4 w-px bg-white/[0.08] mx-0.5" />
 
           <div className="flex items-center gap-2">
-            <XoxHeaderFace state={xoxState} onClick={handleXoxClick} />
+            <XoxHeaderFace
+              state={xoxState}
+              onClick={handleXoxClick}
+              agentName={effectiveAgentName}
+              accentPreset={displayAccentPreset}
+            />
             <XookWordmark className="h-3.5 w-auto text-zinc-100" />
           </div>
         </div>
 
-        {/* Lado Derecho: Toggle de Canvas + Tareas y Decisiones */}
+        {/* Lado Derecho: Espacio de Xox + Toggle de Canvas + Tareas y Decisiones */}
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (showXoxStudio) {
+                setShowXoxStudio(false);
+              } else {
+                openXoxStudio("identity");
+              }
+            }}
+            aria-pressed={showXoxStudio}
+            title={`Abrir Espacio de ${effectiveAgentName} (nombre, voz, skills, prompt global)`}
+            className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
+              showXoxStudio
+                ? "bg-white/[0.1] text-white border-white/[0.18]"
+                : "bg-transparent text-zinc-300 border-transparent hover:text-white hover:bg-white/[0.06]"
+            }`}
+          >
+            <XoxSilhouetteIcon
+              className="w-4 h-4 shrink-0 transition-colors duration-500"
+              style={{
+                color:
+                  displayAccentPreset === "classic"
+                    ? "#F4F4F5"
+                    : XOX_ACCENT_PRESETS[displayAccentPreset].rim,
+              }}
+            />
+            <span className="text-[11px] font-medium hidden sm:inline max-w-[140px] truncate">
+              {effectiveAgentName}
+            </span>
+          </button>
+
           {showCanvas && activeCanvas && (
             <button
               type="button"
@@ -4538,6 +4713,8 @@ export default function App() {
                 onRenameWorkspace={handleRenameActiveWorkspace}
                 selectedFile={selectedWorkspaceFile}
                 onSaveFileContent={handleSaveWorkspaceFile}
+                globalAgentName={effectiveAgentName}
+                onOpenXoxStudio={(tab) => openXoxStudio(tab ?? "identity")}
                 onStatusNotice={(msg) => {
                   setStatusMessage(msg);
                   setTimeout(() => setStatusMessage((curr) => (curr === msg ? null : curr)), 4000);
@@ -4803,16 +4980,34 @@ export default function App() {
               {/* ========================================================================= */}
               {chatMessages.length === 0 ? (
                 <div className="min-h-[calc(100vh-18rem)] flex flex-col items-center justify-center py-2 text-center">
-                  {/* Estrella Xox: protagonista en el Home (~20% más grande); hit-target solo sobre la estrella */}
-                  <div className="relative flex flex-col items-center justify-center select-none pointer-events-none -mt-8 -mb-10 sm:-mt-10 sm:-mb-14 lg:-mb-16">
-                    <XoxStar
-                      state={xoxState}
-                      responsive
-                      hitArea="star"
-                      className="w-[308px] h-[308px] sm:w-[384px] sm:h-[384px] lg:w-[408px] lg:h-[408px] xl:w-[456px] xl:h-[456px]"
-                      summonTrigger={summonSeq}
-                      onClick={handleXoxClick}
-                    />
+                  {/* Estrella Xox: protagonista en el Home; se desliza hacia Espacio de Xox al abrirlo */}
+                  <div
+                    className={`xox-hero-slot relative flex flex-col items-center justify-center select-none pointer-events-none -mt-8 -mb-10 sm:-mt-10 sm:-mb-14 lg:-mb-16 ${
+                      showXoxStudio ? "is-away" : ""
+                    }`}
+                  >
+                    <div
+                      className={
+                        xoxTravelPhase === "to-studio"
+                          ? "xox-stage-away"
+                          : xoxTravelPhase === "from-studio"
+                            ? "xox-stage-home"
+                            : ""
+                      }
+                    >
+                      <XoxStar
+                        state={xoxState}
+                        responsive
+                        hitArea="star"
+                        accentPreset={displayAccentPreset}
+                        glideTrigger={xoxGlideSeq}
+                        glideDir={xoxTravelPhase === "to-studio" ? "right" : "left"}
+                        active={!showXoxStudio || xoxExitingStage}
+                        className="w-[308px] h-[308px] sm:w-[384px] sm:h-[384px] lg:w-[408px] lg:h-[408px] xl:w-[456px] xl:h-[456px]"
+                        summonTrigger={summonSeq}
+                        onClick={handleXoxClick}
+                      />
+                    </div>
 
                     {/* Burbuja de saludo Liquid Glass (solo al hacer clic sobre la estrella Xox) */}
                     {greeting && (
@@ -4934,6 +5129,11 @@ export default function App() {
                     ttsLoadingMessageId={ttsPlayback.loadingMessageId}
                     ttsPlayingMessageId={ttsPlayback.playingMessageId}
                     onSpeakMessage={handleSpeakMessage}
+                    accentPreset={displayAccentPreset}
+                    agentName={effectiveAgentName}
+                    xoxAwayInStudio={showXoxStudio && !xoxExitingStage}
+                    xoxTravelPhase={xoxTravelPhase}
+                    glideSeq={xoxGlideSeq}
                   />
                 </div>
               )}
@@ -5463,6 +5663,40 @@ export default function App() {
 
         </section>
 
+        {/* PANEL ESPACIO DE XOX (IDENTIDAD GLOBAL, VOZ, SKILLS EN BLOQUES Y PROMPT INICIAL) */}
+        {studioPresence.mounted && (
+          <div className="w-[48%] min-w-[380px] max-w-[720px] shrink-0 bg-[#060709] border-l border-white/[0.07] p-2.5 overflow-hidden">
+            <XoxStudioPanel
+              visible={studioPresence.visible}
+              initialTab={xoxStudioTab}
+              highlightedSkillSlug={highlightedSkillSlug}
+              glideSeq={xoxGlideSeq}
+              profile={globalXoxProfile}
+              skills={xoxSkills}
+              ttsStatus={ttsStatus}
+              xoxState={xoxState}
+              hasActiveWorkspace={Boolean(workspaceOverview?.active)}
+              activeWorkspaceName={workspaceOverview?.active.name ?? null}
+              onProfileChanged={(nextProf) => {
+                setGlobalXoxProfile(nextProf);
+                setPreviewAccentPreset(null);
+              }}
+              onPreviewAccentChange={setPreviewAccentPreset}
+              onSkillsRefresh={refreshXoxStudioData}
+              onTtsStatusChanged={setTtsStatus}
+              onAskXoxCustomize={(hintPrompt) => {
+                setInputPrompt(hintPrompt);
+                requestAnimationFrame(() => inputRef.current?.focus());
+              }}
+              onStatusNotice={(msg) => {
+                setStatusMessage(msg);
+                setTimeout(() => setStatusMessage((curr) => (curr === msg ? null : curr)), 3800);
+              }}
+              onClose={() => setShowXoxStudio(false)}
+            />
+          </div>
+        )}
+
         {/* PANEL CANVAS INTERACTIVO ESTILO GEMINI (TABLAS COMPARATIVAS Y DATOS) */}
         {canvasPresence.mounted && activeCanvas && (
           <div className="w-[44%] min-w-[330px] max-w-[660px] shrink-0 bg-[#060709] border-l border-white/[0.07] p-2.5 overflow-hidden">
@@ -5696,6 +5930,8 @@ export default function App() {
         modelCatalog={catalogModels}
         localUser={localUser}
         activeWorkspaceId={workspaceOverview?.active.id ?? null}
+        agentName={effectiveAgentName}
+        onOpenXoxStudio={(tab) => openXoxStudio(tab ?? "identity")}
         onOpenAiSettings={(tab) => openAiSettings(tab ?? "models")}
         onOpenLocalAuth={() => setShowLocalAuth(true)}
         onStatusNotice={(msg) => {

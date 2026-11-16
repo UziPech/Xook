@@ -16,7 +16,11 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { XoxDragMotion, XoxStar, XoxState } from "./XoxStar";
+import { XoxDragMotion, XoxStar, XoxState, resolveXoxAccentPreset, type XoxAccentPreset } from "./XoxStar";
+import {
+  getGlobalXoxProfile,
+  subscribeGlobalXoxProfile,
+} from "../features/xox-studio/xoxStudioApi";
 import { QuickLiquidLayer } from "./QuickLiquidLayer";
 import { JellyPillTrack } from "./JellyPillTrack";
 import { LiquidGlassBackdrop } from "./LiquidGlassBackdrop";
@@ -196,6 +200,7 @@ export const QuickBar: React.FC = () => {
   const [showScreenMenu, setShowScreenMenu] = useState<boolean>(false);
   const [liveScreenBadge, setLiveScreenBadge] = useState<string | null>(null);
   const [screenPermissionNeeded, setScreenPermissionNeeded] = useState<boolean>(false);
+  const [quickAccentPreset, setQuickAccentPreset] = useState<XoxAccentPreset>("classic");
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -761,6 +766,25 @@ export const QuickBar: React.FC = () => {
     window.addEventListener("blur", handleBlur);
     return () => window.removeEventListener("blur", handleBlur);
   }, [finishDragSession]);
+
+  useEffect(() => {
+    let active = true;
+    void getGlobalXoxProfile()
+      .then((prof) => {
+        if (active) setQuickAccentPreset(resolveXoxAccentPreset(prof.accentPreset));
+      })
+      .catch(() => {});
+    let unsub = () => {};
+    void subscribeGlobalXoxProfile((prof) => {
+      if (active) setQuickAccentPreset(resolveXoxAccentPreset(prof.accentPreset));
+    }).then((fn) => {
+      unsub = fn;
+    });
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, []);
 
   // Auto-altura suave del textarea estilo burbuja (1 a 4 líneas)
   useEffect(() => {
@@ -1488,6 +1512,7 @@ export const QuickBar: React.FC = () => {
                   state={xoxState}
                   size={82}
                   glassContrast
+                  accentPreset={quickAccentPreset}
                   active={isQuickVisible && !isLeaving}
                   summonTrigger={summonSeq}
                   dragMotionRef={xoxDragMotionRef}

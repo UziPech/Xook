@@ -240,6 +240,9 @@ def handle_rpc_request(request_line):
                 auto_failover=bool(params.get("auto_failover", True)),
                 failover_order=params.get("failover_order"),
                 provider_region=params.get("provider_region"),
+                xox_config_dir=params.get("xox_config_dir"),
+                global_xox_profile=params.get("global_xox_profile"),
+                tts_config=params.get("tts_config"),
             )
         elif method == "ai_chat_stream":
             stream_id = params.get("stream_id")
@@ -281,6 +284,9 @@ def handle_rpc_request(request_line):
                 auto_failover=bool(params.get("auto_failover", True)),
                 failover_order=params.get("failover_order"),
                 provider_region=params.get("provider_region"),
+                xox_config_dir=params.get("xox_config_dir"),
+                global_xox_profile=params.get("global_xox_profile"),
+                tts_config=params.get("tts_config"),
             )
         elif method == "test_ai_key":
             prov = str(params.get("provider") or "openrouter")
@@ -441,6 +447,30 @@ def handle_rpc_request(request_line):
                     result = {"ok": False, "error": f"Archivo no encontrado: {clean_rel}"}
                 else:
                     result = read_universal_document(target, clean_rel)
+        elif method == "discover_official_skills":
+            from slices.agent_tools.skills_hub import discover_official_skills
+
+            result = discover_official_skills(
+                str(params.get("query") or ""),
+                limit=int(params.get("limit") or 8),
+            )
+        elif method == "install_official_skill":
+            from slices.agent_tools.skills_hub import install_official_skill
+
+            scope = str(params.get("scope") or "global").strip().lower()
+            cfg_dir_raw = params.get("xox_config_dir")
+            cfg_dir = Path(cfg_dir_raw) if cfg_dir_raw else None
+            ws_root = Path(params.get("workspace_root") or str(BASE_DIR)).resolve()
+            skills_root = (cfg_dir / "xox-skills") if (scope == "global" and cfg_dir is not None) else None
+            result = install_official_skill(
+                ws_root,
+                source=str(params.get("source") or ""),
+                skill_id=str(params.get("skill_id") or ""),
+                local_slug=str(params.get("local_slug") or ""),
+                skills_root=skills_root,
+                scope=scope,
+                audit_root=cfg_dir if (scope == "global" and cfg_dir is not None) else ws_root,
+            )
         elif method == "ping":
             result = {"status": "pong"}
         else:

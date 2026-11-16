@@ -1006,6 +1006,11 @@ pub async fn run_xox_chat<R: Runtime>(
         .and_then(|e| e.api_region.clone());
     let auto_failover = vault.auto_failover;
     let failover_order = vault.failover_order.clone();
+    let xox_config_dir = crate::slices::xox_studio::store::xox_config_dir(&app)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
+    let global_xox_profile = crate::slices::xox_studio::store::load_global_xox_profile(&app);
+    let tts_config = crate::slices::tts_voice::store::load_tts_config(&app);
     let app_for_sync = app.clone();
     let eff_for_sync = effective_provider.clone();
 
@@ -1022,6 +1027,9 @@ pub async fn run_xox_chat<R: Runtime>(
                 "auto_failover": auto_failover,
                 "failover_order": failover_order,
                 "workspace_root": workspace_root,
+                "xox_config_dir": xox_config_dir,
+                "global_xox_profile": global_xox_profile,
+                "tts_config": tts_config,
                 "message": payload.message,
                 "history": payload.history,
                 "current_tasks": payload.current_tasks,
@@ -3483,6 +3491,290 @@ fn handle_memory_search_rpc_callback<R: Runtime>(
     })
 }
 
+fn merge_string_list(existing: &[String], incoming: &[String], mode: &str) -> Vec<String> {
+    let mode_norm = mode.trim().to_ascii_lowercase();
+    if mode_norm == "replace" {
+        return incoming.to_vec();
+    }
+    if mode_norm == "remove" {
+        let remove_keys: std::collections::HashSet<String> = incoming
+            .iter()
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        return existing
+            .iter()
+            .filter(|s| !remove_keys.contains(&s.trim().to_lowercase()))
+            .cloned()
+            .collect();
+    }
+    let mut combined = existing.to_vec();
+    combined.extend(incoming.iter().cloned());
+    combined
+}
+
+fn parse_optional_str_list(val: Option<&serde_json::Value>) -> Option<Vec<String>> {
+    val.and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect()
+    })
+}
+
+fn handle_update_xox_profile_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+) -> serde_json::Value {
+    use crate::slices::xox_studio::store::{
+        load_global_xox_profile, save_global_xox_profile, SaveGlobalXoxProfilePayload,
+    };
+
+    let current = load_global_xox_profile(app);
+    let list_mode = parsed
+        .get("list_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("merge");
+
+    let mut changed_fields: Vec<&'static str> = Vec::new();
+    let get_str = |key: &str| -> Option<String> {
+        parsed
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+
+    let agent_name = get_str("agent_name").or_else(|| get_str("agentName"));
+    if agent_name.is_some() {
+        changed_fields.push("agentName");
+    }
+    let active_role = get_str("active_role").or_else(|| get_str("activeRole"));
+    if active_role.is_some() {
+        changed_fields.push("activeRole");
+    }
+    let personality = get_str("personality");
+    if personality.is_some() {
+        changed_fields.push("personality");
+    }
+    let initial_instructions = parsed
+        .get("initial_instructions")
+        .or_else(|| parsed.get("initialInstructions"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    if initial_instructions.is_some() {
+        changed_fields.push("initialInstructions");
+    }
+    let accent_preset = get_str("accent_preset").or_else(|| get_str("accentPreset"));
+    if accent_preset.is_some() {
+        changed_fields.push("accentPreset");
+    }
+
+    let tone_tags = parse_optional_str_list(parsed.get("tone_tags").or_else(|| parsed.get("toneTags")));
+    if tone_tags.is_some() {
+        changed_fields.push("toneTags");
+    }
+
+    let global_rules =
+        parse_optional_str_list(parsed.get("global_rules").or_else(|| parsed.get("globalRules")))
+            .map(|inc| {
+                changed_fields.push("globalRules");
+                merge_string_list(&current.global_rules, &inc, list_mode)
+            });
+    let likes = parse_optional_str_list(parsed.get("likes")).map(|inc| {
+        changed_fields.push("likes");
+        merge_string_list(&current.likes, &inc, list_mode)
+    });
+    let workflows = parse_optional_str_list(parsed.get("workflows")).map(|inc| {
+        changed_fields.push("workflows");
+        merge_string_list(&current.workflows, &inc, list_mode)
+    });
+    let donts = parse_optional_str_list(parsed.get("donts")).map(|inc| {
+        changed_fields.push("donts");
+        merge_string_list(&current.donts, &inc, list_mode)
+    });
+
+    if changed_fields.is_empty() {
+        return serde_json::json!({
+            "ok": false,
+            "error": "Indica al menos un campo del perfil global de Xox para actualizar."
+        });
+    }
+
+    let patch = SaveGlobalXoxProfilePayload {
+        agent_name,
+        active_role,
+        personality,
+        tone_tags,
+        initial_instructions,
+        global_rules,
+        likes,
+        workflows,
+        donts,
+        accent_preset,
+    };
+
+    match save_global_xox_profile(app, patch) {
+        Ok(saved) => serde_json::json!({
+            "ok": true,
+            "profile": saved,
+            "changed_fields": changed_fields,
+        }),
+        Err(err) => serde_json::json!({
+            "ok": false,
+            "error": err,
+        }),
+    }
+}
+
+fn handle_set_tts_voice_config_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+) -> serde_json::Value {
+    use crate::slices::tts_voice::store::{load_tts_config, normalize_voice_id, save_tts_config};
+    use crate::slices::tts_voice::worker::{build_tts_status, TtsWorkerState, TTS_STATUS_EVENT};
+
+    let mut cfg = load_tts_config(app);
+    let mut changed: Vec<&'static str> = Vec::new();
+
+    if let Some(v) = parsed.get("voice_id").or_else(|| parsed.get("voiceId")).and_then(|x| x.as_str()) {
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            let norm = normalize_voice_id(trimmed);
+            if norm != trimmed.to_ascii_lowercase() {
+                return serde_json::json!({
+                    "ok": false,
+                    "error": format!("Voz no reconocida '{trimmed}'. Voces disponibles: lola, rafael, alba, estelle, marius, jean.")
+                });
+            }
+            cfg.voice_id = norm;
+            changed.push("voiceId");
+        }
+    }
+    if let Some(s) = parsed.get("speed").and_then(|x| x.as_f64()) {
+        cfg.speed = (s as f32).clamp(0.85, 1.25);
+        changed.push("speed");
+    }
+    if let Some(en) = parsed.get("enabled").and_then(|x| x.as_bool()) {
+        cfg.enabled = en;
+        changed.push("enabled");
+    }
+    if let Some(ap) = parsed.get("auto_play").or_else(|| parsed.get("autoPlay")).and_then(|x| x.as_bool()) {
+        cfg.auto_play = ap;
+        changed.push("autoPlay");
+    }
+
+    if changed.is_empty() {
+        return serde_json::json!({
+            "ok": false,
+            "error": "Indica al menos voice_id, speed, enabled o auto_play."
+        });
+    }
+
+    match save_tts_config(app, &cfg) {
+        Ok(saved) => {
+            if !saved.enabled {
+                let worker = app.state::<TtsWorkerState>();
+                worker.kill_worker();
+            }
+            if let Ok(status) = build_tts_status(app) {
+                let _ = app.emit(TTS_STATUS_EVENT, &status);
+            }
+            serde_json::json!({
+                "ok": true,
+                "config": saved,
+                "changed": changed,
+            })
+        }
+        Err(err) => serde_json::json!({
+            "ok": false,
+            "error": err,
+        }),
+    }
+}
+
+fn handle_save_xox_skill_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::workspace_manager::registry::resolve_active_workspace_root;
+    use crate::slices::xox_studio::store::{
+        load_global_xox_profile, save_xox_skill_in, xox_config_dir, SaveXoxSkillPayload,
+        XOX_PROFILE_UPDATED_EVENT,
+    };
+
+    let Ok(dir) = xox_config_dir(app) else {
+        return serde_json::json!({ "ok": false, "error": "No se pudo resolver app_config_dir." });
+    };
+    let ws = fallback_workspace_root
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| resolve_active_workspace_root(app));
+
+    let payload = SaveXoxSkillPayload {
+        scope: parsed.get("scope").and_then(|v| v.as_str()).map(str::to_string),
+        slug: parsed.get("slug").and_then(|v| v.as_str()).map(str::to_string),
+        name: parsed.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        raw_markdown: parsed
+            .get("raw_markdown")
+            .or_else(|| parsed.get("rawMarkdown"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    };
+
+    match save_xox_skill_in(&dir, ws.as_deref(), payload) {
+        Ok(saved) => {
+            let profile = load_global_xox_profile(app);
+            let _ = app.emit(XOX_PROFILE_UPDATED_EVENT, &profile);
+            if saved.scope == "workspace" {
+                let _ = app.emit(
+                    crate::slices::task_ledger::commands::WORKSPACE_UPDATED_EVENT,
+                    serde_json::json!({ "reason": "xox_skill_saved", "path": saved.rel_path }),
+                );
+            }
+            serde_json::json!({ "ok": true, "skill": saved })
+        }
+        Err(err) => serde_json::json!({ "ok": false, "error": err }),
+    }
+}
+
+fn handle_delete_xox_skill_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::workspace_manager::registry::resolve_active_workspace_root;
+    use crate::slices::xox_studio::store::{
+        delete_xox_skill_in, load_global_xox_profile, xox_config_dir, XOX_PROFILE_UPDATED_EVENT,
+    };
+
+    let Ok(dir) = xox_config_dir(app) else {
+        return serde_json::json!({ "ok": false, "error": "No se pudo resolver app_config_dir." });
+    };
+    let ws = fallback_workspace_root
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| resolve_active_workspace_root(app));
+    let scope = parsed.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
+    let slug = parsed.get("slug").and_then(|v| v.as_str()).unwrap_or("");
+
+    match delete_xox_skill_in(&dir, ws.as_deref(), scope, slug) {
+        Ok(()) => {
+            let profile = load_global_xox_profile(app);
+            let _ = app.emit(XOX_PROFILE_UPDATED_EVENT, &profile);
+            if scope.trim().eq_ignore_ascii_case("workspace") {
+                let _ = app.emit(
+                    crate::slices::task_ledger::commands::WORKSPACE_UPDATED_EVENT,
+                    serde_json::json!({ "reason": "xox_skill_deleted", "slug": slug }),
+                );
+            }
+            serde_json::json!({ "ok": true, "slug": slug, "scope": scope })
+        }
+        Err(err) => serde_json::json!({ "ok": false, "error": err }),
+    }
+}
+
 fn call_python_sidecar_streaming<R: Runtime>(
     app: &AppHandle<R>,
     script_path: &PathBuf,
@@ -3563,6 +3855,10 @@ fn call_python_sidecar_streaming<R: Runtime>(
                 "host_fs_copy_from_workspace" => {
                     Some(handle_host_fs_copy_from_workspace_rpc(app, &parsed, ws_ref))
                 }
+                "update_xox_profile" => Some(handle_update_xox_profile_rpc(app, &parsed)),
+                "set_tts_voice_config" => Some(handle_set_tts_voice_config_rpc(app, &parsed)),
+                "save_xox_skill" => Some(handle_save_xox_skill_rpc(app, &parsed, ws_ref)),
+                "delete_xox_skill" => Some(handle_delete_xox_skill_rpc(app, &parsed, ws_ref)),
                 _ => None,
             };
             if let Some(cb_result) = cb_result_opt {
@@ -3692,6 +3988,11 @@ pub async fn run_xox_chat_stream<R: Runtime>(
         .and_then(|e| e.api_region.clone());
     let auto_failover = vault.auto_failover;
     let failover_order = vault.failover_order.clone();
+    let xox_config_dir = crate::slices::xox_studio::store::xox_config_dir(&app)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
+    let global_xox_profile = crate::slices::xox_studio::store::load_global_xox_profile(&app);
+    let tts_config = crate::slices::tts_voice::store::load_tts_config(&app);
 
     let app_clone = app.clone();
     let app_for_sync = app.clone();
@@ -3710,6 +4011,9 @@ pub async fn run_xox_chat_stream<R: Runtime>(
                 "auto_failover": auto_failover,
                 "failover_order": failover_order,
                 "workspace_root": workspace_root,
+                "xox_config_dir": xox_config_dir,
+                "global_xox_profile": global_xox_profile,
+                "tts_config": tts_config,
                 "message": payload.message,
                 "history": payload.history,
                 "current_tasks": payload.current_tasks,

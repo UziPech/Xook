@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { JellyPillTrack } from "../../components/JellyPillTrack";
+import { XoxSilhouetteIcon } from "../../components/XoxStar";
 import { LiquidGlassBackdrop } from "../../components/LiquidGlassBackdrop";
 import { waitTopLayerAnimations } from "../../utils/topLayerDialog";
 import {
@@ -73,6 +74,8 @@ interface SettingsModalProps {
   onOpenAiSettings: (tab?: OpenRouterSettingsTab) => void;
   onOpenLocalAuth: () => void;
   onStatusNotice?: (msg: string) => void;
+  agentName?: string;
+  onOpenXoxStudio?: (tab?: "identity" | "voice" | "skills" | "rules") => void;
 }
 
 const PREVIEW_MSG_ID = "__xook_voice_preview__";
@@ -90,7 +93,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onOpenAiSettings,
   onOpenLocalAuth,
   onStatusNotice,
+  agentName,
+  onOpenXoxStudio,
 }) => {
+  const displayAgentName = agentName?.trim() || "Xox";
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeSeqRef = useRef(0);
   const pressedOutsideRef = useRef(false);
@@ -460,7 +466,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     Configuraciones
                   </h2>
                   <p className="text-[11px] text-zinc-300/80 truncate">
-                    Voz de Xox, lectura de pantalla, modelos e identidad local
+                    Voz de {displayAgentName}, lectura de pantalla, modelos e identidad local
                   </p>
                 </div>
               </div>
@@ -565,7 +571,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <h3 className="text-[13px] font-semibold text-white">
-                            Voz de Xox en este equipo
+                            Voz de {displayAgentName} en este equipo
                           </h3>
                           <span
                             className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10.5px] font-medium border ${
@@ -1187,6 +1193,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   activeWorkspaceId={activeWorkspaceId}
                   onStatusNotice={onStatusNotice}
                 />
+
+                {onOpenXoxStudio && (
+                  <section className="rounded-2xl border border-white/[0.09] bg-white/[0.03] p-4 flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="text-[13px] font-semibold text-white">
+                        Espacio de {displayAgentName}
+                      </h3>
+                      <p className="text-[11.5px] text-zinc-300/80">
+                        Personaliza nombre global, prompt inicial, skills por bloques y reglas.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenXoxStudio("identity");
+                      }}
+                      className="quick-liquid-chip-active px-3 py-1.5 rounded-xl text-[11.5px] font-medium text-white inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <XoxSilhouetteIcon className="w-3.5 h-3.5 text-white" />
+                      <span>Abrir editor</span>
+                    </button>
+                  </section>
+                )}
               </div>
             )}
           </div>

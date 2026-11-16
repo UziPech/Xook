@@ -995,6 +995,13 @@ export interface VaultPromptSpec {
   savedMaskedKey?: string;
 }
 
+export interface XoxCustomizationEvent {
+  section: "identity" | "voice" | "skills" | "rules";
+  summary: string;
+  slug?: string;
+  changed?: string[];
+}
+
 export interface XoxAiChatResponse {
   reply: string;
   reasoning?: string;
@@ -1013,6 +1020,7 @@ export interface XoxAiChatResponse {
   usage?: XoxTokenUsage;
   rateLimits?: ProviderRateLimitsSnapshot;
   workspaceMutated?: boolean;
+  xoxCustomizations?: XoxCustomizationEvent[];
   failoverNotice?: string;
   exhaustedProviders?: Array<Record<string, unknown>>;
   failoverEvents?: ProviderFailoverEvent[];
@@ -1030,6 +1038,7 @@ export interface XoxStreamCallbacks {
   onCanvas?: (canvas: CanvasArtifact) => void;
   onPdfDraftProgress?: (draft: PdfDraftProgressEvent) => void;
   onPdfGenerated?: (pdf: GeneratedPdfArtifact) => void;
+  onXoxCustomized?: (event: XoxCustomizationEvent) => void;
 }
 
 export interface WorkspaceContextSource {
@@ -4612,6 +4621,16 @@ export async function runXoxAiChatStream(
       } else if (evt.type === "pdf_generated" && evt.pdf) {
         const parsedPdf = sanitizeGeneratedPdfArtifact(evt.pdf);
         if (parsedPdf) callbacks?.onPdfGenerated?.(parsedPdf);
+      } else if (evt.type === "xox_customized") {
+        const rawSec = String(evt.section ?? "identity").toLowerCase();
+        const section: XoxCustomizationEvent["section"] =
+          rawSec === "voice" || rawSec === "skills" || rawSec === "rules" ? rawSec : "identity";
+        callbacks?.onXoxCustomized?.({
+          section,
+          summary: typeof evt.summary === "string" ? evt.summary : "Configuración actualizada",
+          slug: typeof evt.slug === "string" ? evt.slug : undefined,
+          changed: Array.isArray(evt.changed) ? evt.changed.map(String) : undefined,
+        });
       }
     });
 
@@ -4632,6 +4651,12 @@ export async function runXoxAiChatStream(
         model_used?: string;
         latency_ms?: number;
         workspace_mutated?: boolean;
+        xox_customizations?: Array<{
+          section?: string;
+          summary?: string;
+          slug?: string;
+          changed?: string[];
+        }>;
         exhausted_providers?: Array<Record<string, unknown>>;
         failover_events?: Array<{
           from_provider?: string;
@@ -4731,6 +4756,21 @@ export async function runXoxAiChatStream(
         usage,
         rateLimits,
         workspaceMutated: Boolean(res.workspace_mutated),
+        xoxCustomizations: Array.isArray(res.xox_customizations)
+          ? res.xox_customizations.map((item) => {
+              const rawSec = String(item.section ?? "identity").toLowerCase();
+              const section: XoxCustomizationEvent["section"] =
+                rawSec === "voice" || rawSec === "skills" || rawSec === "rules"
+                  ? rawSec
+                  : "identity";
+              return {
+                section,
+                summary: typeof item.summary === "string" ? item.summary : "Configuración actualizada",
+                slug: typeof item.slug === "string" ? item.slug : undefined,
+                changed: Array.isArray(item.changed) ? item.changed.map(String) : undefined,
+              };
+            })
+          : undefined,
         failoverNotice: res.failover_notice,
         exhaustedProviders: res.exhausted_providers,
         failoverEvents: res.failover_events?.map((fe) => ({

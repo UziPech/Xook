@@ -111,7 +111,14 @@ pub fn run() {
             slices::tts_voice::commands::download_tts_models_cmd,
             slices::tts_voice::commands::delete_tts_models_cmd,
             slices::tts_voice::commands::unload_tts_worker_cmd,
-            slices::tts_voice::commands::synthesize_tts_speech_cmd
+            slices::tts_voice::commands::synthesize_tts_speech_cmd,
+            slices::xox_studio::commands::get_global_xox_profile_cmd,
+            slices::xox_studio::commands::save_global_xox_profile_cmd,
+            slices::xox_studio::commands::list_xox_skills_cmd,
+            slices::xox_studio::commands::save_xox_skill_cmd,
+            slices::xox_studio::commands::delete_xox_skill_cmd,
+            slices::xox_studio::commands::discover_official_skills_cmd,
+            slices::xox_studio::commands::install_official_skill_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

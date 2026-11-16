@@ -17,6 +17,24 @@ export interface XoxDragMotion {
   releaseVy: number;
 }
 
+export type XoxAccentPreset = "classic" | "violet" | "emerald" | "amber" | "rose";
+
+export const XOX_ACCENT_PRESETS: Record<
+  XoxAccentPreset,
+  { label: string; mid: string; rim: string; tint: string; glow: string }
+> = {
+  classic: { label: "Estelar", mid: "#7DD3FC", rim: "#BAE6FD", tint: "#E0F2FE", glow: "#38BDF8" },
+  violet: { label: "Violeta", mid: "#C4B5FD", rim: "#DDD6FE", tint: "#EDE9FE", glow: "#A78BFA" },
+  emerald: { label: "Esmeralda", mid: "#6EE7B7", rim: "#A7F3D0", tint: "#D1FAE5", glow: "#34D399" },
+  amber: { label: "Ámbar", mid: "#FCD34D", rim: "#FDE68A", tint: "#FEF3C7", glow: "#FBBF24" },
+  rose: { label: "Coral", mid: "#FDA4AF", rim: "#FECDD3", tint: "#FFE4E6", glow: "#FB7185" },
+};
+
+export function resolveXoxAccentPreset(raw?: string | null): XoxAccentPreset {
+  const clean = (raw || "").trim().toLowerCase();
+  return clean in XOX_ACCENT_PRESETS ? (clean as XoxAccentPreset) : "classic";
+}
+
 interface XoxStarProps {
   state?: XoxState;
   /** Tamaño total del lienzo (incluye el aura). La estrella ocupa ~55%. */
@@ -35,6 +53,12 @@ interface XoxStarProps {
   active?: boolean;
   /** "star" limita hover/clic estrictamente al cuerpo de la estrella sin capturar márgenes transparentes. */
   hitArea?: "full" | "star";
+  /** Color visual de aura de Xox en reposo/habla. */
+  accentPreset?: XoxAccentPreset | string;
+  /** Incrementar para disparar un impulso físico de deslizamiento lateral. */
+  glideTrigger?: number;
+  /** Dirección del impulso lateral ("right" = se desliza hacia la derecha, "left" = hacia la izquierda). */
+  glideDir?: "right" | "left";
 }
 
 /**
@@ -91,6 +115,24 @@ const step = (s: Spring, target: number, k: number, c: number, dt: number) => {
 };
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const toRad = (d: number) => (d * Math.PI) / 180;
+
+type RgbTriple = [number, number, number];
+function parseHexRgb(hex: string): RgbTriple {
+  const clean = hex.replace("#", "").trim();
+  if (clean.length !== 6) return [255, 255, 255];
+  const n = parseInt(clean, 16);
+  if (!Number.isFinite(n)) return [255, 255, 255];
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function stepRgb(cur: RgbTriple, target: RgbTriple, alpha: number): string {
+  cur[0] += (target[0] - cur[0]) * alpha;
+  cur[1] += (target[1] - cur[1]) * alpha;
+  cur[2] += (target[2] - cur[2]) * alpha;
+  const r = Math.round(clamp(cur[0], 0, 255));
+  const g = Math.round(clamp(cur[1], 0, 255));
+  const b = Math.round(clamp(cur[2], 0, 255));
+  return `rgb(${r},${g},${b})`;
+}
 
 const STAR_PTS: number[][] = Array.from({ length: 10 }, () => [0, 0]);
 const STAR_RADII: number[] = new Array(10).fill(PEAK_ROUND);
@@ -167,6 +209,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   glassContrast = false,
   active = true,
   hitArea = "full",
+  accentPreset = "classic",
+  glideTrigger,
+  glideDir = "right",
 }) => {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const ids = {
@@ -176,7 +221,15 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     glow: `xox-glow-${uid}`,
     cradle: `xox-cradle-${uid}`,
   };
-  const palette = PALETTE[state];
+  const resolvedAccent = resolveXoxAccentPreset(accentPreset);
+  const initialAccentSpec = useMemo(() => XOX_ACCENT_PRESETS[resolvedAccent], []);
+  const initialPalette = useMemo(() => {
+    const base = PALETTE[state];
+    const useCustom = state === "idle" || state === "talking" || state === "reading";
+    return useCustom
+      ? { core: "#FFFFFF", mid: initialAccentSpec.mid, glow: initialAccentSpec.glow }
+      : base;
+  }, []);
 
   // Refs a nodos SVG animados por rAF
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -196,6 +249,29 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const talkMouthRef = useRef<SVGEllipseElement>(null);
   const talkWaveRef = useRef<SVGGElement>(null);
   const sparkRefs = useRef<(SVGCircleElement | null)[]>([]);
+  const stopRefs = useRef<{
+    bodyTint: SVGStopElement | null;
+    bodyGlow: SVGStopElement | null;
+    rim1: SVGStopElement | null;
+    rim2: SVGStopElement | null;
+    core0: SVGStopElement | null;
+    core1: SVGStopElement | null;
+    core2: SVGStopElement | null;
+    glow0: SVGStopElement | null;
+    glow1: SVGStopElement | null;
+    glow2: SVGStopElement | null;
+  }>({
+    bodyTint: null,
+    bodyGlow: null,
+    rim1: null,
+    rim2: null,
+    core0: null,
+    core1: null,
+    core2: null,
+    glow0: null,
+    glow1: null,
+    glow2: null,
+  });
   // Props (accesorios) que aparecen según el estado
   const lensRef = useRef<SVGGElement>(null);
   const bubbleRef = useRef<SVGGElement>(null);
@@ -203,9 +279,35 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const bangRef = useRef<SVGGElement>(null);
   const syncRef = useRef<SVGGElement>(null);
 
+  const prevAccentRef = useRef<XoxAccentPreset>(resolvedAccent);
   const stateRef = useRef<XoxState>(state);
+  const accentRef = useRef<XoxAccentPreset>(resolvedAccent);
   const hoverRef = useRef(false);
   const dragMotionPropRef = useRef(dragMotionRef);
+
+  const colorStateRef = useRef<{
+    cur: Record<"bodyTint" | "bodyGlow" | "rim1" | "rim2" | "core" | "mid" | "glow", RgbTriple>;
+    target: Record<"bodyTint" | "bodyGlow" | "rim1" | "rim2" | "core" | "mid" | "glow", RgbTriple>;
+  }>({
+    cur: {
+      bodyTint: parseHexRgb(initialAccentSpec.tint),
+      bodyGlow: parseHexRgb(initialAccentSpec.glow),
+      rim1: parseHexRgb(initialAccentSpec.rim),
+      rim2: parseHexRgb(initialAccentSpec.mid),
+      core: parseHexRgb(initialPalette.core),
+      mid: parseHexRgb(initialPalette.mid),
+      glow: parseHexRgb(initialPalette.glow),
+    },
+    target: {
+      bodyTint: parseHexRgb(initialAccentSpec.tint),
+      bodyGlow: parseHexRgb(initialAccentSpec.glow),
+      rim1: parseHexRgb(initialAccentSpec.rim),
+      rim2: parseHexRgb(initialAccentSpec.mid),
+      core: parseHexRgb(initialPalette.core),
+      mid: parseHexRgb(initialPalette.mid),
+      glow: parseHexRgb(initialPalette.glow),
+    },
+  });
 
   useEffect(() => {
     dragMotionPropRef.current = dragMotionRef;
@@ -222,10 +324,42 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     jumpKick: 0,
     waveStart: -10,
     summonAt: -10,
+    colorMorphAt: -10,
     lookTX: 0,
     lookTY: 0,
     mouseTime: -1e9,
   });
+
+  // Actualiza objetivos de color y dispara ola de transformación al cambiar accentPreset
+  useEffect(() => {
+    accentRef.current = resolvedAccent;
+    const spec = XOX_ACCENT_PRESETS[resolvedAccent];
+    const stBase = PALETTE[state];
+    const useCustom = state === "idle" || state === "talking" || state === "reading";
+    const pal = useCustom ? { core: "#FFFFFF", mid: spec.mid, glow: spec.glow } : stBase;
+
+    colorStateRef.current.target = {
+      bodyTint: parseHexRgb(spec.tint),
+      bodyGlow: parseHexRgb(spec.glow),
+      rim1: parseHexRgb(spec.rim),
+      rim2: parseHexRgb(spec.mid),
+      core: parseHexRgb(pal.core),
+      mid: parseHexRgb(pal.mid),
+      glow: parseHexRgb(pal.glow),
+    };
+
+    if (prevAccentRef.current !== resolvedAccent) {
+      prevAccentRef.current = resolvedAccent;
+      const a = anim.current;
+      a.colorMorphAt = a.t;
+      a.summonAt = a.t;
+      if (!a.reduce) {
+        a.squashKick += 2.3;
+        a.jumpKick -= 65;
+        a.waveStart = a.t;
+      }
+    }
+  }, [resolvedAccent, state]);
 
   const initialPath = useMemo(
     () => buildStar({ t: 0, amp: 1, speed: 1, lag: 0, reach: 0, wave: -1 }),
@@ -268,6 +402,17 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     a.squashKick = 4.2;
     a.jumpKick = -195;
   }, [summonTrigger]);
+
+  // Impulso lateral cuando Xox se desliza hacia o desde la ventana de su espacio
+  useEffect(() => {
+    if (!glideTrigger) return;
+    const a = anim.current;
+    a.summonAt = a.t;
+    a.waveStart = a.t;
+    if (a.reduce) return;
+    a.squashKick = glideDir === "right" ? -2.8 : 2.8;
+    a.jumpKick = -85;
+  }, [glideTrigger, glideDir]);
 
   // Seguimiento global del cursor: Xox mira hacia donde esté el puntero solo cuando está activo
   useEffect(() => {
@@ -491,13 +636,40 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       );
       const summonPhase = (t - a.summonAt) / 0.65;
       const summonActive = summonPhase >= 0 && summonPhase <= 1 && !a.reduce;
+      const colorMorphPhase = (t - a.colorMorphAt) / 0.72;
+      const colorMorphActive = colorMorphPhase >= 0 && colorMorphPhase <= 1;
+
+      // Interpolación suave de paleta RGB en SVG stops y chispas
+      const cs = colorStateRef.current;
+      const colorAlpha = a.reduce ? 1 : 1 - Math.exp(-9.5 * dt);
+      const cBodyTint = stepRgb(cs.cur.bodyTint, cs.target.bodyTint, colorAlpha);
+      const cBodyGlow = stepRgb(cs.cur.bodyGlow, cs.target.bodyGlow, colorAlpha);
+      const cRim1 = stepRgb(cs.cur.rim1, cs.target.rim1, colorAlpha);
+      const cRim2 = stepRgb(cs.cur.rim2, cs.target.rim2, colorAlpha);
+      const cCore = stepRgb(cs.cur.core, cs.target.core, colorAlpha);
+      const cMid = stepRgb(cs.cur.mid, cs.target.mid, colorAlpha);
+      const cGlow = stepRgb(cs.cur.glow, cs.target.glow, colorAlpha);
+
+      const sr = stopRefs.current;
+      sr.bodyTint?.setAttribute("stop-color", cBodyTint);
+      sr.bodyGlow?.setAttribute("stop-color", cBodyGlow);
+      sr.rim1?.setAttribute("stop-color", cRim1);
+      sr.rim2?.setAttribute("stop-color", cRim2);
+      sr.core0?.setAttribute("stop-color", cCore);
+      sr.core1?.setAttribute("stop-color", cMid);
+      sr.core2?.setAttribute("stop-color", cMid);
+      sr.glow0?.setAttribute("stop-color", cGlow);
+      sr.glow1?.setAttribute("stop-color", cGlow);
+      sr.glow2?.setAttribute("stop-color", cGlow);
+      summonRingRef.current?.setAttribute("stroke", cGlow);
 
       if (cradleRef.current) {
         cradleRef.current.setAttribute("transform", `translate(0 ${(bob + jump.x).toFixed(2)})`);
       }
 
       if (glowRef.current) {
-        const summonBoost = summonActive ? 0.4 * (1 - summonPhase) : 0;
+        const summonBoost = summonActive ? 0.38 * (1 - summonPhase) : 0;
+        const colorBoost = colorMorphActive && !a.reduce ? 0.25 * Math.sin(colorMorphPhase * Math.PI) : 0;
         glowRef.current.setAttribute("transform", `translate(0 ${(bob + jump.x).toFixed(2)})`);
         glowRef.current.setAttribute(
           "opacity",
@@ -506,7 +678,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
               ? 0.85 + 0.15 * Math.sin(t * 5)
               : alerting
               ? 0.75 + 0.25 * Math.sin(t * 8)
-              : 0.55 + 0.3 * hover.x) + summonBoost,
+              : 0.55 + 0.3 * hover.x) + summonBoost + colorBoost,
             0,
             1
           ).toFixed(3)
@@ -625,18 +797,22 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         );
       }
 
-      // --- Chispas en órbita elíptica (profundidad por opacidad) ----------
-      const orbitBoost = thinking ? 2.2 : talking ? 1.45 : dragging ? 1 + dragSpeed * 1.4 : 1;
+      // --- Chispas en órbita elíptica (profundidad por opacidad + color morph) ---
+      const colorOrbitBoost =
+        colorMorphActive && !a.reduce ? 1.8 * Math.sin(colorMorphPhase * Math.PI) : 0;
+      const orbitBoost =
+        (thinking ? 2.2 : talking ? 1.45 : dragging ? 1 + dragSpeed * 1.4 : 1) + colorOrbitBoost;
       sparkRefs.current.forEach((el, i) => {
         if (!el) return;
         const ang = t * (0.35 + i * 0.12) * orbitBoost + i * 2.094;
-        const radius = 92 + 5 * Math.sin(t * 1.3 + i);
+        const radius = 92 + 5 * Math.sin(t * 1.3 + i) + (colorMorphActive && !a.reduce ? 6 * Math.sin(colorMorphPhase * Math.PI) : 0);
         const depth = 0.5 + 0.5 * Math.sin(ang); // 0 = atrás, 1 = adelante
         const twinkle = 0.5 + 0.5 * Math.sin(t * 3 + i * 1.7);
         el.setAttribute("cx", (C + Math.cos(ang) * radius).toFixed(2));
         el.setAttribute("cy", (C + bob * 0.5 + Math.sin(ang) * radius * 0.5).toFixed(2));
         el.setAttribute("opacity", ((0.2 + 0.6 * twinkle) * (0.45 + 0.55 * depth)).toFixed(3));
         el.setAttribute("r", (1.2 + 0.9 * depth).toFixed(2));
+        el.setAttribute("fill", i === 1 ? cBodyGlow : i === 2 ? cRim1 : "#FFFFFF");
       });
 
       raf = requestAnimationFrame(frame);
@@ -725,26 +901,26 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         <defs>
           <linearGradient id={ids.body} x1="60" y1="50" x2="180" y2="190" gradientUnits="userSpaceOnUse">
             <stop offset="0%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.44" : "0.30"} />
-            <stop offset="35%" stopColor="#E0F2FE" stopOpacity={glassContrast ? "0.26" : "0.14"} />
-            <stop offset="70%" stopColor="#38BDF8" stopOpacity={glassContrast ? "0.18" : "0.08"} />
+            <stop ref={(el) => { stopRefs.current.bodyTint = el; }} offset="35%" stopColor={initialAccentSpec.tint} stopOpacity={glassContrast ? "0.26" : "0.14"} />
+            <stop ref={(el) => { stopRefs.current.bodyGlow = el; }} offset="70%" stopColor={initialAccentSpec.glow} stopOpacity={glassContrast ? "0.18" : "0.08"} />
             <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.30" : "0.18"} />
           </linearGradient>
           <linearGradient id={ids.rim} x1="55" y1="45" x2="185" y2="195" gradientUnits="userSpaceOnUse">
             <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.98" />
-            <stop offset="40%" stopColor="#BAE6FD" stopOpacity={glassContrast ? "0.86" : "0.5"} />
-            <stop offset="75%" stopColor="#7DD3FC" stopOpacity={glassContrast ? "0.72" : "0.2"} />
+            <stop ref={(el) => { stopRefs.current.rim1 = el; }} offset="40%" stopColor={initialAccentSpec.rim} stopOpacity={glassContrast ? "0.86" : "0.5"} />
+            <stop ref={(el) => { stopRefs.current.rim2 = el; }} offset="75%" stopColor={initialAccentSpec.mid} stopOpacity={glassContrast ? "0.72" : "0.2"} />
             <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.94" : "0.7"} />
           </linearGradient>
           <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor={palette.core} stopOpacity={glassContrast ? "0.98" : "0.9"} />
-            <stop offset="50%" stopColor={palette.mid} stopOpacity={glassContrast ? "0.42" : "0.3"} />
-            <stop offset="100%" stopColor={palette.mid} stopOpacity="0" />
+            <stop ref={(el) => { stopRefs.current.core0 = el; }} offset="0%" stopColor={initialPalette.core} stopOpacity={glassContrast ? "0.98" : "0.9"} />
+            <stop ref={(el) => { stopRefs.current.core1 = el; }} offset="50%" stopColor={initialPalette.mid} stopOpacity={glassContrast ? "0.42" : "0.3"} />
+            <stop ref={(el) => { stopRefs.current.core2 = el; }} offset="100%" stopColor={initialPalette.mid} stopOpacity="0" />
           </radialGradient>
           {/* Aura dibujada dentro del SVG: se desvanece a 0 antes del borde */}
           <radialGradient id={ids.glow} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor={palette.glow} stopOpacity="0.32" />
-            <stop offset="45%" stopColor={palette.glow} stopOpacity="0.10" />
-            <stop offset="100%" stopColor={palette.glow} stopOpacity="0" />
+            <stop ref={(el) => { stopRefs.current.glow0 = el; }} offset="0%" stopColor={initialPalette.glow} stopOpacity="0.32" />
+            <stop ref={(el) => { stopRefs.current.glow1 = el; }} offset="45%" stopColor={initialPalette.glow} stopOpacity="0.10" />
+            <stop ref={(el) => { stopRefs.current.glow2 = el; }} offset="100%" stopColor={initialPalette.glow} stopOpacity="0" />
           </radialGradient>
           {glassContrast && (
             <radialGradient id={ids.cradle} cx="50%" cy="50%" r="50%">
@@ -770,7 +946,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           cy={C}
           r="34"
           fill="none"
-          stroke={palette.glow}
+          stroke={initialPalette.glow}
           strokeWidth="2"
           opacity="0"
         />
@@ -785,7 +961,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             cx={C}
             cy={C}
             r="1.5"
-            fill={i === 1 ? "#38BDF8" : i === 2 ? "#BAE6FD" : "#FFFFFF"}
+            fill={i === 1 ? initialAccentSpec.glow : i === 2 ? initialAccentSpec.rim : "#FFFFFF"}
             opacity="0"
           />
         ))}
@@ -961,3 +1137,47 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     </div>
   );
 };
+
+function ellipseCutoutPath(cx: number, cy: number, rx: number, ry: number): string {
+  const x0 = (cx - rx).toFixed(2);
+  const x1 = (cx + rx).toFixed(2);
+  const cyStr = cy.toFixed(2);
+  const rxStr = rx.toFixed(2);
+  const ryStr = ry.toFixed(2);
+  return `M${x0} ${cyStr}A${rxStr} ${ryStr} 0 1 0 ${x1} ${cyStr}A${rxStr} ${ryStr} 0 1 0 ${x0} ${cyStr}Z`;
+}
+
+const XOX_SILHOUETTE_PATH =
+  buildStar({ t: 0, amp: 0, speed: 1, lag: 0, reach: 0, wave: -1 }) +
+  ellipseCutoutPath(C - 8.5 * 1.15, C - 3, 6.0, 9.2) +
+  ellipseCutoutPath(C + 8.5 * 1.15, C - 3, 6.0, 9.2);
+
+export interface XoxSilhouetteIconProps {
+  className?: string;
+  style?: React.CSSProperties;
+}
+
+/**
+ * Silueta sólida de Xox (misma geometría que el ícono de la barra de menú de macOS)
+ * para botones de acceso rápido y chips de personalización.
+ */
+export const XoxSilhouetteIcon: React.FC<XoxSilhouetteIconProps> = ({
+  className = "w-4 h-4",
+  style,
+}) => (
+  <svg
+    viewBox="56 54 128 122"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    className={className}
+    style={style}
+    aria-hidden="true"
+  >
+    <path
+      d={XOX_SILHOUETTE_PATH}
+      fill="currentColor"
+      fillRule="evenodd"
+      clipRule="evenodd"
+    />
+  </svg>
+);

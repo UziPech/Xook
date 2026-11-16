@@ -1860,12 +1860,118 @@ progress.xook-usage-progress::-moz-progress-bar {
   color: #f4f4f5;
 }
 
+/* --- Coreografía de traslado y cambio de aura para Xox (Chat <-> Ventana Studio) --- */
+@keyframes xox-glide-to-studio {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+  18% {
+    opacity: 1;
+    transform: translate3d(-14px, 3px, 0) rotate(-5deg) scale(0.95, 1.04);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(240px, -16px, 0) rotate(13deg) scale(0.56);
+  }
+}
+
+@keyframes xox-glide-from-studio {
+  0% {
+    opacity: 0;
+    transform: translate3d(220px, -12px, 0) rotate(-10deg) scale(0.62);
+  }
+  68% {
+    opacity: 1;
+    transform: translate3d(-11px, 2px, 0) rotate(3deg) scale(1.03, 0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+}
+
+@keyframes xox-window-arrive {
+  0% {
+    opacity: 0;
+    transform: translate3d(-135px, 6px, 0) rotate(10deg) scale(0.64);
+  }
+  68% {
+    opacity: 1;
+    transform: translate3d(9px, -2px, 0) rotate(-3deg) scale(1.04, 0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+}
+
+@keyframes xox-color-ripple {
+  0% {
+    opacity: 0.55;
+    transform: scale(0.65);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.55);
+  }
+}
+
+.xox-hero-slot {
+  max-height: 480px;
+  transition:
+    max-height 0.48s cubic-bezier(0.22, 1, 0.36, 1),
+    margin 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.xox-hero-slot.is-away {
+  max-height: 0px;
+  margin-top: 0px !important;
+  margin-bottom: 12px !important;
+  overflow: visible;
+  pointer-events: none;
+  transition:
+    max-height 0.44s cubic-bezier(0.22, 1, 0.36, 1) 0.1s,
+    margin 0.44s cubic-bezier(0.22, 1, 0.36, 1) 0.1s;
+}
+
+.xox-chat-lane-slot {
+  transition:
+    width 0.44s cubic-bezier(0.22, 1, 0.36, 1) 0.08s,
+    opacity 0.25s ease;
+}
+
+.xox-chat-lane-slot.is-away {
+  width: 0px !important;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.xox-stage-away {
+  animation: xox-glide-to-studio 0.44s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  pointer-events: none;
+}
+
+.xox-stage-home {
+  animation: xox-glide-from-studio 0.52s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.xox-window-star-arrive {
+  animation: xox-window-arrive 0.54s cubic-bezier(0.22, 1, 0.36, 1) 0.06s both;
+}
+
+.xox-window-color-ripple {
+  animation: xox-color-ripple 0.65s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   progress.xook-usage-progress::-webkit-progress-value { transition: none; }
   progress.xook-usage-progress::-moz-progress-bar { transition: none; }
   .menu-in, .menu-out, .xox-mini-eye, .xook-dialog-tab-panel, .xook-catalog-swap, .xook-model-reveal { animation: none; }
   .xook-tree-item, .xook-node-highlight, .xook-save-flash, .xook-empty-float, .xook-task-card { animation: none; }
-  .xook-chevron, .xook-expand-list, .xook-collapse-grid { transition: none; }
+  .xook-chevron, .xook-expand-list, .xook-collapse-grid, .xox-hero-slot, .xox-chat-lane-slot { transition: none; }
+  .xox-stage-away, .xox-stage-home, .xox-window-star-arrive, .xox-window-color-ripple { animation: none; }
+  .xox-stage-away { opacity: 0; }
   .xox-bubble.is-leaving { opacity: 0; }
   .input-bubble, .input-console, .sidebar-slot, .splitter-aurora-glass, .quick-capsule-shell, .quick-liquid-btn, .quick-liquid-btn-ready, .quick-liquid-option, .xook-liquid-row td, .xook-task-card, .xook-approve-btn, .xook-stepper-btn, .xook-code-action-btn, .xook-jelly-pill-thumb { transition: none; }
   .xook-jelly-tab { transition: color 0.12s ease, opacity 0.12s ease; }
