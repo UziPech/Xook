@@ -404,7 +404,7 @@ def sanitize_clarification(raw: Any) -> Optional[Dict[str, Any]]:
     return out
 
 
-ALLOWED_CANVAS_KINDS = frozenset({"comparison", "table", "document"})
+ALLOWED_CANVAS_KINDS = frozenset({"comparison", "table", "document", "diagram", "plan", "dashboard", "form"})
 ALLOWED_COLUMN_ALIGN = frozenset({"left", "center", "right"})
 ALLOWED_COLUMN_KINDS = frozenset({"text", "number", "currency", "badge", "rating"})
 ALLOWED_ROW_HIGHLIGHTS = frozenset({"recommended", "warning", "muted"})
@@ -651,6 +651,28 @@ def clean_visible_reply(text: str, *, strip_tables: bool = False) -> str:
 def canvas_has_cell_data(canvas: Optional[Dict[str, Any]]) -> bool:
     if not isinstance(canvas, dict):
         return False
+    diagram = canvas.get("diagram")
+    if isinstance(diagram, dict) and (
+        (isinstance(diagram.get("nodes"), list) and len(diagram["nodes"]) > 0)
+        or bool(_as_str(diagram.get("mermaid")))
+    ):
+        return True
+    plan = canvas.get("plan")
+    if isinstance(plan, dict) and (
+        (isinstance(plan.get("phases"), list) and len(plan["phases"]) > 0)
+        or bool(_as_str(plan.get("goal")))
+    ):
+        return True
+    dashboard = canvas.get("dashboard")
+    if isinstance(dashboard, dict) and (
+        (isinstance(dashboard.get("kpis"), list) and len(dashboard["kpis"]) > 0)
+        or (isinstance(dashboard.get("charts"), list) and len(dashboard["charts"]) > 0)
+        or (isinstance(dashboard.get("insights"), list) and len(dashboard["insights"]) > 0)
+    ):
+        return True
+    form = canvas.get("form")
+    if isinstance(form, dict) and isinstance(form.get("fields"), list) and len(form["fields"]) > 0:
+        return True
     cols = canvas.get("columns") or []
     rows = canvas.get("rows") or []
     if cols:
@@ -708,15 +730,972 @@ def _extract_markdown_table(markdown: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _sanitize_diagram_node_shape(raw: str) -> str:
+    low = (raw or "").strip().lower()
+    if low in ("pill", "start", "end", "oval", "circle"):
+        return "pill"
+    if low in ("diamond", "decision", "condicion", "branch"):
+        return "diamond"
+    if low in ("cylinder", "db", "database", "storage"):
+        return "cylinder"
+    if low in ("note", "doc", "document"):
+        return "note"
+    return "rounded"
+
+
+def _sanitize_diagram_node_tone(raw: str) -> str:
+    low = (raw or "").strip().lower()
+    if low in ("accent", "primary", "highlight", "info"):
+        return "accent"
+    if low in ("success", "ok", "done", "positive"):
+        return "success"
+    if low in ("warning", "warn", "media", "decision"):
+        return "warning"
+    if low in ("critical", "danger", "error", "alta"):
+        return "critical"
+    return "neutral"
+
+
+def _sanitize_diagram_spec(raw: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(raw, str):
+        cleaned = raw.strip()
+        if not cleaned:
+            return None
+        return {
+            "diagramType": "flowchart",
+            "direction": "TD",
+            "nodes": [],
+            "edges": [],
+            "mermaid": cleaned,
+        }
+    if not isinstance(raw, dict):
+        return None
+
+    raw_mermaid = _as_str(
+        raw.get("mermaid") or raw.get("mermaid_code") or raw.get("mermaidCode") or raw.get("code")
+    )
+    raw_type = _as_str(raw.get("diagramType") or raw.get("diagram_type") or raw.get("type") or "flowchart").lower()
+    if raw_type in ("sequence", "secuencia"):
+        diagram_type = "sequence"
+    elif raw_type in ("mindmap", "mapa", "tree"):
+        diagram_type = "mindmap"
+    elif raw_type in ("process", "proceso"):
+        diagram_type = "process"
+    else:
+        diagram_type = "flowchart"
+
+    raw_dir = _as_str(raw.get("direction") or raw.get("direccion") or "TD").upper()
+    direction = "LR" if raw_dir in ("LR", "RL", "HORIZONTAL") else "TD"
+
+    raw_nodes = (
+        raw.get("nodes")
+        if isinstance(raw.get("nodes"), list)
+        else raw.get("nodos")
+        if isinstance(raw.get("nodos"), list)
+        else raw.get("steps")
+        if isinstance(raw.get("steps"), list)
+        else []
+    )
+    raw_edges = (
+        raw.get("edges")
+        if isinstance(raw.get("edges"), list)
+        else raw.get("conexiones")
+        if isinstance(raw.get("conexiones"), list)
+        else raw.get("links")
+        if isinstance(raw.get("links"), list)
+        else []
+    )
+
+    nodes: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+    for idx, n in enumerate(raw_nodes[:60]):
+        if isinstance(n, str):
+            lbl = n.strip()
+            if not lbl:
+                continue
+            nid = f"n_{idx + 1}"
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": lbl, "shape": "rounded", "tone": "neutral"})
+            continue
+        if not isinstance(n, dict):
+            continue
+        lbl = _as_str(n.get("label") or n.get("title") or n.get("titulo") or n.get("name") or n.get("nombre"))
+        nid = _as_str(n.get("id")) or f"n_{idx + 1}"
+        if (not lbl and not nid) or nid in seen_ids:
+            continue
+        seen_ids.add(nid)
+        node_obj: Dict[str, Any] = {
+            "id": nid,
+            "label": lbl or nid,
+            "shape": _sanitize_diagram_node_shape(_as_str(n.get("shape") or n.get("forma"))),
+            "tone": _sanitize_diagram_node_tone(_as_str(n.get("tone") or n.get("tono"))),
+        }
+        sub = _as_str(n.get("subtitle") or n.get("subtitulo"))
+        detail = _as_str(n.get("detail") or n.get("detalle") or n.get("description"))
+        group = _as_str(n.get("group") or n.get("grupo"))
+        if sub:
+            node_obj["subtitle"] = sub
+        if detail:
+            node_obj["detail"] = detail
+        if group:
+            node_obj["group"] = group
+        nodes.append(node_obj)
+
+    edges: List[Dict[str, Any]] = []
+    for idx, e in enumerate(raw_edges[:100]):
+        if not isinstance(e, dict):
+            continue
+        src = _as_str(e.get("from") or e.get("source") or e.get("desde") or e.get("origen"))
+        dst = _as_str(e.get("to") or e.get("target") or e.get("hacia") or e.get("destino"))
+        if not src or not dst:
+            continue
+        if src not in seen_ids:
+            seen_ids.add(src)
+            nodes.append({"id": src, "label": src, "shape": "rounded", "tone": "neutral"})
+        if dst not in seen_ids:
+            seen_ids.add(dst)
+            nodes.append({"id": dst, "label": dst, "shape": "rounded", "tone": "neutral"})
+        e_style = _as_str(e.get("style") or e.get("estilo")).lower()
+        edge_obj: Dict[str, Any] = {
+            "id": _as_str(e.get("id")) or f"e_{idx + 1}",
+            "from": src,
+            "to": dst,
+            "style": "dashed" if e_style in ("dashed", "discontinua") else "solid",
+        }
+        elbl = _as_str(e.get("label") or e.get("etiqueta"))
+        if elbl:
+            edge_obj["label"] = elbl
+        edges.append(edge_obj)
+
+    if not nodes and raw_mermaid:
+        return {
+            "diagramType": diagram_type,
+            "direction": direction,
+            "nodes": [],
+            "edges": [],
+            "mermaid": raw_mermaid,
+        }
+    if not nodes:
+        return None
+
+    if not edges and len(nodes) > 1 and diagram_type in ("process", "flowchart"):
+        for idx in range(len(nodes) - 1):
+            edges.append({
+                "id": f"e_{idx + 1}",
+                "from": nodes[idx]["id"],
+                "to": nodes[idx + 1]["id"],
+                "style": "solid",
+            })
+
+    out: Dict[str, Any] = {
+        "diagramType": diagram_type,
+        "direction": direction,
+        "nodes": nodes,
+        "edges": edges,
+    }
+    if raw_mermaid:
+        out["mermaid"] = raw_mermaid
+    return out
+
+
+def _sanitize_plan_risk_level(raw: str) -> str:
+    low = (raw or "").strip().lower()
+    if low in ("high", "alta", "alto", "critical"):
+        return "high"
+    if low in ("medium", "media", "medio", "moderate"):
+        return "medium"
+    return "low"
+
+
+def _sanitize_plan_step_status(raw: str) -> str:
+    low = (raw or "").strip().lower()
+    if low in ("in_progress", "running"):
+        return "in_progress"
+    if low in ("done", "completed", "completado"):
+        return "done"
+    if low in ("skipped", "omitido"):
+        return "skipped"
+    return "pending"
+
+
+def _sanitize_plan_spec(raw: Any, fallback_goal: str = "") -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    goal = _as_str(raw.get("goal") or raw.get("objetivo") or raw.get("title")) or fallback_goal or ""
+    raw_status = _as_str(raw.get("status") or raw.get("estado") or "draft").lower()
+    if raw_status in ("approved", "aprobado"):
+        status = "approved"
+    elif raw_status in ("in_progress", "en_progreso"):
+        status = "in_progress"
+    elif raw_status in ("completed", "completado"):
+        status = "completed"
+    elif raw_status in ("changes_requested", "cambios"):
+        status = "changes_requested"
+    else:
+        status = "draft"
+
+    raw_scope = (
+        raw.get("scope")
+        if isinstance(raw.get("scope"), list)
+        else raw.get("alcance")
+        if isinstance(raw.get("alcance"), list)
+        else raw.get("files")
+        if isinstance(raw.get("files"), list)
+        else []
+    )
+    scope = [_as_str(s) for s in raw_scope if _as_str(s)][:20]
+
+    raw_assumptions = (
+        raw.get("assumptions")
+        if isinstance(raw.get("assumptions"), list)
+        else raw.get("supuestos")
+        if isinstance(raw.get("supuestos"), list)
+        else []
+    )
+    assumptions = [_as_str(s) for s in raw_assumptions if _as_str(s)][:12]
+
+    raw_risks = (
+        raw.get("risks")
+        if isinstance(raw.get("risks"), list)
+        else raw.get("riesgos")
+        if isinstance(raw.get("riesgos"), list)
+        else []
+    )
+    risks: List[Dict[str, Any]] = []
+    for r in raw_risks[:12]:
+        if isinstance(r, str):
+            if r.strip():
+                risks.append({"level": "medium", "text": r.strip()})
+            continue
+        if not isinstance(r, dict):
+            continue
+        r_txt = _as_str(r.get("text") or r.get("description") or r.get("riesgo"))
+        if not r_txt:
+            continue
+        r_obj: Dict[str, Any] = {
+            "level": _sanitize_plan_risk_level(_as_str(r.get("level") or r.get("severity") or r.get("nivel"))),
+            "text": r_txt,
+        }
+        mit = _as_str(r.get("mitigation") or r.get("mitigacion"))
+        if mit:
+            r_obj["mitigation"] = mit
+        risks.append(r_obj)
+
+    raw_phases = (
+        raw.get("phases")
+        if isinstance(raw.get("phases"), list)
+        else raw.get("fases")
+        if isinstance(raw.get("fases"), list)
+        else []
+    )
+    phases: List[Dict[str, Any]] = []
+    for p_idx, p in enumerate(raw_phases[:12]):
+        if not isinstance(p, dict):
+            continue
+        p_id = _as_str(p.get("id")) or f"phase_{p_idx + 1}"
+        p_title = _as_str(p.get("title") or p.get("titulo") or p.get("name")) or f"Fase {p_idx + 1}"
+        p_summary = _as_str(p.get("summary") or p.get("resumen") or p.get("description"))
+        p_status = _sanitize_plan_step_status(_as_str(p.get("status") or p.get("estado")))
+        p_comment = _as_str(p.get("comment") or p.get("comentario"))
+        raw_steps = (
+            p.get("steps")
+            if isinstance(p.get("steps"), list)
+            else p.get("pasos")
+            if isinstance(p.get("pasos"), list)
+            else p.get("tasks")
+            if isinstance(p.get("tasks"), list)
+            else []
+        )
+        steps: List[Dict[str, Any]] = []
+        for s_idx, s in enumerate(raw_steps[:20]):
+            if isinstance(s, str):
+                if s.strip():
+                    steps.append({
+                        "id": f"{p_id}_step_{s_idx + 1}",
+                        "title": s.strip(),
+                        "checked": True,
+                        "status": "pending",
+                    })
+                continue
+            if not isinstance(s, dict):
+                continue
+            s_title = _as_str(s.get("title") or s.get("titulo") or s.get("label") or s.get("name"))
+            if not s_title:
+                continue
+            s_obj: Dict[str, Any] = {
+                "id": _as_str(s.get("id")) or f"{p_id}_step_{s_idx + 1}",
+                "title": s_title,
+                "checked": bool(s.get("checked")) if isinstance(s.get("checked"), bool) else True,
+                "status": _sanitize_plan_step_status(_as_str(s.get("status") or s.get("estado"))),
+            }
+            s_detail = _as_str(s.get("detail") or s.get("detalle") or s.get("description"))
+            s_target = _as_str(s.get("target") or s.get("archivo") or s.get("area"))
+            raw_deps = (
+                s.get("dependsOn")
+                if isinstance(s.get("dependsOn"), list)
+                else s.get("depends_on")
+                if isinstance(s.get("depends_on"), list)
+                else s.get("depende_de")
+                if isinstance(s.get("depende_de"), list)
+                else []
+            )
+            deps = [_as_str(d) for d in raw_deps if _as_str(d)]
+            s_risk = _as_str(s.get("risk") or s.get("riesgo"))
+            s_comment = _as_str(s.get("comment") or s.get("comentario"))
+            if s_detail:
+                s_obj["detail"] = s_detail
+            if s_target:
+                s_obj["target"] = s_target
+            if deps:
+                s_obj["dependsOn"] = deps
+            if s_risk:
+                s_obj["risk"] = _sanitize_plan_risk_level(s_risk)
+            if s_comment:
+                s_obj["comment"] = s_comment
+            steps.append(s_obj)
+
+        p_obj: Dict[str, Any] = {
+            "id": p_id,
+            "title": p_title,
+            "status": p_status,
+            "steps": steps,
+        }
+        if p_summary:
+            p_obj["summary"] = p_summary
+        if p_comment:
+            p_obj["comment"] = p_comment
+        phases.append(p_obj)
+
+    if not phases and isinstance(raw.get("steps"), list):
+        fb_steps: List[Dict[str, Any]] = []
+        for s_idx, s in enumerate(raw["steps"][:25]):
+            txt = s.strip() if isinstance(s, str) else _as_str((s or {}).get("title") or (s or {}).get("label")) if isinstance(s, dict) else ""
+            if txt:
+                fb_steps.append({
+                    "id": f"step_{s_idx + 1}",
+                    "title": txt,
+                    "checked": True,
+                    "status": "pending",
+                })
+        if fb_steps:
+            phases.append({
+                "id": "phase_1",
+                "title": "Plan de ejecución",
+                "status": "pending",
+                "steps": fb_steps,
+            })
+
+    if not phases and not goal:
+        return None
+
+    out: Dict[str, Any] = {
+        "goal": goal or "Plan maestro",
+        "status": status,
+        "phases": phases,
+    }
+    if scope:
+        out["scope"] = scope
+    if assumptions:
+        out["assumptions"] = assumptions
+    if risks:
+        out["risks"] = risks
+    rev = _as_str(raw.get("reviewComment") or raw.get("review_comment"))
+    if rev:
+        out["reviewComment"] = rev
+    return out
+
+
+def _parse_numeric_metric_value(raw: Any) -> Optional[float]:
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        cleaned = re.sub(r"[$€£,\s]", "", raw)
+        cleaned = re.sub(r"\b(?:mxn|usd|eur|un\.?|u\.?|pzs?)\b", "", cleaned, flags=re.I)
+        cleaned = cleaned.rstrip("%").strip()
+        if cleaned and re.match(r"^-?\d+(?:\.\d+)?$", cleaned):
+            try:
+                return float(cleaned)
+            except Exception:
+                return None
+    return None
+
+
+def _sanitize_metric_tone(raw: str) -> str:
+    low = (raw or "").strip().lower()
+    if low in ("positive", "success", "ok", "good"):
+        return "positive"
+    if low in ("warning", "warn", "media", "caution"):
+        return "warning"
+    if low in ("critical", "danger", "error", "alta", "bad"):
+        return "critical"
+    return "neutral"
+
+
+def _sanitize_chart_type(raw: str) -> str:
+    low = (raw or "").strip().lower()
+    if low in ("horizontal_bar", "hbar", "horizontal", "ranking"):
+        return "horizontal_bar"
+    if low in ("line", "linea", "línea", "trend"):
+        return "line"
+    if low in ("area", "área"):
+        return "area"
+    if low in ("donut", "pie", "dona", "pastel", "ring"):
+        return "donut"
+    return "bar"
+
+
+def _sanitize_value_format(raw: str, unit: str = "") -> str:
+    low = (raw or "").strip().lower()
+    if low in ("currency", "moneda", "money"):
+        return "currency"
+    if low in ("percent", "percentage", "porcentaje"):
+        return "percent"
+    if low in ("compact", "compacto"):
+        return "compact"
+    if low in ("number", "numero", "número"):
+        return "number"
+    if unit and re.search(r"(\$|mxn|usd|eur)", unit, re.I):
+        return "currency"
+    if unit and "%" in unit:
+        return "percent"
+    return "number"
+
+
+def _sanitize_dashboard_spec(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+
+    raw_kpis = (
+        raw.get("kpis")
+        if isinstance(raw.get("kpis"), list)
+        else raw.get("metrics")
+        if isinstance(raw.get("metrics"), list)
+        else raw.get("tarjetas")
+        if isinstance(raw.get("tarjetas"), list)
+        else []
+    )
+    kpis: List[Dict[str, Any]] = []
+    for idx, k in enumerate(raw_kpis[:8]):
+        if not isinstance(k, dict):
+            continue
+        lbl = _as_str(k.get("label") or k.get("title") or k.get("nombre"))
+        val = _as_str(k.get("value") or k.get("valor"))
+        if not lbl or not val:
+            continue
+        kpi_obj: Dict[str, Any] = {
+            "id": _as_str(k.get("id")) or f"kpi_{idx + 1}",
+            "label": lbl,
+            "value": val,
+            "tone": _sanitize_metric_tone(_as_str(k.get("tone") or k.get("tono"))),
+        }
+        delta = _as_str(k.get("delta") or k.get("change") or k.get("cambio"))
+        if delta:
+            kpi_obj["delta"] = delta
+            raw_dt = _as_str(k.get("deltaTone") or k.get("delta_tone")).lower()
+            if raw_dt in ("positive", "up"):
+                kpi_obj["deltaTone"] = "positive"
+            elif raw_dt in ("negative", "down"):
+                kpi_obj["deltaTone"] = "negative"
+            elif delta.strip().startswith("-"):
+                kpi_obj["deltaTone"] = "negative"
+            elif delta.strip().startswith("+"):
+                kpi_obj["deltaTone"] = "positive"
+            else:
+                kpi_obj["deltaTone"] = "neutral"
+        cap = _as_str(k.get("caption") or k.get("sub") or k.get("nota"))
+        if cap:
+            kpi_obj["caption"] = cap
+        prog = _parse_numeric_metric_value(k.get("progress") if "progress" in k else k.get("ratio"))
+        if prog is not None:
+            norm_prog = prog * 100.0 if 0 < prog <= 1.0 else prog
+            kpi_obj["progress"] = round(max(0.0, min(100.0, norm_prog)), 1)
+        kpis.append(kpi_obj)
+
+    raw_charts = (
+        raw.get("charts")
+        if isinstance(raw.get("charts"), list)
+        else raw.get("graficas")
+        if isinstance(raw.get("graficas"), list)
+        else raw.get("graphs")
+        if isinstance(raw.get("graphs"), list)
+        else [raw["chart"]]
+        if isinstance(raw.get("chart"), dict)
+        else []
+    )
+    charts: List[Dict[str, Any]] = []
+    for c_idx, c in enumerate(raw_charts[:6]):
+        if not isinstance(c, dict):
+            continue
+        c_title = _as_str(c.get("title") or c.get("titulo")) or f"Gráfica {c_idx + 1}"
+        c_sub = _as_str(c.get("subtitle") or c.get("subtitulo"))
+        c_type = _sanitize_chart_type(_as_str(c.get("chartType") or c.get("chart_type") or c.get("type") or c.get("tipo")))
+        unit = _as_str(c.get("unit") or c.get("unidad"))
+        val_fmt = _sanitize_value_format(_as_str(c.get("valueFormat") or c.get("value_format") or c.get("format")), unit)
+
+        raw_cats = (
+            c.get("categories")
+            if isinstance(c.get("categories"), list)
+            else c.get("labels")
+            if isinstance(c.get("labels"), list)
+            else c.get("categorias")
+            if isinstance(c.get("categorias"), list)
+            else []
+        )
+        categories = [_as_str(x) for x in raw_cats if _as_str(x)]
+
+        series: List[Dict[str, Any]] = []
+        raw_series = c.get("series") if isinstance(c.get("series"), list) else []
+        if raw_series:
+            for s_idx, s in enumerate(raw_series[:6]):
+                if not isinstance(s, dict):
+                    continue
+                s_name = _as_str(s.get("name") or s.get("label") or s.get("nombre")) or f"Serie {s_idx + 1}"
+                raw_vals = (
+                    s.get("values")
+                    if isinstance(s.get("values"), list)
+                    else s.get("data")
+                    if isinstance(s.get("data"), list)
+                    else s.get("valores")
+                    if isinstance(s.get("valores"), list)
+                    else []
+                )
+                vals = [(_parse_numeric_metric_value(v) or 0.0) for v in raw_vals]
+                if not vals:
+                    continue
+                s_obj: Dict[str, Any] = {
+                    "id": _as_str(s.get("id")) or f"s_{s_idx + 1}",
+                    "name": s_name,
+                    "values": vals,
+                }
+                raw_tone = _as_str(s.get("tone") or s.get("tono")).lower()
+                if raw_tone == "accent":
+                    s_obj["tone"] = "accent"
+                elif raw_tone:
+                    s_obj["tone"] = _sanitize_metric_tone(raw_tone)
+                series.append(s_obj)
+        elif isinstance(c.get("values"), list):
+            vals = [(_parse_numeric_metric_value(v) or 0.0) for v in c["values"]]
+            if vals:
+                series.append({
+                    "id": "s_1",
+                    "name": _as_str(c.get("seriesName") or c.get("series_name")) or c_title,
+                    "values": vals,
+                    "tone": "accent",
+                })
+        else:
+            raw_pts = (
+                c.get("data")
+                if isinstance(c.get("data"), list)
+                else c.get("points")
+                if isinstance(c.get("points"), list)
+                else c.get("datos")
+                if isinstance(c.get("datos"), list)
+                else []
+            )
+            if raw_pts:
+                pt_cats: List[str] = []
+                pt_vals: List[float] = []
+                for pt_idx, pt in enumerate(raw_pts[:32]):
+                    if not isinstance(pt, dict):
+                        continue
+                    pt_lbl = _as_str(pt.get("label") or pt.get("name") or pt.get("category") or pt.get("x")) or f"Item {pt_idx + 1}"
+                    pt_num = _parse_numeric_metric_value(
+                        pt.get("value")
+                        if "value" in pt
+                        else pt.get("y")
+                        if "y" in pt
+                        else pt.get("total")
+                        if "total" in pt
+                        else pt.get("amount")
+                        if "amount" in pt
+                        else pt.get("valor")
+                    )
+                    pt_cats.append(pt_lbl)
+                    pt_vals.append(pt_num if pt_num is not None else 0.0)
+                if pt_cats:
+                    if not categories:
+                        categories = pt_cats
+                    series.append({
+                        "id": "s_1",
+                        "name": _as_str(c.get("seriesName")) or unit or c_title,
+                        "values": pt_vals,
+                        "tone": "accent",
+                    })
+
+        if not series:
+            continue
+        max_len = max([len(categories), *[len(s["values"]) for s in series]])
+        if max_len == 0:
+            continue
+        if not categories:
+            categories = [f"#{i + 1}" for i in range(max_len)]
+        target_len = min(len(categories), *[len(s["values"]) for s in series], 32)
+        if target_len == 0:
+            continue
+
+        chart_obj: Dict[str, Any] = {
+            "id": _as_str(c.get("id")) or f"chart_{c_idx + 1}",
+            "title": c_title,
+            "chartType": c_type,
+            "categories": categories[:target_len],
+            "series": [{**s, "values": s["values"][:target_len]} for s in series],
+            "valueFormat": val_fmt,
+        }
+        if c_sub:
+            chart_obj["subtitle"] = c_sub
+        if unit:
+            chart_obj["unit"] = unit
+        t_val = _parse_numeric_metric_value(c.get("targetValue") if "targetValue" in c else c.get("target_value") if "target_value" in c else c.get("meta"))
+        if t_val is not None:
+            chart_obj["targetValue"] = t_val
+        t_lbl = _as_str(c.get("targetLabel") or c.get("target_label"))
+        if t_lbl:
+            chart_obj["targetLabel"] = t_lbl
+        charts.append(chart_obj)
+
+    raw_insights = (
+        raw.get("insights")
+        if isinstance(raw.get("insights"), list)
+        else raw.get("hallazgos")
+        if isinstance(raw.get("hallazgos"), list)
+        else []
+    )
+    insights: List[Dict[str, Any]] = []
+    for ins in raw_insights[:8]:
+        if isinstance(ins, str):
+            if ins.strip():
+                insights.append({"tone": "info", "text": ins.strip()})
+            continue
+        if not isinstance(ins, dict):
+            continue
+        txt = _as_str(ins.get("text") or ins.get("description") or ins.get("contenido"))
+        if not txt:
+            continue
+        rt = _as_str(ins.get("tone") or ins.get("tono")).lower()
+        tone = (
+            "positive"
+            if rt in ("positive", "success")
+            else "warning"
+            if rt in ("warning", "warn")
+            else "critical"
+            if rt in ("critical", "danger", "error")
+            else "info"
+        )
+        ins_obj: Dict[str, Any] = {"tone": tone, "text": txt}
+        ititle = _as_str(ins.get("title") or ins.get("titulo"))
+        if ititle:
+            ins_obj["title"] = ititle
+        insights.append(ins_obj)
+
+    if not kpis and not charts and not insights:
+        return None
+
+    out: Dict[str, Any] = {"kpis": kpis, "charts": charts}
+    if insights:
+        out["insights"] = insights
+    return out
+
+
+def _normalize_form_field_type(raw_type: Any, raw_obj: Dict[str, Any]) -> str:
+    low = (
+        unicodedata.normalize("NFD", _as_str(raw_type).lower())
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    if low in ("true_false", "boolean", "bool", "verdadero_falso", "vf"):
+        return "true_false"
+    if low in ("multi_choice", "multi", "checkbox", "checkboxes", "multiple_select", "multiselect", "opcion_multiple_varias"):
+        return "multi_choice"
+    if low in ("multiple_choice", "opcion_multiple"):
+        has_multi = bool(
+            isinstance(raw_obj.get("correctIndices"), list)
+            or isinstance(raw_obj.get("correct_indices"), list)
+            or raw_obj.get("multi") is True
+            or raw_obj.get("allowMultiple") is True
+        )
+        return "multi_choice" if has_multi else "single_choice"
+    if low in ("single_choice", "single", "choice", "mcq", "radio", "opcion_unica"):
+        return "single_choice"
+    if low in ("select", "dropdown", "lista", "desplegable"):
+        return "select"
+    if low in ("number", "numeric", "numero", "integer", "float", "decimal"):
+        return "number"
+    if low in ("rating", "stars", "scale", "escala", "calificacion"):
+        return "rating"
+    if low in ("long_text", "textarea", "paragraph", "essay", "open_ended", "abierta", "texto_largo"):
+        return "long_text"
+    if low in ("short_text", "text", "short", "input", "texto_corto", "open"):
+        return "short_text"
+    if any(isinstance(raw_obj.get(k), list) for k in ("options", "opciones", "choices")):
+        return "single_choice"
+    return "short_text"
+
+
+def _resolve_form_option_index(raw_val: Any, options: List[str], field_type: str) -> Optional[int]:
+    if isinstance(raw_val, bool) and field_type == "true_false":
+        return 0 if raw_val else 1
+    if isinstance(raw_val, int) and not isinstance(raw_val, bool):
+        return raw_val if 0 <= raw_val < len(options) else None
+    s = _as_str(raw_val)
+    if not s:
+        return None
+    if re.fullmatch(r"\d+", s):
+        idx = int(s)
+        return idx if 0 <= idx < len(options) else None
+    if field_type == "true_false":
+        low = s.lower()
+        if low in ("true", "verdadero", "v", "si", "sí", "yes"):
+            return 0
+        if low in ("false", "falso", "f", "no"):
+            return 1
+    if re.fullmatch(r"[A-Za-z]", s) and len(options) >= 2:
+        idx = ord(s.upper()) - 65
+        if 0 <= idx < len(options):
+            return idx
+    low_target = s.lower()
+    for idx, opt in enumerate(options):
+        if opt.lower() == low_target:
+            return idx
+    for idx, opt in enumerate(options):
+        if low_target in opt.lower() or opt.lower() in low_target:
+            return idx
+    return None
+
+
+def _sanitize_form_spec(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+
+    raw_fields = next(
+        (
+            raw.get(k)
+            for k in ("fields", "questions", "preguntas", "campos", "items")
+            if isinstance(raw.get(k), list)
+        ),
+        [],
+    )
+
+    fields: List[Dict[str, Any]] = []
+    used_ids = set()
+    has_quiz_markers = False
+
+    for idx, item in enumerate(raw_fields[:35]):
+        if not isinstance(item, dict):
+            continue
+        label = _as_str(
+            item.get("label")
+            or item.get("question")
+            or item.get("pregunta")
+            or item.get("prompt")
+            or item.get("title")
+            or item.get("titulo")
+            or item.get("texto")
+        )
+        if not label:
+            continue
+
+        raw_type = item.get("type") or item.get("tipo") or item.get("kind")
+        ftype = _normalize_form_field_type(raw_type, item)
+
+        raw_opts = next(
+            (item.get(k) for k in ("options", "opciones", "choices") if isinstance(item.get(k), list)),
+            [],
+        )
+        options: List[str] = []
+        for opt in raw_opts[:12]:
+            if isinstance(opt, (str, int, float, bool)):
+                val = _as_str(opt)
+            elif isinstance(opt, dict):
+                val = _as_str(opt.get("label") or opt.get("text") or opt.get("value") or opt.get("texto"))
+            else:
+                val = ""
+            if val:
+                options.append(val)
+
+        if ftype == "true_false" and not options:
+            options = ["Verdadero", "Falso"]
+        if ftype in ("single_choice", "multi_choice", "select") and not options:
+            ftype = "short_text"
+
+        base_id = _as_str(item.get("id")) or f"f_{idx + 1}"
+        fid = re.sub(r"[^a-zA-Z0-9_-]+", "_", base_id) or f"f_{idx + 1}"
+        if fid in used_ids:
+            fid = f"{fid}_{idx + 1}"
+        used_ids.add(fid)
+
+        raw_correct_idx = None
+        for k in ("correctIndex", "correct_index", "correctAnswerIndex", "indice_correcto", "correct_option", "correct_answer", "correctAnswer"):
+            if item.get(k) is not None:
+                raw_correct_idx = item.get(k)
+                break
+        correct_index = _resolve_form_option_index(raw_correct_idx, options, ftype) if options else None
+
+        raw_correct_indices = next(
+            (
+                item.get(k)
+                for k in ("correctIndices", "correct_indices", "correct_answers")
+                if isinstance(item.get(k), list)
+            ),
+            None,
+        )
+        correct_indices: Optional[List[int]] = None
+        if raw_correct_indices is not None and options:
+            resolved = [
+                r
+                for c in raw_correct_indices
+                for r in [_resolve_form_option_index(c, options, ftype)]
+                if r is not None
+            ]
+            if resolved:
+                correct_indices = sorted(set(resolved))
+
+        expected_answer = _as_str(
+            item.get("expectedAnswer")
+            or item.get("expected_answer")
+            or item.get("model_answer")
+            or item.get("respuesta_esperada")
+        )
+        hint = _as_str(item.get("hint") or item.get("pista"))
+        explanation = _as_str(item.get("explanation") or item.get("explicacion"))
+        placeholder = _as_str(item.get("placeholder"))
+
+        if (
+            correct_index is not None
+            or correct_indices is not None
+            or expected_answer
+            or explanation
+            or hint
+        ):
+            has_quiz_markers = True
+
+        field_obj: Dict[str, Any] = {
+            "id": fid,
+            "label": label,
+            "type": ftype,
+            "required": bool(item.get("required") is True or item.get("obligatorio") is True),
+        }
+        if placeholder:
+            field_obj["placeholder"] = placeholder
+        if options:
+            field_obj["options"] = options
+        if correct_index is not None:
+            field_obj["correctIndex"] = correct_index
+        if correct_indices is not None:
+            field_obj["correctIndices"] = correct_indices
+        if expected_answer:
+            field_obj["expectedAnswer"] = expected_answer
+        if hint:
+            field_obj["hint"] = hint
+        if explanation:
+            field_obj["explanation"] = explanation
+
+        pts = item.get("points") if item.get("points") is not None else item.get("puntos")
+        if isinstance(pts, (int, float)) and not isinstance(pts, bool) and pts > 0:
+            field_obj["points"] = pts
+        for bound_key in ("min", "max"):
+            bv = item.get(bound_key)
+            if isinstance(bv, (int, float)) and not isinstance(bv, bool):
+                field_obj[bound_key] = bv
+
+        fields.append(field_obj)
+
+    if not fields:
+        return None
+
+    raw_purpose = _as_str(
+        raw.get("purpose") or raw.get("proposito") or raw.get("mode") or raw.get("form_type")
+    ).lower()
+    if raw_purpose in ("study_quiz", "quiz", "exam", "examen", "cuestionario", "practica", "study", "repaso", "autoevaluacion"):
+        purpose = "study_quiz"
+    elif raw_purpose in ("survey", "encuesta", "feedback"):
+        purpose = "survey"
+    elif raw_purpose in ("data_capture", "capture", "form", "formulario", "registro"):
+        purpose = "data_capture"
+    else:
+        purpose = "study_quiz" if has_quiz_markers else "data_capture"
+
+    out: Dict[str, Any] = {
+        "purpose": purpose,
+        "fields": fields,
+    }
+    desc = _as_str(raw.get("description") or raw.get("descripcion") or raw.get("instructions") or raw.get("instrucciones"))
+    if desc:
+        out["description"] = desc
+    submit_label = _as_str(raw.get("submitLabel") or raw.get("submit_label"))
+    if submit_label:
+        out["submitLabel"] = submit_label
+    pass_pct = raw.get("passingScorePercent") or raw.get("passing_score_percent") or raw.get("min_score")
+    if isinstance(pass_pct, (int, float)) and not isinstance(pass_pct, bool) and 0 < pass_pct <= 100:
+        out["passingScorePercent"] = round(pass_pct)
+    if isinstance(raw.get("showHints"), bool):
+        out["showHints"] = raw["showHints"]
+    elif isinstance(raw.get("show_hints"), bool):
+        out["showHints"] = raw["show_hints"]
+    elif purpose == "study_quiz":
+        out["showHints"] = True
+
+    field_ids = {f["id"] for f in fields}
+    if isinstance(raw.get("answers"), dict):
+        clean_ans = {
+            k: v
+            for k, v in raw["answers"].items()
+            if k in field_ids and (isinstance(v, (str, int, float, bool)) or (isinstance(v, list) and all(isinstance(n, int) for n in v)))
+        }
+        if clean_ans:
+            out["answers"] = clean_ans
+    if raw.get("checkedLocally") is True:
+        out["checkedLocally"] = True
+    if raw.get("submitted") is True:
+        out["submitted"] = True
+    if _as_str(raw.get("submittedAt")):
+        out["submittedAt"] = _as_str(raw.get("submittedAt"))
+    if isinstance(raw.get("score"), dict):
+        out["score"] = raw["score"]
+
+    return out
+
+
 def sanitize_canvas_artifact(raw: Any, fallback_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    Valida y normaliza un artefacto Canvas (tabla comparativa, tabla o documento)
+    Valida y normaliza un artefacto Canvas (tabla comparativa, tabla, documento, diagrama, plan, dashboard o formulario)
     generado por el agente mediante tool calling o bloque <canvas>.
     """
     if not isinstance(raw, dict):
         return None
 
-    title = _as_str(raw.get("title") or raw.get("titulo")) or "Tabla en Canvas"
+    has_explicit_table = bool(raw.get("columns") or raw.get("columnas") or raw.get("rows") or raw.get("filas"))
+    is_plan_hint = bool(raw.get("plan") or raw.get("phases") or raw.get("fases"))
+    is_diagram_hint = bool(
+        raw.get("diagram")
+        or raw.get("diagrama")
+        or raw.get("nodes")
+        or raw.get("nodos")
+        or raw.get("mermaid")
+        or raw.get("mermaid_code")
+    )
+    is_form_hint = bool(
+        raw.get("form")
+        or raw.get("formulario")
+        or (not has_explicit_table and (raw.get("fields") or raw.get("questions") or raw.get("preguntas") or raw.get("campos")))
+    )
+    is_dashboard_hint = bool(
+        raw.get("dashboard") or raw.get("kpis") or raw.get("charts") or raw.get("graficas") or raw.get("chart")
+    )
+    title = _as_str(raw.get("title") or raw.get("titulo")) or (
+        "Plan de ejecución"
+        if is_plan_hint
+        else "Diagrama visual"
+        if is_diagram_hint
+        else "Cuestionario interactivo"
+        if is_form_hint
+        else "Dashboard de análisis"
+        if is_dashboard_hint
+        else "Tabla en Canvas"
+    )
     subtitle = _as_str(raw.get("subtitle") or raw.get("subtitulo")) or None
     summary = _as_str(raw.get("summary") or raw.get("resumen")) or None
     markdown = _as_str(raw.get("markdown") or raw.get("contenido")) or None
@@ -726,10 +1705,109 @@ def sanitize_canvas_artifact(raw: Any, fallback_id: Optional[str] = None) -> Opt
         kind = "comparison"
     elif raw_kind in ("document", "documento"):
         kind = "document"
+    elif raw_kind in ("diagram", "diagrama", "flowchart"):
+        kind = "diagram"
+    elif raw_kind in ("plan", "roadmap"):
+        kind = "plan"
+    elif raw_kind in ("form", "quiz", "cuestionario", "formulario", "examen", "survey", "encuesta"):
+        kind = "form"
+    elif raw_kind in ("dashboard", "chart", "grafica", "tablero"):
+        kind = "dashboard"
+    elif is_plan_hint:
+        kind = "plan"
+    elif is_diagram_hint:
+        kind = "diagram"
+    elif is_form_hint:
+        kind = "form"
+    elif is_dashboard_hint:
+        kind = "dashboard"
     elif re.search(r"compar|vs|alternativ|opci", title, re.I):
         kind = "comparison"
     else:
         kind = "table"
+
+    now_iso = _as_str(raw.get("updatedAt")) or datetime.now(timezone.utc).isoformat()
+    canvas_id = _as_str(raw.get("id")) or fallback_id or f"canvas_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
+
+    if kind == "plan" or is_plan_hint:
+        plan_src = raw.get("plan") if isinstance(raw.get("plan"), dict) else raw
+        plan_obj = _sanitize_plan_spec(plan_src, summary or title)
+        if plan_obj is not None:
+            out_plan: Dict[str, Any] = {
+                "id": canvas_id,
+                "title": title,
+                "kind": "plan",
+                "columns": [],
+                "rows": [],
+                "plan": plan_obj,
+                "updatedAt": now_iso,
+            }
+            if subtitle:
+                out_plan["subtitle"] = subtitle
+            if summary or plan_obj.get("goal"):
+                out_plan["summary"] = summary or plan_obj.get("goal")
+            if markdown:
+                out_plan["markdown"] = markdown
+            return out_plan
+
+    if kind == "diagram" or is_diagram_hint:
+        diag_src = (
+            raw.get("diagram")
+            if isinstance(raw.get("diagram"), dict)
+            else raw.get("diagrama")
+            if isinstance(raw.get("diagrama"), dict)
+            else raw
+        )
+        diag_obj = _sanitize_diagram_spec(diag_src)
+        if diag_obj is not None:
+            out_diag: Dict[str, Any] = {
+                "id": canvas_id,
+                "title": title,
+                "kind": "diagram",
+                "columns": [],
+                "rows": [],
+                "diagram": diag_obj,
+                "updatedAt": now_iso,
+            }
+            if subtitle:
+                out_diag["subtitle"] = subtitle
+            if summary:
+                out_diag["summary"] = summary
+            if markdown:
+                out_diag["markdown"] = markdown
+            return out_diag
+
+    if kind == "form" or is_form_hint:
+        form_src = (
+            raw.get("form")
+            if isinstance(raw.get("form"), dict)
+            else raw.get("formulario")
+            if isinstance(raw.get("formulario"), dict)
+            else raw
+        )
+        form_obj = _sanitize_form_spec(form_src)
+        if form_obj is not None:
+            out_form: Dict[str, Any] = {
+                "id": canvas_id,
+                "title": title,
+                "kind": "form",
+                "columns": [],
+                "rows": [],
+                "form": form_obj,
+                "updatedAt": now_iso,
+            }
+            if subtitle:
+                out_form["subtitle"] = subtitle
+            if summary or form_obj.get("description"):
+                out_form["summary"] = summary or form_obj.get("description")
+            if markdown:
+                out_form["markdown"] = markdown
+            return out_form
+
+    dashboard_obj: Optional[Dict[str, Any]] = None
+    if kind == "dashboard" or is_dashboard_hint:
+        dash_src = raw.get("dashboard") if isinstance(raw.get("dashboard"), dict) else raw
+        dashboard_obj = _sanitize_dashboard_spec(dash_src)
 
     raw_cols = (
         raw.get("columns")
@@ -754,7 +1832,41 @@ def sanitize_canvas_artifact(raw: Any, fallback_id: Optional[str] = None) -> Opt
     raw_cols = raw_cols if isinstance(raw_cols, list) else []
     raw_rows = raw_rows if isinstance(raw_rows, list) else []
 
+    if dashboard_obj is not None and not raw_cols and not raw_rows:
+        out_dash: Dict[str, Any] = {
+            "id": canvas_id,
+            "title": title,
+            "kind": "dashboard",
+            "columns": [],
+            "rows": [],
+            "dashboard": dashboard_obj,
+            "updatedAt": now_iso,
+        }
+        if subtitle:
+            out_dash["subtitle"] = subtitle
+        if summary:
+            out_dash["summary"] = summary
+        if markdown:
+            out_dash["markdown"] = markdown
+        return out_dash
+
     if not raw_cols and not raw_rows and markdown:
+        mermaid_m = re.search(r"```mermaid\s*([\s\S]*?)```", markdown, re.I)
+        if mermaid_m and mermaid_m.group(1).strip():
+            diag_obj = _sanitize_diagram_spec(mermaid_m.group(1))
+            if diag_obj is not None:
+                return {
+                    "id": canvas_id,
+                    "title": title,
+                    "subtitle": subtitle,
+                    "kind": "diagram",
+                    "columns": [],
+                    "rows": [],
+                    "summary": summary,
+                    "markdown": markdown,
+                    "diagram": diag_obj,
+                    "updatedAt": now_iso,
+                }
         md_tbl = _extract_markdown_table(markdown) or _extract_html_table(markdown)
         if md_tbl:
             raw_cols = [
@@ -809,10 +1921,24 @@ def sanitize_canvas_artifact(raw: Any, fallback_id: Optional[str] = None) -> Opt
                 continue
             col_meta.append({"source_keys": [str(key)], "label": str(key), "align": None, "kind": None})
 
-    now_iso = _as_str(raw.get("updatedAt")) or datetime.now(timezone.utc).isoformat()
-    canvas_id = _as_str(raw.get("id")) or fallback_id or f"canvas_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
-
     if not col_meta:
+        if dashboard_obj is not None:
+            out_dash_fb: Dict[str, Any] = {
+                "id": canvas_id,
+                "title": title,
+                "kind": "dashboard",
+                "columns": [],
+                "rows": [],
+                "dashboard": dashboard_obj,
+                "updatedAt": now_iso,
+            }
+            if subtitle:
+                out_dash_fb["subtitle"] = subtitle
+            if summary:
+                out_dash_fb["summary"] = summary
+            if markdown:
+                out_dash_fb["markdown"] = markdown
+            return out_dash_fb
         if markdown or summary:
             cleaned_md = clean_visible_reply(markdown or summary or "")
             return {
@@ -941,11 +2067,13 @@ def sanitize_canvas_artifact(raw: Any, fallback_id: Optional[str] = None) -> Opt
     out: Dict[str, Any] = {
         "id": canvas_id,
         "title": title,
-        "kind": kind if kind in ALLOWED_CANVAS_KINDS else "table",
+        "kind": "dashboard" if dashboard_obj is not None else (kind if kind in ALLOWED_CANVAS_KINDS else "table"),
         "columns": columns,
         "rows": normalized_rows,
         "updatedAt": now_iso,
     }
+    if dashboard_obj is not None:
+        out["dashboard"] = dashboard_obj
     if subtitle:
         out["subtitle"] = subtitle
     if summary:

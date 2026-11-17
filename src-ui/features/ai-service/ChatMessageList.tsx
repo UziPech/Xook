@@ -5,7 +5,9 @@ import {
   type CommandPermissionUiItem,
 } from "./CommandPermissionCard";
 import {
+  BarChart3,
   Check,
+  ClipboardCheck,
   Copy,
   Download,
   ExternalLink,
@@ -16,6 +18,7 @@ import {
   HelpCircle,
   Image as ImageIcon,
   KeyRound,
+  ListChecks,
   Loader2,
   Paperclip,
   Pencil,
@@ -27,6 +30,7 @@ import {
   ThumbsDown,
   ThumbsUp,
   Volume2,
+  Workflow,
 } from "lucide-react";
 import {
   XoxStar,
@@ -36,6 +40,7 @@ import {
   getXoxBubbleVars,
   resolveXoxAccentPreset,
   type XoxAccentPreset,
+  type XoxSubagentOrbitItem,
 } from "../../components/XoxStar";
 import { ProviderIcon } from "./ProviderIcon";
 import {
@@ -60,6 +65,18 @@ import {
   formatModelDisplay,
   getProviderSpec,
 } from "./aiClient";
+import {
+  XOX_COMMAND_SPECS,
+  type XoxModeId,
+} from "../../components/SlashCommandMenu";
+import {
+  SUBAGENT_GLASS_PALETTE,
+  type StudyDeckArtifact,
+  type SubagentActivity,
+} from "./agentModeTypes";
+import { SubagentGlyph } from "../../components/SubagentRosterPopover";
+import { StudyDeckCard } from "../../components/StudyDeckCard";
+import { OpenCircleCheckSvg } from "../../components/ChecklistCornerCard";
 
 export interface UiChatAttachment {
   name: string;
@@ -72,6 +89,9 @@ export interface UiChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  mode?: XoxModeId;
+  subagents?: SubagentActivity[];
+  studyDeck?: StudyDeckArtifact;
   attachments?: UiChatAttachment[];
   reasoning?: string;
   reasoningDurationMs?: number;
@@ -140,6 +160,7 @@ interface ChatMessageListProps {
   xoxAwayInStudio?: boolean;
   xoxTravelPhase?: "idle" | "to-studio" | "from-studio";
   glideSeq?: number;
+  rosterSubagents?: XoxSubagentOrbitItem[];
 }
 
 function FormattedReply({
@@ -528,6 +549,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   xoxAwayInStudio = false,
   xoxTravelPhase = "idle",
   glideSeq = 0,
+  rosterSubagents,
   onOpenTasksTab,
   onRegenerateMessage,
   onRateMessage,
@@ -596,6 +618,14 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                         <span className="truncate">{att.name}</span>
                       </div>
                     ))}
+                  </div>
+                )}
+                {msg.mode && XOX_COMMAND_SPECS[msg.mode] && (
+                  <div className="flex items-center gap-1.5 pb-0.5">
+                    <span className="text-[10px] font-medium px-2 py-0.5 rounded-full inline-flex items-center gap-1.5 bg-white/[0.06] border border-white/[0.1] text-zinc-300">
+                      <span className="w-1.5 h-1.5 rounded-full bg-zinc-300 shrink-0" />
+                      {XOX_COMMAND_SPECS[msg.mode].slash} · {XOX_COMMAND_SPECS[msg.mode].name}
+                    </span>
                   </div>
                 )}
                 {msg.content && <div>{msg.content}</div>}
@@ -672,6 +702,13 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     className="w-[110px] h-[110px] @sm:w-[130px] @sm:h-[130px] @md:w-[150px] @md:h-[150px] @lg:w-[174px] @lg:h-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] @2xl:h-[clamp(198px,19.5cqi,264px)]"
                     summonTrigger={summonTrigger}
                     onClick={onXoxClick}
+                    subagents={
+                      msg.subagents?.length
+                        ? msg.subagents
+                        : isActiveGuideTurn && msg.mode === "agent" && msg.isStreaming
+                          ? rosterSubagents
+                          : undefined
+                    }
                   />
                   {greeting && (
                     <div
@@ -707,6 +744,11 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="text-xs @md:text-[13px] font-medium text-white">{agentName}</span>
+                  {msg.mode && XOX_COMMAND_SPECS[msg.mode] && (
+                    <span className="text-[10px] font-medium px-2 py-0.5 rounded-md inline-flex items-center gap-1 shrink-0 bg-white/[0.06] border border-white/[0.1] text-zinc-300">
+                      {XOX_COMMAND_SPECS[msg.mode].badge}
+                    </span>
+                  )}
                   {phaseLabel ? (
                     <span className="text-[11px] xox-shimmer inline-block font-medium truncate">
                       {phaseLabel}
@@ -809,6 +851,87 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 </div>
               )}
 
+              {/* Actividad en vivo de Sub-Agentes (/agent) */}
+              {msg.subagents && msg.subagents.length > 0 && (
+                <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02] backdrop-blur-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2 text-[10.5px] font-mono uppercase tracking-wider text-zinc-400">
+                    <span>Sub-agentes activos ({msg.subagents.length})</span>
+                    <span>
+                      {msg.subagents.filter((s) => s.status === "done").length}/{msg.subagents.length} listos
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {msg.subagents.map((sub) => {
+                      const isRunning = sub.status === "running";
+                      const isDone = sub.status === "done";
+                      const subDesign =
+                        sub.design && sub.design in SUBAGENT_GLASS_PALETTE
+                          ? sub.design
+                          : "orbit";
+                      const pal = SUBAGENT_GLASS_PALETTE[subDesign];
+                      return (
+                        <div
+                          key={sub.id}
+                          style={{
+                            backgroundColor: isRunning ? pal.fill : pal.cardBg,
+                            borderColor: isRunning ? pal.stroke : pal.cardBorder,
+                          }}
+                          className="rounded-xl border px-2.5 py-2 backdrop-blur-md transition-colors"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <SubagentGlyph
+                                design={subDesign}
+                                active={isRunning}
+                                className="w-[18px] h-[18px] shrink-0"
+                              />
+                              <span className="text-xs font-semibold text-white truncate">
+                                {sub.name}
+                              </span>
+                              {sub.model && (
+                                <span className="text-[9.5px] font-mono px-1.5 py-0.2 rounded bg-white/[0.03] border border-white/[0.07] text-zinc-400 truncate max-w-[110px]">
+                                  {sub.model}
+                                </span>
+                              )}
+                            </div>
+                            <span className="shrink-0">
+                              <OpenCircleCheckSvg
+                                status={
+                                  isRunning
+                                    ? "in_progress"
+                                    : isDone
+                                      ? "done"
+                                      : sub.status === "error"
+                                        ? "error"
+                                        : "pending"
+                                }
+                                className="w-4 h-4"
+                              />
+                            </span>
+                          </div>
+                          {sub.task && (
+                            <p
+                              className={`text-[11px] mt-1 leading-snug line-clamp-2 ${
+                                isDone
+                                  ? "underline decoration-zinc-500/60 underline-offset-2 text-zinc-400"
+                                  : "text-zinc-300"
+                              }`}
+                            >
+                              {sub.task}
+                            </p>
+                          )}
+                          {sub.summary && isDone && (
+                            <p className="text-[10.5px] text-zinc-400 mt-1 border-t border-white/[0.06] pt-1 line-clamp-2">
+                              {sub.summary}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Respuesta limpia (sin recuadro pesado salvo en errores) */}
               {msg.content.trim() ? (
                 msg.isError ? (
@@ -828,6 +951,9 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                   <span className="xox-shimmer inline-block font-medium">Thinking</span>
                 </div>
               ) : null}
+
+              {/* Mazo de Estudio Interactivo (/study) */}
+              {msg.studyDeck && <StudyDeckCard deck={msg.studyDeck} />}
 
               {/* Trazas compactas de permisos ya resueltos o en ejecución (los pendientes salen en el dock del input) */}
               {permissionItems.some((p) => p.state !== "pending") && isActiveGuideTurn && (
@@ -851,7 +977,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 <div className="rounded-2xl border border-white/[0.1] bg-[#0b0c10] px-3.5 py-2.5 flex items-center gap-2.5 text-[12px] text-zinc-200">
                   <Sparkles className="w-3.5 h-3.5 text-zinc-300 animate-pulse shrink-0" />
                   <span className="xox-shimmer font-medium">
-                    Construyendo tabla interactiva en Canvas…
+                    Construyendo vista interactiva en Canvas…
                   </span>
                 </div>
               )}
@@ -860,11 +986,47 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
               {msg.canvas && (() => {
                 const isOpen = activeCanvasId === msg.canvas.id;
                 const kindLabel =
-                  msg.canvas.kind === "comparison"
-                    ? "Comparativa"
-                    : msg.canvas.kind === "document"
-                      ? "Documento"
-                      : "Tabla";
+                  msg.canvas.kind === "plan"
+                    ? "Plan de acción"
+                    : msg.canvas.kind === "diagram"
+                      ? "Diagrama"
+                      : msg.canvas.kind === "dashboard"
+                        ? "Dashboard"
+                        : msg.canvas.kind === "form"
+                          ? msg.canvas.form?.purpose === "study_quiz"
+                            ? "Cuestionario"
+                            : "Formulario"
+                          : msg.canvas.kind === "comparison"
+                            ? "Comparativa"
+                            : msg.canvas.kind === "document"
+                              ? "Documento"
+                              : "Tabla";
+                const CardIcon =
+                  msg.canvas.kind === "plan"
+                    ? ListChecks
+                    : msg.canvas.kind === "diagram"
+                      ? Workflow
+                      : msg.canvas.kind === "dashboard"
+                        ? BarChart3
+                        : msg.canvas.kind === "form"
+                          ? ClipboardCheck
+                          : msg.canvas.kind === "document"
+                            ? FileText
+                            : Table2;
+                const planStepsTotal = msg.canvas.plan
+                  ? msg.canvas.plan.phases.reduce((acc, ph) => acc + ph.steps.length, 0)
+                  : 0;
+                const planStatusLabel = msg.canvas.plan
+                  ? msg.canvas.plan.status === "approved"
+                    ? "Aprobado"
+                    : msg.canvas.plan.status === "completed"
+                      ? "Completado"
+                      : msg.canvas.plan.status === "in_progress"
+                        ? "En ejecución"
+                        : msg.canvas.plan.status === "changes_requested"
+                          ? "Ajustes solicitados"
+                          : "Listo para revisión"
+                  : null;
                 const visibleColumns = msg.canvas.columns.slice(0, 4);
                 const extraColumns = msg.canvas.columns.length - visibleColumns.length;
 
@@ -885,17 +1047,43 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     <div className="relative flex items-center justify-between gap-2.5 mb-2.5">
                       <div className="flex items-center gap-2 min-w-0">
                         <div className="w-7 h-7 rounded-xl bg-zinc-900 border border-white/[0.12] flex items-center justify-center shrink-0">
-                          <Table2 className="w-3.5 h-3.5 text-zinc-200" />
+                          <CardIcon className="w-3.5 h-3.5 text-zinc-200" />
                         </div>
                         <span className="px-2 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.09] text-[10px] font-medium text-zinc-200 shrink-0">
                           {kindLabel}
                         </span>
                         <span className="text-[11px] text-zinc-400 truncate">
-                          {msg.canvas.columns.length > 0
-                            ? `${msg.canvas.rows.length} ${
-                                msg.canvas.rows.length === 1 ? "fila" : "filas"
-                              } · ${msg.canvas.columns.length} cols`
-                            : "Vista Canvas"}
+                          {msg.canvas.plan
+                            ? `${msg.canvas.plan.phases.length} ${
+                                msg.canvas.plan.phases.length === 1 ? "fase" : "fases"
+                              } · ${planStepsTotal} pasos`
+                            : msg.canvas.diagram
+                              ? `${msg.canvas.diagram.nodes.length} nodos · ${msg.canvas.diagram.edges.length} enlaces`
+                              : msg.canvas.dashboard
+                                ? `${msg.canvas.dashboard.kpis.length} KPIs · ${msg.canvas.dashboard.charts.length} ${
+                                    msg.canvas.dashboard.charts.length === 1 ? "gráfica" : "gráficas"
+                                  }`
+                                : msg.canvas.form
+                                  ? `${msg.canvas.form.fields.length} ${
+                                      msg.canvas.form.fields.length === 1
+                                        ? msg.canvas.form.purpose === "study_quiz"
+                                          ? "pregunta"
+                                          : "campo"
+                                        : msg.canvas.form.purpose === "study_quiz"
+                                          ? "preguntas"
+                                          : "campos"
+                                    }${
+                                      msg.canvas.form.score && msg.canvas.form.score.gradableCount > 0
+                                        ? ` · ${msg.canvas.form.score.percent}%`
+                                        : msg.canvas.form.submitted
+                                          ? " · Enviado"
+                                          : ""
+                                    }`
+                                  : msg.canvas.columns.length > 0
+                                  ? `${msg.canvas.rows.length} ${
+                                      msg.canvas.rows.length === 1 ? "fila" : "filas"
+                                    } · ${msg.canvas.columns.length} cols`
+                                  : "Vista Canvas"}
                         </span>
                       </div>
                       <span
@@ -912,15 +1100,102 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     </div>
 
                     <div className="relative space-y-1">
-                      <h4 className="text-[13.5px] font-semibold text-white leading-snug line-clamp-2 tracking-[-0.01em]">
-                        {msg.canvas.title}
-                      </h4>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="text-[13.5px] font-semibold text-white leading-snug line-clamp-2 tracking-[-0.01em]">
+                          {renderInlineMarkdown(msg.canvas.title, {
+                            variant: "default",
+                            preserveLineBreaks: false,
+                            keyPrefix: `cc-t-${msg.canvas.id}`,
+                          })}
+                        </h4>
+                        {planStatusLabel && (
+                          <span className="px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/[0.12] text-[10px] text-zinc-200">
+                            {planStatusLabel}
+                          </span>
+                        )}
+                      </div>
                       {msg.canvas.subtitle && (
                         <p className="text-[11px] text-zinc-400 leading-snug line-clamp-1">
-                          {msg.canvas.subtitle}
+                          {renderInlineMarkdown(msg.canvas.subtitle, {
+                            variant: "default",
+                            preserveLineBreaks: false,
+                            keyPrefix: `cc-s-${msg.canvas.id}`,
+                          })}
                         </p>
                       )}
                     </div>
+
+                    {msg.canvas.plan && msg.canvas.plan.phases.length > 0 && (
+                      <div className="relative mt-2.5 flex flex-wrap items-center gap-1.5">
+                        {msg.canvas.plan.phases.slice(0, 3).map((ph, idx) => (
+                          <span
+                            key={ph.id}
+                            className="px-2 py-0.5 rounded-md bg-white/[0.045] border border-white/[0.08] text-[10.5px] text-zinc-300 truncate max-w-[170px]"
+                          >
+                            {idx + 1}. {ph.title}
+                          </span>
+                        ))}
+                        {msg.canvas.plan.phases.length > 3 && (
+                          <span className="px-1.5 py-0.5 text-[10px] text-zinc-500">
+                            +{msg.canvas.plan.phases.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {msg.canvas.diagram && msg.canvas.diagram.nodes.length > 0 && (
+                      <div className="relative mt-2.5 flex flex-wrap items-center gap-1.5">
+                        {msg.canvas.diagram.nodes.slice(0, 4).map((nd) => (
+                          <span
+                            key={nd.id}
+                            className="px-2 py-0.5 rounded-md bg-white/[0.045] border border-white/[0.08] text-[10.5px] text-zinc-300 truncate max-w-[140px]"
+                          >
+                            {nd.label}
+                          </span>
+                        ))}
+                        {msg.canvas.diagram.nodes.length > 4 && (
+                          <span className="px-1.5 py-0.5 text-[10px] text-zinc-500">
+                            +{msg.canvas.diagram.nodes.length - 4}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {msg.canvas.dashboard && msg.canvas.dashboard.kpis.length > 0 && (
+                      <div className="relative mt-2.5 grid grid-cols-3 gap-1.5">
+                        {msg.canvas.dashboard.kpis.slice(0, 3).map((kpi) => (
+                          <div
+                            key={kpi.id}
+                            className="px-2 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.08] min-w-0"
+                          >
+                            <span className="block text-[9.5px] text-zinc-400 truncate">
+                              {kpi.label}
+                            </span>
+                            <span className="block text-[12px] font-semibold font-mono text-white truncate">
+                              {kpi.value}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {msg.canvas.form && msg.canvas.form.fields.length > 0 && (
+                      <div className="relative mt-2.5 flex flex-wrap items-center gap-1.5">
+                        {msg.canvas.form.fields.slice(0, 3).map((fld, idx) => (
+                          <span
+                            key={fld.id}
+                            className="px-2 py-0.5 rounded-md bg-white/[0.045] border border-white/[0.08] text-[10.5px] text-zinc-300 truncate max-w-[175px]"
+                          >
+                            {idx + 1}. {fld.label}
+                          </span>
+                        ))}
+                        {msg.canvas.form.fields.length > 3 && (
+                          <span className="px-1.5 py-0.5 text-[10px] text-zinc-500">
+                            +{msg.canvas.form.fields.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    )}
 
                     {visibleColumns.length > 0 && (
                       <div className="relative mt-2.5 flex flex-wrap items-center gap-1.5">
@@ -929,7 +1204,11 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                             key={col.id}
                             className="px-2 py-0.5 rounded-md bg-white/[0.045] border border-white/[0.08] text-[10.5px] text-zinc-300"
                           >
-                            {col.label}
+                            {renderInlineMarkdown(col.label, {
+                              variant: "default",
+                              preserveLineBreaks: false,
+                              keyPrefix: `cc-col-${msg.canvas!.id}-${col.id}`,
+                            })}
                           </span>
                         ))}
                         {extraColumns > 0 && (
@@ -942,7 +1221,11 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
 
                     {msg.canvas.summary && (
                       <div className="relative mt-2.5 px-2.5 py-2 rounded-xl bg-black/35 border border-white/[0.06] text-[11.5px] leading-relaxed text-zinc-300 line-clamp-2">
-                        {msg.canvas.summary}
+                        {renderInlineMarkdown(msg.canvas.summary, {
+                          variant: "default",
+                          preserveLineBreaks: false,
+                          keyPrefix: `cc-sum-${msg.canvas.id}`,
+                        })}
                       </div>
                     )}
                   </button>

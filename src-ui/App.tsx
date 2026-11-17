@@ -24,7 +24,24 @@ import {
   UserCircle2,
   Image as ImageIcon,
   Settings,
+  Slash,
+  Users,
 } from "lucide-react";
+import {
+  SlashCommandMenu,
+  ActiveModeChip,
+  XOX_COMMAND_SPECS,
+  XOX_COMMAND_LIST,
+  type XoxModeId,
+} from "./components/SlashCommandMenu";
+import { ChecklistCornerCard } from "./components/ChecklistCornerCard";
+import { SubagentRosterPopover } from "./components/SubagentRosterPopover";
+import {
+  DEFAULT_SUBAGENT_ROSTER,
+  type ChecklistState,
+  type SubagentProfile,
+  type SubagentTeamMode,
+} from "./features/ai-service/agentModeTypes";
 import {
   XoxStar,
   XoxSilhouetteIcon,
@@ -60,12 +77,17 @@ import {
   isSameLocalDay,
 } from "./utils/xoxGreetings";
 import {
+  CanvasActionPayload,
   CanvasArtifact,
   canvasHasCellData,
   cleanVisibleReply,
+  evaluateFormFieldState,
   extractFirstHtmlTable,
   extractFirstMarkdownTable,
+  formatFormAnswerForDisplay,
+  gradeStudyForm,
   markdownTableToCanvasArtifact,
+  resolveSelectedIndex,
   sanitizeCanvasArtifact,
 } from "./features/canvas/canvasSchema";
 import { CanvasPanel } from "./features/canvas/CanvasPanel";
@@ -340,6 +362,133 @@ function buildPdfSpecFromCanvas(canvas: CanvasArtifact): Record<string, unknown>
       tone: "info",
     });
   }
+  if (canvas.plan) {
+    const p = canvas.plan;
+    if (p.scope && p.scope.length > 0) {
+      blocks.push({
+        type: "callout",
+        title: "Alcance",
+        text: p.scope.join(", "),
+        tone: "info",
+      });
+    }
+    p.phases.forEach((ph, idx) => {
+      blocks.push({ type: "heading", level: 1, text: `Fase ${idx + 1}: ${ph.title}` });
+      if (ph.summary) {
+        blocks.push({ type: "paragraph", text: ph.summary });
+      }
+      ph.steps.forEach((st) => {
+        const mark = st.status === "done" || st.checked ? "[x]" : "[ ]";
+        const targetTxt = st.target ? ` (${st.target})` : "";
+        blocks.push({
+          type: "paragraph",
+          text: `${mark} ${st.title}${targetTxt}${st.detail ? ` — ${st.detail}` : ""}`,
+        });
+      });
+    });
+    if (p.risks && p.risks.length > 0) {
+      blocks.push({ type: "heading", level: 2, text: "Riesgos identificados" });
+      p.risks.forEach((r) => {
+        blocks.push({
+          type: "paragraph",
+          text: `[${r.level.toUpperCase()}] ${r.text}${r.mitigation ? ` · Mitigación: ${r.mitigation}` : ""}`,
+        });
+      });
+    }
+  }
+  if (canvas.diagram) {
+    blocks.push({ type: "heading", level: 1, text: "Estructura del diagrama" });
+    canvas.diagram.nodes.forEach((n, idx) => {
+      const outs = canvas.diagram!.edges
+        .filter((e) => e.from === n.id)
+        .map((e) => {
+          const targetNode = canvas.diagram!.nodes.find((x) => x.id === e.to);
+          return `${e.label ? `${e.label} -> ` : ""}${targetNode?.label ?? e.to}`;
+        });
+      blocks.push({
+        type: "paragraph",
+        text: `${idx + 1}. ${n.label}${n.detail ? `: ${n.detail}` : ""}${outs.length > 0 ? ` [Continúa hacia: ${outs.join("; ")}]` : ""}`,
+      });
+    });
+  }
+  if (canvas.dashboard) {
+    const d = canvas.dashboard;
+    if (d.kpis.length > 0) {
+      blocks.push({
+        type: "kpi_strip",
+        items: d.kpis.slice(0, 4).map((k) => ({
+          label: k.label,
+          value: k.delta ? `${k.value} (${k.delta})` : k.value,
+        })),
+      });
+    }
+    d.charts.forEach((ch) => {
+      blocks.push({ type: "heading", level: 2, text: ch.title });
+      blocks.push({
+        type: "table",
+        headers: ["Categoría", ...ch.series.map((s) => s.name)],
+        rows: ch.categories.map((cat, idx) => [
+          cat,
+          ...ch.series.map((s) => String(s.values[idx] ?? 0)),
+        ]),
+      });
+    });
+    if (d.insights && d.insights.length > 0) {
+      d.insights.forEach((ins) => {
+        blocks.push({
+          type: "callout",
+          title: ins.title || "Hallazgo clave",
+          text: ins.text,
+          tone: ins.tone === "warning" || ins.tone === "critical" ? "warning" : "info",
+        });
+      });
+    }
+  }
+  if (canvas.form) {
+    const f = canvas.form;
+    if (f.score && f.score.gradableCount > 0) {
+      blocks.push({
+        type: "callout",
+        title: "Resultado",
+        text: `${f.score.correctCount} de ${f.score.gradableCount} correctas (${f.score.earned}/${f.score.total} pts · ${f.score.percent}%)`,
+        tone: "info",
+      });
+    }
+    f.fields.forEach((field, idx) => {
+      blocks.push({
+        type: "heading",
+        level: 2,
+        text: `${idx + 1}. ${field.label}${field.required ? " *" : ""}`,
+      });
+      if (field.options && field.options.length > 0) {
+        const userVal = f.answers?.[field.id];
+        const pickedSingle = resolveSelectedIndex(field, userVal);
+        const pickedMulti = Array.isArray(userVal) ? new Set(userVal) : null;
+        blocks.push({
+          type: "bullets",
+          items: field.options.map((opt, oIdx) => {
+            const isPicked =
+              field.type === "multi_choice"
+                ? Boolean(pickedMulti?.has(oIdx))
+                : pickedSingle === oIdx;
+            const mark = isPicked ? "[x]" : "[ ]";
+            return `${mark} ${opt}`;
+          }),
+        });
+      } else {
+        const answerStr = formatFormAnswerForDisplay(field, f.answers?.[field.id]);
+        blocks.push({ type: "paragraph", text: `Respuesta: ${answerStr}` });
+      }
+      if ((f.checkedLocally || f.submitted) && field.explanation) {
+        blocks.push({
+          type: "callout",
+          title: "Explicación",
+          text: field.explanation,
+          tone: "info",
+        });
+      }
+    });
+  }
   if (canvas.columns.length > 0 && canvas.rows.length > 0) {
     blocks.push({ type: "heading", level: 1, text: "Detalle comparativo" });
     blocks.push({
@@ -356,7 +505,7 @@ function buildPdfSpecFromCanvas(canvas: CanvasArtifact): Record<string, unknown>
     theme: "executive",
     cover: { enabled: false },
     blocks,
-    ...(canvas.columns.length === 0 && canvas.markdown?.trim()
+    ...(canvas.columns.length === 0 && !canvas.plan && !canvas.diagram && !canvas.dashboard && canvas.markdown?.trim()
       ? { markdown: canvas.markdown.trim() }
       : {}),
   };
@@ -565,6 +714,49 @@ export default function App() {
   const [xoxExitingStage, setXoxExitingStage] = useState<boolean>(false);
   const prevShowStudioRef = useRef<boolean>(false);
 
+  const [activeMode, setActiveMode] = useState<XoxModeId | null>(null);
+  const activeModeSpec = activeMode ? XOX_COMMAND_SPECS[activeMode] : null;
+  const [activeChecklist, setActiveChecklist] = useState<ChecklistState | null>(null);
+  const [checklistCollapsed, setChecklistCollapsed] = useState<boolean>(false);
+  const [subagentTeamMode, setSubagentTeamMode] = useState<SubagentTeamMode>("dynamic");
+  const [dynamicSubagentModel, setDynamicSubagentModel] = useState<string>("auto");
+  const [subagentRoster, setSubagentRoster] = useState<SubagentProfile[]>(() => DEFAULT_SUBAGENT_ROSTER);
+  const [showRosterPopover, setShowRosterPopover] = useState<boolean>(false);
+  const rosterPopoverRef = useRef<HTMLDivElement>(null);
+
+  const effectiveSubagentRoster = useMemo<SubagentProfile[] | undefined>(() => {
+    if (activeMode !== "agent") return undefined;
+    if (subagentTeamMode === "custom") return subagentRoster;
+    if (dynamicSubagentModel && dynamicSubagentModel !== "auto") {
+      return [
+        {
+          id: "dyn_pref",
+          name: "__dynamic_default__",
+          role: "Modelo preferido",
+          model: dynamicSubagentModel,
+          design: "orbit",
+          enabled: true,
+        },
+      ];
+    }
+    return undefined;
+  }, [activeMode, subagentTeamMode, subagentRoster, dynamicSubagentModel]);
+
+  const handleToggleChecklistItem = (itemId: string) => {
+    setActiveChecklist((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        updatedAt: Date.now(),
+        items: prev.items.map((it) =>
+          it.id === itemId
+            ? { ...it, status: it.status === "done" ? "pending" : "done" }
+            : it
+        ),
+      };
+    });
+  };
+
   const effectiveAgentName =
     globalXoxProfile.agentName.trim() || workspaceOverview?.profile.agentName || "Xox";
   const effectiveAccentPreset = resolveXoxAccentPreset(globalXoxProfile.accentPreset);
@@ -673,11 +865,6 @@ export default function App() {
     Math.max(440, Math.round(viewportWidth * 0.54)),
     Math.max(360, viewportWidth - 260)
   );
-  const canvasPanelWidth = Math.min(
-    660,
-    Math.max(330, Math.round(viewportWidth * 0.44)),
-    Math.max(300, viewportWidth - 260)
-  );
   const docViewerPanelWidth = Math.min(
     680,
     Math.max(360, Math.round(viewportWidth * 0.46)),
@@ -739,6 +926,22 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<UiChatMessage[]>([]);
   const [activeCanvas, setActiveCanvas] = useState<CanvasArtifact | null>(null);
   const [showCanvas, setShowCanvas] = useState<boolean>(false);
+  const [canvasExpanded, setCanvasExpanded] = useState<boolean>(false);
+  const canvasPanelWidth = canvasExpanded
+    ? Math.min(
+        980,
+        Math.max(520, Math.round(viewportWidth * 0.62)),
+        Math.max(340, viewportWidth - 240)
+      )
+    : Math.min(
+        660,
+        Math.max(330, Math.round(viewportWidth * 0.44)),
+        Math.max(300, viewportWidth - 260)
+      );
+  const hasRightSplitOpen = showCanvas || showRightSidebar || showXoxStudio || showDocViewer;
+  useEffect(() => {
+    setChecklistCollapsed(hasRightSplitOpen);
+  }, [hasRightSplitOpen]);
   const [isChatStreaming, setIsChatStreaming] = useState<boolean>(false);
   const [localUser, setLocalUser] = useState<LocalUserProfile | null>(null);
   const [showLocalAuth, setShowLocalAuth] = useState<boolean>(false);
@@ -748,6 +951,11 @@ export default function App() {
   const [thinkingLabel, setThinkingLabel] = useState<string>("Consultando a Xox...");
   const [showModelMenu, setShowModelMenu] = useState<boolean>(false);
   const [showContextMenu, setShowContextMenu] = useState<boolean>(false);
+  const [showCommandMenu, setShowCommandMenu] = useState<boolean>(false);
+  const [commandMenuFilter, setCommandMenuFilter] = useState<string>("");
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState<number>(0);
+  const commandMenuRef = useRef<HTMLDivElement>(null);
+  const commandTriggerRef = useRef<HTMLButtonElement>(null);
   const [learningToast, setLearningToast] = useState<MemoryPattern | null>(null);
   const [inputExpanded, setInputExpanded] = useState<boolean>(false);
 
@@ -936,16 +1144,17 @@ export default function App() {
     [localUser?.name, homeGreetingSlot]
   );
 
-  const chatInputPlaceholder = useMemo(
-    () =>
-      getChatInputPlaceholder({
-        isStreaming: isChatStreaming,
-        isDragging: isDraggingOverChat,
-        hasMessages: chatMessages.length > 0,
-        seed: homeGreetingSlot.seed,
-      }),
-    [isChatStreaming, isDraggingOverChat, chatMessages.length, homeGreetingSlot.seed]
-  );
+  const chatInputPlaceholder = useMemo(() => {
+    if (activeModeSpec) {
+      return activeModeSpec.inputPlaceholder;
+    }
+    return getChatInputPlaceholder({
+      isStreaming: isChatStreaming,
+      isDragging: isDraggingOverChat,
+      hasMessages: chatMessages.length > 0,
+      seed: homeGreetingSlot.seed,
+    });
+  }, [activeModeSpec, isChatStreaming, isDraggingOverChat, chatMessages.length, homeGreetingSlot.seed]);
   const lastMsg = chatMessages[chatMessages.length - 1];
   const lastMsgStreamLen = (lastMsg?.content?.length ?? 0) + (lastMsg?.reasoning?.length ?? 0);
   useEffect(() => {
@@ -1364,6 +1573,8 @@ export default function App() {
     setChatMessages([]);
     setActiveCanvas(null);
     setShowCanvas(false);
+    setActiveChecklist(null);
+    setShowRosterPopover(false);
     setXoxState("idle");
     setXoxMessage(DEFAULT_IDLE_GREETING);
     setHomeGreetingSlot({
@@ -1556,9 +1767,9 @@ export default function App() {
     return () => ro.disconnect();
   }, [inputPrompt]);
 
-  // Cerrar menús desplegables (modelos y contexto) al hacer clic fuera o presionar Escape
+  // Cerrar menús desplegables (modelos, contexto, comandos y equipo multi-agente) al hacer clic fuera o presionar Escape
   useEffect(() => {
-    if (!showModelMenu && !showContextMenu) return;
+    if (!showModelMenu && !showContextMenu && !showCommandMenu && !showRosterPopover) return;
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (showModelMenu && modelMenuRef.current && !modelMenuRef.current.contains(target)) {
@@ -1566,6 +1777,21 @@ export default function App() {
       }
       if (showContextMenu && contextMenuRef.current && !contextMenuRef.current.contains(target)) {
         setShowContextMenu(false);
+      }
+      if (
+        showCommandMenu &&
+        commandMenuRef.current &&
+        !commandMenuRef.current.contains(target) &&
+        !commandTriggerRef.current?.contains(target)
+      ) {
+        setShowCommandMenu(false);
+      }
+      if (
+        showRosterPopover &&
+        rosterPopoverRef.current &&
+        !rosterPopoverRef.current.contains(target)
+      ) {
+        setShowRosterPopover(false);
       }
     };
     const onKey = (e: KeyboardEvent) => {
@@ -1578,6 +1804,13 @@ export default function App() {
           setShowContextMenu(false);
           contextTriggerRef.current?.focus();
         }
+        if (showCommandMenu) {
+          setShowCommandMenu(false);
+          commandTriggerRef.current?.focus();
+        }
+        if (showRosterPopover) {
+          setShowRosterPopover(false);
+        }
       }
     };
     window.addEventListener("mousedown", onDown);
@@ -1586,7 +1819,7 @@ export default function App() {
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [showModelMenu, showContextMenu]);
+  }, [showModelMenu, showContextMenu, showCommandMenu, showRosterPopover]);
 
   const handleListboxKeyDown = (
     e: React.KeyboardEvent<HTMLDivElement>,
@@ -2797,11 +3030,15 @@ export default function App() {
 
   const runPromptQuery = async (
     rawQuery: string,
-    overrideMessages?: UiChatMessage[]
+    overrideMessages?: UiChatMessage[],
+    options?: { overrideMode?: XoxModeId | null }
   ) => {
     const rawTrimmed = rawQuery.trim();
     if ((!rawTrimmed && attachments.length === 0) || isChatStreaming) return;
 
+    const effectiveMode: XoxModeId | null =
+      options && "overrideMode" in options ? (options.overrideMode ?? null) : activeMode;
+    const effectiveModeSpec = effectiveMode ? XOX_COMMAND_SPECS[effectiveMode] : null;
     const baseMessages = overrideMessages ?? chatMessagesRef.current;
     const currentAttachments = attachments;
     const query =
@@ -2947,11 +3184,14 @@ export default function App() {
       id: `msg_u_${Date.now()}`,
       role: "user",
       content: query,
+      mode: effectiveMode ?? undefined,
       ...(initialAttachmentsMeta.length > 0 ? { attachments: initialAttachmentsMeta } : {}),
     };
 
     const setupIntent = detectKeySetupIntentWithProvider(query);
-    const vaultReq = detectVaultConfigRequest(query);
+    const vaultReq = effectiveMode
+      ? { isVaultRequest: false, intentKind: "open_vault" as const, providerHint: null }
+      : detectVaultConfigRequest(query);
 
     if (vaultReq.isVaultRequest) {
       const targetPid: AiProviderId = vaultReq.providerHint ?? activeProvider;
@@ -3066,7 +3306,9 @@ export default function App() {
 
     const initialStep: ThinkingStep = {
       id: "read_context",
-      label: "Leyendo contexto y reglas del negocio",
+      label: effectiveModeSpec
+        ? `${effectiveModeSpec.name}: Leyendo contexto...`
+        : "Leyendo contexto y reglas del negocio",
       status: "running",
     };
 
@@ -3075,6 +3317,7 @@ export default function App() {
       role: "assistant",
       content: "",
       reasoning: "",
+      mode: effectiveMode ?? undefined,
       thinkingSteps: [initialStep],
       isStreaming: true,
       isReasoningStreaming: true,
@@ -3102,8 +3345,11 @@ export default function App() {
     setChatMessages(startedMessages);
     setIsChatStreaming(true);
     setXoxState("reading");
-    setThinkingLabel("Leyendo contexto…");
-    setXoxMessage("Leyendo contexto y reglas...");
+    const readingLabel = effectiveModeSpec
+      ? `${effectiveModeSpec.slash} · ${effectiveModeSpec.badge}...`
+      : "Leyendo contexto y reglas...";
+    setThinkingLabel(readingLabel);
+    setXoxMessage(readingLabel);
 
     try {
       let stagedAnyBinary = false;
@@ -3300,6 +3546,8 @@ export default function App() {
       const res = await runXoxAiChatStream(
         {
           message: query,
+          activeMode: effectiveMode,
+          subagentRoster: effectiveSubagentRoster,
           history: priorHistory,
           currentTasks: tasksRef.current,
           agendaItems,
@@ -3375,6 +3623,30 @@ export default function App() {
             setChatMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantMsgId ? { ...m, thinkingSteps: steps } : m
+              )
+            );
+          },
+          onChecklistUpdate: (chk) => {
+            setActiveChecklist(chk);
+          },
+          onSubagentEvent: (sub) => {
+            setChatMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== assistantMsgId) return m;
+                const existing = m.subagents ?? [];
+                const foundIdx = existing.findIndex((s) => s.id === sub.id);
+                const nextSubs =
+                  foundIdx >= 0
+                    ? existing.map((s, i) => (i === foundIdx ? { ...s, ...sub } : s))
+                    : [...existing, sub];
+                return { ...m, subagents: nextSubs };
+              })
+            );
+          },
+          onStudyDeck: (deck) => {
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId ? { ...m, studyDeck: deck } : m
               )
             );
           },
@@ -3845,7 +4117,9 @@ export default function App() {
         cleanedResponse ||
         (hasTabularTransferred && transferredCanvas
           ? `Listo, preparé "${transferredCanvas.title}" en Canvas (${transferredCanvas.rows.length} filas y ${transferredCanvas.columns.length} columnas).${transferredCanvas.summary ? `\n\n${transferredCanvas.summary}` : ""}`
-          : rawResponse || "Listo.");
+          : transferredCanvas
+            ? `Listo, preparé "${transferredCanvas.title}" en Canvas.${transferredCanvas.summary ? `\n\n${transferredCanvas.summary}` : ""}`
+            : rawResponse || "Listo.");
       const assistantQbId = `msg_qb_a_${Date.now() + 1}`;
       const nextMessages: UiChatMessage[] = [
         ...chatMessagesRef.current,
@@ -3985,10 +4259,182 @@ export default function App() {
   const handleAskXoxAboutCanvas = (canvas: CanvasArtifact) => {
     setActiveCanvas(canvas);
     setShowCanvas(true);
+    const noun =
+      canvas.kind === "plan"
+        ? "el plan"
+        : canvas.kind === "diagram"
+          ? "el diagrama"
+          : canvas.kind === "dashboard"
+            ? "el dashboard"
+            : canvas.kind === "form"
+              ? canvas.form?.purpose === "study_quiz"
+                ? "el cuestionario"
+                : "el formulario"
+              : canvas.kind === "document"
+                ? "el documento"
+                : "la tabla";
     setInputPrompt((prev) =>
-      prev.trim() ? prev : `Sobre la tabla "${canvas.title}": `
+      prev.trim() ? prev : `Sobre ${noun} "${canvas.title}": `
     );
     requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const handleCanvasAction = (action: CanvasActionPayload) => {
+    if (action.type === "ask_edit") {
+      handleAskXoxAboutCanvas(action.canvas);
+      return;
+    }
+
+    if (action.type === "dashboard_ask_item") {
+      const detailHint = action.detail ? ` (${action.detail})` : "";
+      void runPromptQuery(
+        `Sobre "${action.label}" en el dashboard "${action.canvas.title}"${detailHint}: analiza qué está ocurriendo y qué decisión recomiendas.`
+      );
+      return;
+    }
+
+    if (action.type === "diagram_ask_node") {
+      const n = action.node;
+      const detailHint = n.detail ? ` (Contexto: ${n.detail})` : "";
+      void runPromptQuery(
+        `Sobre "${n.label}" en "${action.canvas.title}"${detailHint}: explícamelo con claridad y qué decisiones o pasos implica.`
+      );
+      return;
+    }
+
+    if (action.type === "plan_approve" && action.canvas.plan) {
+      handleUpdateCanvas(action.canvas);
+      const p = action.canvas.plan;
+      const approvedSteps = p.phases.flatMap((ph) =>
+        ph.steps
+          .filter((st) => st.checked)
+          .map((st) => ({
+            phase: ph.title,
+            step: st,
+          }))
+      );
+      const skippedSteps = p.phases.flatMap((ph) =>
+        ph.steps.filter((st) => !st.checked).map((st) => st.title)
+      );
+      const notes: string[] = [];
+      if (p.reviewComment?.trim()) notes.push(`Nota general: ${p.reviewComment.trim()}`);
+      p.phases.forEach((ph) => {
+        if (ph.comment?.trim()) notes.push(`Fase "${ph.title}": ${ph.comment.trim()}`);
+        ph.steps.forEach((st) => {
+          if (st.comment?.trim()) notes.push(`Paso "${st.title}": ${st.comment.trim()}`);
+        });
+      });
+
+      setActiveChecklist({
+        id: `chk_plan_${Date.now()}`,
+        title: action.canvas.title,
+        mode: "plan",
+        items: approvedSteps.slice(0, 15).map(({ step }) => ({
+          id: step.id,
+          label: step.title,
+          status: step.status === "done" ? "done" : "pending",
+        })),
+        updatedAt: Date.now(),
+      });
+
+      if (activeMode === "plan") {
+        setActiveMode(null);
+      }
+
+      const stepsText = approvedSteps
+        .map(({ phase, step }, idx) => `${idx + 1}. [${phase}] ${step.title}${step.target ? ` (${step.target})` : ""}`)
+        .join("\n");
+      const skippedText = skippedSteps.length > 0 ? `\n\nPasos omitidos por el usuario:\n- ${skippedSteps.join("\n- ")}` : "";
+      const notesText = notes.length > 0 ? `\n\nNotas adicionales:\n- ${notes.join("\n- ")}` : "";
+
+      void runPromptQuery(
+        `Apruebo el plan "${action.canvas.title}". Procede a ejecutar los pasos seleccionados y ve actualizando el progreso en la checklist:\n${stepsText}${skippedText}${notesText}`,
+        undefined,
+        { overrideMode: null }
+      );
+      return;
+    }
+
+    if (action.type === "plan_request_changes" && action.canvas.plan) {
+      handleUpdateCanvas(action.canvas);
+      const p = action.canvas.plan;
+      const feedbackLines: string[] = [];
+      if (p.reviewComment?.trim()) {
+        feedbackLines.push(`Nota general: ${p.reviewComment.trim()}`);
+      }
+      p.phases.forEach((ph) => {
+        if (ph.comment?.trim()) {
+          feedbackLines.push(`En fase "${ph.title}": ${ph.comment.trim()}`);
+        }
+        ph.steps.forEach((st) => {
+          if (!st.checked) {
+            feedbackLines.push(`Quitar u omitir paso: "${st.title}"`);
+          }
+          if (st.comment?.trim()) {
+            feedbackLines.push(`En paso "${st.title}": ${st.comment.trim()}`);
+          }
+        });
+      });
+      const body =
+        feedbackLines.length > 0
+          ? feedbackLines.join("\n- ")
+          : "Reorganiza el plan haciéndolo más claro y específico.";
+      void runPromptQuery(
+        `Ajusta el plan "${action.canvas.title}" en Canvas (manteniendo su id "${action.canvas.id}" con \`create_plan\`) tomando en cuenta estas observaciones:\n- ${body}`,
+        undefined,
+        { overrideMode: "plan" }
+      );
+      return;
+    }
+
+    if (action.type === "form_submit" && action.canvas.form) {
+      handleUpdateCanvas(action.canvas);
+      const f = action.canvas.form;
+      const isQuiz = f.purpose === "study_quiz";
+      const score = isQuiz ? (f.score ?? gradeStudyForm(f)) : undefined;
+
+      const lines = f.fields.map((field, idx) => {
+        const val = f.answers?.[field.id];
+        const answerDisplay = formatFormAnswerForDisplay(field, val);
+        if (!isQuiz) {
+          return `${idx + 1}. ${field.label}: ${answerDisplay}`;
+        }
+        let statusTag = "";
+        const outcome = evaluateFormFieldState(field, val);
+        if (outcome === "open") {
+          statusTag = " [PREGUNTA ABIERTA — evaluar respuesta]";
+        } else if (outcome === "correct") {
+          statusTag = " [CORRECTA]";
+        } else if (field.type === "multi_choice" && Array.isArray(field.correctIndices) && field.options) {
+          const expectedText = field.correctIndices
+            .map((i) => field.options![i])
+            .filter(Boolean)
+            .join(", ");
+          statusTag = ` [INCORRECTA — esperadas: "${expectedText}"]`;
+        } else if (typeof field.correctIndex === "number" && field.options?.[field.correctIndex] !== undefined) {
+          statusTag = ` [INCORRECTA — esperada: "${field.options[field.correctIndex]}"]`;
+        } else if (field.expectedAnswer) {
+          statusTag = ` [INCORRECTA — esperado: "${field.expectedAnswer}"]`;
+        } else {
+          statusTag = " [INCORRECTA]";
+        }
+        return `${idx + 1}. ${field.label}\n   Respuesta del usuario: ${answerDisplay}${statusTag}`;
+      });
+
+      if (isQuiz) {
+        const scoreLine =
+          score && score.gradableCount > 0
+            ? `Puntaje automático en preguntas cerradas: ${score.correctCount}/${score.gradableCount} (${score.earned}/${score.total} pts · ${score.percent}%).\n`
+            : "";
+        void runPromptQuery(
+          `Envío mis respuestas del cuestionario "${action.canvas.title}":\n${scoreLine}\n${lines.join("\n")}\n\nPor favor evalúa mis respuestas abiertas si las hay, explícame brevemente cualquier error de forma clara y dime qué tema conviene reforzar.`
+        );
+      } else {
+        void runPromptQuery(
+          `Envío el formulario "${action.canvas.title}" con los siguientes datos:\n\n${lines.join("\n")}\n\nConfirma la recepción y continúa con el análisis o siguiente paso usando esta información.`
+        );
+      }
+    }
   };
 
   const openPdfInRightPanel = async (
@@ -4283,7 +4729,28 @@ export default function App() {
         text: canvas.summary.trim(),
       });
     }
-    if (canvas.columns.length > 0 && canvas.rows.length > 0) {
+    if (canvas.plan) {
+      canvasPreviewBlocks.push({
+        type: "callout",
+        title: `Plan (${canvas.plan.phases.length} fases)`,
+        text: canvas.plan.goal,
+      });
+    } else if (canvas.dashboard) {
+      canvasPreviewBlocks.push({
+        type: "callout",
+        title: `Dashboard (${canvas.dashboard.kpis.length} KPIs · ${canvas.dashboard.charts.length} gráficas)`,
+        text:
+          canvas.dashboard.kpis
+            .slice(0, 3)
+            .map((k) => `${k.label}: ${k.value}`)
+            .join(" | ") || canvas.title,
+      });
+    } else if (canvas.diagram) {
+      canvasPreviewBlocks.push({
+        type: "paragraph",
+        text: `Diagrama visual con ${canvas.diagram.nodes.length} nodos y ${canvas.diagram.edges.length} conexiones.`,
+      });
+    } else if (canvas.columns.length > 0 && canvas.rows.length > 0) {
       canvasPreviewBlocks.push({
         type: "table",
         columns: canvas.columns.map((c) => c.label),
@@ -4391,7 +4858,20 @@ export default function App() {
 
   const modelMenuPresence = useAnimatedPresence(showModelMenu, 150);
   const contextMenuPresence = useAnimatedPresence(showContextMenu, 150);
+  const commandMenuPresence = useAnimatedPresence(showCommandMenu, 150);
   const activeContextCount = contextItems.filter((item) => inputPrompt.includes(`@${item.name}`)).length;
+
+  const filteredCommands = useMemo(() => {
+    const cleanFilter = commandMenuFilter.replace(/^\//, "").trim().toLowerCase();
+    if (!cleanFilter) return XOX_COMMAND_LIST;
+    return XOX_COMMAND_LIST.filter(
+      (cmd) =>
+        cmd.slash.toLowerCase().includes(cleanFilter) ||
+        cmd.id.toLowerCase().includes(cleanFilter) ||
+        cmd.name.toLowerCase().includes(cleanFilter) ||
+        cmd.description.toLowerCase().includes(cleanFilter)
+    );
+  }, [commandMenuFilter]);
 
   return (
     <div className="h-screen w-screen bg-[#060709] text-zinc-100 flex flex-col font-sans select-none overflow-hidden antialiased">
@@ -5027,7 +5507,13 @@ export default function App() {
 
           {/* Área de Trabajo con Scroll: Xox Hero / Chat en vivo */}
           <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-6">
-            <div className="max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto space-y-6">
+            <div
+              className={`max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto space-y-6 transition-[padding] duration-200 ${
+                activeChecklist && !checklistCollapsed && !hasRightSplitOpen
+                  ? "lg:pr-[314px]"
+                  : ""
+              }`}
+            >
 
               {/* ========================================================================= */}
               {/* 1. XOX DIGITAL COMPANION (HERO EN ESTADO VACÍO / COMPACTO EN CHAT)      */}
@@ -5060,6 +5546,18 @@ export default function App() {
                         className="w-[308px] h-[308px] sm:w-[384px] sm:h-[384px] lg:w-[408px] lg:h-[408px] xl:w-[456px] xl:h-[456px]"
                         summonTrigger={summonSeq}
                         onClick={handleXoxClick}
+                        subagents={
+                          activeMode === "agent" && subagentTeamMode === "custom"
+                            ? subagentRoster
+                                .filter((r) => r.enabled)
+                                .map((r) => ({
+                                  id: r.id,
+                                  name: r.name,
+                                  design: r.design,
+                                  status: "pending" as const,
+                                }))
+                            : undefined
+                        }
                       />
                     </div>
 
@@ -5189,6 +5687,18 @@ export default function App() {
                     xoxAwayInStudio={showXoxStudio && !xoxExitingStage}
                     xoxTravelPhase={xoxTravelPhase}
                     glideSeq={xoxGlideSeq}
+                    rosterSubagents={
+                      activeMode === "agent" && subagentTeamMode === "custom"
+                        ? subagentRoster
+                            .filter((r) => r.enabled)
+                            .map((r) => ({
+                              id: r.id,
+                              name: r.name,
+                              design: r.design,
+                              status: "pending" as const,
+                            }))
+                        : undefined
+                    }
                   />
                 </div>
               )}
@@ -5205,6 +5715,22 @@ export default function App() {
 
             </div>
           </div>
+
+          {/* Tarjeta flotante de Checklist en la esquina derecha (se pliega en píldora al abrir Canvas o Panel) */}
+          {activeChecklist && activeChecklist.items.length > 0 && (
+            <ChecklistCornerCard
+              checklist={activeChecklist}
+              collapsed={checklistCollapsed}
+              onCollapsedChange={setChecklistCollapsed}
+              className={`absolute ${
+                chatMessages.length > 0 && !(showLeftSidebar && leftTab === "chats")
+                  ? "top-12"
+                  : "top-3"
+              } right-5 z-20`}
+              onToggleItem={handleToggleChecklistItem}
+              onClose={() => setActiveChecklist(null)}
+            />
+          )}
 
           {/* Notificación compacta de aprendizaje reciente (esquina superior derecha) */}
           {learningToastPresence.mounted && displayLearningToast && (
@@ -5356,6 +5882,51 @@ export default function App() {
                     </div>
                   )}
 
+                  {/* Badge de Modo Activo (/agent, /study, etc.) */}
+                  {activeModeSpec && (
+                    <div ref={rosterPopoverRef} className="relative px-1 flex items-center gap-2">
+                      <ActiveModeChip
+                        spec={activeModeSpec}
+                        onDismiss={() => {
+                          setActiveMode(null);
+                          setShowRosterPopover(false);
+                          inputRef.current?.focus();
+                        }}
+                        extraAction={
+                          activeMode === "agent" ? (
+                            <button
+                              type="button"
+                              onClick={() => setShowRosterPopover((v) => !v)}
+                              title="Configurar nombres, modelos y diseños de sub-agentes"
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg text-[10px] font-medium bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.1] text-zinc-200 hover:text-white transition-colors cursor-pointer"
+                            >
+                              <Users className="w-2.5 h-2.5" />
+                              <span>
+                                {subagentTeamMode === "dynamic"
+                                  ? "Equipo: Auto"
+                                  : `Equipo (${subagentRoster.filter((r) => r.enabled).length})`}
+                              </span>
+                            </button>
+                          ) : undefined
+                        }
+                      />
+
+                      {activeMode === "agent" && (
+                        <SubagentRosterPopover
+                          isOpen={showRosterPopover}
+                          teamMode={subagentTeamMode}
+                          dynamicModel={dynamicSubagentModel}
+                          roster={subagentRoster}
+                          models={availableQuickModels}
+                          onTeamModeChange={setSubagentTeamMode}
+                          onDynamicModelChange={setDynamicSubagentModel}
+                          onChange={setSubagentRoster}
+                          onClose={() => setShowRosterPopover(false)}
+                        />
+                      )}
+                    </div>
+                  )}
+
                   <div className="relative flex items-end gap-2">
                     {/* Botón + para subir archivos */}
                     <input
@@ -5390,7 +5961,34 @@ export default function App() {
                       ref={inputRef}
                       rows={1}
                       value={inputPrompt}
-                      onChange={(e) => setInputPrompt(e.target.value)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setInputPrompt(val);
+
+                        // Si el usuario escribe / al inicio, abrir menú de comandos
+                        if (val.startsWith("/")) {
+                          setShowCommandMenu(true);
+                          setCommandMenuFilter(val);
+                          setSelectedCommandIndex(0);
+                        } else if (showCommandMenu && !val) {
+                          setShowCommandMenu(false);
+                          setCommandMenuFilter("");
+                        }
+
+                        // Si escribe "/agent " o similar con un espacio, activar el modo automáticamente
+                        const matchSlash = val.match(/^(\/[a-zA-Z]+)\s+(.*)$/s);
+                        if (matchSlash) {
+                          const typedCmd = matchSlash[1].toLowerCase();
+                          const rest = matchSlash[2];
+                          const found = XOX_COMMAND_LIST.find((c) => c.slash.toLowerCase() === typedCmd);
+                          if (found) {
+                            setActiveMode(found.id);
+                            setInputPrompt(rest);
+                            setShowCommandMenu(false);
+                            setCommandMenuFilter("");
+                          }
+                        }
+                      }}
                       onPaste={(e) => {
                         const pastedFiles = Array.from(e.clipboardData?.files ?? []);
                         if (pastedFiles.length > 0) {
@@ -5404,6 +6002,53 @@ export default function App() {
                         }
                       }}
                       onKeyDown={(e) => {
+                        if (showCommandMenu) {
+                          if (e.key === "ArrowDown") {
+                            e.preventDefault();
+                            if (filteredCommands.length > 0) {
+                              setSelectedCommandIndex((i) => (i + 1) % filteredCommands.length);
+                            }
+                            return;
+                          }
+                          if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            if (filteredCommands.length > 0) {
+                              setSelectedCommandIndex(
+                                (i) => (i - 1 + filteredCommands.length) % filteredCommands.length
+                              );
+                            }
+                            return;
+                          }
+                          if (e.key === "Enter" || e.key === "Tab") {
+                            if (
+                              filteredCommands.length > 0 &&
+                              selectedCommandIndex >= 0 &&
+                              selectedCommandIndex < filteredCommands.length
+                            ) {
+                              e.preventDefault();
+                              const chosen = filteredCommands[selectedCommandIndex];
+                              setActiveMode(chosen.id);
+                              setInputPrompt("");
+                              setShowCommandMenu(false);
+                              setCommandMenuFilter("");
+                              return;
+                            }
+                          }
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            setShowCommandMenu(false);
+                            setCommandMenuFilter("");
+                            return;
+                          }
+                        }
+
+                        // Si el prompt está vacío y presiona Backspace teniendo un modo activo, desactivarlo
+                        if (e.key === "Backspace" && !inputPrompt && activeMode) {
+                          e.preventDefault();
+                          setActiveMode(null);
+                          return;
+                        }
+
                         if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                           e.preventDefault();
                           handlePromptSubmit();
@@ -5603,9 +6248,65 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* Barra inferior compacta: selector de contexto desplegable + atajo ⌘K */}
+                  {/* Barra inferior compacta: selector de modos + selector de contexto + atajo ⌘K */}
                   <div className="pt-2 flex items-center justify-between gap-2 border-t border-white/[0.05]">
-                    <div ref={contextMenuRef} className="relative">
+                    <div className="flex items-center gap-1.5">
+                      {/* Desplegable de Modos y Comandos Especiales (/agent, /study, etc.) */}
+                      <div ref={commandMenuRef} className="relative">
+                        <button
+                          ref={commandTriggerRef}
+                          type="button"
+                          onClick={() => {
+                            setShowModelMenu(false);
+                            setShowContextMenu(false);
+                            setShowCommandMenu((v) => !v);
+                          }}
+                          aria-haspopup="listbox"
+                          aria-expanded={showCommandMenu}
+                          aria-label="Comandos y modos de Xox"
+                          title="Activar modos (/agent, /study, /plan, /audit, /compact)"
+                          className={`quick-liquid-btn h-7 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] cursor-pointer ${
+                            activeMode || showCommandMenu
+                              ? "text-white"
+                              : "text-zinc-300 hover:text-white"
+                          }`}
+                        >
+                          <Slash className="w-3 h-3 text-white/75 shrink-0" />
+                          <span className="hidden @xs:inline">Modos</span>
+                          {activeModeSpec && (
+                            <span className="text-[10px] font-medium text-zinc-300 font-mono">
+                              {activeModeSpec.slash}
+                            </span>
+                          )}
+                          <ChevronDown
+                            className={`w-3 h-3 text-white/65 transition-transform ${
+                              showCommandMenu ? "rotate-180" : ""
+                            }`}
+                          />
+                        </button>
+
+                        {commandMenuPresence.mounted && (
+                          <SlashCommandMenu
+                            isOpen={showCommandMenu}
+                            filterQuery={commandMenuFilter}
+                            selectedIndex={selectedCommandIndex}
+                            onSelect={(cmd) => {
+                              setActiveMode(cmd.id);
+                              setInputPrompt("");
+                              setShowCommandMenu(false);
+                              setCommandMenuFilter("");
+                              inputRef.current?.focus();
+                            }}
+                            onClose={() => {
+                              setShowCommandMenu(false);
+                              setCommandMenuFilter("");
+                            }}
+                          />
+                        )}
+                      </div>
+
+                      {/* Selector de Contexto */}
+                      <div ref={contextMenuRef} className="relative">
                       <button
                         ref={contextTriggerRef}
                         type="button"
@@ -5687,8 +6388,9 @@ export default function App() {
                         </div>
                       )}
                     </div>
+                  </div>
 
-                    <div className="hidden @sm:flex items-center gap-1.5">
+                  <div className="hidden @sm:flex items-center gap-1.5">
                       {isTauriEnv && (
                         <button
                           type="button"
@@ -5781,10 +6483,16 @@ export default function App() {
               <CanvasPanel
                 canvas={activeCanvas}
                 visible={canvasPresence.visible}
+                expanded={canvasExpanded}
+                onToggleExpand={() => setCanvasExpanded((v) => !v)}
                 onUpdateCanvas={handleUpdateCanvas}
+                onCanvasAction={handleCanvasAction}
                 onAskXoxEdit={handleAskXoxAboutCanvas}
                 onExportPdf={isTauriEnv ? handleExportCanvasPdf : undefined}
-                onClose={() => setShowCanvas(false)}
+                onClose={() => {
+                  setShowCanvas(false);
+                  setCanvasExpanded(false);
+                }}
               />
             </div>
           </div>

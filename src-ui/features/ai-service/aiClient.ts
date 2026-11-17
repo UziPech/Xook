@@ -20,6 +20,14 @@ import {
   AiProviderId,
   normalizeProviderIdClient,
 } from "./ProviderIcon";
+import type {
+  ChecklistState,
+  StudyDeckArtifact,
+  SubagentActivity,
+  SubagentDesign,
+  SubagentProfile,
+  XoxModeId,
+} from "./agentModeTypes";
 export type { ClarificationSpec, AiProviderId };
 export { normalizeProviderIdClient };
 
@@ -62,6 +70,277 @@ const BROWSER_CANVAS_TOOL_DEF = {
         markdown: { type: "string", description: "Notas o documento Markdown si kind es document" },
       },
       required: ["title", "columns", "rows"],
+    },
+  },
+};
+
+const BROWSER_DIAGRAM_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "create_diagram",
+    description:
+      "Crea un diagrama visual interactivo en Canvas (diagrama de flujo, mapa conceptual, proceso o secuencia) para explicar ideas, arquitecturas o flujos de decisión.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Título claro del diagrama" },
+        subtitle: { type: "string", description: "Subtítulo breve o contexto" },
+        summary: { type: "string", description: "Idea principal en 1 oración" },
+        diagram_type: {
+          type: "string",
+          enum: ["flowchart", "sequence", "mindmap", "process"],
+          description: "Tipo de diagrama visual",
+        },
+        direction: { type: "string", enum: ["TD", "LR"], description: "TD vertical, LR horizontal" },
+        nodes: {
+          type: "array",
+          description: "Lista de nodos del diagrama",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              label: { type: "string" },
+              subtitle: { type: "string" },
+              detail: { type: "string", description: "Explicación al hacer clic en el nodo" },
+              shape: { type: "string", enum: ["rounded", "pill", "diamond", "cylinder", "note"] },
+              tone: { type: "string", enum: ["neutral", "accent", "success", "warning", "critical"] },
+              group: { type: "string" },
+            },
+            required: ["id", "label"],
+          },
+        },
+        edges: {
+          type: "array",
+          description: "Conexiones dirigidas entre nodos",
+          items: {
+            type: "object",
+            properties: {
+              from: { type: "string" },
+              to: { type: "string" },
+              label: { type: "string" },
+              style: { type: "string", enum: ["solid", "dashed"] },
+            },
+            required: ["from", "to"],
+          },
+        },
+        mermaid: {
+          type: "string",
+          description: "Opcional: código Mermaid si prefieres definirlo en formato Mermaid",
+        },
+      },
+      required: ["title"],
+    },
+  },
+};
+
+const BROWSER_PLAN_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "create_plan",
+    description:
+      "Publica un Plan Maestro estructurado y revisable en Canvas (estilo Plan Mode) con fases, pasos, dependencias, alcance y riesgos para que el usuario lo revise, comente y apruebe antes de ejecutar.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Título del plan" },
+        subtitle: { type: "string", description: "Contexto breve o duración estimada" },
+        goal: { type: "string", description: "Objetivo concreto del plan en 1-2 oraciones" },
+        summary: { type: "string", description: "Resumen ejecutivo" },
+        scope: {
+          type: "array",
+          description: "Áreas, archivos o datos que serán consultados o afectados",
+          items: { type: "string" },
+        },
+        phases: {
+          type: "array",
+          description: "Fases ordenadas del plan",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              title: { type: "string" },
+              summary: { type: "string" },
+              steps: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    title: { type: "string" },
+                    detail: { type: "string" },
+                    target: { type: "string" },
+                    depends_on: { type: "array", items: { type: "string" } },
+                    risk: { type: "string", enum: ["low", "medium", "high"] },
+                  },
+                  required: ["id", "title"],
+                },
+              },
+            },
+            required: ["id", "title", "steps"],
+          },
+        },
+        assumptions: { type: "array", items: { type: "string" } },
+        risks: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              level: { type: "string", enum: ["low", "medium", "high"] },
+              text: { type: "string" },
+              mitigation: { type: "string" },
+            },
+            required: ["level", "text"],
+          },
+        },
+      },
+      required: ["title", "goal", "phases"],
+    },
+  },
+};
+
+const BROWSER_DASHBOARD_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "create_dashboard",
+    description:
+      "Crea un mini-dashboard visual interactivo en Canvas con tarjetas KPI, gráficas (barras, líneas, área, dona) y hallazgos clave para ayudar al usuario a analizar datos y tomar decisiones.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Título claro del dashboard" },
+        subtitle: { type: "string", description: "Periodo o contexto breve" },
+        summary: { type: "string", description: "Conclusión ejecutiva en 1 oración" },
+        kpis: {
+          type: "array",
+          description: "2 a 6 métricas principales",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string" },
+              value: { type: "string" },
+              delta: { type: "string" },
+              delta_tone: { type: "string", enum: ["positive", "negative", "neutral"] },
+              tone: { type: "string", enum: ["neutral", "positive", "warning", "critical"] },
+              caption: { type: "string" },
+              progress: { type: "number" },
+            },
+            required: ["label", "value"],
+          },
+        },
+        charts: {
+          type: "array",
+          description: "1 a 4 gráficas interactivas",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              subtitle: { type: "string" },
+              chart_type: {
+                type: "string",
+                enum: ["bar", "horizontal_bar", "line", "area", "donut"],
+              },
+              categories: { type: "array", items: { type: "string" } },
+              series: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string" },
+                    values: { type: "array", items: { type: "number" } },
+                    tone: { type: "string", enum: ["accent", "neutral", "positive", "warning", "critical"] },
+                  },
+                  required: ["name", "values"],
+                },
+              },
+              unit: { type: "string" },
+              value_format: { type: "string", enum: ["number", "currency", "percent", "compact"] },
+              target_value: { type: "number" },
+              target_label: { type: "string" },
+            },
+            required: ["title", "chart_type", "categories", "series"],
+          },
+        },
+        insights: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              tone: { type: "string", enum: ["info", "positive", "warning", "critical"] },
+              title: { type: "string" },
+              text: { type: "string" },
+            },
+            required: ["text"],
+          },
+        },
+        columns: { type: "array", items: { type: "string" }, description: "Opcional: columnas de tabla de respaldo" },
+        rows: {
+          type: "array",
+          description: "Opcional: filas de respaldo",
+          items: { type: "array", items: { type: "string" } },
+        },
+      },
+      required: ["title"],
+    },
+  },
+};
+
+const BROWSER_FORM_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "create_form",
+    description:
+      "Crea un formulario o cuestionario interactivo en Canvas. Ideal para hojas de práctica y exámenes en /study (purpose='study_quiz', con opciones múltiples, verdadero/falso, respuestas abiertas, pistas y explicaciones) o para captura estructurada de datos y encuestas (purpose='data_capture' o 'survey').",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Título claro del cuestionario o formulario" },
+        subtitle: { type: "string", description: "Tema, materia o contexto breve" },
+        description: { type: "string", description: "Instrucciones breves para el usuario" },
+        purpose: {
+          type: "string",
+          enum: ["study_quiz", "data_capture", "survey"],
+          description: "study_quiz para exámenes/práctica educativa con calificación y explicación; data_capture o survey para recopilar datos",
+        },
+        passing_score_percent: { type: "number", description: "Opcional: porcentaje mínimo aprobatorio (ej. 70)" },
+        fields: {
+          type: "array",
+          description: "Preguntas o campos interactivos del formulario",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              label: { type: "string", description: "Enunciado de la pregunta o nombre del campo" },
+              type: {
+                type: "string",
+                enum: [
+                  "single_choice",
+                  "multi_choice",
+                  "true_false",
+                  "short_text",
+                  "long_text",
+                  "number",
+                  "rating",
+                  "select",
+                ],
+              },
+              required: { type: "boolean" },
+              options: { type: "array", items: { type: "string" } },
+              correct_index: { type: "integer", description: "Índice 0-based de la opción correcta en study_quiz" },
+              correct_indices: {
+                type: "array",
+                items: { type: "integer" },
+                description: "Índices correctos 0-based para multi_choice",
+              },
+              expected_answer: { type: "string", description: "Respuesta modelo o valor numérico esperado" },
+              hint: { type: "string", description: "Pista opcional sin regalar la respuesta" },
+              explanation: { type: "string", description: "Explicación pedagógica mostrada al verificar" },
+              points: { type: "number" },
+            },
+            required: ["label", "type"],
+          },
+        },
+      },
+      required: ["title", "fields"],
     },
   },
 };
@@ -123,6 +402,93 @@ const BROWSER_VAULT_CONFIG_TOOL_DEF = {
         note: { type: "string" },
       },
       required: ["provider", "action"],
+    },
+  },
+};
+
+const BROWSER_CHECKLIST_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "agent_checklist_update",
+    description:
+      "Crea o actualiza la tarjeta flotante de Checklist en la esquina derecha para mostrar al usuario los pasos pendientes, en progreso y completados.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Título breve de la lista de tareas." },
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              label: { type: "string" },
+              status: { type: "string", enum: ["pending", "in_progress", "done", "error"] },
+              assignee: { type: "string" },
+            },
+            required: ["id", "label", "status"],
+          },
+        },
+      },
+      required: ["title", "items"],
+    },
+  },
+};
+
+const BROWSER_SPAWN_SUBAGENT_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "spawn_subagent",
+    description:
+      "Despacha un sub-agente especializado real que ejecuta una subtarea (investigación, análisis, redacción o auditoría) con su propio nombre, rol, diseño y modelo asignado.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Nombre del sub-agente." },
+        role: { type: "string", description: "Especialidad del sub-agente." },
+        model: { type: "string", description: "Modelo asignado o 'auto'." },
+        design: { type: "string", enum: ["star", "prism", "orbit", "shield"] },
+        task: { type: "string", description: "Instrucción detallada de la subtarea." },
+      },
+      required: ["name", "role", "task"],
+    },
+  },
+};
+
+const BROWSER_STUDY_DECK_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "study_create_deck",
+    description:
+      "Genera un mazo interactivo de tarjetas de estudio (flashcards) y una pregunta quiz de autoevaluación en la conversación para /study.",
+    parameters: {
+      type: "object",
+      properties: {
+        topic: { type: "string" },
+        cards: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              front: { type: "string" },
+              back: { type: "string" },
+              hint: { type: "string" },
+            },
+            required: ["front", "back"],
+          },
+        },
+        quiz: {
+          type: "object",
+          properties: {
+            question: { type: "string" },
+            options: { type: "array", items: { type: "string" } },
+            correct_index: { type: "integer" },
+            explanation: { type: "string" },
+          },
+          required: ["question", "options", "correct_index", "explanation"],
+        },
+      },
+      required: ["topic", "cards"],
     },
   },
 };
@@ -961,6 +1327,8 @@ export interface XoxAiChatRequest {
   attachedContext: AttachedContextItem[];
   modelOverride?: string;
   providerOverride?: string;
+  activeMode?: XoxModeId | null;
+  subagentRoster?: SubagentProfile[];
   /** Perfil local activo para contextualizar el saludo y rol */
   userProfile?: { name: string; storeName?: string; role?: string } | null;
   /** En modo browser preview, permite leer contexto de negocio en vivo */
@@ -1039,6 +1407,9 @@ export interface XoxStreamCallbacks {
   onPdfDraftProgress?: (draft: PdfDraftProgressEvent) => void;
   onPdfGenerated?: (pdf: GeneratedPdfArtifact) => void;
   onXoxCustomized?: (event: XoxCustomizationEvent) => void;
+  onChecklistUpdate?: (checklist: ChecklistState) => void;
+  onSubagentEvent?: (subagent: SubagentActivity) => void;
+  onStudyDeck?: (deck: StudyDeckArtifact) => void;
 }
 
 export interface WorkspaceContextSource {
@@ -1473,7 +1844,7 @@ export function detectVaultConfigRequest(text: string): VaultConfigRequestDetect
   }
 
   const mentionsSecretOrVault =
-    /(?:\b(?:api\s*key|apikey|clave\s*(?:api|de\s+ia)?|token\s*(?:de\s+ia)?|b[oó]veda)\b|\bla\s+key\b|\bmi\s+key\b|\buna\s+key\b)/i.test(
+    /(?:\b(?:api\s*key|apikey|clave\s+(?:api|secreta|de\s+(?:ia|acceso|openrouter|deepseek|kimi|groq|gemini|openai|anthropic))|token\s+de\s+ia|b[oó]veda)\b|\b(?:la|mi|tu|una)\s+(?:key|clave(?:\s+(?:api|de\s+ia))?)\b)/i.test(
       trimmed
     );
   const hasActionVerb =
@@ -3709,10 +4080,44 @@ function hasStructuredTableMarkup(text: string): boolean {
   return false;
 }
 
+function isCanvasLikeToolName(fnName: string): boolean {
+  const low = fnName.trim().toLowerCase();
+  return (
+    low.includes("create_canvas") ||
+    low.includes("create_diagram") ||
+    low.includes("create_plan") ||
+    low.includes("create_dashboard") ||
+    low.includes("create_form") ||
+    low === "canvas"
+  );
+}
+
+function formatCanvasFallbackSummary(canvas: CanvasArtifact): string {
+  if (canvas.plan) {
+    const stepsTotal = canvas.plan.phases.reduce((acc, ph) => acc + ph.steps.length, 0);
+    return `Listo, preparé el plan "${canvas.title}" en Canvas (${canvas.plan.phases.length} fases · ${stepsTotal} pasos) para tu revisión.${canvas.summary ? `\n\n${canvas.summary}` : ""}`;
+  }
+  if (canvas.dashboard) {
+    return `Listo, preparé el dashboard "${canvas.title}" en Canvas (${canvas.dashboard.kpis.length} KPIs · ${canvas.dashboard.charts.length} gráficas).${canvas.summary ? `\n\n${canvas.summary}` : ""}`;
+  }
+  if (canvas.form) {
+    const noun = canvas.form.purpose === "study_quiz" ? "el cuestionario" : "el formulario";
+    const unit = canvas.form.purpose === "study_quiz" ? "preguntas" : "campos";
+    return `Listo, abrí ${noun} "${canvas.title}" en Canvas (${canvas.form.fields.length} ${unit}). Contéstalo directamente ahí y verifícalo o envíamelo cuando termines.${canvas.summary ? `\n\n${canvas.summary}` : ""}`;
+  }
+  if (canvas.diagram) {
+    return `Listo, generé el diagrama "${canvas.title}" en Canvas (${canvas.diagram.nodes.length} nodos y ${canvas.diagram.edges.length} conexiones).${canvas.summary ? `\n\n${canvas.summary}` : ""}`;
+  }
+  if (canvas.columns.length > 0 && canvas.rows.length > 0) {
+    return `Listo, preparé "${canvas.title}" en Canvas (${canvas.rows.length} filas y ${canvas.columns.length} columnas).${canvas.summary ? `\n\n${canvas.summary}` : ""}`;
+  }
+  return `Listo, preparé "${canvas.title}" en Canvas.${canvas.summary ? `\n\n${canvas.summary}` : ""}`;
+}
+
 function extractCanvasToolMetadata(toolCalls: AccumulatedToolCall[]): Record<string, unknown> {
   for (const tc of toolCalls) {
     const fnName = (tc.function?.name ?? "").trim().toLowerCase();
-    if (!fnName || (!fnName.includes("create_canvas") && fnName !== "canvas")) continue;
+    if (!fnName || !isCanvasLikeToolName(fnName)) continue;
     const parsedArgs = parseJsonObjectCandidate(tc.function.arguments);
     if (parsedArgs) {
       const inner =
@@ -3732,16 +4137,25 @@ function extractCanvasToolMetadata(toolCalls: AccumulatedToolCall[]): Record<str
 function extractCanvasFromToolCalls(toolCalls: AccumulatedToolCall[]): CanvasArtifact | undefined {
   for (const tc of toolCalls) {
     const fnName = (tc.function?.name ?? "").trim().toLowerCase();
-    if (!fnName || (!fnName.includes("create_canvas") && fnName !== "canvas")) continue;
+    if (!fnName || !isCanvasLikeToolName(fnName)) continue;
     const rawArgs = tc.function.arguments;
     const parsedArgs = parseJsonObjectCandidate(rawArgs);
     if (parsedArgs) {
-      const inner =
+      const innerRaw =
         parsedArgs.canvas && typeof parsedArgs.canvas === "object"
-          ? parsedArgs.canvas
+          ? (parsedArgs.canvas as Record<string, unknown>)
           : parsedArgs.arguments && typeof parsedArgs.arguments === "object"
-            ? parsedArgs.arguments
+            ? (parsedArgs.arguments as Record<string, unknown>)
             : parsedArgs;
+      const inner: Record<string, unknown> = fnName.includes("create_diagram")
+        ? { ...innerRaw, kind: "diagram" }
+        : fnName.includes("create_plan")
+          ? { ...innerRaw, kind: "plan" }
+          : fnName.includes("create_dashboard")
+            ? { ...innerRaw, kind: "dashboard" }
+            : fnName.includes("create_form")
+              ? { ...innerRaw, kind: "form" }
+              : innerRaw;
       const sanitized = sanitizeCanvasArtifact(inner);
       if (sanitized && canvasHasCellData(sanitized)) return sanitized;
     } else if (hasStructuredTableMarkup(rawArgs)) {
@@ -3860,6 +4274,16 @@ function resolveBrowserCanvasArtifact(params: {
         typeof meta.summary === "string" && meta.summary.trim() ? meta.summary.trim() : undefined;
       return markdownTableToCanvasArtifact(inlineTable, { title, subtitle, summary });
     }
+  }
+
+  const mermaidMatch = (params.fullReply || "").match(/```mermaid\s*([\s\S]*?)```/i);
+  if (mermaidMatch && mermaidMatch[1].trim()) {
+    const diagCanvas = sanitizeCanvasArtifact({
+      title: "Diagrama visual",
+      kind: "diagram",
+      mermaid: mermaidMatch[1].trim(),
+    });
+    if (diagCanvas && canvasHasCellData(diagCanvas)) return diagCanvas;
   }
 
   return undefined;
@@ -4437,10 +4861,97 @@ function buildBrowserSystemPrompt(
         summary: req.activeCanvas.summary,
         columns: req.activeCanvas.columns.slice(0, 12),
         rows: req.activeCanvas.rows.slice(0, 25),
+        ...(req.activeCanvas.diagram
+          ? {
+              diagram: {
+                diagramType: req.activeCanvas.diagram.diagramType,
+                direction: req.activeCanvas.diagram.direction,
+                nodes: req.activeCanvas.diagram.nodes.slice(0, 25),
+                edges: req.activeCanvas.diagram.edges.slice(0, 35),
+              },
+            }
+          : {}),
+        ...(req.activeCanvas.plan
+          ? {
+              plan: {
+                goal: req.activeCanvas.plan.goal,
+                status: req.activeCanvas.plan.status,
+                phases: req.activeCanvas.plan.phases.slice(0, 10),
+              },
+            }
+          : {}),
+        ...(req.activeCanvas.dashboard
+          ? {
+              dashboard: {
+                kpis: req.activeCanvas.dashboard.kpis.slice(0, 8),
+                charts: req.activeCanvas.dashboard.charts.slice(0, 4).map((c) => ({
+                  title: c.title,
+                  chartType: c.chartType,
+                  categories: c.categories.slice(0, 12),
+                })),
+              },
+            }
+          : {}),
+        ...(req.activeCanvas.form
+          ? {
+              form: {
+                purpose: req.activeCanvas.form.purpose,
+                fieldsCount: req.activeCanvas.form.fields.length,
+                submitted: Boolean(req.activeCanvas.form.submitted),
+                score: req.activeCanvas.form.score,
+                fields: req.activeCanvas.form.fields.slice(0, 15).map((f) => ({
+                  id: f.id,
+                  label: f.label,
+                  type: f.type,
+                })),
+              },
+            }
+          : {}),
       })}`
     : "";
 
-  const header = `Eres Xox, el agente inteligente y co-constructor operativo de propósito múltiple de XOOK. Respondes siempre en español claro, directo y humano (o en el idioma que pida el usuario), adaptando tu rol y enfoque al proyecto o espacio activo sin JSON visible al usuario.
+  let modeDirective = "";
+  if (req.activeMode === "agent") {
+    const rosterLines = (req.subagentRoster ?? [])
+      .filter((r) => r.enabled && r.name !== "__dynamic_default__")
+      .map(
+        (r) =>
+          `  - Nombre: "${r.name}" | Rol: ${r.role} | Modelo preferido: ${r.model} | Diseño icono: ${r.design}`
+      )
+      .join("\n");
+    const rosterBlock = rosterLines
+      ? `\nEQUIPO BASE PREFERIDO POR EL USUARIO (puedes usarlos y crear agentes adicionales si detectas que faltan):\n${rosterLines}`
+      : "\nEQUIPO DINÁMICO (razona libremente cuántos y qué especialistas necesita esta actividad).";
+    modeDirective = `\nPROTOCOLO CRÍTICO: MODO AGENTE AUTÓNOMO Y ORQUESTADOR MULTI-AGENTE (/agent)
+Actúa con el criterio de un orquestador senior (como Claude):
+1. Razona qué sub-agentes necesita realmente esta actividad con nombres claros y naturales según el dominio (ej. "Analista Financiero", "Estratega Comercial", "Revisor de Riesgos"). Si después de recibir resultados detectas que falta un ángulo, puedes llamar a \`spawn_subagent\` con un agente adicional nuevo.${rosterBlock}
+2. EN ESTA PRIMERA RONDA, llama EN PARALELO a \`agent_checklist_update\` (3 a 5 pasos) Y a los \`spawn_subagent\` iniciales al mismo tiempo.
+3. El campo \`design\` (\`star\`, \`prism\`, \`orbit\`, \`shield\`) es solo el icono visual en la interfaz; NUNCA uses esas palabras como nombres de productos, planes ni categorías.
+4. Al recibir los hallazgos, marca cada paso completado (\`done\`) en \`agent_checklist_update\` y entrega la síntesis final.\n`;
+  } else if (req.activeMode === "study") {
+    modeDirective = `\nPROTOCOLO CRÍTICO: MODO TUTOR SOCRÁTICO Y ACADEMIA (/study)
+Tienes herramientas reales pedagógicas:
+1. Usa \`agent_checklist_update\` para mostrar la ruta de estudio en la tarjeta Checklist de la esquina derecha.
+2. Elige la mejor herramienta práctica según la necesidad:
+   - \`study_create_deck\` para un mazo rápido de flashcards y 1 pregunta breve en chat.
+   - \`create_form\` con \`purpose="study_quiz"\` cuando el usuario pida un quiz, examen, cuestionario o hoja de práctica interactiva en Canvas (soporta opción múltiple, verdadero/falso, preguntas abiertas, pistas y explicaciones).
+3. En tu respuesta escrita, enseña con analogías intuitivas, desglose paso a paso y cierra con una pregunta socrática.\n`;
+  } else if (req.activeMode === "plan") {
+    modeDirective = `\nPROTOCOLO CRÍTICO: MODO PLANIFICADOR DE TAREAS (/plan)
+Actúa estilo Plan Mode revisable antes de ejecutar:
+1. Llama OBLIGATORIAMENTE a \`create_plan\` para presentar en Canvas un Plan Maestro estructurado (objetivo, alcance, fases con pasos, \`depends_on\`, supuestos y riesgos) listo para que el usuario lo revise, comente o apruebe.
+2. Llama también a \`agent_checklist_update\` para mostrar el resumen de fases en la tarjeta Checklist de la esquina derecha.
+3. No ejecutes cambios destructivos ni asumas aprobación hasta que el usuario apruebe el plan.\n`;
+  } else if (req.activeMode === "audit") {
+    modeDirective = `\nPROTOCOLO CRÍTICO: MODO AUDITORÍA DE NEGOCIO (/audit)
+1. Usa \`agent_checklist_update\` para mostrar cada punto auditado en la esquina derecha.
+2. Clasifica hallazgos por severidad (Alta, Media, Baja) sin modificar datos.\n`;
+  } else if (req.activeMode === "compact") {
+    modeDirective = `\nPROTOCOLO CRÍTICO: MODO SINTETIZAR MEMORIA (/compact)
+- Usa \`agent_checklist_update\` para consolidar los acuerdos clave y resume la conversación en puntos duraderos.\n`;
+  }
+
+  const header = `Eres Xox, el agente inteligente y co-constructor operativo de propósito múltiple de XOOK. Respondes siempre en español claro, directo y humano (o en el idioma que pida el usuario), adaptando tu rol y enfoque al proyecto o espacio activo sin JSON visible al usuario.${modeDirective}
 
 FECHA Y HORA LOCAL ACTUAL DEL SISTEMA: ${nowLabel}
 
@@ -4448,6 +4959,10 @@ CAPACIDADES:
 - Puedes responder preguntas generales de uso diario (qué hora es, qué día es hoy, cálculos, programación, redacción, investigación o charla casual) de forma directa y natural usando la fecha y hora local actual cuando aplique, SIN desviar la conversación hacia inventario si el usuario no lo pidió.
 - Cuando el usuario trabaje en negocios, software, investigación, productividad o proyectos creativos, adapta tu rol y apoya usando el contexto, gustos/flujo del usuario, habilidades y memoria reales del workspace.
 - Si el usuario pide crear o mostrar una TABLA, tabla comparativa, desglose, matriz de opciones o presupuesto: usa la herramienta \`create_canvas\` (preferida; evita emitir bloques \`<canvas>\` manualmente) pasando columnas en texto simple y TODAS las filas completas en \`rows\`. NUNCA escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en tu mensaje al usuario; escribe libremente tu explicación o conclusión sin duplicar la tabla en HTML ni usar etiquetas XML.
+- Diagramas visuales y flujos (\`create_diagram\`): cuando el usuario pida un diagrama de flujo, proceso, mapa conceptual, secuencia o arquitectura (o cuando un flujo visual ayude a entender mejor una explicación compleja en /study o negocio), usa \`create_diagram\` con \`nodes\` y \`edges\` (o \`mermaid\`) para abrirlo interactivo en Canvas.
+- Planes revisables (\`create_plan\`): cuando el usuario pida un plan por fases, roadmap o esté en \`/plan\`, usa \`create_plan\` para mostrar un Plan Maestro aprobable en Canvas.
+- Mini-dashboards y gráficas (\`create_dashboard\`): cuando el usuario pida gráficas, métricas visuales, KPIs o un dashboard con los datos analizados, usa \`create_dashboard\` para mostrar tarjetas KPI, gráficas interactivas y tabla de respaldo en Canvas.
+- Formularios y cuestionarios interactivos (\`create_form\`): cuando el usuario pida un examen, quiz, hoja de práctica o repaso evaluable (\`purpose="study_quiz"\`) o necesite llenar un formulario/encuesta estructurada (\`purpose="data_capture"\` o \`"survey"\`), usa \`create_form\` para abrirlo interactivo en Canvas.
 - Aclaraciones (\`ask_clarification\`): analiza primero qué ya especificó el usuario. Si ya dio evento/acción + fecha/hora (ej. "cita para mañana a las 10 pm"), NO pidas aclaraciones y genera la tarjeta directo (solo avisa si choca con AGENDA ACTIVA). Úsala únicamente si falta un dato esencial (como en "agenda algo" o "haz una cita mañana" sin hora), preguntando SOLO lo que falta y nunca datos que ya indicó.
 - Bóveda y proveedores IA (\`configure_ai_vault\`): TÚ SÍ PUEDES configurar proveedores en la bóveda local de XOOK (openrouter, deepseek, groq, gemini, openai, anthropic). Si el usuario pide agregar, configurar o cambiar su API key o proveedor en XOOK, PROHIBIDO sugerir \`.env\` o código; llama de inmediato a \`configure_ai_vault\` para mostrar el formulario seguro Zero-Trust en tu respuesta.
 - Agenda vs Reloj: para recordatorios o entregas con fecha/hora del reloj (ej. "mañana 18:00", "viernes 13 a las 19:00", "1 hora antes") usa SIEMPRE \`intent.type="schedule_event"\` y \`schedule.mode="alarm"\` (NUNCA \`start_timer\`). Usa \`start_timer\` solo para temporizadores cortos que arrancan ahora con \`paramValues.duration_min\` explícito.
@@ -4631,6 +5146,12 @@ export async function runXoxAiChatStream(
           slug: typeof evt.slug === "string" ? evt.slug : undefined,
           changed: Array.isArray(evt.changed) ? evt.changed.map(String) : undefined,
         });
+      } else if (evt.type === "checklist_update" && evt.checklist && typeof evt.checklist === "object") {
+        callbacks?.onChecklistUpdate?.(evt.checklist as ChecklistState);
+      } else if (evt.type === "subagent_event" && evt.subagent && typeof evt.subagent === "object") {
+        callbacks?.onSubagentEvent?.(evt.subagent as SubagentActivity);
+      } else if (evt.type === "study_deck" && evt.deck && typeof evt.deck === "object") {
+        callbacks?.onStudyDeck?.(evt.deck as StudyDeckArtifact);
       }
     });
 
@@ -4688,6 +5209,8 @@ export async function runXoxAiChatStream(
           streamId,
           userProfile: req.userProfile ?? null,
           activeCanvas: req.activeCanvas ?? null,
+          activeMode: req.activeMode ?? null,
+          subagentRoster: req.subagentRoster ?? null,
         },
       });
 
@@ -4837,7 +5360,7 @@ export async function runXoxAiChatStream(
   let usageObj: XoxTokenUsage | undefined;
   let browserRateLimits: ProviderRateLimitsSnapshot | null = null;
 
-  const upsertStep = (id: string, label: string, status: "running" | "done") => {
+  const upsertStep = (id: string, label: string, status: "running" | "done" | "error") => {
     const idx = steps.findIndex((s) => s.id === id);
     if (idx !== -1) {
       steps[idx] = { ...steps[idx], label, status };
@@ -4895,11 +5418,22 @@ export async function runXoxAiChatStream(
         stream: true,
       };
       if (includeTools) {
-        reqBody.tools = [
+        const modeTools: unknown[] = [
           BROWSER_CANVAS_TOOL_DEF,
+          BROWSER_DIAGRAM_TOOL_DEF,
+          BROWSER_PLAN_TOOL_DEF,
+          BROWSER_DASHBOARD_TOOL_DEF,
+          BROWSER_FORM_TOOL_DEF,
           BROWSER_CLARIFICATION_TOOL_DEF,
           BROWSER_VAULT_CONFIG_TOOL_DEF,
+          BROWSER_CHECKLIST_TOOL_DEF,
         ];
+        if (req.activeMode === "agent") {
+          modeTools.push(BROWSER_SPAWN_SUBAGENT_TOOL_DEF);
+        } else if (req.activeMode === "study") {
+          modeTools.push(BROWSER_STUDY_DECK_TOOL_DEF);
+        }
+        reqBody.tools = modeTools;
         reqBody.tool_choice = "auto";
       }
       const headers: Record<string, string> = {
@@ -5075,7 +5609,7 @@ export async function runXoxAiChatStream(
                 entry.function.arguments = JSON.stringify(tcd.function.arguments);
               }
               tcAcc.set(idx, entry);
-              if (!notifiedCanvasTc && entry.function.name.toLowerCase().includes("create_canvas")) {
+              if (!notifiedCanvasTc && isCanvasLikeToolName(entry.function.name)) {
                 notifiedCanvasTc = true;
                 handlePhase("canvas");
               }
@@ -5095,11 +5629,243 @@ export async function runXoxAiChatStream(
   };
 
   const router = new BrowserStreamTagRouter(pushReasoning, pushReply, handlePhase);
-  const toolCallsList = await runBrowserStreamPass(
-    messages as Array<Record<string, unknown>>,
-    true,
-    router
-  );
+  const browserModeTools = new Set(["agent_checklist_update", "spawn_subagent", "study_create_deck"]);
+  const loopMessages: Array<Record<string, unknown>> = [
+    ...(messages as Array<Record<string, unknown>>),
+  ];
+  const toolCallsList: AccumulatedToolCall[] = [];
+
+  const runBrowserSubagent = async (
+    tcId: string,
+    args: Record<string, unknown>
+  ): Promise<Record<string, unknown>> => {
+    const rawName = String(args.name || "Sub-agente").trim() || "Sub-agente";
+    const rawRole = String(args.role || "Especialista").trim() || "Especialista";
+    let subModel = String(args.model || "auto").trim();
+    let subDesign = String(args.design || "").trim().toLowerCase() as SubagentDesign;
+    const dynPref = (req.subagentRoster ?? []).find((r) => r.name === "__dynamic_default__")?.model;
+    const rosterMatch = (req.subagentRoster ?? []).find(
+      (r) => r.name !== "__dynamic_default__" && r.name.trim().toLowerCase() === rawName.toLowerCase()
+    );
+    if (rosterMatch) {
+      if (!subModel || subModel === "auto") subModel = rosterMatch.model;
+      if (!subDesign) subDesign = rosterMatch.design;
+    }
+    if (!subModel || subModel === "auto") {
+      subModel = dynPref && dynPref !== "auto" ? dynPref : chosenModel;
+    }
+    if (!["star", "prism", "orbit", "shield"].includes(subDesign)) subDesign = "orbit";
+    const subTask = String(args.task || "").trim();
+    if (!subTask) return { ok: false, error: "Falta la instrucción task." };
+
+    const t0 = performance.now();
+    callbacks?.onSubagentEvent?.({
+      id: tcId,
+      name: rawName,
+      role: rawRole,
+      model: subModel,
+      design: subDesign,
+      status: "running",
+      task: subTask,
+    });
+
+    const callSubFetch = async (targetModel: string) => {
+      const h: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      };
+      if (activeBrowserPid === "openrouter") {
+        h["HTTP-Referer"] = window.location.origin;
+        h["X-Title"] = "XOOK Enterprise Agentic Orchestrator";
+      }
+      return fetch(`${activeBrowserBaseUrl}/chat/completions`, {
+        method: "POST",
+        headers: h,
+        body: JSON.stringify({
+          model: targetModel,
+          temperature: 0.25,
+          max_tokens: 1800,
+          messages: [
+            {
+              role: "system",
+              content: `Eres el sub-agente especializado '${rawName}' (${rawRole}) del equipo de Xox. Responde en español de manera concisa, verificable y enfocada al objetivo.`,
+            },
+            { role: "user", content: subTask },
+          ],
+        }),
+      });
+    };
+
+    try {
+      let usedModel = subModel;
+      let respSub = await callSubFetch(usedModel);
+      if (!respSub.ok && usedModel !== chosenModel) {
+        usedModel = chosenModel;
+        respSub = await callSubFetch(usedModel);
+      }
+      const dataSub = (await respSub.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const findings = (dataSub.choices?.[0]?.message?.content || "").trim();
+      const durationMs = Math.round(performance.now() - t0);
+      const summary = findings.replace(/\s+/g, " ").slice(0, 170) + (findings.length > 170 ? "..." : "");
+      callbacks?.onSubagentEvent?.({
+        id: tcId,
+        name: rawName,
+        role: rawRole,
+        model: usedModel,
+        design: subDesign,
+        status: "done",
+        task: subTask,
+        summary,
+        durationMs,
+      });
+      return { ok: true, subagent: rawName, model_used: usedModel, duration_ms: durationMs, findings };
+    } catch (err) {
+      const durationMs = Math.round(performance.now() - t0);
+      const msg = err instanceof Error ? err.message : "Error ejecutando sub-agente";
+      callbacks?.onSubagentEvent?.({
+        id: tcId,
+        name: rawName,
+        role: rawRole,
+        model: subModel,
+        design: subDesign,
+        status: "error",
+        task: subTask,
+        summary: msg,
+        durationMs,
+      });
+      return { ok: false, subagent: rawName, error: msg };
+    }
+  };
+
+  for (let roundIdx = 0; roundIdx < 6; roundIdx += 1) {
+    const passCalls = await runBrowserStreamPass(loopMessages, roundIdx < 5, router);
+    if (passCalls.length > 0) toolCallsList.push(...passCalls);
+
+    const execModeCalls = passCalls.filter((tc) => browserModeTools.has(tc.function.name));
+    if (execModeCalls.length === 0) break;
+
+    if (execModeCalls.some((tc) => tc.function.name === "spawn_subagent")) {
+      callbacks?.onPhase?.("syncing", "Coordinando sub-agentes...");
+    }
+
+    const toolResults = await Promise.all(
+      passCalls.map(async (tc, idx) => {
+        const tcId = tc.id || `call_${roundIdx}_${idx}`;
+        const fnName = tc.function.name;
+        if (!browserModeTools.has(fnName)) {
+          return { tcId, result: { ok: true, recorded: fnName } };
+        }
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(tc.function.arguments || "{}") as Record<string, unknown>;
+        } catch {
+          return { tcId, result: { ok: false, error: "Argumentos JSON inválidos." } };
+        }
+
+        if (fnName === "agent_checklist_update") {
+          const title = String(args.title || "Lista de tareas");
+          const rawItems = Array.isArray(args.items) ? args.items : [];
+          const cleanItems = rawItems
+            .filter((it): it is Record<string, unknown> => Boolean(it && typeof it === "object"))
+            .map((it, i) => {
+              const st = String(it.status || "pending").toLowerCase();
+              const validSt =
+                st === "in_progress" || st === "done" || st === "error" ? st : "pending";
+              return {
+                id: String(it.id || `step_${i + 1}`),
+                label: String(it.label || "").trim(),
+                status: validSt as "pending" | "in_progress" | "done" | "error",
+                assignee: it.assignee ? String(it.assignee) : undefined,
+              };
+            })
+            .filter((it) => it.label.length > 0);
+          const chk: ChecklistState = {
+            id: `chk_${Date.now()}`,
+            title,
+            mode: req.activeMode ?? null,
+            items: cleanItems,
+            updatedAt: Date.now(),
+          };
+          callbacks?.onChecklistUpdate?.(chk);
+          upsertStep(`chk_${roundIdx}`, `Checklist: ${title}`, "done");
+          callbacks?.onSteps?.([...steps]);
+          return {
+            tcId,
+            result: {
+              ok: true,
+              completed: cleanItems.filter((i) => i.status === "done").length,
+              total: cleanItems.length,
+            },
+          };
+        }
+
+        if (fnName === "study_create_deck") {
+          const topic = String(args.topic || "Guía de Estudio");
+          const rawCards = Array.isArray(args.cards) ? args.cards : [];
+          const cards = rawCards
+            .filter((c): c is Record<string, unknown> => Boolean(c && typeof c === "object"))
+            .map((c, i) => ({
+              id: `card_${i + 1}`,
+              front: String(c.front || "").trim(),
+              back: String(c.back || "").trim(),
+              hint: c.hint ? String(c.hint).trim() : undefined,
+            }))
+            .filter((c) => c.front && c.back);
+          const rawQuiz =
+            args.quiz && typeof args.quiz === "object"
+              ? (args.quiz as Record<string, unknown>)
+              : null;
+          const deck: StudyDeckArtifact = {
+            id: `deck_${tcId}`,
+            topic,
+            cards,
+            ...(rawQuiz && rawQuiz.question && Array.isArray(rawQuiz.options)
+              ? {
+                  quiz: {
+                    question: String(rawQuiz.question),
+                    options: rawQuiz.options.map(String).slice(0, 5),
+                    correctIndex: Number(rawQuiz.correct_index ?? 0) || 0,
+                    explanation: String(rawQuiz.explanation || ""),
+                  },
+                }
+              : {}),
+          };
+          callbacks?.onStudyDeck?.(deck);
+          upsertStep(`deck_${roundIdx}`, `Mazo de estudio: ${topic}`, "done");
+          callbacks?.onSteps?.([...steps]);
+          return { tcId, result: { ok: true, topic, cards_created: cards.length } };
+        }
+
+        if (fnName === "spawn_subagent") {
+          const resSub = await runBrowserSubagent(tcId, args);
+          upsertStep(
+            `sub_${tcId}`,
+            `Sub-agente ${String(args.name || "")}`,
+            resSub.ok ? "done" : "error"
+          );
+          callbacks?.onSteps?.([...steps]);
+          return { tcId, result: resSub };
+        }
+
+        return { tcId, result: { ok: false, error: `Herramienta desconocida: ${fnName}` } };
+      })
+    );
+
+    loopMessages.push({
+      role: "assistant",
+      content: "",
+      tool_calls: passCalls,
+    });
+    for (const tr of toolResults) {
+      loopMessages.push({
+        role: "tool",
+        tool_call_id: tr.tcId,
+        content: JSON.stringify(tr.result),
+      });
+    }
+  }
 
   const latencyMs = Math.round(performance.now() - started);
   let parsedActions = router.actionsBuf.trim()
@@ -5136,7 +5902,16 @@ export async function runXoxAiChatStream(
   });
 
   if (canvasArtifact) {
-    upsertStep("build_canvas", `Tabla lista en Canvas: "${canvasArtifact.title}"`, "done");
+    const stepLabel = canvasArtifact.plan
+      ? `Plan listo en Canvas: "${canvasArtifact.title}"`
+      : canvasArtifact.dashboard
+        ? `Dashboard listo en Canvas: "${canvasArtifact.title}"`
+        : canvasArtifact.form
+          ? `${canvasArtifact.form.purpose === "study_quiz" ? "Cuestionario" : "Formulario"} listo en Canvas: "${canvasArtifact.title}"`
+          : canvasArtifact.diagram
+            ? `Diagrama listo en Canvas: "${canvasArtifact.title}"`
+            : `Tabla lista en Canvas: "${canvasArtifact.title}"`;
+    upsertStep("build_canvas", stepLabel, "done");
     callbacks?.onCanvas?.(canvasArtifact);
     callbacks?.onSteps?.([...steps]);
 
@@ -5145,10 +5920,18 @@ export async function runXoxAiChatStream(
       const toolResultContent = JSON.stringify({
         ok: true,
         canvas_title: canvasArtifact.title,
+        canvas_kind: canvasArtifact.kind,
         columns: canvasArtifact.columns.length,
         rows: canvasArtifact.rows.length,
-        instruction:
-          "La tabla ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves de conclusión en español directamente en Markdown (sin etiquetas XML). NO repitas la tabla ni escribas HTML.",
+        instruction: canvasArtifact.plan
+          ? "El plan ya está abierto en Canvas para revisión y aprobación del usuario. Responde en 1 a 3 oraciones breves en español explicando que puede revisar, comentar o aprobar el plan."
+          : canvasArtifact.dashboard
+            ? "El dashboard ya está abierto en Canvas con KPIs y gráficas interactivas. Responde en 1 a 3 oraciones breves en español destacando la conclusión principal y recomendación."
+            : canvasArtifact.form
+              ? "El formulario/cuestionario ya está abierto en Canvas. Responde en 1 a 3 oraciones breves en español invitando al usuario a responderlo ahí (sin repetir todas las preguntas ni revelar las respuestas correctas)."
+              : canvasArtifact.diagram
+                ? "El diagrama ya está abierto en Canvas. Responde en 1 a 3 oraciones breves en español explicando lo más relevante del flujo sin repetir texto innecesario."
+                : "La tabla ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves de conclusión en español directamente en Markdown (sin etiquetas XML). NO repitas la tabla ni escribas HTML.",
       });
       try {
         await runBrowserStreamPass(
@@ -5173,10 +5956,7 @@ export async function runXoxAiChatStream(
     }
 
     if (!replyText.trim()) {
-      const fallbackText =
-        `Listo, preparé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).` +
-        (canvasArtifact.summary ? `\n\n${canvasArtifact.summary}` : "");
-      pushReply(fallbackText);
+      pushReply(formatCanvasFallbackSummary(canvasArtifact));
     }
   }
 
@@ -5189,8 +5969,8 @@ export async function runXoxAiChatStream(
     cleanedFinalReply ||
     (vaultAction
       ? `Abrí el formulario seguro de bóveda para **${getProviderSpec(vaultAction.provider).name}** aquí mismo. Ingresa tu clave para guardarla localmente.`
-      : hasTabularCanvas && canvasArtifact
-        ? `Listo, preparé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).${canvasArtifact.summary ? `\n\n${canvasArtifact.summary}` : ""}`
+      : canvasArtifact
+        ? formatCanvasFallbackSummary(canvasArtifact)
         : clarificationSpec
           ? clarificationSpec.subtitle || clarificationSpec.title
           : rawFinalReply);
@@ -5285,6 +6065,10 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
     if (useTools) {
       payload.tools = [
         BROWSER_CANVAS_TOOL_DEF,
+        BROWSER_DIAGRAM_TOOL_DEF,
+        BROWSER_PLAN_TOOL_DEF,
+        BROWSER_DASHBOARD_TOOL_DEF,
+        BROWSER_FORM_TOOL_DEF,
         BROWSER_CLARIFICATION_TOOL_DEF,
         BROWSER_VAULT_CONFIG_TOOL_DEF,
       ];
@@ -5372,7 +6156,7 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
     (vaultAction
       ? `Abrí el formulario seguro de bóveda para **${getProviderSpec(vaultAction.provider).name}**. Ingresa ahí tu clave para guardarla localmente.`
       : canvasArtifact
-        ? `Listo, generé "${canvasArtifact.title}" en Canvas (${canvasArtifact.rows.length} filas y ${canvasArtifact.columns.length} columnas).`
+        ? formatCanvasFallbackSummary(canvasArtifact)
         : clarificationSpec
           ? clarificationSpec.subtitle || clarificationSpec.title
           : "Listo, procesé tu consulta.");

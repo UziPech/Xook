@@ -201,6 +201,10 @@ pub struct XoxChatRequest {
     pub user_profile: Option<serde_json::Value>,
     #[serde(default)]
     pub active_canvas: Option<serde_json::Value>,
+    #[serde(default)]
+    pub active_mode: Option<String>,
+    #[serde(default)]
+    pub subagent_roster: Option<serde_json::Value>,
 }
 
 fn vault_file_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
@@ -1037,6 +1041,8 @@ pub async fn run_xox_chat<R: Runtime>(
                 "attached_context": payload.attached_context,
                 "user_profile": payload.user_profile,
                 "active_canvas": payload.active_canvas,
+                "active_mode": payload.active_mode,
+                "subagent_roster": payload.subagent_roster,
                 "unified_memory": {
                     "facts": facts,
                     "screen_summary": screen_summary,
@@ -4021,6 +4027,8 @@ pub async fn run_xox_chat_stream<R: Runtime>(
                 "attached_context": payload.attached_context,
                 "user_profile": payload.user_profile,
                 "active_canvas": payload.active_canvas,
+                "active_mode": payload.active_mode,
+                "subagent_roster": payload.subagent_roster,
                 "unified_memory": {
                     "facts": facts,
                     "screen_summary": screen_summary,

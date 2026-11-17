@@ -152,7 +152,10 @@ def _classify_task_intent_base(
     )
     canvas_re = re.compile(
         r"\b(tabla|comparativa|comparaci[oó]n|cuadro|canvas|matriz|cronograma|"
-        r"reporte\s+visual|exporta\w*|resumen\s+en\s+tabla)\b"
+        r"diagrama|flujograma|mapa\s+conceptual|organigrama|flowchart|secuencia|"
+        r"dashboard|gr[aá]ficas?|gr[aá]ficos?|kpis?|m[eé]tricas|tendencia|panel\s+visual|"
+        r"cuestionario|examen|quiz|formulario|encuesta|pr[aá]ctica|ejercicios|autoevaluaci[oó]n|"
+        r"plan\s+maestro|plan\s+de\s+acci[oó]n|reporte\s+visual|exporta\w*|resumen\s+en\s+tabla)\b"
     )
     deep_re = re.compile(
         r"\b(analiza|an[aá]lisis|estrategia|rentabilidad|margen|riesgos?\s+financieros?|"

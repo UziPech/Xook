@@ -12,11 +12,18 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import concurrent.futures
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from slices.agent_tools import AGENT_TOOL_DEFS, WorkspaceToolExecutor
+from slices.agent_tools import (
+    AGENT_TOOL_DEFS,
+    CHECKLIST_TOOL_DEF,
+    SPAWN_SUBAGENT_TOOL_DEF,
+    STUDY_DECK_TOOL_DEF,
+    WorkspaceToolExecutor,
+)
 from slices.agent_tools.skills_hub import index_workspace_skills, load_global_xox_profile
 from slices.ai_service.anthropic_adapter import (
     ANTHROPIC_BASE_URL,
@@ -172,6 +179,14 @@ def _tool_step_meta(fn_name: str, args: Dict[str, Any]) -> Tuple[str, str]:
         return "Consultando memoria reciente de pantalla", str(args.get("query") or "últimos minutos")
     if fn_name == "memory_search":
         return "Buscando en memoria del negocio", str(args.get("query") or "")
+    if fn_name == "agent_checklist_update":
+        return "Actualizando checklist en pantalla", str(args.get("title") or "Lista de tareas")
+    if fn_name == "spawn_subagent":
+        sub_nm = str(args.get("name") or "Sub-agente").strip()
+        sub_rl = str(args.get("role") or "").strip()
+        return f"Coordinando sub-agente {sub_nm}", sub_rl
+    if fn_name == "study_create_deck":
+        return "Creando mazo de estudio interactivo", str(args.get("topic") or "Estudio")
     return f"Herramienta: {fn_name}", target
 
 
@@ -338,6 +353,306 @@ CANVAS_TOOL_DEF: Dict[str, Any] = {
                 },
             },
             "required": ["title", "columns", "rows"],
+        },
+    },
+}
+
+CREATE_DIAGRAM_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "create_diagram",
+        "description": (
+            "Crea un diagrama visual interactivo en Canvas (diagrama de flujo, proceso, mapa conceptual o secuencia) "
+            "para explicar flujos de negocio, decisiones o arquitecturas de manera visual."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Título claro del diagrama"},
+                "subtitle": {"type": "string", "description": "Contexto breve"},
+                "summary": {"type": "string", "description": "Conclusión o idea principal en 1 oración"},
+                "diagram_type": {
+                    "type": "string",
+                    "enum": ["flowchart", "sequence", "mindmap", "process"],
+                    "description": "Tipo de diagrama visual",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["TD", "LR"],
+                    "description": "TD para flujo vertical, LR para horizontal",
+                },
+                "nodes": {
+                    "type": "array",
+                    "description": "Lista de nodos del diagrama",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "label": {"type": "string"},
+                            "subtitle": {"type": "string"},
+                            "detail": {"type": "string", "description": "Explicación que verá el usuario al hacer clic"},
+                            "shape": {"type": "string", "enum": ["rounded", "pill", "diamond", "cylinder", "note"]},
+                            "tone": {"type": "string", "enum": ["neutral", "accent", "success", "warning", "critical"]},
+                            "group": {"type": "string"},
+                        },
+                        "required": ["id", "label"],
+                    },
+                },
+                "edges": {
+                    "type": "array",
+                    "description": "Conexiones dirigidas entre nodos",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "from": {"type": "string"},
+                            "to": {"type": "string"},
+                            "label": {"type": "string"},
+                            "style": {"type": "string", "enum": ["solid", "dashed"]},
+                        },
+                        "required": ["from", "to"],
+                    },
+                },
+                "mermaid": {
+                    "type": "string",
+                    "description": "Opcional: código Mermaid válido si prefieres definirlo en Mermaid",
+                },
+                "save_report": {
+                    "type": "boolean",
+                    "description": "Opcional: true si el usuario pidió guardar este diagrama en agente/reportes/",
+                },
+            },
+            "required": ["title"],
+        },
+    },
+}
+
+CREATE_PLAN_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "create_plan",
+        "description": (
+            "Publica un Plan Maestro estructurado y revisable en Canvas (estilo Plan Mode) con fases, pasos, "
+            "dependencias, alcance, supuestos y riesgos para que el usuario lo revise, comente y apruebe antes de ejecutar."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Título claro del plan"},
+                "subtitle": {"type": "string", "description": "Contexto o horizonte estimado"},
+                "goal": {"type": "string", "description": "Objetivo del plan en 1-2 oraciones"},
+                "summary": {"type": "string", "description": "Resumen ejecutivo"},
+                "scope": {
+                    "type": "array",
+                    "description": "Áreas, archivos o fuentes de datos involucradas",
+                    "items": {"type": "string"},
+                },
+                "phases": {
+                    "type": "array",
+                    "description": "Fases ordenadas del plan",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "steps": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "title": {"type": "string"},
+                                        "detail": {"type": "string"},
+                                        "target": {"type": "string"},
+                                        "depends_on": {"type": "array", "items": {"type": "string"}},
+                                        "risk": {"type": "string", "enum": ["low", "medium", "high"]},
+                                    },
+                                    "required": ["id", "title"],
+                                },
+                            },
+                        },
+                        "required": ["id", "title", "steps"],
+                    },
+                },
+                "assumptions": {"type": "array", "items": {"type": "string"}},
+                "risks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "level": {"type": "string", "enum": ["low", "medium", "high"]},
+                            "text": {"type": "string"},
+                            "mitigation": {"type": "string"},
+                        },
+                        "required": ["level", "text"],
+                    },
+                },
+                "save_report": {
+                    "type": "boolean",
+                    "description": "Opcional: true si el usuario pidió guardar este plan en agente/reportes/",
+                },
+            },
+            "required": ["title", "goal", "phases"],
+        },
+    },
+}
+
+CREATE_DASHBOARD_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "create_dashboard",
+        "description": (
+            "Crea un mini-dashboard visual interactivo en Canvas con tarjetas KPI, gráficas (barras, líneas, área, dona), "
+            "hallazgos clave y una tabla de respaldo opcional para que el usuario analice datos y tome decisiones."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Título claro del dashboard"},
+                "subtitle": {"type": "string", "description": "Periodo o contexto breve"},
+                "summary": {"type": "string", "description": "Conclusión ejecutiva en 1 oración"},
+                "kpis": {
+                    "type": "array",
+                    "description": "2 a 6 indicadores principales",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string"},
+                            "value": {"type": "string"},
+                            "delta": {"type": "string"},
+                            "delta_tone": {"type": "string", "enum": ["positive", "negative", "neutral"]},
+                            "tone": {"type": "string", "enum": ["neutral", "positive", "warning", "critical"]},
+                            "caption": {"type": "string"},
+                            "progress": {"type": "number"},
+                        },
+                        "required": ["label", "value"],
+                    },
+                },
+                "charts": {
+                    "type": "array",
+                    "description": "1 a 4 gráficas interactivas",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "subtitle": {"type": "string"},
+                            "chart_type": {
+                                "type": "string",
+                                "enum": ["bar", "horizontal_bar", "line", "area", "donut"],
+                            },
+                            "categories": {"type": "array", "items": {"type": "string"}},
+                            "series": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "values": {"type": "array", "items": {"type": "number"}},
+                                        "tone": {"type": "string", "enum": ["accent", "neutral", "positive", "warning", "critical"]},
+                                    },
+                                    "required": ["name", "values"],
+                                },
+                            },
+                            "unit": {"type": "string"},
+                            "value_format": {"type": "string", "enum": ["number", "currency", "percent", "compact"]},
+                            "target_value": {"type": "number"},
+                            "target_label": {"type": "string"},
+                        },
+                        "required": ["title", "chart_type", "categories", "series"],
+                    },
+                },
+                "insights": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tone": {"type": "string", "enum": ["info", "positive", "warning", "critical"]},
+                            "title": {"type": "string"},
+                            "text": {"type": "string"},
+                        },
+                        "required": ["text"],
+                    },
+                },
+                "columns": {"type": "array", "items": {"type": "string"}, "description": "Opcional: columnas de tabla de respaldo"},
+                "rows": {
+                    "type": "array",
+                    "description": "Opcional: filas de respaldo",
+                    "items": {"type": "array", "items": {"type": "string"}},
+                },
+                "save_report": {
+                    "type": "boolean",
+                    "description": "Opcional: true si el usuario pidió guardar este dashboard en agente/reportes/",
+                },
+            },
+            "required": ["title"],
+        },
+    },
+}
+
+CREATE_FORM_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "create_form",
+        "description": (
+            "Crea un formulario o cuestionario interactivo en Canvas. Ideal para hojas de práctica y exámenes en /study "
+            "(purpose='study_quiz', con opciones múltiples, verdadero/falso, respuestas abiertas, pistas y explicaciones) "
+            "o para captura estructurada de datos y encuestas (purpose='data_capture' o 'survey')."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Título claro del cuestionario o formulario"},
+                "subtitle": {"type": "string", "description": "Tema, materia o contexto breve"},
+                "description": {"type": "string", "description": "Instrucciones breves para el usuario"},
+                "purpose": {
+                    "type": "string",
+                    "enum": ["study_quiz", "data_capture", "survey"],
+                    "description": "study_quiz para exámenes/práctica educativa; data_capture o survey para recopilar datos",
+                },
+                "passing_score_percent": {"type": "number", "description": "Opcional: porcentaje mínimo aprobatorio (ej. 70)"},
+                "fields": {
+                    "type": "array",
+                    "description": "Preguntas o campos interactivos del formulario",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "label": {"type": "string", "description": "Enunciado de la pregunta o nombre del campo"},
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "single_choice",
+                                    "multi_choice",
+                                    "true_false",
+                                    "short_text",
+                                    "long_text",
+                                    "number",
+                                    "rating",
+                                    "select",
+                                ],
+                            },
+                            "required": {"type": "boolean"},
+                            "options": {"type": "array", "items": {"type": "string"}},
+                            "correct_index": {"type": "integer", "description": "Índice 0-based de la opción correcta"},
+                            "correct_indices": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "Índices correctos 0-based para multi_choice",
+                            },
+                            "expected_answer": {"type": "string", "description": "Respuesta modelo o valor numérico esperado"},
+                            "hint": {"type": "string", "description": "Pista opcional sin regalar la respuesta"},
+                            "explanation": {"type": "string", "description": "Explicación pedagógica al verificar"},
+                            "points": {"type": "number"},
+                        },
+                        "required": ["label", "type"],
+                    },
+                },
+                "save_report": {
+                    "type": "boolean",
+                    "description": "Opcional: true si el usuario pidió guardar el cuestionario/formulario en agente/reportes/",
+                },
+            },
+            "required": ["title", "fields"],
         },
     },
 }
@@ -1404,6 +1719,135 @@ def _should_enable_inventory_skill(
     return False
 
 
+_DSML_BLOCK_RE = re.compile(
+    r"<[\s|｜]*DSML[\s|｜]*(?:function_calls|calls)\b[^>]*>(.*?)</[\s|｜]*DSML[\s|｜]*(?:function_calls|calls)\b[^>]*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_DSML_INVOKE_RE = re.compile(
+    r'<[\s|｜]*DSML[\s|｜]*invoke\s+name="([^"]+)"[^>]*>(.*?)</[\s|｜]*DSML[\s|｜]*invoke>',
+    re.IGNORECASE | re.DOTALL,
+)
+_DSML_PARAM_RE = re.compile(
+    r'<[\s|｜]*DSML[\s|｜]*parameter\s+name="([^"]+)"[^>]*>(.*?)</[\s|｜]*DSML[\s|｜]*parameter>',
+    re.IGNORECASE | re.DOTALL,
+)
+_DSML_RESIDUAL_RE = re.compile(
+    r"<[\s|｜]*\/?\s*[\s|｜]*DSML[\s|｜]*[^>]*>?",
+    re.IGNORECASE,
+)
+
+
+def _strip_dsml_markup(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = _DSML_BLOCK_RE.sub("", text)
+    cleaned = _DSML_INVOKE_RE.sub("", cleaned)
+    cleaned = _DSML_RESIDUAL_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _parse_and_strip_dsml_calls(text: str, prefix: str = "dsml") -> Tuple[str, List[Dict[str, Any]]]:
+    if not text or "DSML" not in text.upper():
+        return text, []
+    found_calls: List[Dict[str, Any]] = []
+    for idx, inv_m in enumerate(_DSML_INVOKE_RE.finditer(text)):
+        fn_name = str(inv_m.group(1) or "").strip()
+        inner = inv_m.group(2) or ""
+        if not fn_name:
+            continue
+        args_dict: Dict[str, Any] = {}
+        for pm in _DSML_PARAM_RE.finditer(inner):
+            p_key = str(pm.group(1) or "").strip()
+            p_raw = (pm.group(2) or "").strip()
+            if not p_key:
+                continue
+            try:
+                args_dict[p_key] = json.loads(p_raw)
+            except Exception:
+                args_dict[p_key] = p_raw
+        found_calls.append({
+            "id": f"{prefix}_{idx}_{fn_name}",
+            "type": "function",
+            "function": {
+                "name": fn_name,
+                "arguments": json.dumps(args_dict, ensure_ascii=False),
+            },
+        })
+    return _strip_dsml_markup(text), found_calls
+
+
+def _build_active_mode_section(
+    active_mode: Optional[str],
+    subagent_roster: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    mode = str(active_mode or "").strip().lower()
+    if not mode:
+        return ""
+    if mode == "agent":
+        roster_lines: List[str] = []
+        for item in (subagent_roster or []):
+            if not isinstance(item, dict) or item.get("enabled") is False:
+                continue
+            r_name = str(item.get("name") or "").strip()
+            if r_name == "__dynamic_default__":
+                continue
+            r_role = str(item.get("role") or "").strip()
+            r_model = str(item.get("model") or "auto").strip()
+            r_design = str(item.get("design") or "orbit").strip()
+            if r_name:
+                roster_lines.append(
+                    f"  - Nombre: \"{r_name}\" | Especialidad: {r_role} | Modelo preferido: {r_model} | Diseño icono: {r_design}"
+                )
+        roster_block = (
+            "\nEQUIPO BASE PREFERIDO POR EL USUARIO (puedes usarlos y crear agentes adicionales si detectas que faltan):\n"
+            + "\n".join(roster_lines)
+            if roster_lines
+            else "\nEQUIPO DINÁMICO (razona libremente cuántos y qué especialistas necesita esta actividad)."
+        )
+        return f"""
+
+PROTOCOLO ACTIVO: ORQUESTADOR MULTI-AGENTE (/agent)
+Actúa con el criterio de un orquestador senior (como Claude):
+1. **Razona qué sub-agentes necesita realmente esta actividad:** No uses nombres raros ni genéricos por inercia; elige solo los especialistas útiles para esta meta con nombres claros y naturales según el dominio (ej. "Analista Financiero", "Investigador de Inventario", "Estratega Comercial", "Revisor Técnico"). Si la tarea requiere más cobertura después de revisar los primeros resultados, **puedes invocar `spawn_subagent` con un agente adicional nuevo** en la siguiente ronda.{roster_block}
+2. **Primera ronda en paralelo:** Llama en esta primera ronda a `agent_checklist_update` (3 a 5 pasos concretos) junto con los `spawn_subagent` iniciales necesarios para trabajar en paralelo.
+3. **Regla importante:** El campo `design` (`star`, `prism`, `orbit`, `shield`) solo define el icono visual del satélite en la interfaz; NUNCA uses esas palabras como nombres de productos, planes ni categorías dentro del documento o tabla.
+4. **Cierre y síntesis:** Conforme regresen los hallazgos reales, actualiza la checklist marcando cada paso completado (`done`) y entrega una síntesis clara y accionable."""
+    if mode == "study":
+        return """
+
+PROTOCOLO ACTIVO: MODO ESTUDIO SOCRÁTICO (/study)
+Tienes herramientas reales pedagógicas:
+1. Usa `agent_checklist_update` para publicar la ruta de estudio en la tarjeta Checklist de la esquina derecha (ej. Concepto, Analogía, Práctica, Repaso).
+2. Elige el formato práctico ideal según la petición:
+   - Usa `study_create_deck` para un mazo rápido de 3 a 6 flashcards + 1 pregunta breve dentro del chat.
+   - Usa `create_form` con `purpose="study_quiz"` cuando el usuario pida practicar, hacer un examen/cuestionario, resolver ejercicios o evaluar varios conceptos en Canvas (permite opción múltiple, verdadero/falso, preguntas abiertas, pistas y explicaciones).
+3. En tu respuesta escrita, explica con una analogía clara, desglosa paso a paso, marca la checklist como `done` y cierra con una pregunta socrática de reflexión."""
+    if mode == "plan":
+        return """
+
+PROTOCOLO ACTIVO: PLANIFICADOR DE TAREAS (/plan)
+Actúa estilo Plan Mode revisable antes de ejecutar cambios:
+1. Si hay workspace activo, lee primero los archivos o métricas necesarias (en solo lectura) para fundamentar el plan.
+2. Llama OBLIGATORIAMENTE a `create_plan` para presentar el Plan Maestro interactivo en Canvas (objetivo, alcance, fases con pasos, `depends_on`, supuestos y riesgos) listo para que el usuario lo revise, comente o apruebe.
+3. Llama también a `agent_checklist_update` para reflejar las fases del plan en la tarjeta Checklist de la esquina derecha.
+4. No modifiques archivos ni apliques cambios destructivos hasta que el usuario apruebe el plan."""
+    if mode == "audit":
+        return """
+
+PROTOCOLO ACTIVO: AUDITORÍA DE NEGOCIO ZERO-RISK (/audit)
+1. Usa `agent_checklist_update` para ir marcando en la esquina derecha cada punto auditado.
+2. Ejecuta inspecciones reales con `run_business_review`, `workspace_list`, `workspace_read`, `workspace_search` o `pdf_read`.
+3. Reporta hallazgos clasificados por severidad (Alta, Media, Baja) sin modificar datos sin aprobación."""
+    if mode == "compact":
+        return """
+
+PROTOCOLO ACTIVO: SINTETIZAR MEMORIA (/compact)
+1. Identifica los hechos clave, preferencias y decisiones tomadas en esta conversación.
+2. Guarda los aprendizajes duraderos con `memory_record_fact` (si hay workspace activo) y registra el resumen en `agent_checklist_update`.
+3. Entrega un resumen conciso y limpio para continuar sin perder contexto."""
+    return ""
+
+
 def _build_system_prompt(
     context_dir: Path,
     skills_dir: Path,
@@ -1419,6 +1863,8 @@ def _build_system_prompt(
     xox_config_dir: Optional[Path] = None,
     global_xox_profile: Optional[Dict[str, Any]] = None,
     tts_config: Optional[Dict[str, Any]] = None,
+    active_mode: Optional[str] = None,
+    subagent_roster: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     ws_active = workspace_root is not None and workspace_root.is_dir()
     unified_facts = unified_memory.get("facts") if isinstance(unified_memory, dict) else None
@@ -1554,7 +2000,7 @@ def _build_system_prompt(
 
     canvas_ctx = ""
     if isinstance(active_canvas, dict) and active_canvas.get("title"):
-        compact_canvas = {
+        compact_canvas: Dict[str, Any] = {
             "id": active_canvas.get("id"),
             "title": active_canvas.get("title"),
             "kind": active_canvas.get("kind"),
@@ -1562,15 +2008,60 @@ def _build_system_prompt(
             "columns": active_canvas.get("columns", [])[:12],
             "rows": active_canvas.get("rows", [])[:25],
         }
+        if isinstance(active_canvas.get("diagram"), dict):
+            diag = active_canvas["diagram"]
+            compact_canvas["diagram"] = {
+                "diagramType": diag.get("diagramType"),
+                "direction": diag.get("direction"),
+                "nodes": (diag.get("nodes") or [])[:25],
+                "edges": (diag.get("edges") or [])[:35],
+            }
+        if isinstance(active_canvas.get("plan"), dict):
+            pln = active_canvas["plan"]
+            compact_canvas["plan"] = {
+                "goal": pln.get("goal"),
+                "status": pln.get("status"),
+                "phases": (pln.get("phases") or [])[:10],
+            }
+        if isinstance(active_canvas.get("dashboard"), dict):
+            dash = active_canvas["dashboard"]
+            compact_canvas["dashboard"] = {
+                "kpis": (dash.get("kpis") or [])[:8],
+                "charts": [
+                    {
+                        "title": ch.get("title"),
+                        "chartType": ch.get("chartType"),
+                        "categories": (ch.get("categories") or [])[:12],
+                    }
+                    for ch in (dash.get("charts") or [])[:4]
+                    if isinstance(ch, dict)
+                ],
+            }
+        if isinstance(active_canvas.get("form"), dict):
+            frm = active_canvas["form"]
+            compact_canvas["form"] = {
+                "purpose": frm.get("purpose"),
+                "submitted": bool(frm.get("submitted")),
+                "score": frm.get("score"),
+                "fields": [
+                    {"id": fld.get("id"), "label": fld.get("label"), "type": fld.get("type")}
+                    for fld in (frm.get("fields") or [])[:15]
+                    if isinstance(fld, dict)
+                ],
+            }
         canvas_ctx = (
-            "\nCANVAS ACTIVO EN PANTALLA (si el usuario pide modificar, filtrar, ampliar o mejorar la tabla, actualiza este Canvas manteniendo su id):\n"
+            "\nCANVAS ACTIVO EN PANTALLA (si el usuario pide modificar, filtrar, ampliar o mejorar el contenido de Canvas, actualiza este Canvas manteniendo su id):\n"
             + json.dumps(compact_canvas, ensure_ascii=False)
         )
 
-    canvas_hint = """USO DE CANVAS PARA TABLAS Y COMPARATIVAS (IMPORTANTE):
+    canvas_hint = """USO DE CANVAS PARA TABLAS, DIAGRAMAS, PLANES, DASHBOARDS Y FORMULARIOS (IMPORTANTE):
 Cuando el usuario pida o convenga mostrar una TABLA, tabla comparativa, desglose, matriz de opciones o presupuesto:
 - Usa la herramienta `create_canvas` (preferida; evita emitir etiquetas `<canvas>` manualmente) pasando columnas en texto simple y TODAS las filas completas en `rows`, o en último caso incluye una sección `<canvas>{...}</canvas>` con:
   {"title":"Título corto","subtitle":"Criterio breve","kind":"comparison","summary":"Conclusión clave en 1 oración","columns":["Criterio","Opción A","Opción B"],"rows":[["Precio","$100","$120"],["Tiempo","2 días","5 días"]],"recommended_row":0,"recommended_badge":"Recomendado"}
+- Cuando el usuario pida un diagrama de flujo, proceso, mapa conceptual, secuencia o arquitectura (o cuando un diagrama visual ayude a entender una explicación), usa `create_diagram` con `nodes` y `edges` (o `mermaid`) para abrirlo interactivo en Canvas.
+- Cuando el usuario pida un plan estructurado por fases o esté en `/plan`, usa `create_plan` para abrir un Plan Maestro revisable y aprobable en Canvas.
+- Cuando el usuario pida gráficas, métricas visuales, KPIs o un mini-dashboard con los datos analizados, usa `create_dashboard` para abrir KPIs + gráficas interactivas + tabla de respaldo en Canvas.
+- Cuando el usuario pida un cuestionario, examen, quiz o hoja de práctica evaluable (`purpose="study_quiz"`), o necesite un formulario/encuesta interactiva para capturar datos (`purpose="data_capture"` o `"survey"`), usa `create_form` para abrirlo en Canvas.
 - NUNCA envíes `rows` con celdas vacías ni escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en tu respuesta al usuario.
 - En tu mensaje responde libremente con una explicación clara o la conclusión clave sin duplicar tablas HTML ni envolver el texto en etiquetas XML."""
 
@@ -1630,6 +2121,10 @@ Responde directamente al usuario en español (o en el idioma que pida) usando Ma
   * `propose_tasks`: cuando el usuario pida analizar stock con plan accionable, agendar tareas operativas, crear cronómetros/temporizadores o recordatorios internos de XOOK (`operation`: `"add_tasks"` o `"replace_tasks"`).
   * `ask_clarification`: si faltan datos críticos en una petición operativa ambigua y conviene preguntar con opciones interactivas.
   * `create_canvas`: para abrir tablas comparativas o reportes tabulares interactivos en el panel Canvas.
+  * `create_diagram`: para abrir diagramas de flujo, procesos, mapas conceptuales o secuencias interactivas en Canvas.
+  * `create_plan`: para abrir un Plan Maestro revisable y aprobable por fases en Canvas.
+  * `create_dashboard`: para abrir mini-dashboards con KPIs, gráficas interactivas y hallazgos de negocio en Canvas.
+  * `create_form`: para abrir cuestionarios/exámenes interactivos con calificación (`study_quiz`) o formularios de captura/encuestas en Canvas.
   * `configure_ai_vault`: cuando el usuario pida configurar, cambiar o guardar su API key o proveedor (`openrouter`, `deepseek`, `groq`, `gemini`, `openai`, `anthropic`) en la bóveda local de XOOK.
   * `pdf_generate` / `pdf_read`: para generar o leer archivos PDF.
 - En preguntas generales, análisis de imágenes, lectura de documentos, programación, redacción o charla cotidiana, responde directamente en Markdown libre sin forzar tareas ni Canvas.
@@ -1780,6 +2275,8 @@ HERRAMIENTAS DEL ESPACIO DE TRABAJO Y EQUIPO DEL USUARIO (OBLIGATORIO CUANDO OPE
     if active_skills_bodies:
         skills_index_section += "\n\nHABILIDADES ACTIVAS EN ESTE TURNO:\n" + "\n\n".join(active_skills_bodies)
 
+    mode_section = _build_active_mode_section(active_mode, subagent_roster)
+
     # Orden optimizado para Prompt Caching / Disk KV Cache (prefijo estático al inicio, contexto volátil al final)
     return f"""Eres {agent_name}, el agente inteligente y co-constructor operativo de propósito múltiple de XOOK.
 Hablas SIEMPRE en español claro, humano, directo y útil (o en el idioma que pida el usuario).
@@ -1809,7 +2306,7 @@ TAREAS PENDIENTES EN PANEL DERECHO:
 {json.dumps(compact_tasks, ensure_ascii=False)}
 
 AGENDA Y RELOJES ACTIVOS:
-{json.dumps(compact_agenda, ensure_ascii=False)}{operator_ctx}{canvas_ctx}{extra_ctx}{screen_ctx_block}
+{json.dumps(compact_agenda, ensure_ascii=False)}{operator_ctx}{canvas_ctx}{extra_ctx}{screen_ctx_block}{mode_section}
 
 FECHA Y HORA LOCAL ACTUAL DEL SISTEMA:
 {now_label}
@@ -2585,11 +3082,63 @@ def _has_structured_table_markup(text: str) -> bool:
     return False
 
 
+def _is_canvas_tool_name(fn_name: str) -> bool:
+    low = (fn_name or "").strip().lower()
+    return bool(
+        low
+        and (
+            "create_canvas" in low
+            or "create_diagram" in low
+            or "create_plan" in low
+            or "create_dashboard" in low
+            or "create_form" in low
+            or low == "canvas"
+        )
+    )
+
+
+def _format_canvas_summary_reply(canvas_obj: Dict[str, Any]) -> str:
+    title = str(canvas_obj.get("title") or "Canvas")
+    summary = str(canvas_obj.get("summary") or "").strip()
+    if isinstance(canvas_obj.get("plan"), dict):
+        phases = canvas_obj["plan"].get("phases") or []
+        steps_cnt = sum(len(p.get("steps") or []) for p in phases if isinstance(p, dict))
+        msg = f'Listo, preparé el plan "{title}" en Canvas ({len(phases)} fases · {steps_cnt} pasos) para tu revisión.'
+    elif isinstance(canvas_obj.get("dashboard"), dict):
+        dash = canvas_obj["dashboard"]
+        kpis_cnt = len(dash.get("kpis") or [])
+        charts_cnt = len(dash.get("charts") or [])
+        msg = f'Listo, preparé el dashboard "{title}" en Canvas ({kpis_cnt} KPIs · {charts_cnt} gráficas).'
+    elif isinstance(canvas_obj.get("form"), dict):
+        frm = canvas_obj["form"]
+        f_cnt = len(frm.get("fields") or [])
+        is_quiz = frm.get("purpose") == "study_quiz"
+        noun = "el cuestionario" if is_quiz else "el formulario"
+        unit = "preguntas" if is_quiz else "campos"
+        msg = f'Listo, abrí {noun} "{title}" en Canvas ({f_cnt} {unit}). Respóndelo ahí y verifícalo o envíamelo cuando termines.'
+    elif isinstance(canvas_obj.get("diagram"), dict):
+        diag = canvas_obj["diagram"]
+        nodes_cnt = len(diag.get("nodes") or [])
+        edges_cnt = len(diag.get("edges") or [])
+        msg = (
+            f'Listo, generé el diagrama "{title}" en Canvas ({nodes_cnt} nodos y {edges_cnt} conexiones).'
+            if nodes_cnt
+            else f'Listo, generé el diagrama "{title}" en Canvas.'
+        )
+    elif canvas_obj.get("columns") and canvas_obj.get("rows"):
+        msg = f'Listo, preparé "{title}" en Canvas ({len(canvas_obj["rows"])} filas y {len(canvas_obj["columns"])} columnas).'
+    else:
+        msg = f'Listo, preparé "{title}" en Canvas.'
+    if summary:
+        msg += f"\n\n{summary}"
+    return msg
+
+
 def _extract_canvas_tool_metadata(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
     for tc in tool_calls:
         fn = tc.get("function") or {}
         fn_name = str(fn.get("name") or "").strip().lower()
-        if not fn_name or ("create_canvas" not in fn_name and fn_name != "canvas"):
+        if not _is_canvas_tool_name(fn_name):
             continue
         raw_args = fn.get("arguments")
         parsed_args = raw_args if isinstance(raw_args, dict) else _parse_json_candidates(str(raw_args or ""))
@@ -2610,7 +3159,7 @@ def _extract_canvas_from_tool_calls(tool_calls: List[Dict[str, Any]]) -> Optiona
     for tc in tool_calls:
         fn = tc.get("function") or {}
         fn_name = str(fn.get("name") or "").strip().lower()
-        if not fn_name or ("create_canvas" not in fn_name and fn_name != "canvas"):
+        if not _is_canvas_tool_name(fn_name):
             continue
         raw_args = fn.get("arguments")
         parsed_args: Optional[Dict[str, Any]] = None
@@ -2623,13 +3172,22 @@ def _extract_canvas_from_tool_calls(tool_calls: List[Dict[str, Any]]) -> Optiona
                 if tbl and canvas_has_cell_data(tbl):
                     return tbl
         if isinstance(parsed_args, dict):
-            inner = (
+            inner_raw = (
                 parsed_args.get("canvas")
                 if isinstance(parsed_args.get("canvas"), dict)
                 else parsed_args.get("arguments")
                 if isinstance(parsed_args.get("arguments"), dict)
                 else parsed_args
             )
+            inner = dict(inner_raw)
+            if "create_diagram" in fn_name and not inner.get("kind"):
+                inner["kind"] = "diagram"
+            elif "create_plan" in fn_name and not inner.get("kind"):
+                inner["kind"] = "plan"
+            elif "create_dashboard" in fn_name and not inner.get("kind"):
+                inner["kind"] = "dashboard"
+            elif "create_form" in fn_name and not inner.get("kind"):
+                inner["kind"] = "form"
             canvas = sanitize_canvas_artifact(inner)
             if canvas and canvas_has_cell_data(canvas):
                 return canvas
@@ -2640,7 +3198,7 @@ def _canvas_wants_saved_report(tool_calls: List[Dict[str, Any]]) -> bool:
     for tc in tool_calls:
         fn = tc.get("function") or {}
         fn_name = str(fn.get("name") or "").strip().lower()
-        if not fn_name or ("create_canvas" not in fn_name and fn_name != "canvas"):
+        if not _is_canvas_tool_name(fn_name):
             continue
         parsed_args = _parse_tool_args(fn.get("arguments"))
         if isinstance(parsed_args.get("save_report"), bool) and parsed_args.get("save_report"):
@@ -2670,16 +3228,73 @@ def _maybe_save_canvas_report(
         lines.append(f"_{canvas_obj['subtitle']}_")
     if canvas_obj.get("summary"):
         lines.extend(["", f"> {canvas_obj['summary']}"])
+    if isinstance(canvas_obj.get("plan"), dict):
+        pln = canvas_obj["plan"]
+        if pln.get("goal"):
+            lines.extend(["", f"**Objetivo:** {pln['goal']}"])
+        for idx, ph in enumerate(pln.get("phases") or []):
+            if not isinstance(ph, dict):
+                continue
+            lines.extend(["", f"## {idx + 1}. {ph.get('title') or f'Fase {idx + 1}'}"])
+            if ph.get("summary"):
+                lines.append(str(ph["summary"]))
+            for st in ph.get("steps") or []:
+                if isinstance(st, dict):
+                    mark = "x" if st.get("status") == "done" else " "
+                    lines.append(f"- [{mark}] **{st.get('title', '')}**" + (f" — {st['detail']}" if st.get("detail") else ""))
+    if isinstance(canvas_obj.get("diagram"), dict):
+        diag = canvas_obj["diagram"]
+        if diag.get("mermaid"):
+            lines.extend(["", "```mermaid", str(diag["mermaid"]), "```"])
+        else:
+            lines.extend(["", "### Nodos del diagrama"])
+            for nd in diag.get("nodes") or []:
+                if isinstance(nd, dict):
+                    lines.append(f"- **{nd.get('label', '')}**" + (f": {nd['detail']}" if nd.get("detail") else ""))
+    if isinstance(canvas_obj.get("dashboard"), dict):
+        dash = canvas_obj["dashboard"]
+        if dash.get("kpis"):
+            lines.extend(["", "## Indicadores Clave"])
+            for k in dash["kpis"]:
+                if isinstance(k, dict):
+                    delta = f" ({k['delta']})" if k.get("delta") else ""
+                    lines.append(f"- **{k.get('label', '')}:** {k.get('value', '')}{delta}")
+        for ch in dash.get("charts") or []:
+            if not isinstance(ch, dict):
+                continue
+            lines.extend(["", f"### {ch.get('title') or 'Gráfica'}"])
+            cats = ch.get("categories") or []
+            ser = ch.get("series") or []
+            if cats and ser:
+                hdrs = ["Categoría", *[str(s.get("name") or "Valor") for s in ser if isinstance(s, dict)]]
+                lines.append("| " + " | ".join(hdrs) + " |")
+                lines.append("| " + " | ".join("---" for _ in hdrs) + " |")
+                for c_idx, cat in enumerate(cats):
+                    vals = [str((s.get("values") or [])[c_idx]) if c_idx < len(s.get("values") or []) else "" for s in ser if isinstance(s, dict)]
+                    lines.append("| " + " | ".join([str(cat), *vals]) + " |")
+    if isinstance(canvas_obj.get("form"), dict):
+        frm = canvas_obj["form"]
+        if frm.get("description"):
+            lines.extend(["", str(frm["description"])])
+        for f_idx, fld in enumerate(frm.get("fields") or []):
+            if not isinstance(fld, dict):
+                continue
+            lines.extend(["", f"### {f_idx + 1}. {fld.get('label', '')}"])
+            for opt in fld.get("options") or []:
+                lines.append(f"- [ ] {opt}")
+            if fld.get("explanation"):
+                lines.append(f"> _Explicación:_ {fld['explanation']}")
     cols = canvas_obj.get("columns") or []
     rows = canvas_obj.get("rows") or []
     if cols and rows:
-        headers = [str(c.get("label") or c.get("key") or f"Col {i+1}") for i, c in enumerate(cols)]
-        keys = [str(c.get("key") or f"col_{i}") for i, c in enumerate(cols)]
+        headers = [str(c.get("label") or c.get("id") or c.get("key") or f"Col {i+1}") for i, c in enumerate(cols)]
+        keys = [str(c.get("id") or c.get("key") or f"col_{i}") for i, c in enumerate(cols)]
         lines.append("")
         lines.append("| " + " | ".join(headers) + " |")
         lines.append("| " + " | ".join("---" for _ in headers) + " |")
         for row in rows:
-            vals = [str(row.get(k, "")).replace("|", "\\|").replace("\n", " ") for k in keys]
+            cell_map = row.get("cells") if isinstance(row.get("cells"), dict) else row
+            vals = [str(cell_map.get(k, "")).replace("|", "\\|").replace("\n", " ") for k in keys]
             lines.append("| " + " | ".join(vals) + " |")
     if canvas_obj.get("markdown"):
         lines.extend(["", str(canvas_obj["markdown"])])
@@ -2715,6 +3330,15 @@ def _resolve_canvas_artifact(
         })
         if extracted and canvas_has_cell_data(extracted) and extracted.get("columns"):
             return extracted
+    mermaid_blk = re.search(r"```mermaid\s*([\s\S]*?)```", full_reply or "", re.I)
+    if mermaid_blk and mermaid_blk.group(1).strip():
+        diag_extracted = sanitize_canvas_artifact({
+            "title": "Diagrama visual",
+            "kind": "diagram",
+            "mermaid": mermaid_blk.group(1).strip(),
+        })
+        if diag_extracted and canvas_has_cell_data(diag_extracted):
+            return diag_extracted
     return None
 
 
@@ -2796,6 +3420,8 @@ def _validate_and_build_messages(
     xox_config_dir: Optional[Path] = None,
     global_xox_profile: Optional[Dict[str, Any]] = None,
     tts_config: Optional[Dict[str, Any]] = None,
+    active_mode: Optional[str] = None,
+    subagent_roster: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, str, List[Dict[str, Any]]]:
     pid = normalize_provider_id(provider)
     spec = get_provider_spec(pid)
@@ -2824,6 +3450,8 @@ def _validate_and_build_messages(
         xox_config_dir=xox_config_dir,
         global_xox_profile=global_xox_profile,
         tts_config=tts_config,
+        active_mode=active_mode,
+        subagent_roster=subagent_roster,
     )
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
@@ -3226,6 +3854,8 @@ def run_agent_completion(
     xox_config_dir: Optional[str] = None,
     global_xox_profile: Optional[Dict[str, Any]] = None,
     tts_config: Optional[Dict[str, Any]] = None,
+    active_mode: Optional[str] = None,
+    subagent_roster: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     primary_provider = normalize_provider_id(provider)
     ws_path = Path(workspace_root).resolve() if workspace_root and Path(workspace_root).is_dir() else None
@@ -3262,7 +3892,7 @@ def run_agent_completion(
         if ws_path is not None
         else None
     )
-    active_tools = [CANVAS_TOOL_DEF, ASK_CLARIFICATION_TOOL_DEF, VAULT_CONFIG_TOOL_DEF]
+    active_tools = [CANVAS_TOOL_DEF, CREATE_DIAGRAM_TOOL_DEF, CREATE_PLAN_TOOL_DEF, CREATE_DASHBOARD_TOOL_DEF, CREATE_FORM_TOOL_DEF, ASK_CLARIFICATION_TOOL_DEF, VAULT_CONFIG_TOOL_DEF]
     if executor is not None:
         active_tools = [*AGENT_TOOL_DEFS, *active_tools]
 
@@ -3438,7 +4068,7 @@ def run_agent_completion(
 
             try:
                 for round_idx in range(MAX_AGENT_STEPS):
-                    allow_tools_now = tools_supported and (round_idx < MAX_AGENT_STEPS - 1 or executor is None)
+                    allow_tools_now = tools_supported and round_idx < MAX_AGENT_STEPS - 1
                     allow_downgrade_now = not ((has_next_candidate or has_next_provider) and round_idx == 0)
                     round_messages = loop_messages if vision_supported else _strip_image_parts(loop_messages)
                     payload: Dict[str, Any] = {
@@ -3508,7 +4138,7 @@ def run_agent_completion(
                         break
 
                     local_ui_tool_calls.extend(tool_calls)
-                    ui_names = {"create_canvas", "ask_clarification", "configure_ai_vault"}
+                    ui_names = {"create_canvas", "create_diagram", "create_plan", "create_dashboard", "create_form", "ask_clarification", "configure_ai_vault"}
                     exec_calls = [
                         tc for tc in tool_calls
                         if isinstance(tc, dict)
@@ -3692,7 +4322,7 @@ def run_agent_completion(
         }, ensure_ascii=False)
     elif not raw_content.strip() and canvas_obj is not None:
         raw_content = json.dumps({
-            "reply": f'Listo, generé "{canvas_obj["title"]}" en Canvas ({len(canvas_obj["rows"])} filas y {len(canvas_obj["columns"])} columnas).',
+            "reply": _format_canvas_summary_reply(canvas_obj),
             "xox_mood": "success",
             "operation": "none",
             "tasks": [],
@@ -3845,6 +4475,8 @@ def stream_agent_completion(
     xox_config_dir: Optional[str] = None,
     global_xox_profile: Optional[Dict[str, Any]] = None,
     tts_config: Optional[Dict[str, Any]] = None,
+    active_mode: Optional[str] = None,
+    subagent_roster: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     primary_provider = normalize_provider_id(provider)
     ws_path = Path(workspace_root).resolve() if workspace_root and Path(workspace_root).is_dir() else None
@@ -3891,6 +4523,8 @@ def stream_agent_completion(
         xox_config_dir=cfg_path,
         global_xox_profile=global_xox_profile,
         tts_config=tts_config,
+        active_mode=active_mode,
+        subagent_roster=subagent_roster,
     )
 
     executor = (
@@ -3904,7 +4538,21 @@ def stream_agent_completion(
         if ws_path is not None
         else None
     )
-    active_tools = [CANVAS_TOOL_DEF, ASK_CLARIFICATION_TOOL_DEF, VAULT_CONFIG_TOOL_DEF]
+    norm_mode = str(active_mode or "").strip().lower()
+    active_tools = [
+        CANVAS_TOOL_DEF,
+        CREATE_DIAGRAM_TOOL_DEF,
+        CREATE_PLAN_TOOL_DEF,
+        CREATE_DASHBOARD_TOOL_DEF,
+        CREATE_FORM_TOOL_DEF,
+        ASK_CLARIFICATION_TOOL_DEF,
+        VAULT_CONFIG_TOOL_DEF,
+        CHECKLIST_TOOL_DEF,
+    ]
+    if norm_mode == "agent":
+        active_tools.append(SPAWN_SUBAGENT_TOOL_DEF)
+    elif norm_mode == "study":
+        active_tools.append(STUDY_DECK_TOOL_DEF)
     if executor is not None:
         active_tools = [*AGENT_TOOL_DEFS, *active_tools]
 
@@ -4330,7 +4978,7 @@ def stream_agent_completion(
                                 entry["function"]["arguments"] += args_delta
                         elif isinstance(args_delta, dict) and args_delta:
                             entry["function"]["arguments"] = json.dumps(args_delta, ensure_ascii=False)
-                        if not notified_canvas_tc and "create_canvas" in entry["function"]["name"].lower():
+                        if not notified_canvas_tc and _is_canvas_tool_name(entry["function"]["name"]):
                             notified_canvas_tc = True
                             on_phase_change("canvas")
                         if "pdf_generate" in entry["function"]["name"].lower():
@@ -4369,7 +5017,334 @@ def stream_agent_completion(
     all_ui_tool_calls: List[Dict[str, Any]] = []
     combined_canvas_buf = ""
     combined_actions_buf = ""
-    ui_tool_names = {"create_canvas", "ask_clarification", "configure_ai_vault"}
+    ui_tool_names = {"create_canvas", "create_diagram", "create_plan", "create_dashboard", "create_form", "ask_clarification", "configure_ai_vault"}
+    mode_tool_names = {"agent_checklist_update", "spawn_subagent", "study_create_deck"}
+    read_only_subagent_tool_names = {
+        "workspace_list",
+        "workspace_read",
+        "workspace_search",
+        "pdf_read",
+        "memory_search",
+        "query_screen_memory",
+    }
+    subagent_readonly_defs = (
+        [td for td in AGENT_TOOL_DEFS if str((td.get("function") or {}).get("name") or "") in read_only_subagent_tool_names]
+        if executor is not None
+        else []
+    )
+
+    def _resolve_subagent_spec(raw_name: str, raw_model: str, raw_design: str, fallback_model: str) -> Tuple[str, str, str]:
+        nm = (raw_name or "Especialista").strip() or "Especialista"
+        mdl = (raw_model or "").strip()
+        dsn = (raw_design or "").strip().lower()
+        dyn_default_model = ""
+        for item in (subagent_roster or []):
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get("name") or "").strip()
+            if item_name == "__dynamic_default__":
+                dyn_default_model = str(item.get("model") or "").strip()
+                continue
+            if item_name and item_name.lower() == nm.lower():
+                if not mdl or mdl == "auto":
+                    mdl = str(item.get("model") or "").strip()
+                if not dsn:
+                    dsn = str(item.get("design") or "").strip().lower()
+                break
+        if not mdl or mdl == "auto":
+            mdl = dyn_default_model if (dyn_default_model and dyn_default_model != "auto") else fallback_model
+        if dsn not in ("star", "prism", "orbit", "shield"):
+            dsn = "orbit"
+        return nm, mdl, dsn
+
+    def _run_subagent_worker(
+        tc_id: str,
+        args: Dict[str, Any],
+        cur_prov: str,
+        cur_key: str,
+        cur_base_url: str,
+        fallback_model: str,
+    ) -> Dict[str, Any]:
+        sub_name, sub_model, sub_design = _resolve_subagent_spec(
+            str(args.get("name") or "Sub-agente"),
+            str(args.get("model") or "auto"),
+            str(args.get("design") or ""),
+            fallback_model,
+        )
+        if cur_prov != "openrouter" and "/" in sub_model:
+            sub_model = fallback_model
+        sub_role = str(args.get("role") or "Especialista").strip() or "Especialista"
+        sub_task = str(args.get("task") or "").strip()
+        if not sub_task:
+            return {"ok": False, "error": "Falta la instrucción 'task' para el sub-agente."}
+
+        started_sub = time.time()
+        emit_event({
+            "type": "subagent_event",
+            "subagent": {
+                "id": tc_id,
+                "name": sub_name,
+                "role": sub_role,
+                "model": sub_model,
+                "design": sub_design,
+                "status": "running",
+                "task": sub_task,
+            },
+        })
+
+        ctx_snippets = []
+        for item in (attached_context or [])[:4]:
+            if isinstance(item, dict):
+                c_name = str(item.get("name") or "")
+                c_txt = str(item.get("content") or "")[:1500]
+                if c_txt:
+                    ctx_snippets.append(f"[{c_name}]: {c_txt}")
+        ctx_note = ("\n\nCONTEXTO ADJUNTO:\n" + "\n".join(ctx_snippets)) if ctx_snippets else ""
+        ws_files_note = ""
+        if ws_path is not None and executor is not None:
+            try:
+                ws_files = _summarize_workspace_tree(ws_path)[:25]
+                if ws_files:
+                    ws_files_note = "\n\nARCHIVOS REALES DEL ESPACIO:\n- " + "\n- ".join(ws_files)
+            except Exception:
+                pass
+
+        sub_msgs: List[Dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    f"Eres el sub-agente especializado '{sub_name}' ({sub_role}) en XOOK. "
+                    f"Ejecuta la tarea solicitada con rigor, usando tus herramientas nativas cuando necesites consultar archivos reales "
+                    f"(nunca emitas etiquetas XML o DSML en el texto). Devuelve un reporte conciso, directo y verificable en español para el coordinador."
+                    f"{ws_files_note}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"{sub_task}{ctx_note}",
+            },
+        ]
+
+        used_model = sub_model
+        if cur_prov != "openrouter" and "/" in used_model:
+            used_model = fallback_model
+        final_text = ""
+        try:
+            for _sub_round in range(3):
+                sub_payload: Dict[str, Any] = {
+                    "model": used_model,
+                    "messages": sub_msgs,
+                    "temperature": 0.25,
+                    "max_tokens": 2048,
+                }
+                if subagent_readonly_defs and _sub_round < 2:
+                    sub_payload["tools"] = subagent_readonly_defs
+                    sub_payload["tool_choice"] = "auto"
+
+                def _call_sub(p: Dict[str, Any]) -> Dict[str, Any]:
+                    if cur_prov == "anthropic":
+                        return anthropic_chat_completion(cur_key, p, timeout=45)
+                    if cur_prov == "openrouter":
+                        return _http_json(
+                            f"{OPENROUTER_BASE_URL}/chat/completions",
+                            method="POST",
+                            api_key=cur_key,
+                            payload=p,
+                            timeout=45,
+                        )
+                    cp = build_openai_compat_chat_payload(cur_prov, str(p.get("model") or used_model), p)
+                    return _provider_http_json(
+                        cur_prov,
+                        f"{cur_base_url}/chat/completions",
+                        method="POST",
+                        api_key=cur_key,
+                        payload=cp,
+                        timeout=45,
+                    )
+
+                try:
+                    sub_res = _call_sub(sub_payload)
+                except Exception:
+                    if used_model != fallback_model:
+                        used_model = fallback_model
+                        sub_payload["model"] = used_model
+                        sub_res = _call_sub(sub_payload)
+                    else:
+                        sub_payload.pop("tools", None)
+                        sub_payload.pop("tool_choice", None)
+                        sub_res = _call_sub(sub_payload)
+
+                choices = sub_res.get("choices") or []
+                msg_obj = (choices[0].get("message") or {}) if choices else {}
+                raw_sub_text = str(msg_obj.get("content") or "").strip()
+                sub_tcs = msg_obj.get("tool_calls") or []
+                if not sub_tcs and raw_sub_text and "DSML" in raw_sub_text.upper():
+                    final_text, sub_tcs = _parse_and_strip_dsml_calls(raw_sub_text, prefix=f"sub_{_sub_round}")
+                else:
+                    final_text = _strip_dsml_markup(raw_sub_text)
+                if not sub_tcs:
+                    break
+                if executor is None:
+                    sub_msgs.append({"role": "assistant", "content": final_text or ""})
+                    sub_msgs.append({
+                        "role": "user",
+                        "content": "No hay carpeta de workspace adjunta en esta sesión. Responde directamente usando el contexto proporcionado y tu análisis experto, sin emitir llamadas a herramientas.",
+                    })
+                    continue
+
+                sub_parsed = []
+                sub_results = []
+                for s_tc in sub_tcs:
+                    s_fn = s_tc.get("function") if isinstance(s_tc.get("function"), dict) else {}
+                    s_name = str(s_fn.get("name") or "")
+                    s_id = str(s_tc.get("id") or f"sub_{_sub_round}")
+                    s_args = _parse_tool_args(s_fn.get("arguments"))
+                    sub_parsed.append(s_args)
+                    if s_name in read_only_subagent_tool_names and not (isinstance(s_args, dict) and s_args.get("__parse_error__")):
+                        s_res = executor.execute(s_name, s_args)
+                    else:
+                        s_res = {"ok": False, "error": "Herramienta no permitida para sub-agente."}
+                    sub_results.append((s_id, s_res))
+
+                clean_tcs, bad_tcs = _sanitize_tool_calls_for_history(sub_tcs, sub_parsed)
+                if bad_tcs:
+                    break
+                sub_msgs.append({"role": "assistant", "content": final_text, "tool_calls": clean_tcs})
+                for s_id, s_res in sub_results:
+                    sub_msgs.append({"role": "tool", "tool_call_id": s_id, "content": json.dumps(s_res, ensure_ascii=False)})
+
+            if not final_text and sub_msgs and sub_msgs[-1].get("role") == "tool":
+                try:
+                    synth_res = _call_sub({
+                        "model": used_model,
+                        "messages": sub_msgs,
+                        "temperature": 0.25,
+                        "max_tokens": 1500,
+                    })
+                    s_ch = synth_res.get("choices") or []
+                    s_msg = (s_ch[0].get("message") or {}) if s_ch else {}
+                    final_text = _strip_dsml_markup(str(s_msg.get("content") or "").strip())
+                except Exception:
+                    pass
+
+            final_text = _strip_dsml_markup(final_text)
+            elapsed_ms = int((time.time() - started_sub) * 1000)
+            short_summary = " ".join(final_text.split())[:170]
+            if len(final_text) > 170:
+                short_summary += "..."
+            emit_event({
+                "type": "subagent_event",
+                "subagent": {
+                    "id": tc_id,
+                    "name": sub_name,
+                    "role": sub_role,
+                    "model": used_model,
+                    "design": sub_design,
+                    "status": "done",
+                    "task": sub_task,
+                    "summary": short_summary,
+                    "duration_ms": elapsed_ms,
+                },
+            })
+            return {
+                "ok": True,
+                "subagent": sub_name,
+                "role": sub_role,
+                "model_used": used_model,
+                "duration_ms": elapsed_ms,
+                "findings": final_text or "Sin hallazgos adicionales.",
+            }
+        except Exception as exc:
+            elapsed_ms = int((time.time() - started_sub) * 1000)
+            err_msg = str(exc)[:180]
+            emit_event({
+                "type": "subagent_event",
+                "subagent": {
+                    "id": tc_id,
+                    "name": sub_name,
+                    "role": sub_role,
+                    "model": used_model,
+                    "design": sub_design,
+                    "status": "error",
+                    "task": sub_task,
+                    "summary": err_msg,
+                    "duration_ms": elapsed_ms,
+                },
+            })
+            return {"ok": False, "subagent": sub_name, "error": err_msg}
+
+    def _execute_mode_tool_non_subagent(fn_name: str, tc_id: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        if fn_name == "agent_checklist_update":
+            title = str(args.get("title") or "Lista de tareas").strip() or "Lista de tareas"
+            raw_items = args.get("items") if isinstance(args.get("items"), list) else []
+            clean_items: List[Dict[str, Any]] = []
+            for idx_it, raw_it in enumerate(raw_items[:20]):
+                if not isinstance(raw_it, dict):
+                    continue
+                lbl = str(raw_it.get("label") or "").strip()
+                if not lbl:
+                    continue
+                st_val = str(raw_it.get("status") or "pending").strip().lower()
+                if st_val not in ("pending", "in_progress", "done", "error"):
+                    st_val = "pending"
+                item_obj: Dict[str, Any] = {
+                    "id": str(raw_it.get("id") or f"step_{idx_it + 1}"),
+                    "label": lbl,
+                    "status": st_val,
+                }
+                if raw_it.get("assignee"):
+                    item_obj["assignee"] = str(raw_it.get("assignee")).strip()
+                clean_items.append(item_obj)
+            checklist_obj = {
+                "id": f"chk_{int(time.time())}",
+                "title": title,
+                "mode": norm_mode or None,
+                "items": clean_items,
+                "updatedAt": int(time.time() * 1000),
+            }
+            emit_event({"type": "checklist_update", "checklist": checklist_obj})
+            done_cnt = sum(1 for x in clean_items if x["status"] == "done")
+            return {"ok": True, "title": title, "completed": done_cnt, "total": len(clean_items)}
+
+        if fn_name == "study_create_deck":
+            topic = str(args.get("topic") or "Guía de Estudio").strip() or "Guía de Estudio"
+            raw_cards = args.get("cards") if isinstance(args.get("cards"), list) else []
+            clean_cards: List[Dict[str, Any]] = []
+            for idx_c, rc in enumerate(raw_cards[:12]):
+                if not isinstance(rc, dict):
+                    continue
+                fr = str(rc.get("front") or "").strip()
+                bk = str(rc.get("back") or "").strip()
+                if fr and bk:
+                    c_obj: Dict[str, Any] = {"id": f"card_{idx_c + 1}", "front": fr, "back": bk}
+                    if rc.get("hint"):
+                        c_obj["hint"] = str(rc.get("hint")).strip()
+                    clean_cards.append(c_obj)
+            raw_quiz = args.get("quiz") if isinstance(args.get("quiz"), dict) else None
+            clean_quiz = None
+            if raw_quiz and raw_quiz.get("question") and isinstance(raw_quiz.get("options"), list):
+                opts = [str(o).strip() for o in raw_quiz.get("options", []) if str(o).strip()][:5]
+                if opts:
+                    c_idx = int(raw_quiz.get("correct_index") or 0)
+                    if c_idx < 0 or c_idx >= len(opts):
+                        c_idx = 0
+                    clean_quiz = {
+                        "question": str(raw_quiz.get("question")).strip(),
+                        "options": opts,
+                        "correctIndex": c_idx,
+                        "explanation": str(raw_quiz.get("explanation") or "").strip(),
+                    }
+            deck_obj: Dict[str, Any] = {
+                "id": f"deck_{tc_id}",
+                "topic": topic,
+                "cards": clean_cards,
+            }
+            if clean_quiz:
+                deck_obj["quiz"] = clean_quiz
+            emit_event({"type": "study_deck", "deck": deck_obj})
+            return {"ok": True, "topic": topic, "cards_created": len(clean_cards)}
+
+        return {"ok": False, "error": f"Herramienta no soportada: {fn_name}"}
 
     prov_idx = 0
     cand_idx = 0
@@ -4490,7 +5465,7 @@ def stream_agent_completion(
                     on_reply=_round_on_reply,
                     on_phase=on_phase_change,
                 )
-                allow_tools_now = tools_supported and (round_idx < MAX_AGENT_STEPS - 1 or executor is None)
+                allow_tools_now = tools_supported and round_idx < MAX_AGENT_STEPS - 1
                 can_failover_here = (
                     (has_next_candidate or has_next_provider)
                     and round_idx == 0
@@ -4517,9 +5492,15 @@ def stream_agent_completion(
                 exec_calls = [
                     tc for tc in pass_tool_calls
                     if isinstance(tc, dict)
-                    and str((tc.get("function") or {}).get("name") or "") not in ui_tool_names
+                    and (
+                        str((tc.get("function") or {}).get("name") or "") in mode_tool_names
+                        or (
+                            executor is not None
+                            and str((tc.get("function") or {}).get("name") or "") not in ui_tool_names
+                        )
+                    )
                 ]
-                if not exec_calls or executor is None:
+                if not exec_calls:
                     round_reply_text = "".join(round_reply_chunks)
                     round_reas_text = "".join(round_reasoning_chunks)
                     round_actions_parsed = (
@@ -4532,7 +5513,7 @@ def stream_agent_completion(
                             round_reply_text,
                             round_reas_text,
                             pass_meta.get("finish_reason", ""),
-                            tools_available=allow_tools_now and executor is not None,
+                            tools_available=allow_tools_now and (executor is not None or bool(mode_tool_names)),
                             has_canvas=bool(all_ui_tool_calls or round_router.canvas_buf.strip()),
                             has_actions=bool(round_actions_parsed.get("tasks") or round_actions_parsed.get("clarification")),
                             has_staged_tasks=bool(executor is not None and executor.staged_tasks),
@@ -4563,6 +5544,55 @@ def stream_agent_completion(
                 parsed_pass_args: List[Dict[str, Any]] = []
                 pass_tool_results: List[Tuple[str, Dict[str, Any]]] = []
 
+                # Pre-despachar en paralelo todas las llamadas a `spawn_subagent` de esta ronda
+                subagent_jobs: List[Tuple[int, str, str, Dict[str, Any]]] = []
+                parsed_by_idx: Dict[int, Dict[str, Any]] = {}
+                for idx, tc in enumerate(pass_tool_calls):
+                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                    fn_name = str(fn.get("name") or "")
+                    tc_id = str(tc.get("id") or f"call_{round_idx}_{idx}")
+                    if fn_name in ui_tool_names:
+                        parsed_by_idx[idx] = {}
+                    else:
+                        p_args = _parse_tool_args(fn.get("arguments"))
+                        parsed_by_idx[idx] = p_args
+                        if fn_name == "spawn_subagent" and not (isinstance(p_args, dict) and p_args.get("__parse_error__")):
+                            subagent_jobs.append((idx, tc_id, fn_name, p_args))
+                            step_id = f"tool_{round_idx}_{idx}_{fn_name}"
+                            label, detail = _tool_step_meta(fn_name, p_args)
+                            _upsert_step(step_id, label, "running", detail=detail or None)
+
+                precomputed_sub_res: Dict[str, Dict[str, Any]] = {}
+                if subagent_jobs:
+                    cur_sub_base_url = resolve_provider_base_url(active_provider, active_region)
+                    emit_event({"type": "phase", "xox_state": "syncing", "label": f"Coordinando {len(subagent_jobs)} sub-agente(s)..."})
+                    emit_event({"type": "steps", "steps": steps})
+                    if len(subagent_jobs) == 1:
+                        _, s_tc_id, _, s_args = subagent_jobs[0]
+                        precomputed_sub_res[s_tc_id] = _run_subagent_worker(
+                            s_tc_id, s_args, active_provider, active_key, cur_sub_base_url, cand_model
+                        )
+                    else:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(subagent_jobs))) as pool:
+                            fut_map = {
+                                pool.submit(
+                                    _run_subagent_worker,
+                                    s_tc_id,
+                                    s_args,
+                                    active_provider,
+                                    active_key,
+                                    cur_sub_base_url,
+                                    cand_model,
+                                ): s_tc_id
+                                for _, s_tc_id, _, s_args in subagent_jobs
+                            }
+                            for fut in concurrent.futures.as_completed(fut_map):
+                                s_tc_id = fut_map[fut]
+                                try:
+                                    precomputed_sub_res[s_tc_id] = fut.result()
+                                except Exception as sub_exc:
+                                    precomputed_sub_res[s_tc_id] = {"ok": False, "error": str(sub_exc)}
+
                 for idx, tc in enumerate(pass_tool_calls):
                     fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
                     fn_name = str(fn.get("name") or "")
@@ -4571,7 +5601,7 @@ def stream_agent_completion(
                         parsed_pass_args.append({})
                         pass_tool_results.append((tc_id, {"ok": True, "recorded": fn_name}))
                     else:
-                        args = _parse_tool_args(fn.get("arguments"))
+                        args = parsed_by_idx.get(idx, {})
                         parsed_pass_args.append(args)
                         step_id = f"tool_{round_idx}_{idx}_{fn_name}"
                         if isinstance(args, dict) and args.get("__parse_error__"):
@@ -4581,28 +5611,37 @@ def stream_agent_completion(
                             tool_res = {"ok": False, "error": str(args["__parse_error__"])}
                         else:
                             label, detail = _tool_step_meta(fn_name, args)
-                            _upsert_step(step_id, label, "running", detail=detail or None)
-                            phase_state = (
-                                "reading"
-                                if fn_name
-                                in (
-                                    "workspace_list",
-                                    "workspace_read",
-                                    "workspace_search",
-                                    "pdf_read",
-                                    "list_desktop_apps",
-                                    "os_list_notes",
-                                    "os_list_calendar_events",
-                                    "read_screen_now",
-                                    "query_screen_memory",
-                                    "memory_search",
+                            if fn_name == "spawn_subagent":
+                                tool_res = precomputed_sub_res.get(tc_id) or {"ok": False, "error": "Sub-agente no completado."}
+                            elif fn_name in mode_tool_names:
+                                _upsert_step(step_id, label, "running", detail=detail or None)
+                                emit_event({"type": "phase", "xox_state": "syncing", "label": f"{label}..."})
+                                emit_event({"type": "steps", "steps": steps})
+                                tool_res = _execute_mode_tool_non_subagent(fn_name, tc_id, args)
+                            elif executor is not None:
+                                _upsert_step(step_id, label, "running", detail=detail or None)
+                                phase_state = (
+                                    "reading"
+                                    if fn_name
+                                    in (
+                                        "workspace_list",
+                                        "workspace_read",
+                                        "workspace_search",
+                                        "pdf_read",
+                                        "list_desktop_apps",
+                                        "os_list_notes",
+                                        "os_list_calendar_events",
+                                        "read_screen_now",
+                                        "query_screen_memory",
+                                        "memory_search",
+                                    )
+                                    else "syncing"
                                 )
-                                else "syncing"
-                            )
-                            emit_event({"type": "phase", "xox_state": phase_state, "label": f"{label}..."})
-                            emit_event({"type": "steps", "steps": steps})
-
-                            tool_res = executor.execute(fn_name, args)
+                                emit_event({"type": "phase", "xox_state": phase_state, "label": f"{label}..."})
+                                emit_event({"type": "steps", "steps": steps})
+                                tool_res = executor.execute(fn_name, args)
+                            else:
+                                tool_res = {"ok": False, "error": f"Herramienta no disponible sin workspace: {fn_name}"}
                             _upsert_step(
                                 step_id,
                                 label,
@@ -4782,7 +5821,18 @@ def stream_agent_completion(
     )
 
     if canvas_obj is not None:
-        _upsert_step("build_canvas", f'Tabla lista en Canvas: "{canvas_obj["title"]}"', "done")
+        step_canvas_label = (
+            f'Plan listo en Canvas: "{canvas_obj["title"]}"'
+            if isinstance(canvas_obj.get("plan"), dict)
+            else f'Dashboard listo en Canvas: "{canvas_obj["title"]}"'
+            if isinstance(canvas_obj.get("dashboard"), dict)
+            else f'{"Cuestionario" if canvas_obj["form"].get("purpose") == "study_quiz" else "Formulario"} listo en Canvas: "{canvas_obj["title"]}"'
+            if isinstance(canvas_obj.get("form"), dict)
+            else f'Diagrama listo en Canvas: "{canvas_obj["title"]}"'
+            if isinstance(canvas_obj.get("diagram"), dict)
+            else f'Tabla lista en Canvas: "{canvas_obj["title"]}"'
+        )
+        _upsert_step("build_canvas", step_canvas_label, "done")
         saved_report_path = _maybe_save_canvas_report(ws_path, canvas_obj, all_ui_tool_calls)
         if saved_report_path and executor is not None:
             executor.workspace_mutated = True
@@ -4791,16 +5841,25 @@ def stream_agent_completion(
         emit_event({"type": "steps", "steps": steps})
 
         if all_ui_tool_calls and not full_reply:
+            followup_instruction = (
+                "El plan maestro ya está abierto en Canvas para revisión y aprobación del usuario. Responde únicamente con 1 a 3 oraciones breves en español explicando que puede revisar, comentar pasos o aprobar para ejecutar."
+                if isinstance(canvas_obj.get("plan"), dict)
+                else "El dashboard ya está abierto en Canvas con KPIs y gráficas interactivas. Responde únicamente con 1 a 3 oraciones breves en español destacando la conclusión principal y recomendación."
+                if isinstance(canvas_obj.get("dashboard"), dict)
+                else "El formulario/cuestionario ya está abierto en Canvas. Responde únicamente con 1 a 3 oraciones breves en español invitando al usuario a responderlo directamente ahí (sin repetir las preguntas ni revelar respuestas)."
+                if isinstance(canvas_obj.get("form"), dict)
+                else "El diagrama ya está abierto en Canvas. Responde únicamente con 1 a 3 oraciones breves en español resumiendo lo esencial sin repetir el diagrama en texto."
+                if isinstance(canvas_obj.get("diagram"), dict)
+                else "La tabla ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves de conclusión en español directamente en Markdown (sin etiquetas XML). NO repitas la tabla ni escribas HTML."
+            )
             tool_result_content = json.dumps(
                 {
                     "ok": True,
                     "canvas_title": canvas_obj["title"],
+                    "canvas_kind": canvas_obj.get("kind"),
                     "columns": len(canvas_obj["columns"]),
                     "rows": len(canvas_obj["rows"]),
-                    "instruction": (
-                        "La tabla ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves "
-                        "de conclusión en español directamente en Markdown (sin etiquetas XML). NO repitas la tabla ni escribas HTML."
-                    ),
+                    "instruction": followup_instruction,
                 },
                 ensure_ascii=False,
             )
@@ -4830,9 +5889,7 @@ def stream_agent_completion(
                 pass
 
         if not full_reply:
-            summary_msg = f'Listo, preparé "{canvas_obj["title"]}" en Canvas ({len(canvas_obj["rows"])} filas y {len(canvas_obj["columns"])} columnas).'
-            if canvas_obj.get("summary"):
-                summary_msg += f"\n\n{canvas_obj['summary']}"
+            summary_msg = _format_canvas_summary_reply(canvas_obj)
             on_reply_delta(summary_msg)
             full_reply = summary_msg
 
@@ -4840,10 +5897,8 @@ def stream_agent_completion(
     has_tabular_canvas = bool(canvas_obj and canvas_obj.get("columns") and canvas_obj.get("rows"))
     if full_reply:
         cleaned_reply = clean_visible_reply(full_reply, strip_tables=has_tabular_canvas)
-        if not cleaned_reply and has_tabular_canvas and canvas_obj is not None:
-            cleaned_reply = f'Listo, preparé "{canvas_obj["title"]}" en Canvas ({len(canvas_obj["rows"])} filas y {len(canvas_obj["columns"])} columnas).'
-            if canvas_obj.get("summary"):
-                cleaned_reply += f"\n\n{canvas_obj['summary']}"
+        if not cleaned_reply and canvas_obj is not None:
+            cleaned_reply = _format_canvas_summary_reply(canvas_obj)
         full_reply = cleaned_reply or full_reply
 
     safe_tasks, operation, mood, clarification_obj = _normalize_agent_actions(

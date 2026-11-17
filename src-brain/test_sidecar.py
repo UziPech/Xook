@@ -277,7 +277,223 @@ def test_canvas_schema_and_stream_router():
     assert c_flex["rows"][0]["highlight"] == "recommended"
     assert c_flex["rows"][0]["badge"] == "Principal"
     assert c_flex["rows"][1]["cells"] == {"col_a": "Industria", "col_b": "33%"}
-    print("✅ Canvas schema, StreamTagRouter y tool_calls verificados correctamente.")
+
+    # 9. Canvas tipo Diagrama (`create_diagram`) y Plan Maestro (`create_plan`)
+    diag_calls = [
+        {
+            "id": "call_diag_1",
+            "type": "function",
+            "function": {
+                "name": "create_diagram",
+                "arguments": json.dumps(
+                    {
+                        "title": "Flujo de Aprobación de Compras",
+                        "diagram_type": "flowchart",
+                        "direction": "LR",
+                        "nodes": [
+                            {"id": "n1", "label": "Solicitud", "shape": "pill", "tone": "accent"},
+                            {"id": "n2", "label": "¿Supera $10,000?", "shape": "diamond", "tone": "warning"},
+                            {"id": "n3", "label": "Aprobar Dirección", "shape": "rounded", "tone": "success"},
+                        ],
+                        "edges": [
+                            {"from": "n1", "to": "n2"},
+                            {"from": "n2", "to": "n3", "label": "Sí"},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        }
+    ]
+    diag_canvas = _extract_canvas_from_tool_calls(diag_calls)
+    assert diag_canvas is not None
+    assert diag_canvas["kind"] == "diagram"
+    assert canvas_has_cell_data(diag_canvas)
+    assert len(diag_canvas["diagram"]["nodes"]) == 3
+    assert diag_canvas["diagram"]["edges"][1]["label"] == "Sí"
+
+    plan_calls = [
+        {
+            "id": "call_plan_1",
+            "type": "function",
+            "function": {
+                "name": "create_plan",
+                "arguments": json.dumps(
+                    {
+                        "title": "Plan de Auditoría de Inventario",
+                        "goal": "Detectar quiebres de stock y proponer reposición óptima.",
+                        "scope": ["datos/catalogo.csv", "empresa/reglas/operacion.md"],
+                        "phases": [
+                            {
+                                "id": "p1",
+                                "title": "Lectura de datos",
+                                "steps": [
+                                    {"id": "s1", "title": "Leer catálogo", "target": "datos/catalogo.csv", "risk": "low"},
+                                    {"id": "s2", "title": "Cruzar mínimos", "depends_on": ["s1"], "risk": "medium"},
+                                ],
+                            }
+                        ],
+                        "risks": [{"level": "medium", "text": "Precios desactualizados", "mitigation": "Validar con usuario"}],
+                        "assumptions": ["Moneda en MXN"],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        }
+    ]
+    plan_canvas = _extract_canvas_from_tool_calls(plan_calls)
+    assert plan_canvas is not None
+    assert plan_canvas["kind"] == "plan"
+    assert canvas_has_cell_data(plan_canvas)
+    assert plan_canvas["plan"]["status"] == "draft"
+    assert plan_canvas["plan"]["phases"][0]["steps"][1]["dependsOn"] == ["s1"]
+    assert plan_canvas["plan"]["phases"][0]["steps"][0]["checked"] is True
+
+    mermaid_reply = "Aquí está el flujo:\n```mermaid\nflowchart TD\nA[Inicio] --> B[Fin]\n```"
+    mermaid_canvas = _resolve_canvas_artifact(
+        tool_calls=[],
+        canvas_buf="",
+        actions_canvas=None,
+        full_reply=mermaid_reply,
+        user_message="Hazme un diagrama de flujo",
+    )
+    assert mermaid_canvas is not None
+    assert mermaid_canvas["kind"] == "diagram"
+    assert "flowchart TD" in mermaid_canvas["diagram"]["mermaid"]
+
+    # 10. Mini-Dashboard (`create_dashboard`) con KPIs, gráficas y tabla de respaldo
+    dash_calls = [
+        {
+            "id": "call_dash_1",
+            "type": "function",
+            "function": {
+                "name": "create_dashboard",
+                "arguments": json.dumps(
+                    {
+                        "title": "Dashboard de Ventas y Stock Q4",
+                        "subtitle": "Sucursal Centro",
+                        "summary": "Café en Grano concentra el 45% de ingresos pero requiere reposición urgente.",
+                        "kpis": [
+                            {"label": "Ventas Mes", "value": "$124,500", "delta": "+14%", "tone": "positive", "progress": 82},
+                            {"label": "SKUs Críticos", "value": "3", "delta": "+1", "delta_tone": "negative", "tone": "critical"},
+                        ],
+                        "charts": [
+                            {
+                                "title": "Ingresos por Categoría",
+                                "chart_type": "bar",
+                                "categories": ["Bebidas", "Grano", "Panadería"],
+                                "series": [{"name": "MXN", "values": [56000, 44500, 24000], "tone": "accent"}],
+                                "value_format": "currency",
+                                "target_value": 40000,
+                            },
+                            {
+                                "title": "Participación",
+                                "chart_type": "donut",
+                                "data": [{"label": "Bebidas", "value": "$56,000"}, {"label": "Grano", "value": "$44,500"}],
+                                "value_format": "currency",
+                            },
+                        ],
+                        "insights": [
+                            {"tone": "warning", "title": "Alerta de quiebre", "text": "Grano Espresso queda con 2 días de inventario."}
+                        ],
+                        "columns": ["Producto", "Ventas", "Stock"],
+                        "rows": [["Espresso 1kg", "$44,500", "4 un."], ["Latte", "$32,000", "35 un."]],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        }
+    ]
+    dash_canvas = _extract_canvas_from_tool_calls(dash_calls)
+    assert dash_canvas is not None
+    assert dash_canvas["kind"] == "dashboard"
+    assert canvas_has_cell_data(dash_canvas)
+    assert len(dash_canvas["dashboard"]["kpis"]) == 2
+    assert dash_canvas["dashboard"]["kpis"][0]["deltaTone"] == "positive"
+    assert len(dash_canvas["dashboard"]["charts"]) == 2
+    assert dash_canvas["dashboard"]["charts"][1]["series"][0]["values"] == [56000.0, 44500.0]
+    assert len(dash_canvas["columns"]) == 3 and len(dash_canvas["rows"]) == 2
+
+    # 11. Formulario y Cuestionario de Estudio (`create_form`)
+    quiz_calls = [
+        {
+            "id": "call_form_1",
+            "type": "function",
+            "function": {
+                "name": "create_form",
+                "arguments": json.dumps(
+                    {
+                        "title": "Repaso de Finanzas Operativas",
+                        "subtitle": "Margen y punto de equilibrio",
+                        "description": "Responde y verifica tus respuestas antes de enviar.",
+                        "purpose": "study_quiz",
+                        "passing_score_percent": 75,
+                        "fields": [
+                            {
+                                "id": "q1",
+                                "label": "¿Qué mide el margen bruto?",
+                                "type": "single_choice",
+                                "options": ["Ventas menos costo directo", "Solo gastos fijos", "Impuestos netos"],
+                                "correct_answer": "A",
+                                "hint": "Piensa en ingresos directos vs costo de lo vendido.",
+                                "explanation": "Margen bruto = Ventas - Costo de bienes vendidos.",
+                            },
+                            {
+                                "id": "q2",
+                                "label": "Selecciona cuáles son costos variables",
+                                "type": "multi_choice",
+                                "options": ["Materia prima", "Renta mensual fija", "Empaque por unidad"],
+                                "correct_indices": [0, 2],
+                            },
+                            {
+                                "id": "q3",
+                                "label": "El punto de equilibrio ocurre cuando utilidad neta = 0",
+                                "type": "true_false",
+                                "correct_answer": True,
+                            },
+                            {
+                                "id": "q4",
+                                "label": "Explica con un ejemplo cómo reducirías merma",
+                                "type": "long_text",
+                                "required": True,
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        }
+    ]
+    quiz_canvas = _extract_canvas_from_tool_calls(quiz_calls)
+    assert quiz_canvas is not None
+    assert quiz_canvas["kind"] == "form"
+    assert canvas_has_cell_data(quiz_canvas)
+    assert quiz_canvas["form"]["purpose"] == "study_quiz"
+    assert quiz_canvas["form"]["passingScorePercent"] == 75
+    assert len(quiz_canvas["form"]["fields"]) == 4
+    assert quiz_canvas["form"]["fields"][0]["correctIndex"] == 0
+    assert quiz_canvas["form"]["fields"][1]["correctIndices"] == [0, 2]
+    assert quiz_canvas["form"]["fields"][2]["options"] == ["Verdadero", "Falso"]
+    assert quiz_canvas["form"]["fields"][2]["correctIndex"] == 0
+    assert quiz_canvas["form"]["fields"][3]["required"] is True
+
+    capture_canvas = sanitize_canvas_artifact({
+        "kind": "form",
+        "title": "Alta rápida de proveedor",
+        "purpose": "data_capture",
+        "fields": [
+            {"id": "prov", "label": "Nombre comercial", "type": "short_text", "required": True},
+            {"id": "lead", "label": "Tiempo de entrega (días)", "type": "number"},
+            {"id": "calif", "label": "Confianza inicial", "type": "rating"},
+        ],
+        "answers": {"prov": "Café Sierra", "lead": 3, "calif": 5},
+        "submitted": True,
+    })
+    assert capture_canvas is not None
+    assert capture_canvas["form"]["purpose"] == "data_capture"
+    assert capture_canvas["form"]["answers"]["prov"] == "Café Sierra"
+    assert capture_canvas["form"]["submitted"] is True
+    print("✅ Canvas schema (tabla, diagrama, plan, dashboard, form), StreamTagRouter y tool_calls verificados correctamente.")
 
 
 def test_task_normalization_and_clarification():

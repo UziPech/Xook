@@ -803,13 +803,21 @@ export const QuickBar: React.FC = () => {
     const typedPrompt = inputPrompt.trim();
     const promptToSend = lastPromptRef.current || typedPrompt || null;
     const rawReply = reply?.trim() ? reply : null;
-    const rawCanvas = resolveQuickPreviewCanvas(
-      lastCanvasRef.current ?? quickCanvas,
-      rawReply,
-      promptToSend || "Tabla rápida"
+    const directCanvas = lastCanvasRef.current ?? quickCanvas;
+    const sanitizedDirect = directCanvas ? sanitizeCanvasArtifact(directCanvas) : null;
+    const rawCanvas =
+      sanitizedDirect && canvasHasCellData(sanitizedDirect)
+        ? sanitizedDirect
+        : resolveQuickPreviewCanvas(
+            directCanvas,
+            rawReply,
+            promptToSend || "Tabla rápida"
+          );
+    const hasTabularQuick = Boolean(
+      rawCanvas && rawCanvas.columns.length > 0 && rawCanvas.rows.length > 0
     );
     const responseToSend = rawReply
-      ? cleanVisibleReply(rawReply, { stripTables: Boolean(rawCanvas) }) || rawReply
+      ? cleanVisibleReply(rawReply, { stripTables: hasTabularQuick }) || rawReply
       : rawCanvas
         ? `Listo, preparé "${rawCanvas.title}" en Canvas.`
         : null;

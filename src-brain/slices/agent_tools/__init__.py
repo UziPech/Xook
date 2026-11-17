@@ -1,7 +1,15 @@
 from .toolkit import (
     AGENT_TOOL_DEFS,
+    CHECKLIST_TOOL_DEF,
+    SPAWN_SUBAGENT_TOOL_DEF,
+    STUDY_DECK_TOOL_DEF,
     WorkspaceToolExecutor,
 )
 
-__all__ = ["AGENT_TOOL_DEFS", "WorkspaceToolExecutor"]
-
+__all__ = [
+    "AGENT_TOOL_DEFS",
+    "CHECKLIST_TOOL_DEF",
+    "SPAWN_SUBAGENT_TOOL_DEF",
+    "STUDY_DECK_TOOL_DEF",
+    "WorkspaceToolExecutor",
+]

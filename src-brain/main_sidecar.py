@@ -6,6 +6,7 @@ consultar la memoria local y generar tarjetas de acción sin tecnicismos.
 
 import sys
 import json
+import threading
 from pathlib import Path
 from slices.task_ui.schemas import sanitize_task_proposal
 from slices.ai_service.openrouter_client import (
@@ -243,21 +244,26 @@ def handle_rpc_request(request_line):
                 xox_config_dir=params.get("xox_config_dir"),
                 global_xox_profile=params.get("global_xox_profile"),
                 tts_config=params.get("tts_config"),
+                active_mode=params.get("active_mode"),
+                subagent_roster=params.get("subagent_roster"),
             )
         elif method == "ai_chat_stream":
             stream_id = params.get("stream_id")
             ws_root = params.get("workspace_root")
+            _stdout_lock = threading.Lock()
 
             def _emit_stream(ev):
                 payload = {"stream": True, "stream_id": stream_id, "event": ev}
-                sys.stdout.write(json.dumps(payload) + "\n")
-                sys.stdout.flush()
+                with _stdout_lock:
+                    sys.stdout.write(json.dumps(payload) + "\n")
+                    sys.stdout.flush()
 
             def _stream_command_bridge(req_payload):
                 payload = {"stream": True, "stream_id": stream_id, **req_payload}
-                sys.stdout.write(json.dumps(payload) + "\n")
-                sys.stdout.flush()
-                resp_line = sys.stdin.readline()
+                with _stdout_lock:
+                    sys.stdout.write(json.dumps(payload) + "\n")
+                    sys.stdout.flush()
+                    resp_line = sys.stdin.readline()
                 if not resp_line:
                     return {"ok": False, "status": "eof", "error": "Canal de permisos cerrado antes de responder."}
                 resp_obj = json.loads(resp_line.strip())
@@ -287,6 +293,8 @@ def handle_rpc_request(request_line):
                 xox_config_dir=params.get("xox_config_dir"),
                 global_xox_profile=params.get("global_xox_profile"),
                 tts_config=params.get("tts_config"),
+                active_mode=params.get("active_mode"),
+                subagent_roster=params.get("subagent_roster"),
             )
         elif method == "test_ai_key":
             prov = str(params.get("provider") or "openrouter")

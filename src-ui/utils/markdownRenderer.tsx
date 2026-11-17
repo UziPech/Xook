@@ -70,6 +70,13 @@ const NAMED_HTML_ENTITIES: Record<string, string> = {
   trade: "™",
   check: "✓",
   cross: "✗",
+  euro: "€",
+  pound: "£",
+  sup2: "²",
+  sup3: "³",
+  frac12: "½",
+  frac14: "¼",
+  frac34: "¾",
 };
 
 const LATEX_SYMBOLS: Array<[RegExp, string]> = [
@@ -126,6 +133,9 @@ const LATEX_SYMBOLS: Array<[RegExp, string]> = [
   [/\\cdots\b/g, "⋯"],
   [/\\ldots\b/g, "…"],
   [/\\dots\b/g, "…"],
+  [/\\checkmark\b/g, "✓"],
+  [/\\star\b/g, "★"],
+  [/\\euro\b/g, "€"],
   [/\\degree\b/g, "°"],
   [/\^\\circ\b/g, "°"],
   [/\\alpha\b/g, "α"],
@@ -209,10 +219,113 @@ const ESCAPABLE_PUNCTUATION = new Set([
   "|",
   "~",
   "$",
+  "%",
   "^",
   "<",
   ">",
 ]);
+
+const BARE_LATEX_SYMBOL_MAP: Record<string, string> = {
+  rightarrow: "→",
+  to: "→",
+  leftarrow: "←",
+  leftrightarrow: "↔",
+  Rightarrow: "⇒",
+  Leftarrow: "⇐",
+  Leftrightarrow: "⇔",
+  approx: "≈",
+  neq: "≠",
+  ne: "≠",
+  leq: "≤",
+  le: "≤",
+  geq: "≥",
+  ge: "≥",
+  times: "×",
+  pm: "±",
+  infty: "∞",
+  checkmark: "✓",
+  star: "★",
+  euro: "€",
+  degree: "°",
+};
+
+const BARE_LATEX_SYMBOL_RE =
+  /^\\(leftrightarrow|rightarrow|leftarrow|Leftrightarrow|Rightarrow|Leftarrow|checkmark|approx|degree|infty|times|star|euro|neq|leq|geq|ne|le|ge|pm|to)(?![a-zA-Z])/;
+
+/**
+ * Finds a safe inline `$ ... $` LaTeX math span without confusing currency amounts (`$599`).
+ */
+function findInlineDollarMathEnd(text: string, startIdx: number): number {
+  if (text[startIdx] !== "$" || text[startIdx + 1] === "$") return -1;
+  const prev = startIdx > 0 ? text[startIdx - 1] : "";
+  if (prev === "\\" || isWordChar(prev)) return -1;
+  const firstInner = text[startIdx + 1];
+  if (!firstInner || /\s/.test(firstInner)) return -1;
+
+  let cursor = startIdx + 1;
+  while (cursor < text.length) {
+    if (text[cursor] === "\\" && cursor + 1 < text.length) {
+      cursor += 2;
+      continue;
+    }
+    if (text[cursor] === "\n") return -1;
+    if (text[cursor] === "$") {
+      if (text[cursor + 1] === "$") return -1;
+      const beforeClose = text[cursor - 1];
+      const afterClose = text[cursor + 1];
+      if (!beforeClose || /\s/.test(beforeClose) || isWordChar(afterClose)) {
+        return -1;
+      }
+      const inner = text.slice(startIdx + 1, cursor);
+      if (
+        /^[\d,.\s]+(?:\s*(?:mxn|usd|eur|cad|gbp|pesos?))?$/i.test(inner) ||
+        /^\d[\d.,]*\s*[-–/]\s*$/.test(inner)
+      ) {
+        return -1;
+      }
+      const looksMath =
+        /[\\^_{}=<>±×÷√∑∏∫≤≥≠≈α-ωΑ-Ω]/.test(inner) ||
+        /^[a-zA-Z][a-zA-Z0-9\s+\-*/().,]*[+\-*/=<>][a-zA-Z0-9\s+\-*/().,]+$/.test(inner);
+      return looksMath ? cursor : -1;
+    }
+    cursor += 1;
+  }
+  return -1;
+}
+
+/**
+ * Strips inline Markdown & simple HTML/LaTeX delimiters down to readable plain text
+ * (useful for numeric sorting, CSV exports, and badge tone matching).
+ */
+export function stripInlineMarkdownText(input: string): string {
+  if (!input) return "";
+  let out = decodeSafeHtmlEntities(input)
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<\/?(?:strong|b|em|i|code|kbd|s|del|u|sup|sub|mark|small)\b[^>]*>/gi, "")
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner: string) => formatLatexMath(inner))
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner: string) => formatLatexMath(inner))
+    .replace(/\$\$([\s\S]*?)\$\$/g, (_m, inner: string) => formatLatexMath(inner))
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, (_m, alt: string) => alt || "Imagen")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/`+([^`]*)`+/g, "$1");
+
+  for (let pass = 0; pass < 3; pass += 1) {
+    out = out
+      .replace(/(\*\*\*|___)(?=\S)([\s\S]*?\S)\1/g, "$2")
+      .replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, "$2")
+      .replace(/~~(?=\S)([\s\S]*?\S)~~/g, "$1")
+      .replace(/(^|[^\p{L}\p{N}])([*_])(?=\S)([^\n]*?\S)\2(?=$|[^\p{L}\p{N}])/gu, "$1$3");
+  }
+
+  return out
+    .replace(
+      /(^|[^a-zA-Z0-9_:\\/])\\(leftrightarrow|rightarrow|leftarrow|Leftrightarrow|Rightarrow|Leftarrow|checkmark|approx|degree|infty|times|star|euro|neq|leq|geq|ne|le|ge|pm|to)(?![a-zA-Z])/g,
+      (_m, prefix: string, sym: string) => `${prefix}${BARE_LATEX_SYMBOL_MAP[sym] ?? `\\${sym}`}`
+    )
+    .replace(/\\([\\`*{}\[\]()#+\-.!|~$%^<>])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 /**
  * Decodes common HTML entities in plain Markdown text while leaving numeric
@@ -590,6 +703,21 @@ export function renderInlineMarkdown(
       }
     }
 
+    if (input[i] === "$") {
+      const closeDollarIdx = findInlineDollarMathEnd(input, i);
+      if (closeDollarIdx !== -1) {
+        const inner = input.slice(i + 1, closeDollarIdx);
+        flushPlain();
+        nodes.push(
+          <span key={`${keyPrefix}-dm-${tokenIdx++}`} className={styles.math}>
+            {formatLatexMath(inner)}
+          </span>
+        );
+        i = closeDollarIdx + 1;
+        continue;
+      }
+    }
+
     // 2. Backslash escapes (\*, \`, \_, \\, \$100, etc.) & backslash line breaks
     if (input[i] === "\\" && i + 1 < input.length) {
       const next = input[i + 1];
@@ -607,6 +735,14 @@ export function renderInlineMarkdown(
         plainBuf += next;
         i += 2;
         continue;
+      }
+      if (i === 0 || !/[a-zA-Z0-9_:\\/]/.test(input[i - 1])) {
+        const bareSymMatch = input.slice(i).match(BARE_LATEX_SYMBOL_RE);
+        if (bareSymMatch) {
+          plainBuf += BARE_LATEX_SYMBOL_MAP[bareSymMatch[1]] ?? bareSymMatch[0];
+          i += bareSymMatch[0].length;
+          continue;
+        }
       }
     }
 
@@ -685,7 +821,7 @@ export function renderInlineMarkdown(
 
       const tagMatch = input
         .slice(i)
-        .match(/^<(strong|b|em|i|code|kbd|s|del|u)>([\s\S]*?)<\/\1>/i);
+        .match(/^<(strong|b|em|i|code|kbd|s|del|u|sup|sub|mark|small)>([\s\S]*?)<\/\1>/i);
       if (tagMatch) {
         const tag = tagMatch[1].toLowerCase();
         const inner = tagMatch[2];
@@ -726,6 +862,30 @@ export function renderInlineMarkdown(
               <span key={key} className="underline underline-offset-2">
                 {children}
               </span>
+            );
+          } else if (tag === "sup") {
+            nodes.push(
+              <sup key={key} className="text-[0.75em] align-super">
+                {children}
+              </sup>
+            );
+          } else if (tag === "sub") {
+            nodes.push(
+              <sub key={key} className="text-[0.75em] align-sub">
+                {children}
+              </sub>
+            );
+          } else if (tag === "mark") {
+            nodes.push(
+              <mark key={key} className="px-1 rounded bg-white/[0.14] text-white">
+                {children}
+              </mark>
+            );
+          } else if (tag === "small") {
+            nodes.push(
+              <small key={key} className="text-[0.85em] text-zinc-300">
+                {children}
+              </small>
             );
           } else {
             nodes.push(

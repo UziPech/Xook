@@ -1,4 +1,9 @@
 import React, { useEffect, useId, useMemo, useRef } from "react";
+import {
+  SUBAGENT_GLASS_PALETTE,
+  SUBAGENT_SHAPE_GEOMETRY,
+  type SubagentDesign,
+} from "../features/ai-service/agentModeTypes";
 
 export type XoxState =
   | "idle"
@@ -145,6 +150,13 @@ export function getXoxBubbleVars(accentPreset?: string | null): React.CSSPropert
   } as React.CSSProperties;
 }
 
+export interface XoxSubagentOrbitItem {
+  id: string;
+  name: string;
+  design?: "star" | "prism" | "orbit" | "shield";
+  status: "pending" | "running" | "done" | "error";
+}
+
 interface XoxStarProps {
   state?: XoxState;
   /** Tamaño total del lienzo (incluye el aura). La estrella ocupa ~55%. */
@@ -169,6 +181,8 @@ interface XoxStarProps {
   glideTrigger?: number;
   /** Dirección del impulso lateral ("right" = se desliza hacia la derecha, "left" = hacia la izquierda). */
   glideDir?: "right" | "left";
+  /** Satélites orbitales opcionales representando sub-agentes trabajando con Xox. */
+  subagents?: XoxSubagentOrbitItem[];
 }
 
 /**
@@ -459,6 +473,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   accentPreset = "classic",
   glideTrigger,
   glideDir = "right",
+  subagents,
 }) => {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const ids = {
@@ -499,6 +514,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const talkWave1Ref = useRef<SVGPathElement>(null);
   const talkWave2Ref = useRef<SVGPathElement>(null);
   const sparkRefs = useRef<(SVGCircleElement | null)[]>([]);
+  const subagentSatRefs = useRef<(SVGGElement | null)[]>([]);
+  const subagentsRef = useRef<XoxSubagentOrbitItem[] | undefined>(subagents);
+  subagentsRef.current = subagents;
   const syncPathRefs = useRef<(SVGPathElement | null)[]>([]);
   const syncArrowRefs = useRef<(SVGPolygonElement | null)[]>([]);
   const lensHandleRef = useRef<SVGLineElement>(null);
@@ -1119,6 +1137,38 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         el.setAttribute("fill", i === 1 ? cAccessory : i === 2 ? cRim1 : "#FFFFFF");
       });
 
+      // --- Satélites orbitales de sub-agentes activos (mini-Xox pequeños con cristal nítido) ---
+      const currentSubs = subagentsRef.current ?? [];
+      if (currentSubs.length > 0) {
+        const satTotal = Math.min(currentSubs.length, 6);
+        const anyRunning = currentSubs.some((s) => s.status === "running");
+        const satSpeed = anyRunning ? 0.68 : 0.24;
+        subagentSatRefs.current.forEach((el, i) => {
+          if (!el || i >= satTotal) return;
+          const sat = currentSubs[i];
+          const isRunning = sat.status === "running";
+          const isDone = sat.status === "done";
+          const ang = (a.reduce ? 0 : t * satSpeed) + (i / satTotal) * Math.PI * 2;
+          const rx = 98;
+          const ry = 52;
+          const sx = C + Math.cos(ang) * rx;
+          const sy = C + bob * 0.42 + Math.sin(ang) * ry;
+          const depth = 0.5 + 0.5 * Math.sin(ang);
+          const pulse = isRunning && !a.reduce ? 1 + 0.12 * Math.sin(t * 6.2 + i) : 1;
+          const satScale = (0.76 + 0.24 * depth) * pulse;
+          const satOp = isDone
+            ? 0.80 + 0.20 * depth
+            : isRunning
+              ? 0.90 + 0.10 * depth
+              : 0.68 + 0.26 * depth;
+          el.setAttribute(
+            "transform",
+            `translate(${sx.toFixed(2)} ${sy.toFixed(2)}) scale(${satScale.toFixed(3)})`
+          );
+          el.setAttribute("opacity", satOp.toFixed(3));
+        });
+      }
+
       raf = requestAnimationFrame(frame);
     };
 
@@ -1243,6 +1293,31 @@ export const XoxStar: React.FC<XoxStarProps> = ({
               <stop offset="100%" stopColor="#070C1A" stopOpacity="0" />
             </radialGradient>
           )}
+          {/* Gradientes de cristal translúcido para los mini-Xox en órbita (idéntica receta física que Xox) */}
+          {(["star", "orbit", "prism", "shield"] as const).map((d) => {
+            const p = SUBAGENT_GLASS_PALETTE[d];
+            return (
+              <React.Fragment key={d}>
+                <linearGradient
+                  id={`sat-body-${d}-${uid}`}
+                  x1="2"
+                  y1="2"
+                  x2="18"
+                  y2="18"
+                  gradientUnits="userSpaceOnUse"
+                >
+                  <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.34" />
+                  <stop offset="42%" stopColor={p.tintHex} stopOpacity="0.18" />
+                  <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.22" />
+                </linearGradient>
+                <radialGradient id={`sat-core-${d}-${uid}`} cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.55" />
+                  <stop offset="45%" stopColor={p.tintHex} stopOpacity="0.25" />
+                  <stop offset="100%" stopColor={p.tintHex} stopOpacity="0" />
+                </radialGradient>
+              </React.Fragment>
+            );
+          })}
         </defs>
 
         {/* Cojín sutil oscuro en Quick Bar para separar a Xox de fondos claros u olas brillantes */}
@@ -1279,6 +1354,82 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             opacity="0"
           />
         ))}
+
+        {/* Constelación de Sub-Agentes en Órbita (mini-Xox translúcidos) */}
+        {subagents && subagents.length > 0 && (
+          <>
+            <ellipse
+              cx={C}
+              cy={C}
+              rx="98"
+              ry="52"
+              fill="none"
+              stroke="rgba(255,255,255,0.105)"
+              strokeWidth="0.75"
+              strokeDasharray="2.5 4.5"
+            />
+            {subagents.slice(0, 6).map((sat, idx) => {
+              const design: SubagentDesign =
+                sat.design && sat.design in SUBAGENT_GLASS_PALETTE
+                  ? (sat.design as SubagentDesign)
+                  : "orbit";
+              const pal = SUBAGENT_GLASS_PALETTE[design];
+              const geom = SUBAGENT_SHAPE_GEOMETRY[design];
+              const isRunning = sat.status === "running";
+              const rimStroke = isRunning ? "#FFFFFF" : pal.stroke;
+              return (
+                <g
+                  key={sat.id}
+                  ref={(el) => {
+                    subagentSatRefs.current[idx] = el;
+                  }}
+                  transform={`translate(${C} ${C})`}
+                  opacity="0"
+                >
+                  <g transform="translate(-10 -10)">
+                    <path
+                      d={geom.path}
+                      fill={`url(#sat-body-${design}-${uid})`}
+                      stroke={rimStroke}
+                      strokeOpacity={isRunning ? "0.96" : "0.86"}
+                      strokeWidth={isRunning ? "1.3" : "1.18"}
+                      strokeLinejoin="round"
+                    />
+                    <circle
+                      cx="10"
+                      cy={geom.eyeY}
+                      r="5.2"
+                      fill={`url(#sat-core-${design}-${uid})`}
+                    />
+                    {geom.ring && (
+                      <path
+                        d={geom.ring}
+                        fill="none"
+                        stroke={rimStroke}
+                        strokeOpacity={isRunning ? "0.92" : "0.78"}
+                        strokeWidth="1.05"
+                        strokeLinecap="round"
+                      />
+                    )}
+                    <ellipse
+                      cx={geom.sheen.cx}
+                      cy={geom.sheen.cy}
+                      rx={geom.sheen.rx}
+                      ry={geom.sheen.ry}
+                      transform={`rotate(${geom.sheen.rot} ${geom.sheen.cx} ${geom.sheen.cy})`}
+                      fill="#FFFFFF"
+                      opacity="0.26"
+                    />
+                    <ellipse cx="8.5" cy={geom.eyeY} rx="0.92" ry="1.42" fill="#FFFFFF" fillOpacity="0.96" />
+                    <ellipse cx="11.5" cy={geom.eyeY} rx="0.92" ry="1.42" fill="#FFFFFF" fillOpacity="0.96" />
+                    <circle cx="8.7" cy={geom.eyeY - 0.35} r="0.28" fill={pal.tintHex} />
+                    <circle cx="11.7" cy={geom.eyeY - 0.35} r="0.28" fill={pal.tintHex} />
+                  </g>
+                </g>
+              );
+            })}
+          </>
+        )}
 
         {/* Anillo de datos al pensar */}
         {state === "thinking" && (

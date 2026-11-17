@@ -1279,6 +1279,129 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
     },
 ]
 
+CHECKLIST_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "agent_checklist_update",
+        "description": (
+            "Crea o actualiza la tarjeta flotante de Checklist en la esquina derecha de la pantalla "
+            "para mostrar al usuario en tiempo real los pasos pendientes, en progreso y completados."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Título breve de la lista de tareas (ej. 'Plan de Misión', 'Auditoría de Inventario', 'Ruta de Estudio').",
+                },
+                "items": {
+                    "type": "array",
+                    "description": "Lista completa y ordenada de pasos.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "description": "ID único del paso (ej. 'step_1')."},
+                            "label": {"type": "string", "description": "Descripción clara de la tarea."},
+                            "status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "done", "error"],
+                                "description": "Estado actual del paso.",
+                            },
+                            "assignee": {
+                                "type": "string",
+                                "description": "Opcional: nombre del sub-agente encargado (ej. 'Investigador').",
+                            },
+                        },
+                        "required": ["id", "label", "status"],
+                    },
+                },
+            },
+            "required": ["title", "items"],
+        },
+    },
+}
+
+SPAWN_SUBAGENT_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "spawn_subagent",
+        "description": (
+            "Despacha un sub-agente especializado real que ejecuta una subtarea de investigación, "
+            "análisis, redacción o auditoría (con su propio nombre, rol, diseño y modelo asignado) "
+            "y devuelve sus hallazgos concretos al coordinador."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Nombre del sub-agente (usa los nombres configurados en el equipo si están disponibles, ej. 'Investigador', 'Analista').",
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Especialidad o rol del sub-agente.",
+                },
+                "model": {
+                    "type": "string",
+                    "description": "ID del modelo asignado o 'auto' para usar el del equipo.",
+                },
+                "design": {
+                    "type": "string",
+                    "enum": ["star", "prism", "orbit", "shield"],
+                    "description": "Diseño visual orbital del sub-agente.",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "Instrucción concreta y detallada de lo que debe investigar, calcular o redactar este sub-agente.",
+                },
+            },
+            "required": ["name", "role", "task"],
+        },
+    },
+}
+
+STUDY_DECK_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "study_create_deck",
+        "description": (
+            "Genera un mazo interactivo de tarjetas de estudio (flashcards) y una pregunta quiz "
+            "socrática de autoevaluación dentro de la conversación para el modo /study."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "description": "Tema o concepto principal del mazo."},
+                "cards": {
+                    "type": "array",
+                    "description": "De 3 a 6 flashcards educativas.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "front": {"type": "string", "description": "Pregunta o concepto al frente."},
+                            "back": {"type": "string", "description": "Respuesta o explicación en el reverso."},
+                            "hint": {"type": "string", "description": "Pista opcional."},
+                        },
+                        "required": ["front", "back"],
+                    },
+                },
+                "quiz": {
+                    "type": "object",
+                    "description": "Pregunta interactiva opcional de opción múltiple.",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "options": {"type": "array", "items": {"type": "string"}},
+                        "correct_index": {"type": "integer"},
+                        "explanation": {"type": "string"},
+                    },
+                    "required": ["question", "options", "correct_index", "explanation"],
+                },
+            },
+            "required": ["topic", "cards"],
+        },
+    },
+}
+
 
 class WorkspaceToolExecutor:
     """Ejecuta herramientas agénticas dentro de un `workspace_root` con límite estricto de sandbox."""

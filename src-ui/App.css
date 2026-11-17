@@ -1968,10 +1968,93 @@ progress.xook-usage-progress::-moz-progress-bar {
   animation: xox-color-ripple 0.65s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
+/* =========================================================================
+   Checklist Open-Circle Checkmark & Task Completion Animations
+   ========================================================================= */
+
+@keyframes xookCheckPop {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.45;
+  }
+  65% {
+    transform: scale(1.1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes xookArcDraw {
+  from {
+    stroke-dashoffset: 100;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes xookTickDraw {
+  from {
+    stroke-dashoffset: 100;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes xookChecklistRowSettle {
+  0% {
+    background-color: rgba(255, 255, 255, 0.09);
+    transform: translateX(2px);
+  }
+  100% {
+    background-color: rgba(255, 255, 255, 0.025);
+    transform: translateX(0);
+  }
+}
+
+@keyframes xookOrbitSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.xook-check-pop {
+  animation: xookCheckPop 0.38s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.xook-check-arc {
+  stroke-dasharray: 100;
+  stroke-dashoffset: 0;
+  animation: xookArcDraw 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.xook-check-tick {
+  stroke-dasharray: 100;
+  stroke-dashoffset: 0;
+  animation: xookTickDraw 0.28s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
+}
+
+.xook-checklist-row-done {
+  animation: xookChecklistRowSettle 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.xook-spinner-arc {
+  transform-origin: 10px 10px;
+  animation: xookOrbitSpin 1.1s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   progress.xook-usage-progress::-webkit-progress-value { transition: none; }
   progress.xook-usage-progress::-moz-progress-bar { transition: none; }
   .menu-in, .menu-out, .xox-mini-eye, .xook-dialog-tab-panel, .xook-catalog-swap, .xook-model-reveal { animation: none; }
+  .xook-check-pop, .xook-check-arc, .xook-check-tick, .xook-checklist-row-done, .xook-spinner-arc { animation: none; }
   .xook-tree-item, .xook-node-highlight, .xook-save-flash, .xook-empty-float, .xook-task-card { animation: none; }
   .xook-chevron, .xook-expand-list, .xook-collapse-grid, .xox-hero-slot, .xox-chat-lane-slot { transition: none; }
   .xox-stage-away, .xox-stage-home, .xox-window-star-arrive, .xox-window-color-ripple { animation: none; }
