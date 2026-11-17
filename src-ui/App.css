@@ -49,7 +49,10 @@
     inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.16),
     inset 0 -1px 1px 0 rgba(0, 0, 0, 0.5),
     0 24px 48px -12px rgba(0, 0, 0, 0.75);
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  transition:
+    border-color 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .liquid-glass-hero:focus-within {
@@ -453,8 +456,9 @@
 /* Transiciones suaves de entrada y salida para ventanas laterales */
 .sidebar-slot {
   transition:
-    width 0.26s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.22s ease;
+    width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: width, opacity;
 }
 
 .sidebar-slot.is-resizing {
@@ -522,9 +526,9 @@
   isolation: isolate;
   transform-origin: 0% 100%;
   background:
-    /* tinte estelar de Xox */
-    radial-gradient(120% 140% at 0% 100%, rgba(94, 234, 212, 0.16) 0%, transparent 55%),
-    radial-gradient(120% 140% at 100% 0%, rgba(186, 230, 253, 0.12) 0%, transparent 60%),
+    /* tinte estelar de Xox (hereda variables de tema) */
+    radial-gradient(120% 140% at 0% 100%, var(--xox-bubble-tint, rgba(97, 228, 240, 0.16)) 0%, transparent 55%),
+    radial-gradient(120% 140% at 100% 0%, var(--xox-bubble-rim, rgba(186, 230, 253, 0.14)) 0%, transparent 60%),
     /* vidrio base */
     linear-gradient(160deg, rgba(255, 255, 255, 0.13) 0%, rgba(255, 255, 255, 0.04) 48%, rgba(255, 255, 255, 0.07) 100%);
   backdrop-filter: blur(22px) saturate(190%);
@@ -532,9 +536,9 @@
   box-shadow:
     inset 0 1px 1px 0 rgba(255, 255, 255, 0.38),
     inset 0 -1px 1px 0 rgba(0, 0, 0, 0.25),
-    inset 0 0 22px -6px rgba(186, 230, 253, 0.18),
+    inset 0 0 22px -6px var(--xox-bubble-rim, rgba(186, 230, 253, 0.18)),
     0 14px 34px -12px rgba(0, 0, 0, 0.75),
-    0 0 36px -10px rgba(94, 234, 212, 0.28);
+    0 0 36px -10px var(--xox-bubble-glow, rgba(56, 189, 248, 0.28));
 }
 
 /* Brillo especular superior (reflejo curvo del vidrio) */
@@ -563,7 +567,7 @@
     rgba(255, 255, 255, 0.6) 0%,
     rgba(255, 255, 255, 0.1) 35%,
     rgba(255, 255, 255, 0.04) 60%,
-    rgba(125, 211, 252, 0.35) 100%
+    var(--xox-bubble-edge, rgba(125, 211, 252, 0.36)) 100%
   );
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
@@ -585,7 +589,7 @@
   -webkit-backdrop-filter: blur(10px);
   box-shadow:
     inset 0 1px 1px rgba(255, 255, 255, 0.4),
-    0 0 12px -2px rgba(94, 234, 212, 0.3);
+    0 0 12px -2px var(--xox-bubble-glow, rgba(56, 189, 248, 0.28));
 }
 .xox-bubble-trail-sm {
   width: 6px;

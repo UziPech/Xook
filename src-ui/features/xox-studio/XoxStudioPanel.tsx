@@ -216,6 +216,23 @@ const EditableTextBlockList: React.FC<EditableTextBlockListProps> = ({
   );
 };
 
+type XoxAnimCatalogOption = "auto" | XoxState;
+
+const XOX_ANIMATION_CATALOG: Array<{
+  id: XoxAnimCatalogOption;
+  label: string;
+  detail: string;
+}> = [
+  { id: "auto", label: "En vivo", detail: "Sigue automáticamente la actividad actual o toca a Xox" },
+  { id: "idle", label: "Reposo", detail: "Respiración gelatina, parpadeo natural y mirada al cursor" },
+  { id: "success", label: "Feliz", detail: "Pirueta, ojos ^^, sonrisa cálida y sonrojo suave" },
+  { id: "thinking", label: "Pensando", detail: "Anillo orbital de datos, burbuja '...' y núcleo profundo" },
+  { id: "reading", label: "Leyendo", detail: "Lupa escaneando el entorno con cabeceo curioso" },
+  { id: "talking", label: "Hablando", detail: "Boca articulada al hablar y ondas laterales de voz" },
+  { id: "syncing", label: "Sincronizando", detail: "Doble aro giratorio y piruetas periódicas" },
+  { id: "alert", label: "Alerta", detail: "Aviso en rojo semántico con vibración y señal '!'" },
+];
+
 export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   visible = true,
   initialTab = "identity",
@@ -246,7 +263,17 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [stageCheerState, setStageCheerState] = useState<XoxState | null>(null);
+  const stageCheerTimerRef = useRef<number | null>(null);
+  const [catalogAnim, setCatalogAnim] = useState<XoxAnimCatalogOption>("auto");
+  const [stageReplaySeq, setStageReplaySeq] = useState(0);
   const [colorRippleSeq, setColorRippleSeq] = useState(0);
+
+  useEffect(
+    () => () => {
+      if (stageCheerTimerRef.current) window.clearTimeout(stageCheerTimerRef.current);
+    },
+    []
+  );
 
   // Estado de Voz local
   const [savingVoice, setSavingVoice] = useState(false);
@@ -278,6 +305,16 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     voice: null,
     skills: null,
     rules: null,
+  });
+  const animBtnRefs = useRef<Record<XoxAnimCatalogOption, HTMLButtonElement | null>>({
+    auto: null,
+    idle: null,
+    success: null,
+    thinking: null,
+    reading: null,
+    talking: null,
+    syncing: null,
+    alert: null,
   });
 
   useEffect(() => {
@@ -635,13 +672,40 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   const stageXoxState: XoxState =
     playback.playingMessageId === STUDIO_PREVIEW_MSG_ID
       ? "talking"
-      : stageCheerState ?? xoxState;
+      : stageCheerState ?? (catalogAnim !== "auto" ? catalogAnim : xoxState);
+  const activeCatalogMeta =
+    XOX_ANIMATION_CATALOG.find((item) => item.id === catalogAnim) ??
+    XOX_ANIMATION_CATALOG[0];
+
+  const handleAnimCatalogKeyDown = (e: React.KeyboardEvent) => {
+    const idx = XOX_ANIMATION_CATALOG.findIndex((item) => item.id === catalogAnim);
+    if (idx < 0) return;
+    let nextIdx: number | null = null;
+    if (e.key === "ArrowRight") nextIdx = (idx + 1) % XOX_ANIMATION_CATALOG.length;
+    else if (e.key === "ArrowLeft") {
+      nextIdx = (idx - 1 + XOX_ANIMATION_CATALOG.length) % XOX_ANIMATION_CATALOG.length;
+    } else if (e.key === "Home") nextIdx = 0;
+    else if (e.key === "End") nextIdx = XOX_ANIMATION_CATALOG.length - 1;
+    if (nextIdx !== null) {
+      e.preventDefault();
+      const targetId = XOX_ANIMATION_CATALOG[nextIdx].id;
+      setCatalogAnim(targetId);
+      setStageCheerState(null);
+      animBtnRefs.current[targetId]?.focus();
+    }
+  };
 
   const handleStageXoxClick = () => {
+    setStageReplaySeq((n) => n + 1);
+    if (catalogAnim !== "auto" && catalogAnim !== "idle") {
+      return;
+    }
     setStageCheerState("success");
-    window.setTimeout(() => {
+    if (stageCheerTimerRef.current) window.clearTimeout(stageCheerTimerRef.current);
+    stageCheerTimerRef.current = window.setTimeout(() => {
       setStageCheerState((curr) => (curr === "success" ? null : curr));
-    }, 1500);
+      stageCheerTimerRef.current = null;
+    }, 1800);
   };
 
   return (
@@ -651,8 +715,8 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
         visible ? "opacity-100" : "opacity-0 pointer-events-none"
       }`}
     >
-      {/* Cabecera del Espacio de Xox + Ventana Escenario en vivo */}
-      <header className="px-3.5 pt-2.5 pb-2.5 border-b border-white/[0.07] bg-white/[0.02] space-y-2.5 shrink-0">
+      {/* Barra superior compacta del Espacio de Xox */}
+      <header className="px-3.5 py-2.5 border-b border-white/[0.07] bg-white/[0.02] shrink-0">
         <div className="flex items-center justify-between gap-2.5">
           <div className="flex items-center gap-2 min-w-0">
             <h2 className="text-[13.5px] font-semibold text-white truncate">
@@ -684,13 +748,38 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
             </button>
           </div>
         </div>
+      </header>
 
-        {/* Ventana amplia y centrada de Xox (muestra cuerpo completo, aura y chispas sin recortes) */}
+      {/* Banner de error global del panel */}
+      {errorMsg && (
         <div
-          className="relative rounded-2xl border overflow-hidden min-h-[214px] sm:min-h-[244px] px-4 py-3 flex flex-col items-center justify-center transition-[border-color,background] duration-500"
+          role="alert"
+          className="mx-3.5 mt-2.5 rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 flex items-start justify-between gap-2 text-[11.5px] text-rose-100 shrink-0"
+        >
+          <span className="inline-flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" aria-hidden="true" />
+            <span>{errorMsg}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setErrorMsg(null)}
+            aria-label="Cerrar aviso"
+            className="text-rose-200/80 hover:text-white cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
+      {/* Escenario amplio de Xox, catálogo de animaciones y contenido scrollable */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-3.5 py-3.5 space-y-3.5">
+        {/* Ventana amplia, alta y centrada de Xox con tamaño protagonista */}
+        <div
+          id={`${uid}-xox-stage`}
+          className="relative rounded-2xl border overflow-hidden min-h-[296px] sm:min-h-[344px] px-4 py-3.5 flex flex-col items-center justify-between transition-[border-color,background] duration-500"
           style={{
-            borderColor: `${activeAccentSpec.glow}38`,
-            background: `radial-gradient(85% 95% at 50% 48%, ${activeAccentSpec.glow}26 0%, ${activeAccentSpec.glow}0a 44%, rgba(6, 8, 14, 0.96) 80%)`,
+            borderColor: `${activeAccentSpec.glow}40`,
+            background: `radial-gradient(64% 72% at 22% 24%, ${activeAccentSpec.accessory}1a 0%, transparent 56%), radial-gradient(88% 96% at 50% 48%, ${activeAccentSpec.glow}26 0%, ${activeAccentSpec.rim2}0f 44%, rgba(6, 8, 14, 0.96) 82%)`,
           }}
         >
           {/* Barra superior flotante dentro de la ventana */}
@@ -704,7 +793,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                 />
                 <span>{activeAccentSpec.label}</span>
               </span>
-              <span className="px-2.5 py-0.5 rounded-full bg-black/35 border border-white/[0.08] text-[10.5px] text-zinc-300 truncate max-w-[190px]">
+              <span className="px-2.5 py-0.5 rounded-full bg-black/35 border border-white/[0.08] text-[10.5px] text-zinc-300 truncate max-w-[200px]">
                 {draft.activeRole || "Asistente Co-Constructor"}
               </span>
             </div>
@@ -732,13 +821,13 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
             <span
               key={`ripple-${colorRippleSeq}`}
               aria-hidden="true"
-              className="xox-window-color-ripple pointer-events-none absolute left-1/2 top-1/2 -ml-[72px] -mt-[72px] w-[144px] h-[144px] rounded-full border"
+              className="xox-window-color-ripple pointer-events-none absolute left-1/2 top-1/2 -ml-[112px] -mt-[112px] w-[224px] h-[224px] rounded-full border"
               style={{ borderColor: `${activeAccentSpec.glow}85` }}
             />
           )}
 
-          {/* Xox completo en el centro de su ventana (sin márgenes negativos que lo recorten) */}
-          <div className="xox-window-star-arrive relative z-[1] flex items-center justify-center my-0.5">
+          {/* Xox grande y protagonista en el centro de su espacio */}
+          <div className="xox-window-star-arrive relative z-[1] flex items-center justify-center -my-5 sm:-my-6">
             <XoxStar
               state={stageXoxState}
               responsive
@@ -746,8 +835,9 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
               accentPreset={activeAccent}
               glideTrigger={glideSeq}
               glideDir="right"
+              summonTrigger={stageReplaySeq}
               active={visible}
-              className="w-[178px] h-[178px] sm:w-[202px] sm:h-[202px]"
+              className="w-[274px] h-[274px] sm:w-[324px] sm:h-[324px]"
               onClick={handleStageXoxClick}
             />
           </div>
@@ -758,14 +848,75 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
               <strong className="font-medium text-white">{displayAgentName}</strong>
               {draft.personality ? ` · ${draft.personality}` : ""}
             </span>
-            <span className="text-zinc-500 shrink-0">
-              Toca a {displayAgentName}
+            <span className="text-zinc-400 shrink-0">
+              Pasa el cursor o toca a {displayAgentName}
             </span>
           </div>
         </div>
 
-        {/* Barra de pestañas en una sola fila con navegación por teclado */}
-        <div className="overflow-x-auto no-scrollbar">
+        {/* Catálogo interactivo de animaciones y estados de Xox */}
+        <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2.5 space-y-2">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <span className="text-[11px] font-medium text-zinc-200">
+              Catálogo de animaciones
+            </span>
+            <span className="text-[10.5px] text-zinc-400 truncate max-w-full">
+              {activeCatalogMeta.detail}
+            </span>
+          </div>
+          <div
+            role="toolbar"
+            aria-label={`Catálogo de animaciones de ${displayAgentName}`}
+            aria-controls={`${uid}-xox-stage`}
+            onKeyDown={handleAnimCatalogKeyDown}
+            className="flex flex-wrap items-center gap-1.5"
+          >
+            {XOX_ANIMATION_CATALOG.map((item) => {
+              const selected = catalogAnim === item.id;
+              const isAlertOpt = item.id === "alert";
+              const isLiveActive = item.id === "auto" && stageXoxState !== "idle";
+              return (
+                <button
+                  key={item.id}
+                  ref={(el) => {
+                    animBtnRefs.current[item.id] = el;
+                  }}
+                  type="button"
+                  aria-pressed={selected}
+                  tabIndex={selected ? 0 : -1}
+                  title={item.detail}
+                  onClick={() => {
+                    setStageCheerState(null);
+                    if (catalogAnim === item.id && item.id !== "auto") {
+                      setStageReplaySeq((n) => n + 1);
+                    } else {
+                      setCatalogAnim(item.id);
+                    }
+                  }}
+                  className="min-h-[26px] px-2.5 py-1 rounded-full border text-[11px] inline-flex items-center gap-1.5 cursor-pointer transition-colors bg-white/[0.03] border-white/[0.09] text-zinc-300 hover:bg-white/[0.08] hover:text-white aria-[pressed=true]:bg-white/[0.15] aria-[pressed=true]:border-white/[0.35] aria-[pressed=true]:text-white aria-[pressed=true]:font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      isLiveActive ? "animate-pulse" : ""
+                    }`}
+                    style={{
+                      backgroundColor: isAlertOpt
+                        ? "#EF4444"
+                        : selected
+                          ? activeAccentSpec.glow
+                          : "rgba(255,255,255,0.35)",
+                    }}
+                    aria-hidden="true"
+                  />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Barra de pestañas fija al hacer scroll con navegación por teclado */}
+        <div className="sticky top-0 z-20 -mx-3.5 px-3.5 py-2 bg-[#090b10]/95 backdrop-blur-md border-y border-white/[0.07] overflow-x-auto no-scrollbar">
           <JellyPillTrack
             activeKey={activeTab}
             role="tablist"
@@ -810,31 +961,6 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
             })}
           </JellyPillTrack>
         </div>
-      </header>
-
-      {/* Banner de error global del panel */}
-      {errorMsg && (
-        <div
-          role="alert"
-          className="mx-3.5 mt-2.5 rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 flex items-start justify-between gap-2 text-[11.5px] text-rose-100 shrink-0"
-        >
-          <span className="inline-flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" aria-hidden="true" />
-            <span>{errorMsg}</span>
-          </span>
-          <button
-            type="button"
-            onClick={() => setErrorMsg(null)}
-            aria-label="Cerrar aviso"
-            className="text-rose-200/80 hover:text-white cursor-pointer"
-          >
-            <X className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
-        </div>
-      )}
-
-      {/* Contenido scrollable del panel activo */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-3.5 py-3.5 space-y-4">
         {/* =================================================================== */}
         {/* TAB 1: IDENTIDAD Y PROMPT INICIAL GLOBAL                            */}
         {/* =================================================================== */}

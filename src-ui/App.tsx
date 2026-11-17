@@ -30,7 +30,9 @@ import {
   XoxSilhouetteIcon,
   XoxState,
   XOX_ACCENT_PRESETS,
+  getXoxBubbleVars,
   resolveXoxAccentPreset,
+  resolveXoxStateColors,
   type XoxAccentPreset,
 } from "./components/XoxStar";
 import {
@@ -417,21 +419,13 @@ function XoxHeaderFace({
     body: `xox-mini-body-${uid}`,
     rim: `xox-mini-rim-${uid}`,
     core: `xox-mini-core-${uid}`,
+    blush: `xox-mini-blush-${uid}`,
   };
-  const accentSpec = XOX_ACCENT_PRESETS[resolveXoxAccentPreset(accentPreset)];
+  const colors = resolveXoxStateColors(accentPreset, state);
   const isAlert = state === "alert";
   const isSuccess = state === "success";
-  const isSyncing = state === "syncing";
   const isThinking = state === "thinking";
-  const coreColor = isAlert
-    ? "#EF4444"
-    : isSuccess
-    ? "#34D399"
-    : isSyncing
-    ? "#2DD4BF"
-    : isThinking
-    ? "#38BDF8"
-    : accentSpec.glow;
+  const isSyncing = state === "syncing";
 
   return (
     <button
@@ -439,24 +433,29 @@ function XoxHeaderFace({
       onClick={onClick}
       aria-label={`${agentName}, asistente de XOOK`}
       title={`${agentName} · Haz clic para saludar`}
-      className="w-[26px] h-[26px] flex items-center justify-center cursor-pointer transition-transform hover:scale-110 active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/50 rounded-full"
+      className="group w-[26px] h-[26px] flex items-center justify-center cursor-pointer transition-transform hover:scale-110 active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40 rounded-full"
     >
       <svg viewBox="55 52 130 126" className="w-full h-full" aria-hidden="true">
         <defs>
           <linearGradient id={ids.body} x1="65" y1="60" x2="175" y2="170" gradientUnits="userSpaceOnUse">
             <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.34" />
-            <stop offset="45%" stopColor={accentSpec.rim} stopOpacity="0.18" />
-            <stop offset="100%" stopColor={accentSpec.glow} stopOpacity="0.24" />
+            <stop offset="45%" stopColor={colors.rim1} stopOpacity="0.18" />
+            <stop offset="100%" stopColor={colors.bodyGlow} stopOpacity="0.24" />
           </linearGradient>
           <linearGradient id={ids.rim} x1="62" y1="58" x2="176" y2="172" gradientUnits="userSpaceOnUse">
             <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.92" />
-            <stop offset="50%" stopColor={accentSpec.rim} stopOpacity="0.6" />
-            <stop offset="100%" stopColor={accentSpec.mid} stopOpacity="0.38" />
+            <stop offset="50%" stopColor={colors.rim1} stopOpacity="0.62" />
+            <stop offset="100%" stopColor={colors.rim2} stopOpacity="0.42" />
           </linearGradient>
           <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor={isThinking || isAlert || isSuccess || isSyncing ? coreColor : "#FFFFFF"} stopOpacity="0.55" />
-            <stop offset="55%" stopColor={coreColor} stopOpacity="0.22" />
-            <stop offset="100%" stopColor={coreColor} stopOpacity="0" />
+            <stop offset="0%" stopColor={isThinking || isAlert || isSuccess || isSyncing ? colors.glow : "#FFFFFF"} stopOpacity="0.55" />
+            <stop offset="55%" stopColor={colors.glow} stopOpacity="0.22" />
+            <stop offset="100%" stopColor={colors.glow} stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id={ids.blush} cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor={colors.blush} stopOpacity="0.64" />
+            <stop offset="55%" stopColor={colors.blush} stopOpacity="0.24" />
+            <stop offset="100%" stopColor={colors.blush} stopOpacity="0" />
           </radialGradient>
         </defs>
 
@@ -481,9 +480,19 @@ function XoxHeaderFace({
           opacity="0.24"
         />
 
-        {/* Mejillas */}
-        <circle cx="99.5" cy="127.5" r="4.6" fill={isAlert ? "#F87171" : "#38BDF8"} opacity="0.38" />
-        <circle cx="140.5" cy="127.5" r="4.6" fill={isAlert ? "#F87171" : "#38BDF8"} opacity="0.38" />
+        {/* Mejillas con sonrojo difuminado al interactuar o en sucesos */}
+        <g
+          className={`transition-opacity duration-300 ${
+            isAlert
+              ? "opacity-0"
+              : isSuccess
+                ? "opacity-75"
+                : "opacity-0 group-hover:opacity-55"
+          }`}
+        >
+          <ellipse cx="99.5" cy="127" rx="9.5" ry="5.8" transform="rotate(-8 99.5 127)" fill={`url(#${ids.blush})`} />
+          <ellipse cx="140.5" cy="127" rx="9.5" ry="5.8" transform="rotate(8 140.5 127)" fill={`url(#${ids.blush})`} />
+        </g>
 
         {/* Ojos */}
         {isSuccess ? (
@@ -497,13 +506,13 @@ function XoxHeaderFace({
             <g transform="translate(110.5 115)">
               <g className="xox-mini-eye">
                 <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
-                <circle cx="1.9" cy="-2.5" r="1.9" fill={isAlert ? "#FCA5A5" : "#38BDF8"} />
+                <circle cx="1.9" cy="-2.5" r="1.9" fill={colors.pupil} />
               </g>
             </g>
             <g transform="translate(129.5 115)">
               <g className="xox-mini-eye">
                 <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
-                <circle cx="1.9" cy="-2.5" r="1.9" fill={isAlert ? "#FCA5A5" : "#38BDF8"} />
+                <circle cx="1.9" cy="-2.5" r="1.9" fill={colors.pupil} />
               </g>
             </g>
           </>
@@ -649,6 +658,31 @@ export default function App() {
 
   const [isResizingLeft, setIsResizingLeft] = useState<boolean>(false);
   const [isResizingRight, setIsResizingRight] = useState<boolean>(false);
+  const [viewportWidth, setViewportWidth] = useState<number>(() =>
+    typeof window !== "undefined" ? window.innerWidth : 1200
+  );
+
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", onResize, { passive: true });
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const studioPanelWidth = Math.min(
+    860,
+    Math.max(440, Math.round(viewportWidth * 0.54)),
+    Math.max(360, viewportWidth - 260)
+  );
+  const canvasPanelWidth = Math.min(
+    660,
+    Math.max(330, Math.round(viewportWidth * 0.44)),
+    Math.max(300, viewportWidth - 260)
+  );
+  const docViewerPanelWidth = Math.min(
+    680,
+    Math.max(360, Math.round(viewportWidth * 0.46)),
+    Math.max(320, viewportWidth - 260)
+  );
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1470,35 +1504,54 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTauriEnv]);
 
+  const prevInputPromptRef = useRef<string>(inputPrompt);
+
   // El input crece como una burbuja solo cuando hay texto escrito (vacío siempre queda en 1 línea)
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
 
-    const syncHeight = () => {
+    const textChanged = prevInputPromptRef.current !== inputPrompt;
+    prevInputPromptRef.current = inputPrompt;
+
+    const syncHeight = (animateHeight: boolean) => {
       if (!inputPrompt) {
-        el.style.height = "";
-        el.style.overflowY = "hidden";
+        if (el.style.height || el.style.overflowY !== "hidden") {
+          if (!animateHeight) el.style.transition = "none";
+          el.style.height = "";
+          el.style.overflowY = "hidden";
+          if (!animateHeight) {
+            void el.offsetHeight;
+            el.style.transition = "";
+          }
+        }
         setInputExpanded(false);
         return;
       }
 
-      const prev = el.style.height || `${el.offsetHeight}px`;
+      const prevHeight = parseFloat(el.style.height || "0") || el.offsetHeight;
       el.style.transition = "none";
       el.style.height = "auto";
       const target = Math.min(el.scrollHeight, 200);
-      el.style.height = prev;
-      void el.offsetHeight; // forzar reflow para que la transición parta de la altura previa
-      el.style.transition = "";
-      el.style.height = `${target}px`;
       el.style.overflowY = el.scrollHeight > 200 ? "auto" : "hidden";
+
+      if (animateHeight && Math.abs(target - prevHeight) >= 1) {
+        el.style.height = `${prevHeight}px`;
+        void el.offsetHeight; // forzar reflow para que la transición parta de la altura previa
+        el.style.transition = "";
+        el.style.height = `${target}px`;
+      } else {
+        el.style.height = `${target}px`;
+        void el.offsetHeight;
+        el.style.transition = "";
+      }
       setInputExpanded(target > 46);
     };
 
-    syncHeight();
+    syncHeight(textChanged);
 
     if (!inputPrompt || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(syncHeight);
+    const ro = new ResizeObserver(() => syncHeight(false));
     ro.observe(el);
     return () => ro.disconnect();
   }, [inputPrompt]);
@@ -3903,13 +3956,13 @@ export default function App() {
   const pendingCount = tasks.length;
 
   // Estados de presencia animada para ventanas laterales y emergentes (entrada y salida)
-  const leftPresence = useAnimatedPresence(showLeftSidebar, 270);
-  const rightPresence = useAnimatedPresence(showRightSidebar, 270);
-  const canvasPresence = useAnimatedPresence(showCanvas && Boolean(activeCanvas), 220);
-  const studioPresence = useAnimatedPresence(showXoxStudio, 220);
+  const leftPresence = useAnimatedPresence(showLeftSidebar, 290);
+  const rightPresence = useAnimatedPresence(showRightSidebar, 290);
+  const canvasPresence = useAnimatedPresence(showCanvas && Boolean(activeCanvas), 290);
+  const studioPresence = useAnimatedPresence(showXoxStudio, 290);
   const docViewerPresence = useAnimatedPresence(
     showDocViewer && Boolean(pdfPanelState || pdfDraftProgress),
-    220
+    290
   );
 
   const handleOpenCanvas = (canvas: CanvasArtifact) => {
@@ -4893,6 +4946,7 @@ export default function App() {
                 setIsResizingLeft(true);
               }}
               onDoubleClick={() => setLeftWidth(280)}
+              style={!leftPresence.visible ? { width: "0px" } : undefined}
               className={`splitter-aurora-glass ${isResizingLeft ? "is-resizing" : ""} ${
                 leftPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
               }`}
@@ -4904,7 +4958,7 @@ export default function App() {
         )}
 
         {/* COLUMNA CENTRAL: Xox + Conversación + Input Pinned al fondo */}
-        <section className="flex-1 flex flex-col bg-[#060709] overflow-hidden relative">
+        <section className="flex-1 min-w-0 flex flex-col bg-[#060709] overflow-hidden relative">
           
           {/* Notificación de Sistema: flota sobre el contenido, no lo desplaza */}
           {statusToastPresence.mounted && displayStatusMessage && (
@@ -5014,6 +5068,7 @@ export default function App() {
                       <div
                         role="status"
                         aria-live="polite"
+                        style={getXoxBubbleVars(displayAccentPreset)}
                         className={`xox-bubble absolute left-[60%] bottom-[69%] z-20 pointer-events-none ${
                           greetingLeaving ? "is-leaving" : ""
                         }`}
@@ -5144,7 +5199,7 @@ export default function App() {
                   activeClarification || permissionItems.some((p) => p.state === "pending")
                     ? "h-80 sm:h-96"
                     : "h-44 sm:h-48"
-                } shrink-0 transition-all`}
+                } shrink-0 transition-[height]`}
               />
               <div ref={chatEndRef} />
 
@@ -5218,7 +5273,7 @@ export default function App() {
                     setIsDraggingOverChat(false);
                   }
                 }}
-                className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-3.5 relative group shadow-2xl transition-all ${
+                className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-3.5 relative group shadow-2xl ${
                   inputExpanded ? "is-expanded" : ""
                 } ${isDraggingOverChat ? "ring-1 ring-white/30 border-white/25" : ""}`}
               >
@@ -5373,8 +5428,8 @@ export default function App() {
                         className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] text-zinc-200 hover:text-white cursor-pointer"
                       >
                         <ProviderIcon provider={activeProvider} size={13} className="text-white/85 shrink-0" />
-                        <span className="hidden @sm:inline truncate max-w-[160px]">{activeModel.name}</span>
-                        <ChevronDown className={`w-3 h-3 text-white/65 transition-transform ${showModelMenu ? "rotate-180" : ""}`} />
+                        <span className="truncate max-w-[84px] @xs:max-w-[118px] @sm:max-w-[160px]">{activeModel.name}</span>
+                        <ChevronDown className={`w-3 h-3 text-white/65 transition-transform shrink-0 ${showModelMenu ? "rotate-180" : ""}`} />
                       </button>
                       {modelMenuPresence.mounted && (
                         <div
@@ -5665,60 +5720,91 @@ export default function App() {
 
         {/* PANEL ESPACIO DE XOX (IDENTIDAD GLOBAL, VOZ, SKILLS EN BLOQUES Y PROMPT INICIAL) */}
         {studioPresence.mounted && (
-          <div className="w-[48%] min-w-[380px] max-w-[720px] shrink-0 bg-[#060709] border-l border-white/[0.07] p-2.5 overflow-hidden">
-            <XoxStudioPanel
-              visible={studioPresence.visible}
-              initialTab={xoxStudioTab}
-              highlightedSkillSlug={highlightedSkillSlug}
-              glideSeq={xoxGlideSeq}
-              profile={globalXoxProfile}
-              skills={xoxSkills}
-              ttsStatus={ttsStatus}
-              xoxState={xoxState}
-              hasActiveWorkspace={Boolean(workspaceOverview?.active)}
-              activeWorkspaceName={workspaceOverview?.active.name ?? null}
-              onProfileChanged={(nextProf) => {
-                setGlobalXoxProfile(nextProf);
-                setPreviewAccentPreset(null);
-              }}
-              onPreviewAccentChange={setPreviewAccentPreset}
-              onSkillsRefresh={refreshXoxStudioData}
-              onTtsStatusChanged={setTtsStatus}
-              onAskXoxCustomize={(hintPrompt) => {
-                setInputPrompt(hintPrompt);
-                requestAnimationFrame(() => inputRef.current?.focus());
-              }}
-              onStatusNotice={(msg) => {
-                setStatusMessage(msg);
-                setTimeout(() => setStatusMessage((curr) => (curr === msg ? null : curr)), 3800);
-              }}
-              onClose={() => setShowXoxStudio(false)}
-            />
+          <div
+            aria-hidden={!showXoxStudio}
+            inert={!showXoxStudio}
+            style={{ width: studioPresence.visible ? `${studioPanelWidth}px` : "0px" }}
+            className={`sidebar-slot shrink-0 bg-[#060709] overflow-hidden ${
+              studioPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+            }`}
+          >
+            <div
+              style={{ width: `${studioPanelWidth}px` }}
+              className="h-full border-l border-white/[0.07] p-2.5 shrink-0"
+            >
+              <XoxStudioPanel
+                visible={studioPresence.visible}
+                initialTab={xoxStudioTab}
+                highlightedSkillSlug={highlightedSkillSlug}
+                glideSeq={xoxGlideSeq}
+                profile={globalXoxProfile}
+                skills={xoxSkills}
+                ttsStatus={ttsStatus}
+                xoxState={xoxState}
+                hasActiveWorkspace={Boolean(workspaceOverview?.active)}
+                activeWorkspaceName={workspaceOverview?.active.name ?? null}
+                onProfileChanged={(nextProf) => {
+                  setGlobalXoxProfile(nextProf);
+                  setPreviewAccentPreset(null);
+                }}
+                onPreviewAccentChange={setPreviewAccentPreset}
+                onSkillsRefresh={refreshXoxStudioData}
+                onTtsStatusChanged={setTtsStatus}
+                onAskXoxCustomize={(hintPrompt) => {
+                  setInputPrompt(hintPrompt);
+                  requestAnimationFrame(() => inputRef.current?.focus());
+                }}
+                onStatusNotice={(msg) => {
+                  setStatusMessage(msg);
+                  setTimeout(() => setStatusMessage((curr) => (curr === msg ? null : curr)), 3800);
+                }}
+                onClose={() => setShowXoxStudio(false)}
+              />
+            </div>
           </div>
         )}
 
         {/* PANEL CANVAS INTERACTIVO ESTILO GEMINI (TABLAS COMPARATIVAS Y DATOS) */}
         {canvasPresence.mounted && activeCanvas && (
-          <div className="w-[44%] min-w-[330px] max-w-[660px] shrink-0 bg-[#060709] border-l border-white/[0.07] p-2.5 overflow-hidden">
-            <CanvasPanel
-              canvas={activeCanvas}
-              visible={canvasPresence.visible}
-              onUpdateCanvas={handleUpdateCanvas}
-              onAskXoxEdit={handleAskXoxAboutCanvas}
-              onExportPdf={isTauriEnv ? handleExportCanvasPdf : undefined}
-              onClose={() => setShowCanvas(false)}
-            />
+          <div
+            aria-hidden={!showCanvas}
+            inert={!showCanvas}
+            style={{ width: canvasPresence.visible ? `${canvasPanelWidth}px` : "0px" }}
+            className={`sidebar-slot shrink-0 bg-[#060709] overflow-hidden ${
+              canvasPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+            }`}
+          >
+            <div
+              style={{ width: `${canvasPanelWidth}px` }}
+              className="h-full border-l border-white/[0.07] p-2.5 shrink-0"
+            >
+              <CanvasPanel
+                canvas={activeCanvas}
+                visible={canvasPresence.visible}
+                onUpdateCanvas={handleUpdateCanvas}
+                onAskXoxEdit={handleAskXoxAboutCanvas}
+                onExportPdf={isTauriEnv ? handleExportCanvasPdf : undefined}
+                onClose={() => setShowCanvas(false)}
+              />
+            </div>
           </div>
         )}
 
         {/* PANEL DEDICADO DEL VISOR Y EDITOR DE DOCUMENTOS (INDEPENDIENTE DE TAREAS) */}
         {docViewerPresence.mounted && (pdfPanelState || pdfDraftProgress) && (
           <div
-            className={`w-[46%] min-w-[360px] max-w-[680px] shrink-0 bg-[#060709] border-l border-white/[0.07] p-2.5 overflow-hidden transition-opacity duration-200 ${
+            aria-hidden={!showDocViewer}
+            inert={!showDocViewer}
+            style={{ width: docViewerPresence.visible ? `${docViewerPanelWidth}px` : "0px" }}
+            className={`sidebar-slot shrink-0 bg-[#060709] overflow-hidden ${
               docViewerPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
             }`}
           >
-            <PdfWorkspacePanel
+            <div
+              style={{ width: `${docViewerPanelWidth}px` }}
+              className="h-full border-l border-white/[0.07] p-2.5 shrink-0"
+            >
+              <PdfWorkspacePanel
               state={pdfPanelState}
               draftProgress={pdfDraftProgress}
               onClose={() => {
@@ -5799,6 +5885,7 @@ export default function App() {
                 setTimeout(() => setStatusMessage((curr) => (curr === msg ? null : curr)), 4000);
               }}
             />
+            </div>
           </div>
         )}
 
@@ -5814,6 +5901,7 @@ export default function App() {
                 setIsResizingRight(true);
               }}
               onDoubleClick={() => setRightWidth(340)}
+              style={!rightPresence.visible ? { width: "0px" } : undefined}
               className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""} ${
                 rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
               }`}

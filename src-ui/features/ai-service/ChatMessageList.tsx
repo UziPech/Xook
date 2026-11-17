@@ -28,7 +28,15 @@ import {
   ThumbsUp,
   Volume2,
 } from "lucide-react";
-import { XoxStar, XoxSilhouetteIcon, XoxState, type XoxAccentPreset } from "../../components/XoxStar";
+import {
+  XoxStar,
+  XoxSilhouetteIcon,
+  XoxState,
+  XOX_ACCENT_PRESETS,
+  getXoxBubbleVars,
+  resolveXoxAccentPreset,
+  type XoxAccentPreset,
+} from "../../components/XoxStar";
 import { ProviderIcon } from "./ProviderIcon";
 import {
   CanvasArtifact,
@@ -264,7 +272,8 @@ const STREAM_PHASE_LABEL: Partial<Record<XoxState, string>> = {
 };
 
 /** Mini silueta estática de la estrella Xox para turnos anteriores sin animación rAF. */
-function XoxMiniGlyph() {
+function XoxMiniGlyph({ accentPreset = "classic" }: { accentPreset?: string }) {
+  const spec = XOX_ACCENT_PRESETS[resolveXoxAccentPreset(accentPreset)];
   return (
     <svg
       width="20"
@@ -272,11 +281,12 @@ function XoxMiniGlyph() {
       viewBox="0 0 24 24"
       fill="none"
       aria-hidden="true"
-      className="text-sky-200/85"
+      style={{ color: spec.rim }}
     >
       <path
         d="M12 2.5L14.4 8.6L20.8 9.2L15.9 13.4L17.4 19.7L12 16.3L6.6 19.7L8.1 13.4L3.2 9.2L9.6 8.6L12 2.5Z"
-        fill="rgba(125,211,252,0.16)"
+        fill={spec.mid}
+        fillOpacity="0.18"
         stroke="currentColor"
         strokeWidth="1.4"
         strokeLinejoin="round"
@@ -667,6 +677,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     <div
                       role="status"
                       aria-live="polite"
+                      style={getXoxBubbleVars(accentPreset)}
                       className={`xox-bubble absolute left-[72%] bottom-[70%] z-20 pointer-events-none ${
                         greetingLeaving ? "is-leaving" : ""
                       }`}
@@ -685,7 +696,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     xoxAwayInStudio ? "opacity-0" : "opacity-100"
                   }`}
                 >
-                  <XoxMiniGlyph />
+                  <XoxMiniGlyph accentPreset={accentPreset} />
                 </div>
               )}
             </div>

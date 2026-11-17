@@ -1541,12 +1541,10 @@ export const QuickBar: React.FC = () => {
                     <span
                       className={`w-1.5 h-1.5 rounded-full ${
                         xoxState === "thinking" || xoxState === "reading"
-                          ? "bg-indigo-200 animate-ping"
+                          ? "bg-white/85 animate-ping"
                           : xoxState === "syncing"
-                            ? "bg-indigo-200 animate-pulse"
-                            : xoxState === "talking"
-                              ? "bg-sky-200"
-                              : "bg-white/85"
+                            ? "bg-white/80 animate-pulse"
+                            : "bg-white/85"
                       }`}
                     />
                     <p
