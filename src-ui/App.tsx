@@ -582,7 +582,7 @@ function XoxHeaderFace({
       onClick={onClick}
       aria-label={`${agentName}, asistente de XOOK`}
       title={`${agentName} · Haz clic para saludar`}
-      className="group w-[26px] h-[26px] flex items-center justify-center cursor-pointer transition-transform hover:scale-110 active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40 rounded-full"
+      className="group w-[26px] h-[26px] shrink-0 flex items-center justify-center cursor-pointer transition-transform hover:scale-110 active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40 rounded-full"
     >
       <svg viewBox="55 52 130 126" className="w-full h-full" aria-hidden="true">
         <defs>
@@ -853,12 +853,45 @@ export default function App() {
   const [viewportWidth, setViewportWidth] = useState<number>(() =>
     typeof window !== "undefined" ? window.innerWidth : 1200
   );
+  const hasMacOverlayChrome =
+    isWorkspaceTauriRuntime() &&
+    typeof navigator !== "undefined" &&
+    /Mac/i.test(navigator.platform || navigator.userAgent);
+  const [isWindowFullscreen, setIsWindowFullscreen] = useState<boolean>(false);
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth);
     window.addEventListener("resize", onResize, { passive: true });
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  useEffect(() => {
+    if (!hasMacOverlayChrome) return;
+    let active = true;
+    let unlistenResize: (() => void) | null = null;
+
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const win = getCurrentWindow();
+        const syncFullscreen = async () => {
+          const full = await win.isFullscreen();
+          if (active) setIsWindowFullscreen(full);
+        };
+        await syncFullscreen();
+        unlistenResize = await win.onResized(() => {
+          void syncFullscreen();
+        });
+      } catch {
+        // Ignora errores transitorios fuera de ventana Tauri nativa
+      }
+    })();
+
+    return () => {
+      active = false;
+      unlistenResize?.();
+    };
+  }, [hasMacOverlayChrome]);
 
   const studioPanelWidth = Math.min(
     860,
@@ -4876,39 +4909,46 @@ export default function App() {
   return (
     <div className="h-screen w-screen bg-[#060709] text-zinc-100 flex flex-col font-sans select-none overflow-hidden antialiased">
       
-      {/* 1. Header Minimalista & Stealth */}
-      <header className="h-12 border-b border-white/[0.06] bg-[#090a0f]/80 backdrop-blur-xl px-4 flex items-center justify-between shrink-0 z-20">
+      {/* 1. Header Minimalista & Stealth integrado en la barra superior de ventana */}
+      <header
+        data-tauri-drag-region="deep"
+        className={`h-12 min-h-12 border-b border-white/[0.06] bg-[#090a0f]/80 backdrop-blur-xl pr-4 flex items-center justify-between gap-2 shrink-0 z-20 ${
+          hasMacOverlayChrome && !isWindowFullscreen ? "pl-[88px]" : "pl-4"
+        }`}
+      >
         
         {/* Identidad de Marca y Toggle de Contexto Izquierdo */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
           <button
+            type="button"
             onClick={() => setShowLeftSidebar(!showLeftSidebar)}
             aria-pressed={showLeftSidebar}
+            aria-label={showLeftSidebar ? "Ocultar panel de contexto" : "Mostrar panel de contexto"}
             title={showLeftSidebar ? "Ocultar panel de contexto" : "Mostrar panel de contexto"}
-            className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
+            className={`shrink-0 min-w-[28px] min-h-[28px] p-1.5 rounded-lg border transition-all cursor-pointer flex items-center justify-center ${
               showLeftSidebar
                 ? "bg-white/[0.08] text-white border-white/[0.1]"
                 : "bg-transparent text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]"
             }`}
           >
-            <PanelLeft className="w-4 h-4" />
+            <PanelLeft className="w-4 h-4" aria-hidden="true" />
           </button>
 
-          <div className="h-4 w-px bg-white/[0.08] mx-0.5" />
+          <div aria-hidden="true" className="h-4 w-px bg-white/[0.08] mx-0.5 shrink-0" />
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <XoxHeaderFace
               state={xoxState}
               onClick={handleXoxClick}
               agentName={effectiveAgentName}
               accentPreset={displayAccentPreset}
             />
-            <XookWordmark className="h-3.5 w-auto text-zinc-100" />
+            <XookWordmark className="h-3 sm:h-3.5 w-auto shrink-0 text-zinc-100" />
           </div>
         </div>
 
         {/* Lado Derecho: Espacio de Xox + Toggle de Canvas + Tareas y Decisiones */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <button
             type="button"
             onClick={() => {
@@ -4919,14 +4959,16 @@ export default function App() {
               }
             }}
             aria-pressed={showXoxStudio}
+            aria-label={`Espacio de ${effectiveAgentName}`}
             title={`Abrir Espacio de ${effectiveAgentName} (nombre, voz, skills, prompt global)`}
-            className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
+            className={`shrink-0 min-h-[28px] px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
               showXoxStudio
                 ? "bg-white/[0.1] text-white border-white/[0.18]"
                 : "bg-transparent text-zinc-300 border-transparent hover:text-white hover:bg-white/[0.06]"
             }`}
           >
             <XoxSilhouetteIcon
+              aria-hidden="true"
               className="w-4 h-4 shrink-0 transition-colors duration-500"
               style={{
                 color:
@@ -4945,10 +4987,11 @@ export default function App() {
               type="button"
               onClick={() => setShowCanvas(false)}
               aria-pressed={showCanvas}
+              aria-label="Ocultar Canvas"
               title="Ocultar Canvas"
-              className="px-2.5 py-1.5 rounded-lg border bg-white/[0.08] text-white border-white/[0.12] hover:bg-white/[0.12] flex items-center gap-1.5 transition-all cursor-pointer"
+              className="shrink-0 min-h-[28px] px-2.5 py-1.5 rounded-lg border bg-white/[0.08] text-white border-white/[0.12] hover:bg-white/[0.12] flex items-center gap-1.5 transition-all cursor-pointer"
             >
-              <Table2 className="w-3.5 h-3.5 text-zinc-200" />
+              <Table2 className="w-3.5 h-3.5 text-zinc-200" aria-hidden="true" />
               <span className="text-[11px] font-medium hidden sm:inline max-w-[120px] truncate">
                 Canvas
               </span>
@@ -4956,20 +4999,22 @@ export default function App() {
           )}
 
           <button
+            type="button"
             onClick={() => setShowRightSidebar((v) => !v)}
             aria-pressed={showRightSidebar}
+            aria-label={`Tareas (${pendingCount} pendientes)`}
             title={
               showRightSidebar
                 ? "Ocultar panel de tareas"
                 : "Mostrar panel de tareas"
             }
-            className={`px-2 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
+            className={`shrink-0 min-h-[28px] px-2 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
               showRightSidebar
                 ? "bg-white/[0.08] text-white border-white/[0.1]"
                 : "bg-transparent text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]"
             }`}
           >
-            <ListTodo className="w-3.5 h-3.5" />
+            <ListTodo className="w-3.5 h-3.5" aria-hidden="true" />
             <span className="text-[11px] font-medium hidden sm:inline">Tareas</span>
             {pendingCount > 0 ? (
               <span className="inline-flex items-center gap-1.5 pl-1.5 ml-0.5 border-l border-white/[0.08] text-[11px] font-mono tabular-nums text-zinc-200">

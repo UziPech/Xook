@@ -12,9 +12,15 @@
   "app": {
     "windows": [
       {
-        "title": "XOOK - Enterprise Agentic Orchestrator",
+        "title": "XOOK",
         "width": 1200,
-        "height": 800
+        "height": 800,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 16,
+          "y": 26
+        }
       }
     ],
     "security": {
