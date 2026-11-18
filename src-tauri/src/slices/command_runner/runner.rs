@@ -7,7 +7,7 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -227,6 +227,56 @@ fn truncate_utf8(raw: &str, max_bytes: usize) -> (String, bool) {
     (raw[..end].to_string(), true)
 }
 
+fn discover_python_venv_bin_dir(extra_bin_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Some(dir) = extra_bin_dir {
+        if dir.is_dir() {
+            return Some(dir.to_path_buf());
+        }
+    }
+    if let Ok(explicit) = std::env::var("XOOK_PYTHON") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            let p = PathBuf::from(trimmed);
+            if let Some(parent) = p.parent() {
+                if parent.is_dir() {
+                    return Some(parent.to_path_buf());
+                }
+            }
+        }
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("src-brain").join(".venv").join("bin"));
+        candidates.push(cwd.join("src-brain").join(".venv").join("Scripts"));
+        if let Some(parent) = cwd.parent() {
+            candidates.push(parent.join("src-brain").join(".venv").join("bin"));
+            candidates.push(parent.join("src-brain").join(".venv").join("Scripts"));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        for anc in exe.ancestors().take(5) {
+            candidates.push(anc.join("src-brain").join(".venv").join("bin"));
+            candidates.push(anc.join("Resources").join("src-brain").join(".venv").join("bin"));
+        }
+    }
+    candidates.into_iter().find(|d| d.is_dir())
+}
+
+fn build_sandboxed_path(venv_bin_dir: Option<&Path>) -> std::ffi::OsString {
+    let base_path = std::env::var_os("PATH")
+        .unwrap_or_else(|| std::ffi::OsString::from("/usr/local/bin:/usr/bin:/bin"));
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(bin_dir) = venv_bin_dir {
+        dirs.push(bin_dir.to_path_buf());
+    }
+    for dir in std::env::split_paths(&base_path) {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or(base_path)
+}
+
 pub fn execute_sandboxed_command(
     conn: &Connection,
     workspace_root: &Path,
@@ -235,8 +285,29 @@ pub fn execute_sandboxed_command(
     permission_mode: &str,
     timeout_sec: u64,
 ) -> CommandExecutionResult {
-    let clamped_timeout = timeout_sec.clamp(1, 30);
-    let safe_path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".to_string());
+    execute_sandboxed_command_with_extra_bin(
+        conn,
+        workspace_root,
+        cmd_id,
+        eval,
+        permission_mode,
+        timeout_sec,
+        None,
+    )
+}
+
+pub fn execute_sandboxed_command_with_extra_bin(
+    conn: &Connection,
+    workspace_root: &Path,
+    cmd_id: &str,
+    eval: &CommandEvaluation,
+    permission_mode: &str,
+    timeout_sec: u64,
+    extra_bin_dir: Option<&Path>,
+) -> CommandExecutionResult {
+    let clamped_timeout = timeout_sec.clamp(1, 60);
+    let venv_bin_dir = discover_python_venv_bin_dir(extra_bin_dir);
+    let safe_path = build_sandboxed_path(venv_bin_dir.as_deref());
     let env_home = if eval.is_external {
         resolve_user_home().unwrap_or_else(|| workspace_root.to_path_buf())
     } else {
@@ -257,7 +328,22 @@ pub fn execute_sandboxed_command(
             c
         }
     } else {
-        let mut c = Command::new(&eval.program);
+        let mut resolved_prog = PathBuf::from(&eval.program);
+        if let Some(ref bin_dir) = venv_bin_dir {
+            let candidate = bin_dir.join(&eval.program);
+            if candidate.exists() {
+                resolved_prog = candidate;
+            } else {
+                #[cfg(target_os = "windows")]
+                {
+                    let exe_cand = bin_dir.join(format!("{}.exe", eval.program));
+                    if exe_cand.exists() {
+                        resolved_prog = exe_cand;
+                    }
+                }
+            }
+        }
+        let mut c = Command::new(resolved_prog);
         c.args(&eval.args);
         c
     };
@@ -463,6 +549,13 @@ mod tests {
         let rows = list_command_executions(&conn, Some(10)).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, "completed");
+
+        let custom_bin = root.join("fake_venv_bin");
+        fs::create_dir_all(&custom_bin).unwrap();
+        let discovered = discover_python_venv_bin_dir(Some(&custom_bin)).unwrap();
+        assert_eq!(discovered, custom_bin);
+        let merged_path = build_sandboxed_path(Some(&custom_bin));
+        assert!(merged_path.to_string_lossy().contains("fake_venv_bin"));
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -4100,6 +4100,186 @@ def test_upgraded_canvas_tools_and_multi_canvas():
     print("✅ Canvas compuesto, UI interactiva, Mini-app sandboxed, update_canvas y multi-canvas verificados.")
 
 
+def test_document_feedback_clean_watermark_and_custom_script():
+    import tempfile
+    from pathlib import Path
+    from pypdf import PdfReader
+    from slices.agent_tools.toolkit import WorkspaceToolExecutor
+    from slices.ai_service import model_router, openrouter_client
+
+    with tempfile.TemporaryDirectory(prefix="xook_doc_feedback_") as tmp:
+        ws = Path(tmp)
+        (ws / "agente" / "reportes").mkdir(parents=True, exist_ok=True)
+        (ws / "datos").mkdir(parents=True, exist_ok=True)
+
+        captured_bridge_calls = []
+
+        def fake_bridge(payload):
+            captured_bridge_calls.append(dict(payload))
+            cmd_str = str(payload.get("command") or "")
+            # Verificar que el script temporal existe en disco durante la llamada al bridge
+            assert "_script_" in cmd_str or "agente/scripts/" in cmd_str
+            return {
+                "ok": True,
+                "status": "completed",
+                "exit_code": 0,
+                "stdout": "script_ok\n",
+                "stderr": "",
+            }
+
+        ex = WorkspaceToolExecutor(ws, command_bridge=fake_bridge)
+
+        # 1) PDF limpio sin marca de agua XOOK por defecto
+        gen_clean = ex.execute("pdf_generate", {
+            "title": "Análisis Estratégico Q4",
+            "output_path": "agente/reportes/analisis_estrategico_q4.pdf",
+            "markdown": (
+                "# Resumen Ejecutivo\n\nTexto inicial del resumen.\n\n"
+                "## Métricas Clave\n\nIngresos base de 120 unidades.\n\n"
+                "## Conclusión\n\nConclusión original que el usuario quiere mejorar."
+            ),
+        })
+        assert gen_clean["ok"] is True, gen_clean
+        pdf_path = ws / "agente" / "reportes" / "analisis_estrategico_q4.pdf"
+        assert pdf_path.is_file()
+
+        read_clean = ex.execute("pdf_read", {"path": gen_clean["path"]})
+        assert read_clean["ok"] is True
+        all_pages_text = "\n".join(p.get("text", "") for p in read_clean.get("pages", []))
+        assert "XOOK" not in all_pages_text, f"No debía estampar XOOK por defecto: {all_pages_text}"
+        meta = PdfReader(str(pdf_path)).metadata or {}
+        assert "XOOK" not in str(meta.get("/Author", ""))
+        assert "XOOK" not in str(meta.get("/Creator", ""))
+        assert "XOOK" not in str(meta.get("/Producer", ""))
+        assert read_clean.get("editable_structure", {}).get("headings"), read_clean
+
+        # 2) Marca de agua opt-in (seguridad o branding futuro) sí funciona cuando se activa explícitamente
+        gen_sec = ex.execute("pdf_generate", {
+            "title": "Documento Interno",
+            "output_path": "agente/reportes/seguridad_optin.pdf",
+            "watermark": {"enabled": True, "diagonal_text": "CONFIDENCIAL", "footer_text": "USO INTERNO"},
+            "markdown": "## Alcance\n\nContenido confidencial de prueba.",
+        })
+        assert gen_sec["ok"] is True, gen_sec
+        read_sec = ex.execute("pdf_read", {"path": gen_sec["path"]})
+        sec_text = "\n".join(p.get("text", "") for p in read_sec.get("pages", []))
+        sec_compact = "".join(sec_text.split())
+        assert "USO INTERNO" in sec_text and (
+            "CONFIDENCIAL" in sec_compact or "LAICNEDIFNOC" in sec_compact
+        ), sec_text
+
+        gen_xook_opt = ex.execute("pdf_generate", {
+            "title": "Documento Con Branding",
+            "output_path": "agente/reportes/branding_xook.pdf",
+            "watermark": True,
+            "markdown": "## Nota\n\nPrueba con branding activado manualmente.",
+        })
+        assert gen_xook_opt["ok"] is True
+        read_xook_opt = ex.execute("pdf_read", {"path": gen_xook_opt["path"]})
+        assert "XOOK" in "\n".join(p.get("text", "") for p in read_xook_opt.get("pages", []))
+
+        # 3) Búsqueda tolerante (sin tildes / con espacios / por título) y lectura difusa
+        search_res = ex.execute("workspace_search", {"query": "analisis q4"})
+        assert search_res["ok"] is True
+        found_paths = [m["path"] for m in search_res["matches"]]
+        assert "agente/reportes/analisis_estrategico_q4.pdf" in found_paths, found_paths
+
+        fuzzy_read = ex.execute("pdf_read", {"path": "analisis estrategico q4"})
+        assert fuzzy_read["ok"] is True
+        assert fuzzy_read["path"] == "agente/reportes/analisis_estrategico_q4.pdf"
+
+        # 4) Edición quirúrgica por sección sin borrar secciones previas
+        mod_sec = ex.execute("pdf_generate", {
+            "source_pdf_path": "Análisis Estratégico Q4",
+            "edit_action": "modify",
+            "section_updates": [
+                {
+                    "section": "Conclusion",
+                    "action": "replace",
+                    "markdown": "Conclusión renovada y concreta orientada a acción.",
+                }
+            ],
+        })
+        assert mod_sec["ok"] is True, mod_sec
+        after_sec_read = ex.execute("pdf_read", {"path": "agente/reportes/analisis_estrategico_q4.pdf"})
+        after_sec_text = "\n".join(p.get("text", "") for p in after_sec_read.get("pages", []))
+        assert "Texto inicial del resumen." in after_sec_text
+        assert "Ingresos base de 120 unidades." in after_sec_text
+        assert "Conclusión renovada y concreta orientada a acción." in after_sec_text
+        assert "Conclusión original" not in after_sec_text
+
+        # 5) Replacements sin coincidencia NO debe devolver ok=True en silencio; con coincidencia sí actualiza
+        bad_rep = ex.execute("pdf_generate", {
+            "source_pdf_path": "agente/reportes/analisis_estrategico_q4.pdf",
+            "edit_action": "modify",
+            "replacements": [{"find": "CADENA_QUE_NO_EXISTE_999", "replace": "X"}],
+        })
+        assert bad_rep["ok"] is False
+
+        ok_rep = ex.execute("pdf_generate", {
+            "source_pdf_path": "agente/reportes/analisis_estrategico_q4.pdf",
+            "edit_action": "modify",
+            "replacements": [{"find": "120 unidades", "replace": "185 unidades"}],
+        })
+        assert ok_rep["ok"] is True, ok_rep
+        rep_read = ex.execute("pdf_read", {"path": "agente/reportes/analisis_estrategico_q4.pdf"})
+        rep_text = "\n".join(p.get("text", "") for p in rep_read.get("pages", []))
+        assert "185 unidades" in rep_text
+
+        # 6) Enrutador anti-secuestro por Canvas previo ante feedback natural sobre documentos
+        p_feedback = model_router.classify_task_intent(
+            "en el documento de análisis no me gustó la tabla ni la conclusión, cámbiala",
+            has_workspace=True,
+            has_active_canvas=True,
+            tools_available=True,
+        )
+        assert p_feedback.task_kind == "agent_execution" and p_feedback.needs_canvas is False, p_feedback
+        p_active_doc = model_router.classify_task_intent(
+            "no me gustó esa parte, está muy corta",
+            has_workspace=True,
+            has_active_canvas=True,
+            has_active_document=True,
+            tools_available=True,
+        )
+        assert p_active_doc.task_kind == "agent_execution" and p_active_doc.needs_canvas is False, p_active_doc
+        has_att, _ = openrouter_client._extract_attached_flags([{"type": "workspace_selection", "name": "nota.md"}])
+        assert has_att is False
+        assert openrouter_client._has_active_document_in_attached([{"kind": "pdf", "name": "doc.pdf"}]) is True
+
+        # 7) run_custom_script: bloqueo Capa 1 y staging/limpieza segura
+        blocked_script = ex.execute("run_custom_script", {
+            "purpose": "Intentar leer bóveda",
+            "code": "print(open('.xook/ai-vault.json').read())",
+        })
+        assert blocked_script["ok"] is False
+        assert len(captured_bridge_calls) == 0
+
+        ok_temp_script = ex.execute("run_custom_script", {
+            "purpose": "Procesar datos temporales",
+            "runtime": "python",
+            "code": "print('hola desde script propio')",
+            "args": ["--modo", "rapido"],
+        })
+        assert ok_temp_script["ok"] is True
+        assert ok_temp_script.get("trust_level") == "external_untrusted_data"
+        assert "Script (python3)" in (captured_bridge_calls[-1].get("detail_preview") or "")
+        # El script temporal en .tmp_exports se limpia tras ejecutar
+        tmp_scripts = list((ws / "agente" / ".tmp_exports").glob("_script_*")) if (ws / "agente" / ".tmp_exports").exists() else []
+        assert len(tmp_scripts) == 0
+
+        ok_saved_script = ex.execute("run_custom_script", {
+            "purpose": "Guardar utilidad reutilizable",
+            "runtime": "python",
+            "code": "print('reutilizable')",
+            "save_name": "mi utilidad pdf",
+        })
+        assert ok_saved_script["ok"] is True
+        assert ok_saved_script.get("saved_script_path") == "agente/scripts/mi-utilidad-pdf.py"
+        assert (ws / "agente" / "scripts" / "mi-utilidad-pdf.py").is_file()
+
+    print("✅ Feedback natural en documentos, PDFs sin marca XOOK por defecto y scripts propios verificados.")
+
+
 if __name__ == "__main__":
     test_sidecar_ping_and_inventory()
     test_canvas_schema_and_stream_router()
@@ -4122,4 +4302,5 @@ if __name__ == "__main__":
     test_xox_studio_global_profile_and_block_skills()
     test_workspace_cleanup_scan_and_safe_hitl_batch()
     test_upgraded_canvas_tools_and_multi_canvas()
+    test_document_feedback_clean_watermark_and_custom_script()
 

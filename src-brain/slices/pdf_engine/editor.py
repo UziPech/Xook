@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -150,7 +151,7 @@ def save_pdf_spec_metadata(
 
         payload: Dict[str, Any] = {
             "path": rel_path,
-            "title": str(spec_data.get("title") or existing.get("title") or "Documento XOOK").strip(),
+            "title": str(spec_data.get("title") or existing.get("title") or "Documento").strip(),
             "subtitle": str(spec_data.get("subtitle") if "subtitle" in spec_data else (existing.get("subtitle") or "")).strip(),
             "author": str(spec_data.get("author") if "author" in spec_data else (existing.get("author") or "")).strip(),
             "date": str(spec_data.get("date") if "date" in spec_data else (existing.get("date") or "")).strip(),
@@ -194,7 +195,8 @@ def save_pdf_spec_metadata(
 
 
 _HEADER_FOOTER_RE = re.compile(
-    r"^(?:XOOK(?:\s*·.*)?|P[áa]gina\s+\d+\s+de\s+\d+|XOOK\s*·.*P[áa]gina\s+\d+\s+de\s+\d+)$",
+    r"^(?:XOOK(?:\s*·.*)?|P[áa]gina\s+\d+\s+de\s+\d+|XOOK\s*·.*P[áa]gina\s+\d+\s+de\s+\d+|"
+    r"\d{1,2}\s+de\s+[a-záéíóú]+\s+de\s+\d{4}(?:\s+(?:·\s+)?P[áa]gina\s+\d+\s+de\s+\d+)?)$",
     re.IGNORECASE,
 )
 
@@ -1076,13 +1078,13 @@ def save_edited_pdf_document(
                 blocks = []
 
         if not blocks:
-            blocks = [{"type": "paragraph", "text": str(payload.get("title") or "Documento XOOK")}]
+            blocks = [{"type": "paragraph", "text": str(payload.get("title") or "Documento")}]
 
         preserve_first = bool(payload.get("preserve_first_page"))
         prepend_cover_path = paths["cover_pdf"] if (preserve_first and paths["cover_pdf"].is_file()) else None
 
         gen_spec: Dict[str, Any] = {
-            "title": str(payload.get("title") or pdf_abs.stem).strip() or "Documento XOOK",
+            "title": str(payload.get("title") or pdf_abs.stem).strip() or "Documento",
             "subtitle": str(payload.get("subtitle") or "").strip(),
             "author": str(payload.get("author") or "").strip(),
             "date": str(payload.get("date") or "").strip(),
@@ -1092,6 +1094,12 @@ def save_edited_pdf_document(
             "skip_inline_title": bool(payload.get("skip_inline_title")),
             "cover": {"enabled": False} if prepend_cover_path else payload.get("cover"),
         }
+        if "footer_text" in payload:
+            gen_spec["footer_text"] = payload.get("footer_text")
+        if "watermark" in payload:
+            gen_spec["watermark"] = payload.get("watermark")
+        elif "branding" in payload:
+            gen_spec["branding"] = payload.get("branding")
 
         modified_only = [p for p in page_patches if isinstance(p, dict) and _is_patch_modified(p)]
         generate_pdf_document(
@@ -1134,12 +1142,269 @@ def save_edited_pdf_document(
     }
 
 
+def _normalize_doc_lookup_text(text: str) -> str:
+    """Normaliza texto eliminando tildes y separadores para búsqueda flexible de documentos y secciones."""
+    norm = unicodedata.normalize("NFD", str(text or ""))
+    norm = "".join(ch for ch in norm if unicodedata.category(ch) != "Mn")
+    return re.sub(r"[\s_./:,-]+", " ", norm.lower()).strip()
+
+
+def _heading_level(block: Dict[str, Any]) -> Optional[int]:
+    if not isinstance(block, dict):
+        return None
+    b_type = str(block.get("type") or "").strip().lower()
+    if b_type == "h1":
+        return 1
+    if b_type == "h2":
+        return 2
+    if b_type == "h3":
+        return 3
+    if b_type == "heading":
+        try:
+            lvl = int(block.get("level") or 1)
+        except (TypeError, ValueError):
+            lvl = 1
+        return max(1, min(3, lvl))
+    return None
+
+
+def _collect_headings(blocks: List[Dict[str, Any]]) -> List[str]:
+    headings: List[str] = []
+    for blk in blocks:
+        if _heading_level(blk) is not None:
+            t = str(blk.get("text") or "").strip()
+            if t:
+                headings.append(t)
+    return headings
+
+
+def _extract_block_text_preview(blocks: List[Dict[str, Any]], limit: int = 8) -> List[str]:
+    snippets: List[str] = []
+    for blk in blocks:
+        if not isinstance(blk, dict):
+            continue
+        t = str(blk.get("text") or blk.get("title") or "").strip()
+        if not t and isinstance(blk.get("items"), list):
+            t = " | ".join(str(x) for x in blk["items"][:3] if str(x).strip())
+        if t:
+            snippets.append(t[:120] + ("…" if len(t) > 120 else ""))
+        if len(snippets) >= limit:
+            break
+    return snippets
+
+
+def _sub_pattern_in_text(text: str, find_txt: str, replace_txt: str) -> Tuple[str, int]:
+    if not find_txt or not text:
+        return text, 0
+    if find_txt in text:
+        cnt = text.count(find_txt)
+        return text.replace(find_txt, replace_txt), cnt
+    if find_txt.lower() in text.lower():
+        pattern = re.compile(re.escape(find_txt), re.IGNORECASE)
+        return pattern.subn(lambda _m: replace_txt, text)
+    parts = [re.escape(p) for p in find_txt.split() if p]
+    if len(parts) > 1:
+        ws_pattern = re.compile(r"\s+".join(parts), re.IGNORECASE)
+        return ws_pattern.subn(lambda _m: replace_txt, text)
+    return text, 0
+
+
+def _apply_replacements_to_blocks(
+    blocks: List[Dict[str, Any]],
+    replacements: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Aplica reemplazos puntuales sobre una copia profunda de `blocks`."""
+    import copy
+
+    updated = copy.deepcopy(blocks or [])
+    total_applied = 0
+    for rep in replacements:
+        if not isinstance(rep, dict):
+            continue
+        find_txt = str(rep.get("find") or rep.get("old") or "").strip()
+        replace_txt = str(rep.get("replace") or rep.get("new") or "")
+        if not find_txt:
+            continue
+        for blk in updated:
+            if not isinstance(blk, dict):
+                continue
+            for key in ("text", "title", "caption", "code", "label"):
+                if isinstance(blk.get(key), str):
+                    new_val, cnt = _sub_pattern_in_text(blk[key], find_txt, replace_txt)
+                    if cnt:
+                        blk[key] = new_val
+                        total_applied += cnt
+            for list_key in ("items", "headers"):
+                lst = blk.get(list_key)
+                if isinstance(lst, list):
+                    for idx, item in enumerate(lst):
+                        if isinstance(item, str):
+                            new_val, cnt = _sub_pattern_in_text(item, find_txt, replace_txt)
+                            if cnt:
+                                lst[idx] = new_val
+                                total_applied += cnt
+                        elif isinstance(item, dict):
+                            for sub_k in ("label", "value", "note", "text"):
+                                if isinstance(item.get(sub_k), str):
+                                    new_val, cnt = _sub_pattern_in_text(item[sub_k], find_txt, replace_txt)
+                                    if cnt:
+                                        item[sub_k] = new_val
+                                        total_applied += cnt
+            rows = blk.get("rows")
+            if isinstance(rows, list):
+                for r_idx, row in enumerate(rows):
+                    if isinstance(row, list):
+                        for c_idx, cell in enumerate(row):
+                            if isinstance(cell, str):
+                                new_val, cnt = _sub_pattern_in_text(cell, find_txt, replace_txt)
+                                if cnt:
+                                    row[c_idx] = new_val
+                                    total_applied += cnt
+    return updated, total_applied
+
+
+def _apply_section_updates_to_blocks(
+    blocks: List[Dict[str, Any]],
+    section_updates: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], int, List[str]]:
+    """Aplica ediciones quirúrgicas por sección/encabezado sin borrar el resto del documento."""
+    import copy
+
+    cur_blocks = copy.deepcopy(blocks or [])
+    applied = 0
+    unmatched: List[str] = []
+
+    for upd in section_updates:
+        if not isinstance(upd, dict):
+            continue
+        action = str(upd.get("action") or upd.get("mode") or "replace").strip().lower()
+        target_sec = str(
+            upd.get("section") or upd.get("heading") or upd.get("target") or upd.get("match") or ""
+        ).strip()
+        raw_idx = upd.get("block_index")
+
+        # Construir bloques nuevos para esta actualización
+        upd_spec: Dict[str, Any] = {}
+        if isinstance(upd.get("blocks"), list):
+            upd_spec["blocks"] = upd["blocks"]
+        elif isinstance(upd.get("markdown"), str) and upd["markdown"].strip():
+            upd_spec["markdown"] = upd["markdown"]
+        elif isinstance(upd.get("content"), str) and upd["content"].strip():
+            upd_spec["markdown"] = upd["content"]
+        elif isinstance(upd.get("text"), str) and upd["text"].strip():
+            upd_spec["markdown"] = upd["text"]
+        sec_blocks, _ = _normalize_blocks_input(upd_spec) if upd_spec else ([], False)
+
+        is_delete = action in ("delete", "remove", "eliminar", "quitar")
+        if not is_delete and not sec_blocks:
+            continue
+
+        start_idx: Optional[int] = None
+        end_idx: Optional[int] = None
+        is_heading_anchor = False
+
+        if isinstance(raw_idx, int) and 0 <= raw_idx < len(cur_blocks):
+            start_idx = raw_idx
+            lvl = _heading_level(cur_blocks[raw_idx])
+            if lvl is not None:
+                is_heading_anchor = True
+                end_idx = len(cur_blocks)
+                for j in range(raw_idx + 1, len(cur_blocks)):
+                    j_lvl = _heading_level(cur_blocks[j])
+                    if j_lvl is not None and j_lvl <= lvl:
+                        end_idx = j
+                        break
+            else:
+                end_idx = raw_idx + 1
+        elif target_sec:
+            norm_target = _normalize_doc_lookup_text(target_sec)
+            tokens = [t for t in norm_target.split() if len(t) >= 2]
+            best_h_idx: Optional[int] = None
+            best_h_score = -1
+
+            for idx, blk in enumerate(cur_blocks):
+                lvl = _heading_level(blk)
+                if lvl is None:
+                    continue
+                h_norm = _normalize_doc_lookup_text(str(blk.get("text") or ""))
+                if not h_norm:
+                    continue
+                score = -1
+                if h_norm == norm_target:
+                    score = 100
+                elif norm_target and norm_target in h_norm:
+                    score = 80 - abs(len(h_norm) - len(norm_target))
+                elif tokens and all(tok in h_norm for tok in tokens):
+                    score = 60
+                if score > best_h_score:
+                    best_h_score = score
+                    best_h_idx = idx
+
+            if best_h_idx is not None:
+                start_idx = best_h_idx
+                is_heading_anchor = True
+                lvl = _heading_level(cur_blocks[best_h_idx]) or 1
+                end_idx = len(cur_blocks)
+                for j in range(best_h_idx + 1, len(cur_blocks)):
+                    j_lvl = _heading_level(cur_blocks[j])
+                    if j_lvl is not None and j_lvl <= lvl:
+                        end_idx = j
+                        break
+            else:
+                # Fallback: coincidencia por contenido de bloque o inicio del documento
+                if norm_target in ("inicio", "intro", "introduccion", "portada cuerpo", "encabezado") and cur_blocks:
+                    first_h = next((i for i, b in enumerate(cur_blocks) if _heading_level(b) is not None), len(cur_blocks))
+                    if first_h > 0:
+                        start_idx, end_idx = 0, first_h
+                if start_idx is None:
+                    for idx, blk in enumerate(cur_blocks):
+                        raw_txt = str(blk.get("text") or blk.get("title") or "")
+                        if not raw_txt and isinstance(blk.get("items"), list):
+                            raw_txt = " ".join(str(x) for x in blk["items"])
+                        b_norm = _normalize_doc_lookup_text(raw_txt)
+                        if b_norm and (
+                            (norm_target and norm_target in b_norm)
+                            or (tokens and all(tok in b_norm for tok in tokens))
+                        ):
+                            start_idx = idx
+                            end_idx = idx + 1
+                            break
+
+        if start_idx is None or end_idx is None:
+            if target_sec:
+                unmatched.append(target_sec)
+            continue
+
+        if is_delete:
+            del cur_blocks[start_idx:end_idx]
+            applied += 1
+        elif action in ("append", "insert_after", "after", "agregar_despues"):
+            cur_blocks[end_idx:end_idx] = sec_blocks
+            applied += 1
+        elif action in ("prepend", "insert_before", "before", "agregar_antes"):
+            insert_pos = start_idx + 1 if (is_heading_anchor and action == "prepend") else start_idx
+            cur_blocks[insert_pos:insert_pos] = sec_blocks
+            applied += 1
+        else:
+            # replace / update / rewrite
+            if is_heading_anchor and sec_blocks and _heading_level(sec_blocks[0]) is None:
+                cur_blocks[start_idx + 1 : end_idx] = sec_blocks
+            else:
+                cur_blocks[start_idx:end_idx] = sec_blocks
+            applied += 1
+
+    return cur_blocks, applied, unmatched
+
+
 def _find_existing_pdf_in_workspace(
     workspace_root: Path,
     raw_ref: str,
     resolve_path_fn: Callable,
 ) -> Optional[Tuple[Path, str]]:
-    """Resuelve una referencia a un PDF existente del workspace por ruta exacta o por nombre de archivo."""
+    """
+    Resuelve una referencia a un PDF existente del workspace por ruta exacta, nombre de archivo,
+    título guardado en `.xook/pdf_specs/*.json` o coincidencia flexible sin tildes/guiones.
+    """
     clean_ref = str(raw_ref or "").strip()
     if not clean_ref:
         return None
@@ -1156,21 +1421,79 @@ def _find_existing_pdf_in_workspace(
         except Exception:
             pass
 
+    # Indexar títulos conocidos en `.xook/pdf_specs/*.json` para resolver por título natural
+    spec_titles: Dict[str, str] = {}
+    specs_dir = workspace_root / ".xook" / "pdf_specs"
+    if specs_dir.is_dir():
+        for spec_file in specs_dir.glob("*.json"):
+            try:
+                data = json.loads(spec_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("path") and data.get("title"):
+                    spec_titles[str(data["path"]).replace("\\", "/")] = str(data["title"])
+            except Exception:
+                continue
+
+    ws_resolved = workspace_root.resolve()
     target_name = Path(clean_ref_pdf).name.lower()
-    for search_sub in ("agente/reportes", "agente", "context", ""):
+    raw_stem = Path(clean_ref).stem if clean_ref.lower().endswith(".pdf") else clean_ref
+    norm_query = _normalize_doc_lookup_text(raw_stem)
+    stopwords = {"el", "la", "los", "las", "de", "del", "en", "un", "una", "pdf", "documento", "archivo", "reporte", "informe"}
+    sig_tokens = [t for t in norm_query.split() if len(t) >= 2 and t not in stopwords]
+    if not sig_tokens:
+        sig_tokens = [t for t in norm_query.split() if len(t) >= 2]
+
+    candidates: List[Tuple[int, int, float, Path, str]] = []
+    seen_rel: set[str] = set()
+    for zone_rank, search_sub in enumerate(("agente/reportes", "agente", "context", "")):
         base_dir = (workspace_root / search_sub) if search_sub else workspace_root
         if not base_dir.is_dir():
             continue
         try:
             for found in base_dir.rglob("*.pdf"):
-                if ".xook" in found.parts or "node_modules" in found.parts or "target" in found.parts:
+                if ".xook" in found.parts or "node_modules" in found.parts or "target" in found.parts or ".venv" in found.parts:
                     continue
-                if found.name.lower() == target_name:
-                    rel_found = found.resolve().relative_to(workspace_root.resolve()).as_posix()
-                    return found.resolve(), rel_found
+                abs_found = found.resolve()
+                try:
+                    rel_found = abs_found.relative_to(ws_resolved).as_posix()
+                except ValueError:
+                    continue
+                if rel_found in seen_rel:
+                    continue
+                seen_rel.add(rel_found)
+
+                fname_low = abs_found.name.lower()
+                norm_stem = _normalize_doc_lookup_text(abs_found.stem)
+                norm_rel = _normalize_doc_lookup_text(rel_found)
+                norm_title = _normalize_doc_lookup_text(spec_titles.get(rel_found, ""))
+
+                tier = 0
+                if fname_low == target_name:
+                    tier = 4
+                elif norm_query and (norm_stem == norm_query or norm_title == norm_query):
+                    tier = 3
+                elif sig_tokens and (
+                    all(tok in norm_stem for tok in sig_tokens)
+                    or (norm_title and all(tok in norm_title for tok in sig_tokens))
+                    or all(tok in norm_rel for tok in sig_tokens)
+                ):
+                    tier = 2
+                elif norm_query and len(norm_query) >= 4 and (norm_query in norm_stem or (norm_title and norm_query in norm_title)):
+                    tier = 1
+
+                if tier > 0:
+                    try:
+                        mtime = abs_found.stat().st_mtime
+                    except OSError:
+                        mtime = 0.0
+                    candidates.append((tier, -zone_rank, mtime, abs_found, rel_found))
         except Exception:
             pass
-    return None
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    _, _, _, best_abs, best_rel = candidates[0]
+    return best_abs, best_rel
 
 
 def modify_or_append_pdf_by_agent(
@@ -1184,7 +1507,8 @@ def modify_or_append_pdf_by_agent(
     """
     Permite a Xox modificar un PDF existente o agregarle nuevas páginas (`append_pages`)
     conservando la misma tipografía (`_FONT_FAMILY`), estilo visual (`theme`), encabezados,
-    pies de página y portada original.
+    pies de página y portada original. Soporta reemplazos puntuales, ediciones quirúrgicas
+    por sección (`section_updates`), reemplazo completo o anexado de páginas.
     """
     source_ref = str(
         spec.get("source_pdf_path")
@@ -1210,14 +1534,24 @@ def modify_or_append_pdf_by_agent(
 
     # Heredar diseño, tipografía y metadatos del PDF existente para mantener coherencia total
     theme = str(spec.get("theme") or existing_spec.get("theme") or "executive").strip().lower()
-    title = str(spec.get("title") or existing_spec.get("title") or pdf_abs.stem).strip() or "Documento XOOK"
+    title = str(spec.get("title") or existing_spec.get("title") or pdf_abs.stem).strip() or "Documento"
     subtitle = str(
         spec.get("subtitle") if "subtitle" in spec else (existing_spec.get("subtitle") or "")
     ).strip()
     author = str(
         spec.get("author") or spec.get("company") or existing_spec.get("author") or default_author or ""
     ).strip()
-    date_str = str(spec.get("date") or existing_spec.get("date") or "").strip()
+    date_str = str(spec.get("date") if "date" in spec else (existing_spec.get("date") or "")).strip()
+    footer_text = (
+        spec.get("footer_text")
+        if "footer_text" in spec
+        else existing_spec.get("footer_text")
+    )
+    watermark_cfg = (
+        spec.get("watermark")
+        if "watermark" in spec
+        else (spec.get("branding") if "branding" in spec else (existing_spec.get("watermark") if "watermark" in existing_spec else existing_spec.get("branding")))
+    )
 
     edit_action = str(spec.get("edit_action") or spec.get("mode") or "").strip().lower()
     is_append = bool(spec.get("append_pages")) or edit_action in (
@@ -1228,7 +1562,7 @@ def modify_or_append_pdf_by_agent(
         "agregar",
     )
 
-    # 1) Aplicar reemplazos puntuales sobre cajas de texto (`replacements`) si fueron indicados
+    # 1) Aplicar reemplazos puntuales sobre cajas de texto (`page_patches`) y bloques guardados (`blocks`)
     replacements = spec.get("replacements") if isinstance(spec.get("replacements"), list) else []
     page_patches = list(existing_spec.get("page_patches") or [])
     replacements_applied = 0
@@ -1247,15 +1581,65 @@ def modify_or_append_pdf_by_agent(
                 if target_page > 0 and int(patch.get("page_number") or 0) != target_page:
                     continue
                 cur_t = str(patch.get("text") or "")
-                if find_txt in cur_t:
-                    patch["text"] = cur_t.replace(find_txt, replace_txt)
-                    replacements_applied += 1
-                elif find_txt.lower() in cur_t.lower():
-                    pattern = re.compile(re.escape(find_txt), re.IGNORECASE)
-                    patch["text"] = pattern.sub(replace_txt, cur_t)
-                    replacements_applied += 1
+                new_t, cnt = _sub_pattern_in_text(cur_t, find_txt, replace_txt)
+                if cnt > 0:
+                    patch["text"] = new_t
+                    replacements_applied += cnt
+
+    existing_blocks = list(existing_spec.get("blocks") or [])
+    block_replacements_applied = 0
+    if replacements and existing_blocks:
+        existing_blocks, block_replacements_applied = _apply_replacements_to_blocks(existing_blocks, replacements)
+
+    section_updates = spec.get("section_updates") if isinstance(spec.get("section_updates"), list) else []
+    section_updates_applied = 0
+    unmatched_sections: List[str] = []
+    if section_updates:
+        existing_blocks, section_updates_applied, unmatched_sections = _apply_section_updates_to_blocks(
+            existing_blocks,
+            section_updates,
+        )
+        if unmatched_sections and section_updates_applied == 0:
+            return {
+                "ok": False,
+                "path": rel_path,
+                "error": (
+                    f"No se encontró la sección solicitada ({', '.join(unmatched_sections)}) en {rel_path}. "
+                    "Revisa los encabezados reales del documento con `pdf_read`."
+                ),
+                "available_headings": _collect_headings(existing_blocks),
+                "sample_snippets": _extract_block_text_preview(existing_blocks),
+            }
 
     new_blocks, _ = _normalize_blocks_input(spec)
+
+    # Detectar intento fallido de reemplazo sin otro cambio válido para evitar falsos "ok: True"
+    metadata_changed = (
+        ("title" in spec and str(spec.get("title") or "").strip() != str(existing_spec.get("title") or "").strip())
+        or ("theme" in spec and str(spec.get("theme") or "").strip().lower() != str(existing_spec.get("theme") or "").strip().lower())
+        or ("subtitle" in spec and str(spec.get("subtitle") or "").strip() != str(existing_spec.get("subtitle") or "").strip())
+        or ("footer_text" in spec)
+        or ("watermark" in spec)
+        or ("branding" in spec)
+    )
+    if (
+        replacements
+        and replacements_applied == 0
+        and block_replacements_applied == 0
+        and not new_blocks
+        and section_updates_applied == 0
+        and not metadata_changed
+    ):
+        return {
+            "ok": False,
+            "path": rel_path,
+            "error": (
+                f"Ninguno de los textos indicados en `replacements` coincidió en {rel_path}. "
+                "Lee el documento o usa `section_updates` / `markdown`."
+            ),
+            "available_headings": _collect_headings(existing_blocks),
+            "sample_snippets": _extract_block_text_preview(existing_blocks),
+        }
 
     # 2) Modo `append_pages`: conserva intactas todas las páginas actuales (1..N) y agrega
     #    las páginas nuevas (N+1..N+K) con la misma tipografía, paleta y numeración continua.
@@ -1267,8 +1651,7 @@ def modify_or_append_pdf_by_agent(
 
         prev_all_tmp = paths["base_pdf"].with_name(f"{paths['base_pdf'].stem}.prev_all.pdf")
         shutil.copy2(pdf_abs, prev_all_tmp)
-        prev_blocks = list(existing_spec.get("blocks") or [])
-        combined_blocks = prev_blocks + [{"type": "page_break"}] + new_blocks
+        combined_blocks = existing_blocks + [{"type": "page_break"}] + new_blocks
 
         append_spec: Dict[str, Any] = {
             "title": title,
@@ -1281,6 +1664,10 @@ def modify_or_append_pdf_by_agent(
             "skip_inline_title": True,
             "cover": {"enabled": False, "layout": "none"},
         }
+        if footer_text is not None:
+            append_spec["footer_text"] = footer_text
+        if watermark_cfg is not None:
+            append_spec["watermark"] = watermark_cfg
         try:
             res = generate_pdf_document(
                 append_spec,
@@ -1299,6 +1686,8 @@ def modify_or_append_pdf_by_agent(
                     "has_cover": bool(existing_spec.get("has_cover")),
                     "preserve_first_page": bool(existing_spec.get("preserve_first_page")),
                     "cover": existing_spec.get("cover"),
+                    "footer_text": footer_text,
+                    "watermark": watermark_cfg,
                     "blocks": combined_blocks,
                     "page_patches": [],
                 },
@@ -1310,8 +1699,15 @@ def modify_or_append_pdf_by_agent(
         finally:
             prev_all_tmp.unlink(missing_ok=True)
 
-    # 3) Si solo enviaron `replacements` sin bloques nuevos, estampar los parches directamente
-    if replacements_applied > 0 and not new_blocks:
+    # 3) Si solo enviaron `replacements` sin bloques estructurados modificados (ej. PDF escaneado o portada),
+    #    estampar parches directos; si sí coincidieron `blocks`, dejar que el modo `modify` recompile limpio.
+    if (
+        replacements_applied > 0
+        and block_replacements_applied == 0
+        and not new_blocks
+        and section_updates_applied == 0
+        and not metadata_changed
+    ):
         saved = save_edited_pdf_document(
             workspace_root,
             pdf_abs,
@@ -1324,7 +1720,7 @@ def modify_or_append_pdf_by_agent(
 
     # 4) Modo `modify`: recompila el cuerpo del documento conservando la portada original (Página 1)
     #    y siguiendo la misma tipografía y estilo visual (`theme`).
-    blocks_to_compile = new_blocks if new_blocks else list(existing_spec.get("blocks") or [])
+    blocks_to_compile = new_blocks if new_blocks else existing_blocks
     preserve_first = bool(existing_spec.get("preserve_first_page")) or bool(existing_spec.get("has_cover"))
     prepend_cover = paths["cover_pdf"] if (preserve_first and paths["cover_pdf"].is_file()) else None
 
@@ -1339,6 +1735,11 @@ def modify_or_append_pdf_by_agent(
         "skip_inline_title": bool(existing_spec.get("skip_inline_title")),
         "cover": {"enabled": False, "layout": "none"} if prepend_cover else (spec.get("cover") or existing_spec.get("cover")),
     }
+    if footer_text is not None:
+        modify_spec["footer_text"] = footer_text
+    if watermark_cfg is not None:
+        modify_spec["watermark"] = watermark_cfg
+
     res = generate_pdf_document(
         modify_spec,
         workspace_root=workspace_root,
@@ -1357,13 +1758,17 @@ def modify_or_append_pdf_by_agent(
     )
     if pdf_abs.is_file():
         shutil.copy2(pdf_abs, paths["base_pdf"])
-        if replacements_applied > 0:
+        if replacements_applied > 0 and prepend_cover is not None:
             cover_patches = [
                 p for p in page_patches
                 if isinstance(p, dict) and int(p.get("page_number") or 0) == 1 and _is_patch_modified(p)
             ]
             if cover_patches:
                 apply_page_patches_to_pdf(paths["base_pdf"], pdf_abs, cover_patches)
-    res["edit_action"] = "modify"
+    res["edit_action"] = "section_updates" if section_updates_applied > 0 and not new_blocks else "modify"
+    if section_updates_applied > 0:
+        res["section_updates_applied"] = section_updates_applied
+    if unmatched_sections:
+        res["unmatched_sections"] = unmatched_sections
     return res
 

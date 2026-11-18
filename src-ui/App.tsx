@@ -651,7 +651,7 @@ function buildPdfSpecFromCanvas(canvas: CanvasArtifact): Record<string, unknown>
     });
   }
   return {
-    title: canvas.title || "Reporte XOOK",
+    title: canvas.title || "Reporte",
     subtitle: canvas.subtitle || undefined,
     theme: "executive",
     cover: { enabled: false },
@@ -981,6 +981,11 @@ export default function App() {
     }
   }, [showDocViewer]);
   const [pdfPanelState, setPdfPanelState] = useState<PdfWorkspacePanelState | null>(null);
+  const docViewerRef = useRef<{ show: boolean; state: PdfWorkspacePanelState | null }>({
+    show: false,
+    state: null,
+  });
+  docViewerRef.current = { show: showDocViewer, state: pdfPanelState };
   const [pdfDraftProgress, setPdfDraftProgress] = useState<PdfDraftProgressEvent | null>(null);
   const [taskTab, setTaskTab] = useState<TaskPanelTab>("pending");
   const [selectedContext, setSelectedContext] = useState<ContextItem | null>(null);
@@ -1858,6 +1863,32 @@ export default function App() {
           return undefined;
         })
         .catch(() => {});
+      const openDoc = docViewerRef.current;
+      if (
+        openDoc.show &&
+        openDoc.state?.path &&
+        openDoc.state.fileKind !== "pdf" &&
+        !openDoc.state.isLoadingPages
+      ) {
+        const targetPath = openDoc.state.path;
+        void readUniversalDocument(targetPath)
+          .then((doc) => {
+            if (!doc) return;
+            setPdfPanelState((curr) =>
+              curr && curr.path === targetPath
+                ? {
+                    ...curr,
+                    title: doc.title || curr.title,
+                    sizeBytes: doc.sizeBytes ?? curr.sizeBytes,
+                    universalDoc: doc,
+                    textContent: doc.markdown ?? doc.text ?? curr.textContent,
+                    error: doc.ok === false ? doc.error || "No se pudo leer el archivo." : null,
+                  }
+                : curr
+            );
+          })
+          .catch(() => {});
+      }
       void refreshInventoryAndReview();
       void refreshXoxStudioData();
     });
@@ -3502,9 +3533,44 @@ export default function App() {
     const convId = activeConvIdRef.current;
     const assistantMsgId = `msg_a_${Date.now() + 1}`;
     const priorHistory = baseMessages
-      .filter((m) => !m.isError && m.content.trim().length > 0)
+      .filter(
+        (m) =>
+          !m.isError &&
+          (m.content.trim().length > 0 ||
+            (m.generatedPdfs && m.generatedPdfs.length > 0) ||
+            (m.attachments && m.attachments.length > 0) ||
+            Boolean(m.canvas) ||
+            (m.canvases && m.canvases.length > 0))
+      )
       .slice(-10)
-      .map((m) => ({ role: m.role, content: m.content }));
+      .map((m) => {
+        const notes: string[] = [];
+        if (m.attachments && m.attachments.length > 0) {
+          const attDesc = m.attachments
+            .map((a) => (a.workspacePath ? `${a.name} (${a.workspacePath})` : a.name))
+            .join(", ");
+          notes.push(`[Archivos adjuntos en este turno: ${attDesc}]`);
+        }
+        if (m.generatedPdfs && m.generatedPdfs.length > 0) {
+          const pdfDesc = m.generatedPdfs
+            .map(
+              (p) =>
+                `${p.path} (título: "${p.title || p.filename}", ${p.pageCount || 1} pág., theme: ${p.theme || "executive"})`
+            )
+            .join("; ");
+          notes.push(`[PDFs generados/editados en este turno: ${pdfDesc}]`);
+        }
+        const turnCanvases =
+          m.canvases && m.canvases.length > 0 ? m.canvases : m.canvas ? [m.canvas] : [];
+        if (turnCanvases.length > 0) {
+          const canvasDesc = turnCanvases
+            .map((c) => `"${c.title || "Canvas"}" (id: ${c.id}, tipo: ${c.kind})`)
+            .join(", ");
+          notes.push(`[Canvas de este turno: ${canvasDesc}]`);
+        }
+        const suffix = notes.length > 0 ? `\n${notes.join("\n")}` : "";
+        return { role: m.role, content: `${m.content.trim()}${suffix}`.trim() };
+      });
 
     const initialStep: ThinkingStep = {
       id: "read_context",
@@ -3721,8 +3787,8 @@ export default function App() {
             workspacePath: pdfPanelState.path,
             content:
               `DOCUMENTO ACTIVO EN EL VISOR: '${pdfPanelState.path}' (título: '${pdfPanelState.title}', estilo/theme: '${pdfPanelState.theme || "executive"}', páginas actuales: ${pdfPanelState.pageCount || pdfPanelState.pages.length || 1}). ` +
-              `Si el usuario pide agregar más páginas a este documento, llama a 'pdf_generate' con source_pdf_path='${pdfPanelState.path}', edit_action='append_pages' y theme='${pdfPanelState.theme || "executive"}' para conservar exactamente la misma tipografía, diseño, encabezados y numeración continua. ` +
-              `Si pide modificar contenido de este PDF, usa source_pdf_path='${pdfPanelState.path}' con edit_action='modify' (y replacements=[{find, replace}] si aplica) manteniendo su misma tipografía y diseño.`,
+              `Si el usuario comenta o da feedback negativo/de ajuste sobre este documento, PRIMERO inspecciónalo con 'pdf_read' (si aún no conoces sus encabezados/texto exacto) y luego aplica el cambio REAL sobre '${pdfPanelState.path}' llamando a 'pdf_generate' con source_pdf_path='${pdfPanelState.path}', edit_action='modify' (usando 'section_updates' para cambios por sección sin borrar lo demás, o 'replacements' para reemplazos puntuales, o 'markdown'/'blocks' completos). ` +
+              `Si pide agregar más páginas, usa source_pdf_path='${pdfPanelState.path}', edit_action='append_pages' y theme='${pdfPanelState.theme || "executive"}'. NO añadas marca de agua XOOK salvo que se pida explícitamente.`,
           });
         } else {
           activeContextSnippets.unshift({
@@ -3730,9 +3796,16 @@ export default function App() {
             type: "document",
             workspacePath: pdfPanelState.path,
             content:
-              `DOCUMENTO ACTIVO EN EL VISOR: '${pdfPanelState.path}' (${viewerKind}, título: '${pdfPanelState.title}'). Usa 'workspace_read' con path='${pdfPanelState.path}' si necesitas leer su contenido completo.`,
+              `DOCUMENTO ACTIVO EN EL VISOR: '${pdfPanelState.path}' (${viewerKind}, título: '${pdfPanelState.title}'). Usa 'workspace_read' con path='${pdfPanelState.path}' si necesitas ver su contenido completo; si pide modificarlo, edítalo directamente ('workspace_edit_file' para texto/Markdown, o 'run_custom_script' para .docx/.xlsx/.pptx).`,
           });
         }
+      } else if (selectedWorkspaceFile?.relativePath) {
+        activeContextSnippets.push({
+          name: selectedWorkspaceFile.name,
+          type: "workspace_selection",
+          workspacePath: selectedWorkspaceFile.relativePath,
+          content: `Último archivo seleccionado en el espacio de trabajo: '${selectedWorkspaceFile.relativePath}' (${selectedWorkspaceFile.name}). Úsalo como candidato principal si el usuario se refiere implícitamente a "ese archivo/documento".`,
+        });
       }
 
       const businessContextSnapshot = [
@@ -3743,6 +3816,21 @@ export default function App() {
       ]
         .join("\n")
         .slice(0, 4500);
+
+      const fallbackChatCanvas = (() => {
+        for (let i = chatMessagesRef.current.length - 1; i >= 0; i -= 1) {
+          const m = chatMessagesRef.current[i];
+          if (m.canvas) return m.canvas;
+          if (m.canvases && m.canvases.length > 0) {
+            return m.canvases[m.canvases.length - 1];
+          }
+        }
+        return null;
+      })();
+      const effectiveActiveCanvas =
+        showCanvas && !(showDocViewer && pdfPanelState?.path)
+          ? (activeCanvas ?? fallbackChatCanvas)
+          : null;
 
       setPermissionItems([]);
       const res = await runXoxAiChatStream(
@@ -3764,18 +3852,7 @@ export default function App() {
               }
             : null,
           businessContextSnapshot,
-          activeCanvas:
-            activeCanvas ??
-            (() => {
-              for (let i = chatMessagesRef.current.length - 1; i >= 0; i -= 1) {
-                const m = chatMessagesRef.current[i];
-                if (m.canvas) return m.canvas;
-                if (m.canvases && m.canvases.length > 0) {
-                  return m.canvases[m.canvases.length - 1];
-                }
-              }
-              return null;
-            })(),
+          activeCanvas: effectiveActiveCanvas,
         },
         {
           onStreamStart: (sid) => {
@@ -5077,7 +5154,7 @@ export default function App() {
       stage: "rendering_pdf",
       stepLabel: "Compilando Canvas en páginas PDF...",
       progress: 0.45,
-      title: canvas.title || "Canvas XOOK",
+      title: canvas.title || "Canvas",
       subtitle: canvas.subtitle,
       theme: "executive",
       hasCover: false,

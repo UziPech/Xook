@@ -808,6 +808,29 @@ fn inspect_stages_layer1(
         }
 
         // Inspección de todos los argumentos + targets de redirección
+        let is_script_runner = SCRIPT_EXEC_PROGRAMS.contains(&base_prog.as_str());
+        let check_staged_script = |canon: &Path, mark_inline: &mut bool| -> Result<(), String> {
+            if is_script_runner && canon.starts_with(&canon_ws) && canon.is_file() {
+                if let Ok(rel_script) = canon.strip_prefix(&canon_ws) {
+                    let rel_norm = rel_script.to_string_lossy().replace('\\', "/");
+                    if rel_norm.starts_with("agente/.tmp_exports/") {
+                        *mark_inline = true;
+                    }
+                    if rel_norm.starts_with("agente/.tmp_exports/")
+                        || rel_norm.starts_with("agente/scripts/")
+                    {
+                        if let Ok(src_text) = fs::read_to_string(canon) {
+                            if let Some(secret) = token_has_forbidden_secret(&src_text) {
+                                return Err(format!(
+                                    "Acceso denegado: el script intenta tocar ruta protegida ({secret})."
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        };
         let mutates_all_arg_targets = matches!(
             base_prog.as_str(),
             "rm" | "rmdir" | "mv" | "chmod" | "truncate" | "unlink" | "tee" | "ln" | "touch" | "mkdir"
@@ -824,10 +847,13 @@ fn inspect_stages_layer1(
 
         for arg_idx in 0..stage.args.len() {
             let arg = stage.args[arg_idx].clone();
+            let is_inline_code_arg = is_inline_script
+                && arg_idx > 0
+                && matches!(stage.args[arg_idx - 1].as_str(), "-c" | "-e" | "--eval");
             let is_cp_dest = base_prog == "cp"
                 && (Some(arg_idx) == last_non_flag_idx
                     || (arg_idx > 0 && stage.args[arg_idx - 1] == "-t"));
-            let is_mutated_target_arg = !is_inline_script
+            let is_mutated_target_arg = !is_inline_code_arg
                 && ((mutates_all_arg_targets && !arg.starts_with('-') && !arg.trim().is_empty())
                     || is_cp_dest
                     || (sed_inplace && !arg.starts_with('-') && !arg.trim().is_empty()));
@@ -837,6 +863,10 @@ fn inspect_stages_layer1(
             }
             if let Some(secret) = token_has_forbidden_secret(&arg) {
                 return Err(format!("Acceso denegado a ruta protegida del sistema ({secret})."));
+            }
+
+            if is_inline_code_arg {
+                continue;
             }
 
             if let Some((cand, is_bare)) = extract_explicit_host_arg(&arg) {
@@ -853,6 +883,7 @@ fn inspect_stages_layer1(
                 if is_mutated_target_arg {
                     check_protected_workspace_mutation_target(&canon, &canon_ws, &base_prog)?;
                 }
+                check_staged_script(&canon, &mut is_inline_script)?;
                 if !uses_shell
                     && is_bare
                     && (arg == "~"
@@ -874,7 +905,7 @@ fn inspect_stages_layer1(
                         external_dirs.push(sdir);
                     }
                 }
-            } else if !arg.starts_with('-') && !arg.trim().is_empty() && !is_inline_script {
+            } else if !arg.starts_with('-') && !arg.trim().is_empty() {
                 let candidate = cwd_abs.join(&arg);
                 if candidate.exists() || is_mutated_target_arg {
                     if let Ok((canon, existed)) = canonicalize_with_ancestor(&candidate) {
@@ -890,6 +921,7 @@ fn inspect_stages_layer1(
                                 &base_prog,
                             )?;
                         }
+                        check_staged_script(&canon, &mut is_inline_script)?;
                         let inside_ws = canon == canon_ws || canon.starts_with(&canon_ws);
                         if !inside_ws {
                             let sdir = scope_dir_for_resolved_path(&canon, existed);
@@ -1761,6 +1793,35 @@ mod tests {
             evaluate_command(&root, "rm agente/proyectos/tmp.txt", ".").verdict,
             PolicyVerdict::Ask
         );
+
+        // Código inline (-c / -e) con cadenas tipo ~/ o /usr no dispara falsos positivos de ruta,
+        // pero mantiene `allow_always_allowed == false` y sigue bloqueando argumentos de archivo sensibles
+        let ev_inline_re = evaluate_command(
+            &root,
+            "python3 -c \"import re; print(re.sub('/+', '/', '~/demo'))\"",
+            ".",
+        );
+        assert_eq!(ev_inline_re.verdict, PolicyVerdict::Ask);
+        assert!(!ev_inline_re.allow_always_allowed);
+        assert!(matches!(
+            evaluate_command(&root, "python3 -c \"print(1)\" ~/.ssh/id_rsa", ".").verdict,
+            PolicyVerdict::Deny(_)
+        ));
+
+        // Scripts temporales generados en agente/.tmp_exports piden Ask cada vez y se escanean en Capa 1
+        fs::create_dir_all(root.join("agente/.tmp_exports")).unwrap();
+        let clean_script = root.join("agente/.tmp_exports/_script_ok.py");
+        fs::write(&clean_script, "print('hola')\n").unwrap();
+        let ev_staged = evaluate_command(&root, "python3 agente/.tmp_exports/_script_ok.py", ".");
+        assert_eq!(ev_staged.verdict, PolicyVerdict::Ask);
+        assert!(!ev_staged.allow_always_allowed);
+
+        let evil_script = root.join("agente/.tmp_exports/_script_bad.py");
+        fs::write(&evil_script, "print(open('ai-vault.json').read())\n").unwrap();
+        assert!(matches!(
+            evaluate_command(&root, "python3 agente/.tmp_exports/_script_bad.py", ".").verdict,
+            PolicyVerdict::Deny(_)
+        ));
 
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&ext_dir);

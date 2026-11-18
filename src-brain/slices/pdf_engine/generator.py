@@ -1221,7 +1221,7 @@ class _NumberedCanvas(rl_canvas.Canvas):
             self.setFillColor(muted_col)
             self.drawRightString(page_w - margin_x, header_y, company[:48])
 
-        # Footer sutil
+        # Footer sutil (sin marca de agua por defecto; branding/seguridad es opt-in)
         footer_y = 1.15 * cm
         self.setStrokeColor(border_col)
         self.setLineWidth(0.5)
@@ -1229,9 +1229,39 @@ class _NumberedCanvas(rl_canvas.Canvas):
 
         self.setFont(_FONT_FAMILY["regular"], 8)
         self.setFillColor(muted_col)
-        left_footer = f"XOOK · {date_str}" if date_str else "XOOK"
-        self.drawString(margin_x, footer_y, left_footer)
+        custom_footer = _sanitize_text_for_pdf(self._page_meta.get("footer_text") or "").strip()
+        wm_cfg = self._page_meta.get("watermark") if isinstance(self._page_meta.get("watermark"), dict) else {}
+        wm_enabled = bool(wm_cfg.get("enabled"))
+        wm_footer = _sanitize_text_for_pdf(wm_cfg.get("footer_text") or "").strip() if wm_enabled else ""
+        if custom_footer:
+            left_footer = f"{custom_footer} · {date_str}" if date_str else custom_footer
+        elif wm_footer:
+            left_footer = f"{wm_footer} · {date_str}" if date_str else wm_footer
+        else:
+            left_footer = date_str
+        if left_footer:
+            self.drawString(margin_x, footer_y, left_footer[:72])
         self.drawRightString(page_w - margin_x, footer_y, f"Página {page_num} de {total_pages}")
+
+        # Marca de agua diagonal opcional (solo cuando se activa explícitamente)
+        wm_diag = _sanitize_text_for_pdf(wm_cfg.get("diagonal_text") or "").strip() if wm_enabled else ""
+        if wm_diag:
+            self.saveState()
+            try:
+                opacity = float(wm_cfg.get("opacity", 0.07))
+            except (TypeError, ValueError):
+                opacity = 0.07
+            opacity = max(0.02, min(0.35, opacity))
+            if hasattr(self, "setFillAlpha"):
+                self.setFillAlpha(opacity)
+            self.setFillColor(muted_col)
+            font_size = 40 if len(wm_diag) <= 18 else (28 if len(wm_diag) <= 32 else 20)
+            self.setFont(_FONT_FAMILY["bold"], font_size)
+            self.translate(page_w / 2.0, page_h / 2.0)
+            self.rotate(38)
+            self.drawCentredString(0, 0, wm_diag[:48])
+            self.restoreState()
+
         self.restoreState()
 
 
@@ -1254,10 +1284,47 @@ def generate_pdf_document(
     """
     _ensure_fonts()
 
-    title = _sanitize_text_for_pdf(spec.get("title") or "Documento XOOK").strip() or "Documento XOOK"
+    title = _sanitize_text_for_pdf(spec.get("title") or "Documento").strip() or "Documento"
     subtitle = _sanitize_text_for_pdf(spec.get("subtitle") or "").strip()
     author = _sanitize_text_for_pdf(spec.get("author") or spec.get("company") or default_author or "").strip()
-    date_label = _sanitize_text_for_pdf(spec.get("date") or _spanish_date_label()).strip()
+    if spec.get("date") is False:
+        date_label = ""
+    else:
+        date_label = _sanitize_text_for_pdf(spec.get("date") or _spanish_date_label()).strip()
+
+    custom_footer_text = _sanitize_text_for_pdf(str(spec.get("footer_text") or "")).strip()
+    raw_wm = spec.get("watermark") if "watermark" in spec else spec.get("branding")
+    wm_enabled = False
+    wm_footer = ""
+    wm_diagonal = ""
+    wm_opacity = 0.07
+    if isinstance(raw_wm, bool):
+        wm_enabled = raw_wm
+        wm_footer = "XOOK" if wm_enabled else ""
+    elif isinstance(raw_wm, str) and raw_wm.strip():
+        low_wm = raw_wm.strip().lower()
+        if low_wm not in ("false", "0", "none", "off", "no"):
+            wm_enabled = True
+            if low_wm in ("true", "1", "on", "yes", "xook"):
+                wm_footer = "XOOK"
+            else:
+                wm_diagonal = _sanitize_text_for_pdf(raw_wm).strip()
+    elif isinstance(raw_wm, dict):
+        wm_footer = _sanitize_text_for_pdf(str(raw_wm.get("footer_text") or "")).strip()
+        wm_diagonal = _sanitize_text_for_pdf(str(raw_wm.get("diagonal_text") or raw_wm.get("text") or "")).strip()
+        wm_enabled = bool(raw_wm.get("enabled", bool(wm_footer or wm_diagonal)))
+        if wm_enabled and not wm_footer and not wm_diagonal:
+            wm_footer = "XOOK"
+        try:
+            wm_opacity = float(raw_wm.get("opacity", 0.07))
+        except (TypeError, ValueError):
+            wm_opacity = 0.07
+    watermark_meta = {
+        "enabled": wm_enabled,
+        "footer_text": wm_footer,
+        "diagonal_text": wm_diagonal,
+        "opacity": wm_opacity,
+    }
 
     theme_name = str(spec.get("theme") or "executive").strip().lower()
     theme = THEMES.get(theme_name, THEMES["executive"])
@@ -1572,13 +1639,21 @@ def generate_pdf_document(
     templates.append(PageTemplate(id="Content", frames=[content_frame], onPage=_draw_content_bg))
 
     tmp_out = out_abs.with_name(f".{out_abs.name}.tmp.{os.getpid()}_{int(time.time() * 1000)}")
+    doc_creator = _sanitize_text_for_pdf(
+        str(spec.get("creator") or ("XOOK PDF Engine" if wm_enabled else (author or "")))
+    ).strip()
+    doc_producer = _sanitize_text_for_pdf(
+        str(spec.get("producer") or ("XOOK PDF Engine" if wm_enabled else (author or "")))
+    ).strip()
+
     doc = BaseDocTemplate(
         str(tmp_out),
         pagesize=pagesize,
         pageTemplates=templates,
         title=title,
-        author=author or "XOOK",
-        creator="XOOK PDF Engine",
+        author=author or "",
+        creator=doc_creator,
+        producer=doc_producer,
     )
 
     story: List[Any] = []
@@ -2200,7 +2275,7 @@ def generate_pdf_document(
             story.append(PageBreak())
 
     if len(story) == 0:
-        story.append(Paragraph("Documento generado con XOOK.", styles["body"]))
+        story.append(Paragraph("Documento sin contenido.", styles["body"]))
 
     _emit_progress(
         "rendering_pdf",
@@ -2236,6 +2311,8 @@ def generate_pdf_document(
                     "has_cover": has_cover,
                     "margin_x": margin_x,
                     "page_offset": prepend_page_offset,
+                    "footer_text": custom_footer_text,
+                    "watermark": watermark_meta,
                 },
                 **kwargs,
             ),

@@ -1081,8 +1081,9 @@ fn handle_command_rpc_callback<R: Runtime>(
             evaluate_command_with_config,
         },
         runner::{
-            CommandPermissionBroker, CommandPermissionDecision, execute_sandboxed_command,
-            finish_command_execution, insert_command_execution,
+            CommandPermissionBroker, CommandPermissionDecision,
+            execute_sandboxed_command_with_extra_bin, finish_command_execution,
+            insert_command_execution,
         },
     };
     use crate::slices::host_fs::guard::is_broad_or_sensitive_root;
@@ -1119,6 +1120,17 @@ fn handle_command_rpc_callback<R: Runtime>(
         .get("timeout_sec")
         .and_then(|v| v.as_u64())
         .unwrap_or(20);
+    let detail_preview = parsed
+        .get("detail_preview")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let venv_bin_dir = find_sidecar_script(app)
+        .ok()
+        .map(|sp| resolve_python_executable(&sp))
+        .and_then(|py| py.parent().map(PathBuf::from))
+        .filter(|dir| dir.is_dir());
 
     let root = fallback_workspace_root
         .map(PathBuf::from)
@@ -1192,13 +1204,14 @@ fn handle_command_rpc_callback<R: Runtime>(
                 "always_rule",
                 "running",
             );
-            let res = execute_sandboxed_command(
+            let res = execute_sandboxed_command_with_extra_bin(
                 &conn,
                 &workspace_root,
                 &cmd_id,
                 &eval,
                 "always_rule",
                 timeout_sec,
+                venv_bin_dir.as_deref(),
             );
             let _ = app.emit(
                 "xox:command-finished",
@@ -1254,18 +1267,20 @@ fn handle_command_rpc_callback<R: Runtime>(
                     "patternSuggestion": eval.pattern_suggestion,
                     "allowAlwaysAllowed": eval.allow_always_allowed,
                     "isExternal": eval.is_external,
+                    "detailPreview": detail_preview,
                 }),
             );
 
             match rx.recv_timeout(std::time::Duration::from_secs(180)) {
                 Ok(CommandPermissionDecision::AllowOnce) => {
-                    let res = execute_sandboxed_command(
+                    let res = execute_sandboxed_command_with_extra_bin(
                         &conn,
                         &workspace_root,
                         &cmd_id,
                         &eval,
                         "once",
                         timeout_sec,
+                        venv_bin_dir.as_deref(),
                     );
                     let _ = app.emit(
                         "xox:command-finished",
@@ -1329,13 +1344,14 @@ fn handle_command_rpc_callback<R: Runtime>(
                     } else {
                         "once"
                     };
-                    let res = execute_sandboxed_command(
+                    let res = execute_sandboxed_command_with_extra_bin(
                         &conn,
                         &workspace_root,
                         &cmd_id,
                         &eval,
                         effective_mode,
                         timeout_sec,
+                        venv_bin_dir.as_deref(),
                     );
                     let _ = app.emit(
                         "xox:command-finished",

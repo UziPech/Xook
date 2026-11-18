@@ -90,6 +90,7 @@ def classify_task_intent(
     *,
     has_workspace: bool = False,
     has_active_canvas: bool = False,
+    has_active_document: bool = False,
     tools_available: bool = True,
     history: Optional[List[Dict[str, Any]]] = None,
     has_attachments: bool = False,
@@ -99,6 +100,7 @@ def classify_task_intent(
         user_message,
         has_workspace=has_workspace,
         has_active_canvas=has_active_canvas,
+        has_active_document=has_active_document,
         tools_available=tools_available,
         history=history,
         skip_casual=bool(has_attachments or has_images),
@@ -126,6 +128,7 @@ def _classify_task_intent_base(
     *,
     has_workspace: bool = False,
     has_active_canvas: bool = False,
+    has_active_document: bool = False,
     tools_available: bool = True,
     history: Optional[List[Dict[str, Any]]] = None,
     skip_casual: bool = False,
@@ -134,18 +137,25 @@ def _classify_task_intent_base(
     _ = history  # Evitar contaminar el enrutamiento actual con palabras clave de turnos pasados
 
     explicit_action_re = re.compile(
-        r"\b(carpeta|directorio|archivo|borrador|crea|crear|creame|edita|escribe|guardar?|guarda|"
-        r"elimina|borra|mueve|archiva|limpia|limpiar|limpieza|depura|depurar|papelera|temporales|workspace|espacio\s+de\s+trabajo|ejecuta|corre|lista|lee|busca|revision|revisi[oó]n|"
-        r"abre|abrir|abreme|[áa]breme|inicia|iniciar|lanza|lanzar|arranca|"
-        r"app|apps|aplicaci[oó]n|aplicaciones|nota|notas|apunta|apuntar|apuntame|ap[úu]ntame|"
+        r"\b(carpeta|directorio|archivo|fichero|borrador|crea|crear|cr[eé]ame|edita|editar|ed[ií]talo|escribe|escribir|guardar?|guarda|"
+        r"elimina|eliminar|borra|borrar|b[oó]rralo|mueve|mover|archiva|limpia|limpiar|limpieza|depura|depurar|papelera|temporales|workspace|espacio\s+de\s+trabajo|ejecuta|ejecutar|corre|correr|lista|listar|lee|leer|busca|buscar|revision|revisi[oó]n|"
+        r"corrige|corregir|corr[ií]gelo|cambia|cambiar|c[aá]mbia\w*|mejora|mejorar|mej[oó]ra\w*|ajusta|ajustar|aj[uú]sta\w*|reescribe|reescribir|rehaz|rehacer|reemplaza|reemplazar|sustituye|sustituir|modifica|modificar|modif[ií]ca\w*|quita|quitar|qu[ií]ta\w*|agrega|agregar|agr[eé]ga\w*|a[nñ]ade|a[nñ]adir|actualiza|actualizar|recorta|acorta|ampl[ií]a|ampliar|extiende|simplifica|pule|refina|arregla|arreglar|arr[eé]gla\w*|"
+        r"no\s+me\s+gust[oó]|no\s+me\s+convenc\w*|vuelve\s+a\s+hacer|est[aá]\s+(?:mal|raro|largo|corto|confuso|incompleto|feo|vago)|falt[aó]|le\s+falta|sobra|"
+        r"abre|abrir|[áa]breme|inicia|iniciar|lanza|lanzar|arranca|"
+        r"app|apps|aplicaci[oó]n|aplicaciones|nota|notas|apunta|apuntar|ap[úu]ntame|"
         r"calendario|evento|eventos|reuni[oó]n|cita|junta|disponibilidad|hueco|"
         r"recordatorios|calculadora|safari|finder|"
-        r"datos/|empresa/|agente/|habilidades/|comando|consola|terminal|script|"
+        r"datos/|empresa/|agente/|habilidades/|comando|comandos|consola|terminal|script|scripts|"
         r"rol|roles|skill|skills|habilidad|habilidades|aprende|preferencias|flujo|blueprint|arquitectura|proyecto|dise[nñ]a|configura|skills\.sh|"
-        r"agenda|agendar|agendame|ag[ée]ndame|programa|programar|automatiza\w*|temporizador|reloj|alarma|recordatorio|"
+        r"agenda|agendar|ag[ée]ndame|programa|programar|automatiza\w*|temporizador|reloj|alarma|recordatorio|"
         r"pantalla|ventana\s+activa|captura|ves\s+en|dice\s+en|qu[eé]\s+ves|mira\s+esto|"
-        r"pdf|documento|informe|reporte|portada|factura|cotizaci[oó]n|contrato|cat[aá]logo|resumir|resume|extraer|imagen|foto|logo|generar?|exportar?|"
+        r"pdf|documento|informe|reporte|portada|car[aá]tula|secci[oó]n|p[aá]rrafo|introducci[oó]n|conclusi[oó]n|encabezado|pie\s+de\s+p[aá]gina|marca\s+de\s+agua|formato|estilo|"
+        r"word|docx|excel|xlsx|powerpoint|pptx|presentaci[oó]n|factura|cotizaci[oó]n|contrato|cat[aá]logo|resumir|resume|extraer|imagen|foto|logo|generar?|exportar?|"
         r"orden\s+de\s+compra|reponer|csv|json)\b"
+    )
+    doc_reference_re = re.compile(
+        r"\b(pdf|documento|informe|reporte|archivo|fichero|word|docx|excel|xlsx|pptx|presentaci[oó]n|"
+        r"portada|car[aá]tula|secci[oó]n|p[aá]rrafo|introducci[oó]n|conclusi[oó]n|encabezado|pie\s+de\s+p[aá]gina|marca\s+de\s+agua)\b"
     )
     domain_ops_re = re.compile(
         r"\b(revisa|inventario|stock|orden|compra|memoria|recuerda|regla|empresa|proveedores?|proyecto|misi[oó]n|objetivo|equipo|proceso|gustos)\b"
@@ -167,18 +177,27 @@ def _classify_task_intent_base(
         r"c[oó]mo\s+(?:reparto|distribuyo)|escenarios?|proyecci[oó]n|cotizar|cotizaci[oó]n|"
         r"ponme\s+a\s+prueba|hazme\s+preguntas|quiero\s+practicar|\bvs\.?\b)\b"
     )
+    explicit_canvas_re = re.compile(
+        r"\b(canvas|lienzo|dashboard|kanban|simulador|cuestionario|quiz|diagrama|flujograma|organigrama|flowchart)\b"
+    )
     canvas_followup_re = re.compile(
         r"\b(s[uú]bele|b[aá]jale|cambia|agrega|añade|quita|ajusta|modifica|tope|l[ií]mite|canal|opci[oó]n|columna|fila|control|slider)\b"
     )
+    is_doc_focused = bool(has_active_document or doc_reference_re.search(text))
+    effective_active_canvas = bool(has_active_canvas and not is_doc_focused)
+
     quant_matches = re.findall(
         r"(?:\$\s*\d[\d.,]*|\d+(?:[.,]\d+)?\s*%|\b\d[\d.,]*\s*(?:unidades|un\.|pzs|piezas|meses|d[ií]as|pesos|usd|mxn|clientes|ventas|mil)\b)",
         text,
     )
     has_implicit_interactive_situation = bool(
-        (len(quant_matches) >= 2)
-        or (len(quant_matches) >= 1 and implicit_canvas_cue_re.search(text))
-        or (implicit_canvas_cue_re.search(text) and ("?" in text or len(text) >= 35))
-        or (has_active_canvas and bool(canvas_followup_re.search(text)))
+        (not is_doc_focused)
+        and (
+            (len(quant_matches) >= 2)
+            or (len(quant_matches) >= 1 and implicit_canvas_cue_re.search(text))
+            or (implicit_canvas_cue_re.search(text) and ("?" in text or len(text) >= 35))
+            or (effective_active_canvas and bool(canvas_followup_re.search(text)))
+        )
     )
     deep_re = re.compile(
         r"\b(analiza|an[aá]lisis|estrategia|rentabilidad|margen|riesgos?\s+financieros?|"
@@ -192,7 +211,7 @@ def _classify_task_intent_base(
         r"ok+|perfecto|listo|qu[eé]\s+tal|c[oó]mo\s+est[aá]s)[\s!?.]*$"
     )
 
-    if casual_re.match(text) and not has_active_canvas and not skip_casual:
+    if casual_re.match(text) and not effective_active_canvas and not skip_casual:
         return TaskProfile(
             task_kind="fast_chat",
             needs_tools=False,
@@ -202,10 +221,12 @@ def _classify_task_intent_base(
             reason_es="conversación rápida de baja latencia",
         )
 
+    has_explicit_canvas_cue = bool(explicit_canvas_re.search(text))
     is_canvas = bool(
-        canvas_re.search(text)
+        has_explicit_canvas_cue
+        or (not is_doc_focused and canvas_re.search(text))
         or has_implicit_interactive_situation
-        or (has_active_canvas and len(text) < 260)
+        or (effective_active_canvas and len(text) < 260)
     )
     is_deep = bool(deep_re.search(text))
     is_explicit_action = bool(explicit_action_re.search(text))
@@ -492,6 +513,7 @@ def select_best_models_for_task(
     provider: str = "openrouter",
     has_workspace: bool,
     has_active_canvas: bool,
+    has_active_document: bool = False,
     tools_available: bool,
     history: Optional[List[Dict[str, Any]]] = None,
     catalog_models: Optional[List[Dict[str, Any]]] = None,
@@ -508,6 +530,7 @@ def select_best_models_for_task(
         user_message,
         has_workspace=has_workspace,
         has_active_canvas=has_active_canvas,
+        has_active_document=has_active_document,
         tools_available=tools_available,
         history=history,
         has_attachments=has_attachments,

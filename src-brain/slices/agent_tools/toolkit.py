@@ -15,9 +15,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sqlite3
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
+import unicodedata
 import uuid
 
 from slices.inventory_advisor.review_engine import run_workspace_review
@@ -157,6 +159,40 @@ def _normalize_rel_for_compare(raw: Optional[str]) -> str:
     while s.startswith("./"):
         s = s[2:]
     return s.rstrip("/")
+
+
+def _normalize_search_text(text: str) -> str:
+    """Elimina tildes y normaliza separadores (_, -, /, .) para búsquedas tolerantes."""
+    norm = unicodedata.normalize("NFD", str(text or ""))
+    norm = "".join(ch for ch in norm if unicodedata.category(ch) != "Mn")
+    return re.sub(r"[\s_./:,-]+", " ", norm.lower()).strip()
+
+
+_SCRIPT_FORBIDDEN_PATTERNS = [
+    (re.compile(r"ai-vault\.json", re.IGNORECASE), "acceso a ai-vault.json"),
+    (re.compile(r"(?:^|[\s/'\"\\])\.xook(?:/|\\|\b)", re.IGNORECASE), "acceso a carpeta interna .xook/"),
+    (re.compile(r"(?:~|/\.|/)ssh(?:/|\\|\b)|authorized_keys|id_rsa|id_ed25519", re.IGNORECASE), "acceso a llaves SSH"),
+    (re.compile(r"\.aws/(?:credentials|config)|\.(?:gnupg|netrc)|/etc/shadow|/etc/master\.passwd", re.IGNORECASE), "acceso a credenciales del sistema"),
+    (re.compile(r"(?:^|[\s/'\"\\])\.env(?:\.local|\.prod|\.dev)?(?:$|[\s'\"])", re.IGNORECASE), "lectura directa de archivo .env"),
+    (re.compile(r"\bfind-generic-password\b|\bfind-internet-password\b|\bsudo\b", re.IGNORECASE), "operación privilegiada o de llavero"),
+]
+
+
+def _validate_custom_script_safety(code: str, args: List[str]) -> Optional[str]:
+    """Prevalidación Capa 1 antes de pasar el script al Guardián de Comandos de Rust."""
+    if not str(code or "").strip():
+        return "El código del script está vacío."
+    if len(code) > 64_000:
+        return "El script supera el tamaño máximo permitido (64 KB)."
+    combined = f"{code}\n" + "\n".join(str(a) for a in args)
+    for pat, reason in _SCRIPT_FORBIDDEN_PATTERNS:
+        if pat.search(combined):
+            return f"Bloqueado por Guardián Capa 1: el script intenta {reason}."
+    for a in args:
+        norm_a = str(a or "").replace("\\", "/")
+        if norm_a == ".." or "/../" in f"/{norm_a}/" or norm_a.startswith("../") or norm_a.endswith("/.."):
+            return f"Argumento con traversal de ruta ('..') bloqueado por Guardián Capa 1: {a}"
+    return None
 
 
 def _validate_protected_file_content(clean_rel: str, text: str) -> Optional[str]:
@@ -743,17 +779,51 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
             "description": (
                 "Solicita al Guardián de Comandos de Rust ejecutar una utilidad de consola en el workspace o en una carpeta "
                 "del equipo (`~/...` o absoluta), con soporte de tuberías simples (`|`) y encadenamiento (`&&`, `;`) bajo control de seguridad. "
-                "Si el comando requiere permiso, el usuario verá una tarjeta interactiva de autorización en vivo."
+                "Si necesitas lógica compleja, múltiples líneas o librerías de Python (pypdf, reportlab, pdfplumber, pillow, zipfile/xml para docx/xlsx), usa `run_custom_script`."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "purpose": {"type": "string", "description": "Propósito claro en lenguaje humano para mostrar al usuario."},
-                    "command": {"type": "string", "description": "Comando limpio a ejecutar (sin sudo, subshells `$()` ni backticks)."},
+                    "command": {"type": "string", "description": "Comando limpio en una sola línea (sin sudo, subshells `$()` ni backticks)."},
                     "cwd": {"type": "string", "description": "Carpeta de trabajo relativa al workspace ('.') o ruta del equipo (`~/Downloads`, `/ruta/...`)."},
-                    "timeout_sec": {"type": "integer", "description": "Tiempo límite en segundos (máximo 30)."},
+                    "timeout_sec": {"type": "integer", "description": "Tiempo límite en segundos (máximo 60)."},
                 },
                 "required": ["purpose", "command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_custom_script",
+            "description": (
+                "Genera y ejecuta bajo el Guardián de Comandos un script propio (Python con el entorno `.venv` de XOOK —incluye pypdf, pdfplumber, reportlab, pillow, numpy, zipfile/xml—; Node.js o shell `sh`). "
+                "Úsalo proactivamente cuando la toolkit nativa no alcance para lo que pidió el usuario (ej. crear/editar `.docx`, `.xlsx` o `.pptx`, dividir/unir/reordenar PDFs, transformar CSV/JSON en lote, extraer texto o automatizaciones a medida) para resolver el problema por tu cuenta sin dejar al usuario sin salida."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "purpose": {"type": "string", "description": "Propósito claro en lenguaje humano para mostrar al usuario en la tarjeta de permiso."},
+                    "runtime": {
+                        "type": "string",
+                        "enum": ["python", "node", "sh"],
+                        "description": "Intérprete a usar ('python' por defecto; incluye paquetes del venv).",
+                    },
+                    "code": {"type": "string", "description": "Código fuente completo multilínea del script en UTF-8."},
+                    "cwd": {"type": "string", "description": "Carpeta de trabajo relativa al workspace ('.') o ruta del equipo (`~/...`)."},
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Argumentos de línea de comandos opcionales pasados al script.",
+                    },
+                    "timeout_sec": {"type": "integer", "description": "Tiempo límite en segundos (1 a 60, por defecto 30)."},
+                    "save_name": {
+                        "type": "string",
+                        "description": "Slug opcional si conviene guardar el script como utilidad reutilizable en `agente/scripts/` (ej. 'unir_pdfs'). Si se omite, se ejecuta de forma temporal y se limpia.",
+                    },
+                },
+                "required": ["purpose", "code"],
             },
         },
     },
@@ -920,6 +990,10 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
                         "type": "boolean",
                         "description": "Si true (default), aplica OCR local automático a páginas escaneadas sin texto.",
                     },
+                    "include_editable_structure": {
+                        "type": "boolean",
+                        "description": "Si true (default en workspace), incluye los encabezados, tema y bloques/markdown guardados del PDF para poder editarlo con precisión.",
+                    },
                 },
                 "required": ["path"],
             },
@@ -930,10 +1004,11 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
         "function": {
             "name": "pdf_generate",
             "description": (
-                "Genera un documento PDF profesional y estructurado en 'agente/reportes/' (o ruta dentro de 'agente/'). "
-                "Estructura base con títulos, subtítulos, párrafos, listas, tablas, tarjetas métricas (kpi_strip), "
-                "callouts, portada opcional e imágenes del workspace. Interpreta libremente la intención del usuario "
-                "sobre dónde y cómo usar cada imagen o si requiere portada (full_bleed, hero_top, centered, split, minimal o auto)."
+                "Genera o edita un documento PDF profesional y estructurado en 'agente/reportes/' (o ruta autorizada). "
+                "Limpio y SIN marca de agua de XOOK por defecto (el usuario puede pedir pie personalizado o marca de seguridad opcional con `watermark`). "
+                "Para modificar un PDF existente tras feedback del usuario, pasa `source_pdf_path` + `edit_action='modify'` y usa "
+                "`section_updates` (para cambiar/agregar/quitar secciones específicas sin borrar el resto), `replacements` (para texto puntual), "
+                "`append_pages` o `markdown`/`blocks` completos."
             ),
             "parameters": {
                 "type": "object",
@@ -1102,12 +1177,35 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
                     },
                     "source_pdf_path": {
                         "type": "string",
-                        "description": "Ruta del PDF existente en el workspace cuando el usuario pide modificarlo o agregarle más páginas conservando su misma tipografía, diseño y portada.",
+                        "description": "Ruta o nombre/título del PDF existente en el workspace cuando el usuario pide modificarlo o agregarle más páginas conservando su misma tipografía, diseño y portada.",
                     },
                     "edit_action": {
                         "type": "string",
                         "enum": ["create", "append_pages", "modify"],
-                        "description": "Usa 'append_pages' para agregar más páginas al final de `source_pdf_path` conservando intactas sus páginas actuales y la misma tipografía/tema; usa 'modify' para actualizar secciones del documento conservando su portada y estilo; usa 'create' para crear un PDF nuevo.",
+                        "description": "Usa 'append_pages' para agregar más páginas al final de `source_pdf_path` conservando intactas sus páginas actuales; usa 'modify' para aplicar `section_updates`, `replacements` o reescribir bloques conservando portada y estilo; usa 'create' para crear un PDF nuevo.",
+                    },
+                    "section_updates": {
+                        "type": "array",
+                        "description": "Ediciones quirúrgicas por sección sobre `source_pdf_path` sin borrar las demás secciones (ej. [{'section': 'Conclusión', 'action': 'replace', 'markdown': '...'}]).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "section": {"type": "string", "description": "Nombre o fragmento del encabezado de la sección objetivo."},
+                                "action": {
+                                    "type": "string",
+                                    "enum": ["replace", "append", "prepend", "insert_after", "insert_before", "delete"],
+                                    "description": "Operación sobre la sección ('replace' por defecto).",
+                                },
+                                "markdown": {"type": "string", "description": "Contenido nuevo en Markdown para esa sección."},
+                                "blocks": {
+                                    "type": "array",
+                                    "items": {"type": "object", "additionalProperties": True},
+                                    "description": "Alternativa a `markdown` en bloques.",
+                                },
+                                "block_index": {"type": "integer", "description": "Índice de bloque opcional obtenido con `pdf_read`."},
+                            },
+                            "required": ["section"],
+                        },
                     },
                     "replacements": {
                         "type": "array",
@@ -1121,8 +1219,22 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
                             },
                         },
                     },
+                    "footer_text": {
+                        "type": "string",
+                        "description": "Texto izquierdo personalizado opcional en el pie de página (sin marca de agua por defecto).",
+                    },
+                    "watermark": {
+                        "type": "object",
+                        "description": "Marca de agua o branding opcional (desactivado por defecto). Solo úsalo si el usuario pide expresamente marca de confidencialidad, seguridad o branding.",
+                        "properties": {
+                            "enabled": {"type": "boolean"},
+                            "diagonal_text": {"type": "string", "description": "Texto diagonal translúcido opcional (ej. 'CONFIDENCIAL')."},
+                            "footer_text": {"type": "string", "description": "Etiqueta opcional en el pie de página."},
+                            "opacity": {"type": "number", "description": "Opacidad entre 0.02 y 0.35 (default 0.07)."},
+                        },
+                    },
                 },
-                "required": ["title"],
+                "required": [],
             },
         },
     },
@@ -1596,7 +1708,7 @@ class WorkspaceToolExecutor:
             return {"ok": False, "error": "Respuesta inválida de herramienta."}
         scrubbed = _scrub_payload(result, self.active_secrets)
         if isinstance(scrubbed, dict) and (
-            scrubbed.get("outside_workspace") is True or name == "run_workspace_command"
+            scrubbed.get("outside_workspace") is True or name in ("run_workspace_command", "run_custom_script")
         ):
             scrubbed.setdefault("trust_level", "external_untrusted_data")
             scrubbed.setdefault(
@@ -1622,6 +1734,7 @@ class WorkspaceToolExecutor:
             "propose_schedule_automation": self._tool_propose_schedule_automation,
             "propose_tasks": self._tool_propose_tasks,
             "run_workspace_command": self._tool_run_workspace_command,
+            "run_custom_script": self._tool_run_custom_script,
             "list_desktop_apps": self._tool_list_desktop_apps,
             "open_desktop_app": self._tool_open_desktop_app,
             "os_list_notes": self._tool_os_list_notes,
@@ -1850,6 +1963,9 @@ class WorkspaceToolExecutor:
         except Exception:
             max_chars = 24000
 
+        include_editable = args.get("include_editable_structure")
+        include_editable_bool = True if include_editable is None else bool(include_editable)
+
         try:
             res = read_pdf_document(
                 target,
@@ -1862,6 +1978,41 @@ class WorkspaceToolExecutor:
             res["path"] = display_path
             if outside_workspace:
                 res["outside_workspace"] = True
+            elif include_editable_bool and res.get("ok"):
+                try:
+                    from slices.pdf_engine.editor import (
+                        _heading_level,
+                        load_pdf_editable_spec,
+                    )
+
+                    spec_data = load_pdf_editable_spec(self.workspace_root, target, display_path)
+                    blocks_list = spec_data.get("blocks") if isinstance(spec_data.get("blocks"), list) else []
+                    headings_info: List[Dict[str, Any]] = []
+                    for idx, blk in enumerate(blocks_list):
+                        lvl = _heading_level(blk)
+                        if lvl is not None:
+                            headings_info.append({
+                                "block_index": idx,
+                                "level": lvl,
+                                "text": str(blk.get("text") or "").strip(),
+                            })
+                    md_str = str(spec_data.get("markdown") or "")
+                    editable_summary: Dict[str, Any] = {
+                        "title": spec_data.get("title"),
+                        "subtitle": spec_data.get("subtitle"),
+                        "theme": spec_data.get("theme"),
+                        "has_cover": bool(spec_data.get("has_cover")),
+                        "block_count": len(blocks_list),
+                        "headings": headings_info,
+                        "source": spec_data.get("source"),
+                    }
+                    if md_str:
+                        editable_summary["markdown"] = md_str[:8000]
+                        if len(md_str) > 8000:
+                            editable_summary["markdown_truncated"] = True
+                    res["editable_structure"] = editable_summary
+                except Exception:
+                    pass
             return res
         except Exception as exc:
             return {"ok": False, "error": f"Error leyendo PDF {display_path}: {exc}"}
@@ -1886,6 +2037,15 @@ class WorkspaceToolExecutor:
         target, clean_rel, top_zone = resolve_workspace_path(self.workspace_root, raw_str)
         if top_zone in READ_SEARCH_EXCLUDED_ROOTS or _has_hidden_component(clean_rel):
             return {"ok": False, "error": f"Ruta reservada u oculta no accesible: {clean_rel}"}
+        if not target.is_file():
+            try:
+                from slices.pdf_engine.editor import _find_existing_pdf_in_workspace
+
+                fuzzy = _find_existing_pdf_in_workspace(self.workspace_root, raw_str, resolve_workspace_path)
+                if fuzzy is not None:
+                    target, clean_rel = fuzzy
+            except Exception:
+                pass
         return self._read_pdf_path(target, clean_rel, args, outside_workspace=False)
 
     def _tool_pdf_generate(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1917,10 +2077,15 @@ class WorkspaceToolExecutor:
         ).strip()
         edit_action = str(args.get("edit_action") or args.get("mode") or "").strip().lower()
         replacements = args.get("replacements") if isinstance(args.get("replacements"), list) else []
+        section_updates = args.get("section_updates") if isinstance(args.get("section_updates"), list) else []
+        has_meta_edit = any(
+            k in args for k in ("theme", "title", "subtitle", "footer_text", "watermark", "branding", "author", "date")
+        )
         is_edit_or_append = (
             bool(source_pdf_ref)
             or bool(args.get("append_pages"))
             or bool(replacements)
+            or bool(section_updates)
             or edit_action in ("append_pages", "add_pages", "append", "agregar_paginas", "modify", "update", "edit")
         )
         if not is_edit_or_append and args.get("output_path"):
@@ -1939,7 +2104,13 @@ class WorkspaceToolExecutor:
         cover_only = bool(args.get("cover_only"))
         normalized_blocks, _ = _normalize_blocks_input(args)
         substantive_count = _count_substantive_blocks(normalized_blocks)
-        if substantive_count == 0 and not cover_only and not replacements:
+        if (
+            substantive_count == 0
+            and not cover_only
+            and not replacements
+            and not section_updates
+            and not (is_edit_or_append and has_meta_edit)
+        ):
             return {
                 "ok": False,
                 "error": (
@@ -2123,24 +2294,79 @@ class WorkspaceToolExecutor:
             return {"ok": False, "error": f"Ruta no encontrada: {clean_rel}"}
 
         q_lower = query.lower()
+        q_norm = _normalize_search_text(query)
+        stopwords = {"el", "la", "los", "las", "de", "del", "en", "un", "una", "y", "pdf", "documento", "archivo", "reporte", "informe"}
+        q_tokens = [t for t in q_norm.split() if len(t) >= 2 and t not in stopwords]
+        if not q_tokens:
+            q_tokens = [t for t in q_norm.split() if len(t) >= 2]
+
         mode_low = str(args.get("mode") or "auto").strip().lower()
         search_names = mode_low != "content"
         search_content = mode_low != "name"
         cap = max(1, min(100, int(args.get("max_results") or MAX_SEARCH_MATCHES)))
         matches: List[Dict[str, Any]] = []
+        seen_name_paths: set[str] = set()
+
+        # 1) Buscar por título guardado de documentos PDF en .xook/pdf_specs/*.json (sin exponer rutas internas)
+        if search_names and clean_rel in (".", "agente", "agente/reportes"):
+            specs_dir = self.workspace_root / ".xook" / "pdf_specs"
+            if specs_dir.is_dir():
+                for spec_file in sorted(specs_dir.glob("*.json")):
+                    try:
+                        data = json.loads(spec_file.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if not isinstance(data, dict):
+                        continue
+                    doc_rel = str(data.get("path") or "").strip().replace("\\", "/")
+                    doc_title = str(data.get("title") or "").strip()
+                    if not doc_rel or not doc_title or _has_hidden_component(doc_rel):
+                        continue
+                    norm_title = _normalize_search_text(doc_title)
+                    norm_doc_rel = _normalize_search_text(doc_rel)
+                    title_matched = (
+                        (q_norm and q_norm in norm_title)
+                        or (q_tokens and all(tok in norm_title or tok in norm_doc_rel for tok in q_tokens))
+                    )
+                    if title_matched:
+                        try:
+                            target_doc = (self.workspace_root / doc_rel).resolve()
+                            if target_doc.is_file() and doc_rel not in seen_name_paths:
+                                seen_name_paths.add(doc_rel)
+                                matches.append({
+                                    "path": doc_rel,
+                                    "kind": "file",
+                                    "match_type": "document_title",
+                                    "title": doc_title,
+                                })
+                                if len(matches) >= cap:
+                                    return {"ok": True, "query": query, "truncated": True, "matches": matches}
+                        except Exception:
+                            pass
+
         candidates = [base] if base.is_file() else sorted(base.rglob("*"))
         for p in candidates:
             rel_parts = p.relative_to(self.workspace_root).parts
             if any(part in READ_SEARCH_EXCLUDED_ROOTS or _is_hidden_or_temp_name(part) for part in rel_parts):
                 continue
-            if search_names and q_lower in p.name.lower():
-                matches.append({
-                    "path": p.relative_to(self.workspace_root).as_posix(),
-                    "kind": "dir" if p.is_dir() else "file",
-                    "match_type": "filename",
-                })
-                if len(matches) >= cap:
-                    return {"ok": True, "query": query, "truncated": True, "matches": matches}
+            rel_posix = p.relative_to(self.workspace_root).as_posix()
+            if search_names:
+                norm_name = _normalize_search_text(p.stem if p.is_file() else p.name)
+                norm_rel = _normalize_search_text(rel_posix)
+                name_matched = (
+                    q_lower in p.name.lower()
+                    or (q_norm and q_norm in norm_name)
+                    or (q_tokens and all(tok in norm_name or tok in norm_rel for tok in q_tokens))
+                )
+                if name_matched and rel_posix not in seen_name_paths:
+                    seen_name_paths.add(rel_posix)
+                    matches.append({
+                        "path": rel_posix,
+                        "kind": "dir" if p.is_dir() else "file",
+                        "match_type": "filename",
+                    })
+                    if len(matches) >= cap:
+                        return {"ok": True, "query": query, "truncated": True, "matches": matches}
             if not p.is_file() or not search_content:
                 continue
             if p.stat().st_size > 512 * 1024:
@@ -2152,7 +2378,7 @@ class WorkspaceToolExecutor:
             for lineno, line in enumerate(content.splitlines(), start=1):
                 if q_lower in line.lower():
                     matches.append({
-                        "path": p.relative_to(self.workspace_root).as_posix(),
+                        "path": rel_posix,
                         "line": lineno,
                         "snippet": line.strip()[:220],
                     })
@@ -2974,7 +3200,7 @@ class WorkspaceToolExecutor:
         command = str(args.get("command") or "").strip()
         raw_cwd = str(args.get("cwd") or ".").strip() or "."
         cwd = raw_cwd if _is_external_host_path(raw_cwd) else _norm_rel(raw_cwd)
-        timeout_sec = max(1, min(30, int(args.get("timeout_sec") or 20)))
+        timeout_sec = max(1, min(60, int(args.get("timeout_sec") or 20)))
         if not purpose or not command:
             return {"ok": False, "error": "Faltan 'purpose' o 'command'."}
         if self.command_bridge is None:
@@ -2983,14 +3209,112 @@ class WorkspaceToolExecutor:
                 "error": "La ejecución de comandos de terminal requiere la sesión de escritorio con Guardián activo.",
             }
         req_id = f"cmd_{uuid.uuid4().hex[:12]}"
-        return self.command_bridge({
+        payload: Dict[str, Any] = {
             "rpc_callback": "run_workspace_command",
             "request_id": req_id,
             "purpose": purpose,
             "command": command,
             "cwd": cwd,
             "timeout_sec": timeout_sec,
-        })
+        }
+        detail_preview = str(args.get("detail_preview") or "").strip()
+        if detail_preview:
+            payload["detail_preview"] = detail_preview[:4000]
+        return self.command_bridge(payload)
+
+    def _tool_run_custom_script(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        purpose = str(args.get("purpose") or "").strip()
+        code = str(args.get("code") or "")
+        raw_runtime = str(args.get("runtime") or "python").strip().lower()
+        runtime_map = {
+            "python": ("python3", ".py"),
+            "python3": ("python3", ".py"),
+            "py": ("python3", ".py"),
+            "node": ("node", ".mjs"),
+            "nodejs": ("node", ".mjs"),
+            "js": ("node", ".mjs"),
+            "javascript": ("node", ".mjs"),
+            "sh": ("sh", ".sh"),
+            "bash": ("sh", ".sh"),
+            "zsh": ("sh", ".sh"),
+        }
+        if raw_runtime not in runtime_map:
+            return {"ok": False, "error": f"Runtime no soportado ('{raw_runtime}'). Usa 'python', 'node' o 'sh'."}
+        prog, ext = runtime_map[raw_runtime]
+
+        raw_cwd = str(args.get("cwd") or ".").strip() or "."
+        is_ext_cwd = _is_external_host_path(raw_cwd)
+        cwd = raw_cwd if is_ext_cwd else _norm_rel(raw_cwd)
+        timeout_sec = max(1, min(60, int(args.get("timeout_sec") or 30)))
+
+        raw_args = args.get("args")
+        cli_args: List[str] = []
+        if isinstance(raw_args, list):
+            cli_args = [str(x) for x in raw_args if x is not None and str(x) != ""]
+
+        if not purpose or not code.strip():
+            return {"ok": False, "error": "Faltan 'purpose' o 'code' para ejecutar el script."}
+
+        safety_err = _validate_custom_script_safety(code, cli_args)
+        if safety_err:
+            return {"ok": False, "error": safety_err}
+
+        if self.command_bridge is None:
+            return {
+                "ok": False,
+                "error": "La ejecución de scripts propios requiere la sesión de escritorio con Guardián activo.",
+            }
+
+        save_name = str(args.get("save_name") or "").strip()
+        if save_name:
+            slug = _slugify(save_name)[:48] or f"script_{uuid.uuid4().hex[:8]}"
+            script_rel = f"agente/scripts/{slug}{ext}"
+            keep_script = True
+        else:
+            script_rel = f"agente/.tmp_exports/_script_{uuid.uuid4().hex[:12]}{ext}"
+            keep_script = False
+
+        script_abs, script_rel_norm, _ = resolve_workspace_path(self.workspace_root, script_rel)
+        script_abs.parent.mkdir(parents=True, exist_ok=True)
+        script_abs.write_text(code, encoding="utf-8")
+
+        # Si el `cwd` es una subcarpeta del workspace o ruta externa, pasar ruta que resuelva bien
+        if cwd == ".":
+            script_arg = script_rel_norm
+        else:
+            script_arg = str(script_abs.resolve())
+
+        quoted_args = " ".join(shlex.quote(a) for a in cli_args)
+        command = f"{prog} {shlex.quote(script_arg)}" + (f" {quoted_args}" if quoted_args else "")
+
+        code_lines = code.strip().splitlines()
+        snippet_preview = "\n".join(code_lines[:35])
+        if len(code_lines) > 35:
+            snippet_preview += f"\n... ({len(code_lines) - 35} líneas más)"
+        detail_preview = f"Script ({prog}) · {purpose}\n\n{snippet_preview}"
+
+        try:
+            req_id = f"cmd_{uuid.uuid4().hex[:12]}"
+            res = self.command_bridge({
+                "rpc_callback": "run_workspace_command",
+                "request_id": req_id,
+                "purpose": purpose,
+                "command": command,
+                "cwd": cwd,
+                "timeout_sec": timeout_sec,
+                "detail_preview": detail_preview[:4000],
+            })
+            if isinstance(res, dict) and res.get("ok"):
+                if keep_script:
+                    res["saved_script_path"] = script_rel_norm
+                self._emit_workspace_changed(script_rel_norm if keep_script else ".", "custom_script")
+            return res
+        finally:
+            if not keep_script:
+                try:
+                    script_abs.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     def _require_bridge(
         self,

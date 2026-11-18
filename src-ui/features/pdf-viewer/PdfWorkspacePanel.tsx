@@ -417,7 +417,7 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
     setSelectedPatchId(null);
     try {
       const res = await savePdfDocument(state.path, {
-        title: docTitle.trim() || state.title || "Documento XOOK",
+        title: docTitle.trim() || state.title || "Documento",
         theme: docTheme,
         page_patches: pagePatches,
         patches_only: true,
@@ -465,7 +465,7 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
     setSavingPdf(true);
     try {
       const res = await savePdfDocument(state.path, {
-        title: docTitle.trim() || state.title || "Documento XOOK",
+        title: docTitle.trim() || state.title || "Documento",
         theme: docTheme,
         page_patches: [],
         patches_only: true,
@@ -1167,7 +1167,7 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
                         : "DOCUMENTO EJECUTIVO")}
                   </div>
                   <h3 className="text-base font-bold text-slate-900 leading-snug mt-0.5">
-                    {draftProgress.title || "Documento XOOK"}
+                    {draftProgress.title || "Documento"}
                   </h3>
                   {draftProgress.subtitle && (
                     <p className="text-[11.5px] text-slate-600 mt-0.5">

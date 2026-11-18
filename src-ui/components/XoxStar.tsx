@@ -47,8 +47,10 @@ export interface XoxAccentSpec {
   deep: string;
   /** Acento secundario armónico para anillos, chispas y sincronización. */
   accessory: string;
-  /** Brillo especular dentro de los ojos. */
+  /** Acento brillante de la familia (sombra interna de la boca al hablar). */
   pupil: string;
+  /** Tono de pupila/iris: azul muy clarito y discreto (común a todas las auras). */
+  eye: string;
   /** Aura y tono medio al celebrar (`success`), manteniendo armonía sin choques. */
   celebrateMid: string;
   celebrateGlow: string;
@@ -68,10 +70,11 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     deep: "#0EA5E9",
     accessory: "#61E4F0",
     pupil: "#38BDF8",
+    eye: "#BAE6FD",
     celebrateMid: "#BAE6FD",
     celebrateGlow: "#4BE2F0",
-    blush: "#F6AFCD",
-    blushCore: "#FCC6D9",
+    blush: "#BAE6FD",
+    blushCore: "#E0F2FE",
   },
   violet: {
     label: "Violeta",
@@ -83,10 +86,11 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     deep: "#7E6CDA",
     accessory: "#EAB7FF",
     pupil: "#C084FC",
+    eye: "#BAE6FD",
     celebrateMid: "#E9D5FF",
     celebrateGlow: "#E9B2FF",
-    blush: "#ECB1E3",
-    blushCore: "#F6C7E7",
+    blush: "#BAE6FD",
+    blushCore: "#E0F2FE",
   },
   emerald: {
     label: "Esmeralda",
@@ -98,10 +102,11 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     deep: "#08B16F",
     accessory: "#70E6CB",
     pupil: "#34D399",
+    eye: "#BAE6FD",
     celebrateMid: "#A7F3D0",
     celebrateGlow: "#5FE5C7",
-    blush: "#FFC0A8",
-    blushCore: "#FDD4BE",
+    blush: "#BAE6FD",
+    blushCore: "#E0F2FE",
   },
   amber: {
     label: "Ámbar",
@@ -113,10 +118,11 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     deep: "#DE9D00",
     accessory: "#E6CD72",
     pupil: "#F59E0B",
+    eye: "#BAE6FD",
     celebrateMid: "#FEF08A",
     celebrateGlow: "#E5C964",
-    blush: "#FFB299",
-    blushCore: "#FFCAB2",
+    blush: "#BAE6FD",
+    blushCore: "#E0F2FE",
   },
   rose: {
     label: "Coral",
@@ -128,10 +134,11 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     deep: "#D94D72",
     accessory: "#FFBAAE",
     pupil: "#FB7185",
+    eye: "#BAE6FD",
     celebrateMid: "#FECDD3",
     celebrateGlow: "#FFB5A9",
-    blush: "#FFBFB0",
-    blushCore: "#FFD7C8",
+    blush: "#BAE6FD",
+    blushCore: "#E0F2FE",
   },
 };
 
@@ -270,6 +277,7 @@ export interface XoxResolvedColors {
   mid: string;
   glow: string;
   pupil: string;
+  eye: string;
   accessory: string;
   blush: string;
   blushCore: string;
@@ -295,6 +303,7 @@ export function resolveXoxStateColors(
       mid: "#DC2626",
       glow: "#EF4444",
       pupil: "#FCA5A5",
+      eye: "#FBD5D5",
       accessory: "#F87171",
       blush: spec.blush,
       blushCore: spec.blushCore,
@@ -310,6 +319,7 @@ export function resolveXoxStateColors(
       mid: spec.deep,
       glow: spec.glow,
       pupil: spec.pupil,
+      eye: spec.eye,
       accessory: spec.accessory,
       blush: spec.blush,
       blushCore: spec.blushCore,
@@ -325,6 +335,7 @@ export function resolveXoxStateColors(
       mid: spec.celebrateMid,
       glow: spec.celebrateGlow,
       pupil: spec.pupil,
+      eye: spec.eye,
       accessory: spec.accessory,
       blush: spec.blush,
       blushCore: spec.blushCore,
@@ -340,6 +351,7 @@ export function resolveXoxStateColors(
       mid: spec.mid,
       glow: spec.accessory,
       pupil: spec.pupil,
+      eye: spec.eye,
       accessory: spec.accessory,
       blush: spec.blush,
       blushCore: spec.blushCore,
@@ -354,6 +366,7 @@ export function resolveXoxStateColors(
     mid: spec.mid,
     glow: spec.glow,
     pupil: spec.pupil,
+    eye: spec.eye,
     accessory: spec.accessory,
     blush: spec.blush,
     blushCore: spec.blushCore,
@@ -366,7 +379,39 @@ const step = (s: Spring, target: number, k: number, c: number, dt: number) => {
   s.x += s.v * dt;
 };
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
 const toRad = (d: number) => (d * Math.PI) / 180;
+
+/**
+ * Expresiones de enfoque sostenidas ("inspector"). Cada fase mantiene UNA pose firme;
+ * el cambio entre poses ocurre oculto detrás de un parpadeo para que nunca se vea un salto.
+ * s* = entrecerrado del ojo (negativo = abierto/zoom), p* = escala de pupila,
+ * mouth = boca paramétrica (semiancho, altura base, curvatura, inclinación de comisura derecha).
+ */
+type FocusExpr = "none" | "editL" | "editR" | "run" | "ok" | "err";
+type FocusPose = {
+  sL: number;
+  sR: number;
+  pL: number;
+  pR: number;
+  mouth: { w: number; y: number; bend: number; tilt: number; shift: number };
+};
+const FOCUS_POSES: Record<FocusExpr, FocusPose> = {
+  none: { sL: 0, sR: 0, pL: 1, pR: 1, mouth: { w: 2.6, y: 7.2, bend: 0.4, tilt: 0, shift: 0 } },
+  // Editando: un ojo entrecerrado analizando y el otro ligeramente abierto (mirada de inspector).
+  // La comisura del lado del ojo entrecerrado se eleva un poco: gesto de concentración firme.
+  editL: { sL: 0.36, sR: -0.08, pL: 0.9, pR: 1.12, mouth: { w: 2.6, y: 7.2, bend: 0.45, tilt: -0.95, shift: -0.35 } },
+  editR: { sL: -0.08, sR: 0.36, pL: 1.12, pR: 0.9, mouth: { w: 2.6, y: 7.2, bend: 0.45, tilt: 0.95, shift: 0.35 } },
+  // Terminal ejecutando: ambos ojos atentos, boca pequeña de expectativa.
+  run: { sL: 0.1, sR: 0.1, pL: 1.04, pR: 1.04, mouth: { w: 2.0, y: 7.4, bend: -0.8, tilt: 0, shift: 0 } },
+  // "¡Ajá!": ojos grandes con pupilas brillantes y sonrisa cálida.
+  ok: { sL: -0.16, sR: -0.16, pL: 1.24, pR: 1.24, mouth: { w: 3.8, y: 6.3, bend: 3.9, tilt: 0, shift: 0 } },
+  // Error: ojos abiertos con pupilas contraídas y boca invertida.
+  err: { sL: -0.12, sR: -0.12, pL: 0.86, pR: 0.86, mouth: { w: 3.0, y: 8.0, bend: -2.4, tilt: 0, shift: 0 } },
+};
+// Parpadeo natural: cierre rápido, apertura algo más lenta
+const BLINK_CLOSE = 0.065;
+const BLINK_OPEN = 0.12;
 const smooth01 = (e0: number, e1: number, x: number) => {
   const k = clamp((x - e0) / (e1 - e0), 0, 1);
   return k * k * (3 - 2 * k);
@@ -432,6 +477,7 @@ function toOklabColorMap(colors: XoxResolvedColors): OklabColorMap {
     mid: hexToOklab(colors.mid),
     glow: hexToOklab(colors.glow),
     pupil: hexToOklab(colors.pupil),
+    eye: hexToOklab(colors.eye),
     accessory: hexToOklab(colors.accessory),
     blush: hexToOklab(colors.blush),
     blushCore: hexToOklab(colors.blushCore),
@@ -870,6 +916,13 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     const pupilScaleR: Spring = { x: 1, v: 0 };
     const saccadeX: Spring = { x: 0, v: 0 };
     const saccadeY: Spring = { x: 0, v: 0 };
+    // Boca paramétrica de enfoque (resortes críticamente amortiguados: sin rebote ni temblor)
+    const editPose = FOCUS_POSES.editR.mouth;
+    const focusMouthW: Spring = { x: editPose.w, v: 0 };
+    const focusMouthY: Spring = { x: editPose.y, v: 0 };
+    const focusMouthBend: Spring = { x: editPose.bend, v: 0 };
+    const focusMouthTilt: Spring = { x: editPose.tilt, v: 0 };
+    const focusMouthShift: Spring = { x: editPose.shift, v: 0 };
 
     const setProp = (el: SVGElement | null, pop: number, transform: string) => {
       if (!el) return;
@@ -881,7 +934,25 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     let raf = 0;
     let last = performance.now();
     let nextBlink = a.t + 1.6;
-    let blinkStart = -1;
+    let blinkStart = -10;
+    let blinkHold = 0;
+    let lastForceBlinkSeen = a.forceBlinkAt;
+    // Expresión de enfoque que se muestra actualmente; sólo cambia con los ojos cerrados
+    let shownExpr: FocusExpr = "none";
+    let exprSwapPending = false;
+    // Ojo dominante del gesto de inspector (alterna con calma, siempre detrás de un parpadeo)
+    let focusSide: 1 | -1 = 1;
+    let nextFocusSwap = a.t + 7.5;
+    const beginBlink = (at: number, hold: number, calm: boolean) => {
+      blinkStart = at;
+      blinkHold = hold;
+      if (calm) {
+        // Concentrado: parpadeos espaciados y sencillos (sin dobles parpadeos nerviosos)
+        nextBlink = at + 3.8 + Math.random() * 3.2;
+      } else {
+        nextBlink = at + (Math.random() < 0.18 ? 0.32 : 2.6 + Math.random() * 3.4);
+      }
+    };
     let nextGlance = a.t + 2;
     let glance = { x: 0, y: 0 };
     let prevDragActive = false;
@@ -936,52 +1007,98 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       // Trayectoria lateral de la laptop: pasa suavemente de un lado a otro frente a Xox
       const lapSideWave = Math.sin(t * 0.92);
 
-      // Juego de ojos analítico ("inspector"): alterna entre zoom en un ojo y enfoque en el otro (O o <-> o O <-> - -)
+      // --- Parpadeo natural (cierre rápido, apertura suave) --------------------
       const analyzeWeight = clamp(wCode + wRead * 0.55 + wThink * 0.35, 0, 1);
-      const analyzePhase = (t * 0.82) % 3.6;
-      let targetSquintL = 0;
-      let targetSquintR = 0;
-      let targetPupScaleL = 1;
-      let targetPupScaleR = 1;
-      if (analyzeWeight > 0.01) {
-        if (coding && isTermPhase && isTermDoneOk) {
-          // "¡Ajá!": al llegar la respuesta de la terminal, ambos ojos se abren grandes con pupilas brillantes
-          targetSquintL = -0.16;
-          targetSquintR = -0.16;
-          targetPupScaleL = 1.24;
-          targetPupScaleR = 1.24;
-        } else if (analyzePhase < 1.25) {
-          // Fase 1 (O o): Ojo izquierdo hace zoom amplio, ojo derecho entrecierra enfocando
-          targetSquintL = -0.18;
-          targetSquintR = 0.38;
-          targetPupScaleL = 1.22;
-          targetPupScaleR = 0.88;
-        } else if (analyzePhase < 2.5) {
-          // Fase 2 (o O): Se intercambian — ojo izquierdo entrecierra enfocando, ojo derecho hace zoom
-          targetSquintL = 0.38;
-          targetSquintR = -0.18;
-          targetPupScaleL = 0.88;
-          targetPupScaleR = 1.22;
+      const focused = analyzeWeight > 0.3;
+      const blinkTotal = BLINK_CLOSE + blinkHold + BLINK_OPEN;
+      const blinkBusy = t - blinkStart < blinkTotal;
+      if (a.forceBlinkAt !== lastForceBlinkSeen) {
+        // Parpadeo puente por cambio de estado; nunca reinicia un parpadeo en curso (evita el "tic" raro)
+        lastForceBlinkSeen = a.forceBlinkAt;
+        if (!blinkBusy) beginBlink(t, 0.04, focused);
+      } else if (t > nextBlink && !blinkBusy) {
+        beginBlink(t, 0, focused);
+      }
+
+      // --- Expresión de enfoque sostenida ("inspector") --------------------
+      // Cada fase mantiene UNA pose firme. Al cambiar de fase, Xox parpadea y la nueva
+      // expresión se aplica mientras los ojos están cerrados: nunca "se desinfla" a la vista.
+      const editExpr: FocusExpr = focusSide > 0 ? "editR" : "editL";
+      let wantedExpr: FocusExpr = "none";
+      if (coding) {
+        if (isTermPhase && isTermDoneOk) wantedExpr = "ok";
+        else if (isTermPhase && isTermErr) wantedExpr = "err";
+        else if (isTermPhase) wantedExpr = "run";
+        else wantedExpr = editExpr;
+      } else if (reading || thinking) {
+        wantedExpr = editExpr;
+      }
+      // Alterna el ojo dominante de vez en cuando (sólo mientras edita/lee) para que siga vivo
+      if (shownExpr === "editL" || shownExpr === "editR") {
+        if (t > nextFocusSwap) {
+          focusSide = focusSide > 0 ? -1 : 1;
+          nextFocusSwap = t + 7 + Math.random() * 4;
+        }
+      } else {
+        nextFocusSwap = Math.max(nextFocusSwap, t + 5);
+      }
+
+      if (wantedExpr !== shownExpr) {
+        if (wantedExpr === "none" || analyzeWeight < 0.05) {
+          // Entrando/saliendo del estado: la pose ya se funde con el peso del estado
+          shownExpr = wantedExpr;
+          exprSwapPending = false;
         } else {
-          // Fase 3 (- -): Ambos ojos enfocan en paralelo comparando líneas rápidamente
-          targetSquintL = 0.28;
-          targetSquintR = 0.28;
-          targetPupScaleL = 1.08;
-          targetPupScaleR = 1.08;
+          exprSwapPending = true;
+          if (!(t - blinkStart < BLINK_CLOSE + blinkHold + BLINK_OPEN)) beginBlink(t, 0.05, true);
+        }
+      } else {
+        exprSwapPending = false;
+      }
+      const btNow = t - blinkStart;
+      const eyesShut = btNow >= BLINK_CLOSE * 0.85 && btNow <= BLINK_CLOSE + blinkHold + BLINK_OPEN * 0.2;
+      if (exprSwapPending && eyesShut) {
+        shownExpr = wantedExpr;
+        exprSwapPending = false;
+      }
+
+      const pose = FOCUS_POSES[shownExpr];
+      // Resortes críticamente amortiguados (c ≈ 2√k): llegan firmes a la pose sin rebotar
+      step(squintL, pose.sL * analyzeWeight, 300, 35, dt);
+      step(squintR, pose.sR * analyzeWeight, 300, 35, dt);
+      step(pupilScaleL, 1 + (pose.pL - 1) * analyzeWeight, 260, 32, dt);
+      step(pupilScaleR, 1 + (pose.pR - 1) * analyzeWeight, 260, 32, dt);
+
+      // --- Lectura ocular coherente con el cursor del editor ---------------
+      // Fijaciones discretas que avanzan con el texto que se escribe y un barrido de retorno
+      // al saltar de línea (en vez de un temblor continuo de pupilas).
+      const typeCycle = (t * 1.55) % 4;
+      const typeRow = Math.floor(typeCycle);
+      const typeFrac = typeCycle - typeRow;
+      let rawSacX = 0;
+      let rawSacY = 0;
+      if (coding && shownExpr !== "none") {
+        if (shownExpr === "editL" || shownExpr === "editR") {
+          const caret = smooth01(0, 0.86, typeFrac);
+          const fixation = Math.floor(caret * 4) / 4;
+          rawSacX = -0.55 + fixation * 1.1;
+          rawSacY = -0.3 + typeRow * 0.2;
+        } else if (shownExpr === "run") {
+          rawSacX = -0.15;
+          rawSacY = 0.15;
         }
       }
-      step(squintL, targetSquintL * analyzeWeight, 145, 15, dt);
-      step(squintR, targetSquintR * analyzeWeight, 145, 15, dt);
-      step(pupilScaleL, 1 + (targetPupScaleL - 1) * analyzeWeight, 160, 16, dt);
-      step(pupilScaleR, 1 + (targetPupScaleR - 1) * analyzeWeight, 160, 16, dt);
+      step(saccadeX, rawSacX * wCode, 260, 32, dt);
+      step(saccadeY, rawSacY * wCode, 220, 30, dt);
 
-      // Sacadas oculares discretas (saltos rápidos de lectura token por token como al analizar código)
-      const tokenStep = Math.floor(t * 5.5) % 5;
-      const lineStep = Math.floor(t * 1.4) % 3;
-      const rawSacX = tokenStep === 4 ? -0.85 : -0.75 + tokenStep * 0.5;
-      const rawSacY = -0.35 + lineStep * 0.35;
-      step(saccadeX, rawSacX * analyzeWeight, 280, 19, dt);
-      step(saccadeY, rawSacY * analyzeWeight, 240, 18, dt);
+      // Boca de enfoque: sólo se re-apunta cuando hay una pose activa (al salir se funde con wCode)
+      if (shownExpr !== "none") {
+        step(focusMouthW, pose.mouth.w, 260, 32, dt);
+        step(focusMouthY, pose.mouth.y, 260, 32, dt);
+        step(focusMouthBend, pose.mouth.bend, 260, 32, dt);
+        step(focusMouthTilt, pose.mouth.tilt, 260, 32, dt);
+        step(focusMouthShift, pose.mouth.shift, 220, 30, dt);
+      }
 
       const dm = dragMotionPropRef.current?.current ?? null;
       const dragging = Boolean(dm?.active);
@@ -1023,12 +1140,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         tx = Math.sin(t * 1.6) * 0.9;
         ty = 0.45;
       } else if (coding) {
-        // Sigue a la laptop mientras pasa de un lado a otro + micro-sacadas leyendo el código
-        const lineReadSweep = ((t * 1.65) % 1) * 0.22 - 0.11;
-        tx = clamp(lapSideWave * 0.82 + (isTermPhase ? 0 : lineReadSweep), -0.95, 0.95);
-        ty = isTermPhase
-          ? (isTermDoneOk ? 0.16 : 0.30)
-          : 0.22 + 0.12 * Math.floor(((t * 1.55) % 4)) * 0.25;
+        // Sigue a la laptop con la cabeza; la lectura fina la hacen las pupilas (sacadas de lectura)
+        tx = clamp(lapSideWave * 0.82, -0.95, 0.95);
+        ty = isTermPhase ? (isTermDoneOk ? 0.16 : 0.3) : 0.24;
       } else if (alerting) {
         // Inquieto: mira nervioso de un lado a otro
         tx = 0.85 * Math.sin(t * 5.3) * Math.cos(t * 1.7);
@@ -1197,6 +1311,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const cMid = stepOklab(cs.cur.mid, cs.target.mid, colorAlpha);
       const cGlow = stepOklab(cs.cur.glow, cs.target.glow, colorAlpha);
       const cPupil = stepOklab(cs.cur.pupil, cs.target.pupil, colorAlpha);
+      const cEye = stepOklab(cs.cur.eye, cs.target.eye, colorAlpha);
       const cAccessory = stepOklab(cs.cur.accessory, cs.target.accessory, colorAlpha);
       const cBlush = stepOklab(cs.cur.blush, cs.target.blush, colorAlpha);
       const cBlushCore = stepOklab(cs.cur.blushCore, cs.target.blushCore, colorAlpha);
@@ -1217,18 +1332,19 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       sr.blush2?.setAttribute("stop-color", cBlush);
       cheekLCoreRef.current?.setAttribute("fill", cBlushCore);
       cheekRCoreRef.current?.setAttribute("fill", cBlushCore);
-      pupilLRef.current?.setAttribute("fill", cPupil);
-      pupilRRef.current?.setAttribute("fill", cPupil);
-      irisLRef.current?.setAttribute("fill", cPupil);
-      irisRRef.current?.setAttribute("fill", cPupil);
-      lidShadeLRef.current?.setAttribute("fill", cPupil);
-      lidShadeRRef.current?.setAttribute("fill", cPupil);
+      // Pupilas discretas: azul muy clarito (no el acento neón)
+      pupilLRef.current?.setAttribute("fill", cEye);
+      pupilRRef.current?.setAttribute("fill", cEye);
+      irisLRef.current?.setAttribute("fill", cEye);
+      irisRRef.current?.setAttribute("fill", cEye);
+      lidShadeLRef.current?.setAttribute("fill", cEye);
+      lidShadeRRef.current?.setAttribute("fill", cEye);
       ringRef.current?.setAttribute("stroke", cAccessory);
       talkWave1Ref.current?.setAttribute("stroke", cRim1);
       talkWave2Ref.current?.setAttribute("stroke", cGlow);
       talkWave3Ref.current?.setAttribute("stroke", cAccessory);
       talkInnerShadeRef.current?.setAttribute("fill", cPupil);
-      talkTongueRef.current?.setAttribute("fill", cBlushCore);
+      talkTongueRef.current?.setAttribute("fill", "#FCC6D9");
       syncPathRefs.current.forEach((p) => p?.setAttribute("stroke", cAccessory));
       syncArrowRefs.current.forEach((p) => p?.setAttribute("fill", cAccessory));
       lensHandleRef.current?.setAttribute("stroke", cRim1);
@@ -1437,15 +1553,15 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
 
       // --- Rostro: mirada, pupila viva ("ojo dentro del ojo") y gestos coherentes ---
-      if (a.forceBlinkAt > blinkStart && t - a.forceBlinkAt < 0.05) {
-        blinkStart = a.forceBlinkAt;
-        nextBlink = t + 2.4 + Math.random() * 2.8;
-      } else if (t > nextBlink) {
-        blinkStart = t;
-        nextBlink = t + (Math.random() < 0.2 ? 0.28 : 2.8 + Math.random() * 3.5);
-      }
       const bt = t - blinkStart;
-      const blink = bt >= 0 && bt < 0.16 ? Math.sin((bt / 0.16) * Math.PI) : 0;
+      let blink = 0;
+      if (bt >= 0) {
+        if (bt < BLINK_CLOSE) blink = smooth01(0, BLINK_CLOSE, bt);
+        else if (bt < BLINK_CLOSE + blinkHold) blink = 1;
+        else if (bt < BLINK_CLOSE + blinkHold + BLINK_OPEN) {
+          blink = 1 - smooth01(0, BLINK_OPEN, bt - BLINK_CLOSE - blinkHold);
+        }
+      }
 
       faceRef.current?.setAttribute(
         "transform",
@@ -1486,9 +1602,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const lidDropL = clamp(squintL.x * 4.2, 0, 2.2);
       const lidDropR = clamp(squintR.x * 4.2, 0, 2.2);
       lidShadeLRef.current?.setAttribute("y", (-ryL - 2.6 + lidDropL).toFixed(2));
-      lidShadeLRef.current?.setAttribute("opacity", clamp(squintL.x * 0.85, 0, 0.36).toFixed(3));
+      lidShadeLRef.current?.setAttribute("opacity", clamp(squintL.x * 0.7, 0, 0.26).toFixed(3));
       lidShadeRRef.current?.setAttribute("y", (-ryR - 2.6 + lidDropR).toFixed(2));
-      lidShadeRRef.current?.setAttribute("opacity", clamp(squintR.x * 0.85, 0, 0.36).toFixed(3));
+      lidShadeRRef.current?.setAttribute("opacity", clamp(squintR.x * 0.7, 0, 0.26).toFixed(3));
 
       // Movimiento vivo de iris, pupila y brillo especular (con sacadas de análisis y zoom por ojo)
       const pupX = clamp(0.45 + lookX.x * 1.25 + saccadeX.x * 0.95, -1.65, 1.85);
@@ -1533,51 +1649,31 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       eyeHappyRRef.current?.setAttribute("d", happyArcD);
       eyeHappyRRef.current?.setAttribute("opacity", happyEyeOp.toFixed(3));
 
-      // --- Boca coherente con cada fase: concentrada al editar, atenta en terminal y sonriente al terminar ---
+      // --- Boca coherente con cada fase: una sola curva paramétrica que se transforma con resortes ---
+      // (concentrada al editar, expectante en terminal, sonriente al terminar) sin saltos ni temblor.
       const codingMouthWeight = wCode * 0.92;
       const smileTargetWeight = Math.max(hover.x * 0.85, wSucc, codingMouthWeight) * (1 - wTalk);
       if (mouthRef.current) {
-        if (wCode > 0.25 && wSucc < 0.2) {
-          if (isTermPhase && isTermDoneOk) {
-            // La terminal respondió OK: sonrisa cálida de satisfacción
-            mouthRef.current.setAttribute(
-              "d",
-              `M ${(C - 3.8).toFixed(2)} ${(C + 6.3).toFixed(2)} Q ${C} ${(C + 10.2).toFixed(2)} ${(C + 3.8).toFixed(2)} ${(C + 6.3).toFixed(2)}`
-            );
-          } else if (isTermPhase && isTermErr) {
-            // Error en terminal: gesto de sorpresa/atención invertido
-            mouthRef.current.setAttribute(
-              "d",
-              `M ${(C - 3.0).toFixed(2)} ${(C + 8.0).toFixed(2)} Q ${C} ${(C + 5.6).toFixed(2)} ${(C + 3.0).toFixed(2)} ${(C + 8.0).toFixed(2)}`
-            );
-          } else if (isTermPhase) {
-            // Ejecutando comando en terminal: boca pequeña de expectativa/atención (no sonriente)
-            const tenseW = 2.1 + 0.3 * Math.sin(t * 7);
-            mouthRef.current.setAttribute(
-              "d",
-              `M ${(C - tenseW).toFixed(2)} ${(C + 7.4).toFixed(2)} Q ${C} ${(C + 6.3).toFixed(2)} ${(C + tenseW).toFixed(2)} ${(C + 7.4).toFixed(2)}`
-            );
-          } else {
-            // Editando código: gesto pensativo de concentración (~ / línea modulada sin sonrisa)
-            const focusShift = 0.8 * Math.sin(t * 3.8);
-            const xL = C - 2.7 + focusShift * 0.4;
-            const xR = C + 2.7 + focusShift * 0.4;
-            const yBase = C + 7.2;
-            const waveAmp = 0.95 * Math.cos(t * 2.6);
-            mouthRef.current.setAttribute(
-              "d",
-              `M ${xL.toFixed(2)} ${yBase.toFixed(2)} C ${(C - 0.9).toFixed(2)} ${(yBase - waveAmp).toFixed(2)} ${(C + 0.9).toFixed(2)} ${(yBase + waveAmp).toFixed(2)} ${xR.toFixed(2)} ${yBase.toFixed(2)}`
-            );
-          }
-        } else {
-          const mw = 3.0 + 1.5 * wSucc;
-          const mTopY = C + 6.5 - 0.5 * wSucc;
-          const mCtrlY = C + 9.0 + 2.1 * wSucc;
-          mouthRef.current.setAttribute(
-            "d",
-            `M ${(C - mw).toFixed(2)} ${mTopY.toFixed(2)} Q ${C} ${mCtrlY.toFixed(2)} ${(C + mw).toFixed(2)} ${mTopY.toFixed(2)}`
-          );
-        }
+        // Boca genérica (hover / celebración), expresada en los mismos parámetros
+        const genW = 3.0 + 1.5 * wSucc;
+        const genY = 6.5 - 0.5 * wSucc;
+        const genBend = 2.5 + 2.6 * wSucc;
+        const wm = smooth01(0.1, 0.6, wCode) * (1 - smooth01(0.1, 0.5, wSucc));
+        const mW = lerp(genW, focusMouthW.x, wm);
+        const mY = C + lerp(genY, focusMouthY.x, wm);
+        const mBend = lerp(genBend, focusMouthBend.x, wm);
+        const mTilt = focusMouthTilt.x * wm;
+        const mX = C + focusMouthShift.x * wm;
+        const yL = mY + mTilt * 0.5;
+        const yR = mY - mTilt * 0.5;
+        const ctrlY = mY + mBend;
+        // Cúbica equivalente a la cuadrática clásica, permitiendo comisuras asimétricas
+        const c1y = yL / 3 + (ctrlY * 2) / 3;
+        const c2y = yR / 3 + (ctrlY * 2) / 3;
+        mouthRef.current.setAttribute(
+          "d",
+          `M ${(mX - mW).toFixed(2)} ${yL.toFixed(2)} C ${(mX - mW / 3).toFixed(2)} ${c1y.toFixed(2)} ${(mX + mW / 3).toFixed(2)} ${c2y.toFixed(2)} ${(mX + mW).toFixed(2)} ${yR.toFixed(2)}`
+        );
         mouthRef.current.setAttribute("opacity", clamp(smileTargetWeight, 0, 0.94).toFixed(3));
       }
 
@@ -2063,10 +2159,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
               <g ref={eyeOpenLRef}>
                 <ellipse ref={eyeScleraLRef} cx="0" cy="0" rx="3.4" ry="5.2" fill="#FFFFFF" opacity="0.96" />
                 <g clipPath={`url(#${ids.eyeClipL})`}>
-                  <circle ref={irisLRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.pupil} opacity="0.26" />
-                  <circle ref={pupilLRef} cx="1.1" cy="-1.5" r="1.18" fill={currentColors.pupil} />
-                  <circle ref={glintLRef} cx="0.65" cy="-2.0" r="0.45" fill="#FFFFFF" opacity="0.92" />
-                  <rect ref={lidShadeLRef} x="-5" y="-7.5" width="10" height="3.2" fill={currentColors.pupil} opacity="0" />
+                  <circle ref={irisLRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.eye} opacity="0.35" />
+                  <circle ref={pupilLRef} cx="1.1" cy="-1.5" r="1.18" fill={currentColors.eye} />
+                  <circle ref={glintLRef} cx="0.65" cy="-2.0" r="0.4" fill="#FFFFFF" opacity="0.8" />
+                  <rect ref={lidShadeLRef} x="-5" y="-7.5" width="10" height="3.2" fill={currentColors.eye} opacity="0" />
                 </g>
               </g>
               <path
@@ -2084,10 +2180,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
               <g ref={eyeOpenRRef}>
                 <ellipse ref={eyeScleraRRef} cx="0" cy="0" rx="3.4" ry="5.2" fill="#FFFFFF" opacity="0.96" />
                 <g clipPath={`url(#${ids.eyeClipR})`}>
-                  <circle ref={irisRRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.pupil} opacity="0.26" />
-                  <circle ref={pupilRRef} cx="1.1" cy="-1.5" r="1.18" fill={currentColors.pupil} />
-                  <circle ref={glintRRef} cx="0.65" cy="-2.0" r="0.45" fill="#FFFFFF" opacity="0.92" />
-                  <rect ref={lidShadeRRef} x="-5" y="-7.5" width="10" height="3.2" fill={currentColors.pupil} opacity="0" />
+                  <circle ref={irisRRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.eye} opacity="0.35" />
+                  <circle ref={pupilRRef} cx="1.1" cy="-1.5" r="1.18" fill={currentColors.eye} />
+                  <circle ref={glintRRef} cx="0.65" cy="-2.0" r="0.4" fill="#FFFFFF" opacity="0.8" />
+                  <rect ref={lidShadeRRef} x="-5" y="-7.5" width="10" height="3.2" fill={currentColors.eye} opacity="0" />
                 </g>
               </g>
               <path
@@ -2135,7 +2231,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
                   cy={C + 10.6}
                   rx="2.4"
                   ry="1.6"
-                  fill={initialColors.blushCore}
+                  fill="#FCC6D9"
                   opacity="0.78"
                 />
               </g>
