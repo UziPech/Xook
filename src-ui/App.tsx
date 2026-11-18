@@ -48,9 +48,11 @@ import {
   XoxState,
   XOX_ACCENT_PRESETS,
   getXoxBubbleVars,
+  getXoxCosmosVars,
   resolveXoxAccentPreset,
   resolveXoxStateColors,
   type XoxAccentPreset,
+  type XoxTerminalFeed,
 } from "./components/XoxStar";
 import {
   XoxStudioPanel,
@@ -79,6 +81,7 @@ import {
 import {
   CanvasActionPayload,
   CanvasArtifact,
+  CanvasVersionSnapshot,
   canvasHasCellData,
   cleanVisibleReply,
   evaluateFormFieldState,
@@ -90,6 +93,7 @@ import {
   resolveSelectedIndex,
   sanitizeCanvasArtifact,
 } from "./features/canvas/canvasSchema";
+import { evaluateSafeFormula, formatComputedValue } from "./features/canvas/safeFormulaEval";
 import { CanvasPanel } from "./features/canvas/CanvasPanel";
 import {
   PdfWorkspacePanel,
@@ -352,6 +356,33 @@ async function prepareImagePayload(file: File): Promise<{
   }
 }
 
+function mergeCanvasWithVersionHistory(
+  prev: CanvasArtifact | null | undefined,
+  incoming: CanvasArtifact,
+): CanvasArtifact {
+  if (!prev || prev.id !== incoming.id) {
+    return incoming;
+  }
+  if (prev.updatedAt && incoming.updatedAt && prev.updatedAt === incoming.updatedAt) {
+    return {
+      ...incoming,
+      ...(prev.versions?.length ? { versions: prev.versions } : {}),
+    };
+  }
+  const existingVersions = prev.versions ?? [];
+  const prevClean: CanvasArtifact = { ...prev, versions: undefined };
+  const snapshot: CanvasVersionSnapshot = {
+    version: existingVersions.length + 1,
+    updatedAt: prev.updatedAt,
+    summary: prev.summary,
+    artifact: prevClean,
+  };
+  return {
+    ...incoming,
+    versions: [...existingVersions, snapshot].slice(-12),
+  };
+}
+
 function buildPdfSpecFromCanvas(canvas: CanvasArtifact): Record<string, unknown> {
   const blocks: Array<Record<string, unknown>> = [];
   if (canvas.summary?.trim()) {
@@ -489,6 +520,126 @@ function buildPdfSpecFromCanvas(canvas: CanvasArtifact): Record<string, unknown>
       }
     });
   }
+  if (canvas.blocks && canvas.blocks.length > 0) {
+    canvas.blocks.forEach((blk) => {
+      if (blk.title) blocks.push({ type: "heading", level: 2, text: blk.title });
+      if (blk.type === "callout") {
+        blocks.push({
+          type: "callout",
+          title: blk.title || undefined,
+          text: blk.text,
+          tone: blk.tone === "critical" ? "warning" : blk.tone || "info",
+        });
+      } else if (blk.type === "markdown") {
+        blocks.push({ type: "paragraph", text: blk.content });
+      } else if (blk.type === "table" && blk.columns.length > 0 && blk.rows.length > 0) {
+        blocks.push({
+          type: "table",
+          headers: blk.columns.map((c) => c.label),
+          rows: blk.rows.map((r) => blk.columns.map((c) => String(r.cells[c.id] ?? ""))),
+        });
+      } else if (blk.type === "interactive") {
+        const sub = buildPdfSpecFromCanvas({
+          id: canvas.id,
+          title: blk.title || canvas.title,
+          kind: "interactive",
+          columns: [],
+          rows: [],
+          interactive: blk.interactive,
+          updatedAt: canvas.updatedAt,
+        });
+        if (Array.isArray(sub.blocks)) blocks.push(...(sub.blocks as Array<Record<string, unknown>>));
+      } else if (blk.type === "dashboard") {
+        const sub = buildPdfSpecFromCanvas({
+          id: canvas.id,
+          title: blk.title || canvas.title,
+          kind: "dashboard",
+          columns: [],
+          rows: [],
+          dashboard: blk.dashboard,
+          updatedAt: canvas.updatedAt,
+        });
+        if (Array.isArray(sub.blocks)) blocks.push(...(sub.blocks as Array<Record<string, unknown>>));
+      } else if (blk.type === "plan") {
+        const sub = buildPdfSpecFromCanvas({
+          id: canvas.id,
+          title: blk.title || canvas.title,
+          kind: "plan",
+          columns: [],
+          rows: [],
+          plan: blk.plan,
+          updatedAt: canvas.updatedAt,
+        });
+        if (Array.isArray(sub.blocks)) blocks.push(...(sub.blocks as Array<Record<string, unknown>>));
+      } else if (blk.type === "diagram") {
+        const sub = buildPdfSpecFromCanvas({
+          id: canvas.id,
+          title: blk.title || canvas.title,
+          kind: "diagram",
+          columns: [],
+          rows: [],
+          diagram: blk.diagram,
+          updatedAt: canvas.updatedAt,
+        });
+        if (Array.isArray(sub.blocks)) blocks.push(...(sub.blocks as Array<Record<string, unknown>>));
+      } else if (blk.type === "form") {
+        const sub = buildPdfSpecFromCanvas({
+          id: canvas.id,
+          title: blk.title || canvas.title,
+          kind: "form",
+          columns: [],
+          rows: [],
+          form: blk.form,
+          updatedAt: canvas.updatedAt,
+        });
+        if (Array.isArray(sub.blocks)) blocks.push(...(sub.blocks as Array<Record<string, unknown>>));
+      }
+    });
+  }
+  if (canvas.interactive) {
+    const inter = canvas.interactive;
+    if (inter.description) blocks.push({ type: "paragraph", text: inter.description });
+    if (inter.computed && inter.computed.length > 0) {
+      blocks.push({
+        type: "kpi_strip",
+        items: inter.computed.slice(0, 6).map((c) => {
+          const res = evaluateSafeFormula(c.expr, inter.state);
+          return {
+            label: c.label,
+            value: formatComputedValue(res.value, c.format, c.unit),
+          };
+        }),
+      });
+    }
+    if (inter.controls.length > 0) {
+      blocks.push({ type: "heading", level: 2, text: "Parámetros del escenario" });
+      blocks.push({
+        type: "table",
+        headers: ["Control", "Valor"],
+        rows: inter.controls.map((ctrl) => [
+          ctrl.label,
+          `${ctrl.prefix ?? ""}${String(inter.state[ctrl.stateKey] ?? "—")}${ctrl.unit ? ` ${ctrl.unit}` : ""}`,
+        ]),
+      });
+    }
+  }
+  if (canvas.customApp) {
+    const app = canvas.customApp;
+    if (app.description) blocks.push({ type: "paragraph", text: app.description });
+    if (app.state && Object.keys(app.state).length > 0) {
+      blocks.push({ type: "heading", level: 2, text: "Estado capturado de la mini-app" });
+      blocks.push({
+        type: "table",
+        headers: ["Variable", "Valor"],
+        rows: Object.entries(app.state).map(([k, v]) => [
+          k,
+          typeof v === "string" || typeof v === "number" || typeof v === "boolean"
+            ? String(v)
+            : JSON.stringify(v),
+        ]),
+      });
+    }
+  }
   if (canvas.columns.length > 0 && canvas.rows.length > 0) {
     blocks.push({ type: "heading", level: 1, text: "Detalle comparativo" });
     blocks.push({
@@ -505,7 +656,15 @@ function buildPdfSpecFromCanvas(canvas: CanvasArtifact): Record<string, unknown>
     theme: "executive",
     cover: { enabled: false },
     blocks,
-    ...(canvas.columns.length === 0 && !canvas.plan && !canvas.diagram && !canvas.dashboard && canvas.markdown?.trim()
+    ...(canvas.columns.length === 0 &&
+    !canvas.plan &&
+    !canvas.diagram &&
+    !canvas.dashboard &&
+    !canvas.form &&
+    !canvas.interactive &&
+    !canvas.customApp &&
+    !(canvas.blocks && canvas.blocks.length > 0) &&
+    canvas.markdown?.trim()
       ? { markdown: canvas.markdown.trim() }
       : {}),
   };
@@ -643,29 +802,34 @@ function XoxHeaderFace({
           <ellipse cx="140.5" cy="127" rx="9.5" ry="5.8" transform="rotate(8 140.5 127)" fill={`url(#${ids.blush})`} />
         </g>
 
-        {/* Ojos */}
-        {isSuccess ? (
-          <>
-            <path d="M104 117Q110.5 107.5 117 117" stroke="#FFFFFF" strokeWidth="4.4" strokeLinecap="round" fill="none" />
-            <path d="M123 117Q129.5 107.5 136 117" stroke="#FFFFFF" strokeWidth="4.4" strokeLinecap="round" fill="none" />
-            <path d="M113 128.5Q120 135.5 127 128.5" stroke="#FFFFFF" strokeWidth="3.6" strokeLinecap="round" fill="none" opacity="0.92" />
-          </>
-        ) : (
-          <>
-            <g transform="translate(110.5 115)">
-              <g className="xox-mini-eye">
-                <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
-                <circle cx="1.9" cy="-2.5" r="1.9" fill={colors.pupil} />
-              </g>
+        {/* Ojos (ambas capas montadas con transición suave de opacidad/escala) */}
+        <g
+          className={`transition-opacity duration-200 ${
+            isSuccess ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          <path d="M104 117Q110.5 107.5 117 117" stroke="#FFFFFF" strokeWidth="4.4" strokeLinecap="round" fill="none" />
+          <path d="M123 117Q129.5 107.5 136 117" stroke="#FFFFFF" strokeWidth="4.4" strokeLinecap="round" fill="none" />
+          <path d="M113 128.5Q120 135.5 127 128.5" stroke="#FFFFFF" strokeWidth="3.6" strokeLinecap="round" fill="none" opacity="0.92" />
+        </g>
+        <g
+          className={`transition-opacity duration-200 ${
+            isSuccess ? "opacity-0" : "opacity-100"
+          }`}
+        >
+          <g transform="translate(110.5 115)">
+            <g className="xox-mini-eye">
+              <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
+              <circle cx="1.9" cy="-2.5" r="1.9" fill={colors.pupil} />
             </g>
-            <g transform="translate(129.5 115)">
-              <g className="xox-mini-eye">
-                <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
-                <circle cx="1.9" cy="-2.5" r="1.9" fill={colors.pupil} />
-              </g>
+          </g>
+          <g transform="translate(129.5 115)">
+            <g className="xox-mini-eye">
+              <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
+              <circle cx="1.9" cy="-2.5" r="1.9" fill={colors.pupil} />
             </g>
-          </>
-        )}
+          </g>
+        </g>
       </svg>
     </button>
   );
@@ -700,6 +864,7 @@ export default function App() {
   
   // Estado de Xox (Mascota Digital y Orquestador Estelar)
   const [xoxState, setXoxState] = useState<XoxState>("idle");
+  const [xoxTerminalFeed, setXoxTerminalFeed] = useState<XoxTerminalFeed | null>(null);
   const [xoxMessage, setXoxMessage] = useState<string>(DEFAULT_IDLE_GREETING);
   const [globalXoxProfile, setGlobalXoxProfile] = useState<GlobalXoxProfile>(
     DEFAULT_GLOBAL_XOX_PROFILE
@@ -1626,8 +1791,12 @@ export default function App() {
     setChatMessages(msgs);
     let restoredCanvas: CanvasArtifact | null = null;
     for (let i = msgs.length - 1; i >= 0; i -= 1) {
-      if (msgs[i].canvas) {
-        const cleanRestored = sanitizeCanvasArtifact(msgs[i].canvas);
+      const candidate =
+        msgs[i].canvases && msgs[i].canvases!.length > 0
+          ? msgs[i].canvases![msgs[i].canvases!.length - 1]
+          : msgs[i].canvas;
+      if (candidate) {
+        const cleanRestored = sanitizeCanvasArtifact(candidate);
         if (cleanRestored && canvasHasCellData(cleanRestored)) {
           restoredCanvas = cleanRestored;
           break;
@@ -3595,7 +3764,18 @@ export default function App() {
               }
             : null,
           businessContextSnapshot,
-          activeCanvas: showCanvas ? activeCanvas : null,
+          activeCanvas:
+            activeCanvas ??
+            (() => {
+              for (let i = chatMessagesRef.current.length - 1; i >= 0; i -= 1) {
+                const m = chatMessagesRef.current[i];
+                if (m.canvas) return m.canvas;
+                if (m.canvases && m.canvases.length > 0) {
+                  return m.canvases[m.canvases.length - 1];
+                }
+              }
+              return null;
+            })(),
         },
         {
           onStreamStart: (sid) => {
@@ -3614,7 +3794,7 @@ export default function App() {
             }
           },
           onPhase: (state, label) => {
-            if (hasEnteredTalking && (state === "reading" || state === "thinking")) {
+            if (hasEnteredTalking && (state === "reading" || state === "thinking" || state === "coding")) {
               return;
             }
             if (state === "talking") {
@@ -3651,6 +3831,15 @@ export default function App() {
               setThinkingLabel(label);
               setXoxMessage(label);
             }
+          },
+          onTerminal: (termEvt) => {
+            setXoxTerminalFeed((prev) => ({
+              seq: (prev?.seq ?? 0) + 1,
+              mode: termEvt.mode,
+              status: termEvt.status,
+              command: termEvt.command ?? termEvt.target,
+              outputLines: termEvt.outputLines,
+            }));
           },
           onSteps: (steps) => {
             setChatMessages((prev) =>
@@ -3747,14 +3936,39 @@ export default function App() {
             );
           },
           onCanvas: (canvas) => {
-            const withSource: CanvasArtifact = { ...canvas, sourceMessageId: assistantMsgId };
+            let prevExisting: CanvasArtifact | null = null;
+            if (activeCanvas?.id === canvas.id) {
+              prevExisting = activeCanvas;
+            } else {
+              for (let i = chatMessagesRef.current.length - 1; i >= 0; i -= 1) {
+                const msg = chatMessagesRef.current[i];
+                const match =
+                  msg.canvases?.find((c) => c.id === canvas.id) ??
+                  (msg.canvas?.id === canvas.id ? msg.canvas : undefined);
+                if (match) {
+                  prevExisting = match;
+                  break;
+                }
+              }
+            }
+            const withSource = mergeCanvasWithVersionHistory(prevExisting, {
+              ...canvas,
+              sourceMessageId: assistantMsgId,
+            });
             setShowXoxStudio(false);
             setActiveCanvas(withSource);
             setShowCanvas(true);
             setChatMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsgId ? { ...m, canvas: withSource } : m
-              )
+              prev.map((m) => {
+                if (m.id !== assistantMsgId) return m;
+                const prevList = m.canvases ?? (m.canvas ? [m.canvas] : []);
+                const idx = prevList.findIndex((c) => c.id === withSource.id);
+                const nextList =
+                  idx >= 0
+                    ? prevList.map((c, i) => (i === idx ? withSource : c))
+                    : [...prevList, withSource];
+                return { ...m, canvas: withSource, canvases: nextList };
+              })
             );
           },
           onXoxCustomized: (evt) => {
@@ -3801,9 +4015,41 @@ export default function App() {
       clearXoxPhaseTimers();
       setPdfDraftProgress(null);
       const generatedCount = res.tasks.length;
-      const finalCanvas = res.canvas
-        ? { ...res.canvas, sourceMessageId: assistantMsgId }
-        : undefined;
+      const rawResCanvases =
+        res.canvases && res.canvases.length > 0
+          ? res.canvases
+          : res.canvas
+            ? [res.canvas]
+            : [];
+      const currentAssistantMsg = chatMessagesRef.current.find((m) => m.id === assistantMsgId);
+      const finalCanvases: CanvasArtifact[] = rawResCanvases.map((rc) => {
+        let prevExisting: CanvasArtifact | null = null;
+        const inCurrent =
+          currentAssistantMsg?.canvases?.find((c) => c.id === rc.id) ??
+          (currentAssistantMsg?.canvas?.id === rc.id ? currentAssistantMsg.canvas : undefined);
+        if (inCurrent) {
+          prevExisting = inCurrent;
+        } else if (activeCanvas?.id === rc.id) {
+          prevExisting = activeCanvas;
+        } else {
+          for (let i = chatMessagesRef.current.length - 1; i >= 0; i -= 1) {
+            const msg = chatMessagesRef.current[i];
+            const match =
+              msg.canvases?.find((c) => c.id === rc.id) ??
+              (msg.canvas?.id === rc.id ? msg.canvas : undefined);
+            if (match) {
+              prevExisting = match;
+              break;
+            }
+          }
+        }
+        return mergeCanvasWithVersionHistory(prevExisting, {
+          ...rc,
+          sourceMessageId: assistantMsgId,
+        });
+      });
+      const finalCanvas =
+        finalCanvases.length > 0 ? finalCanvases[finalCanvases.length - 1] : undefined;
       if (finalCanvas) {
         setShowXoxStudio(false);
         setActiveCanvas(finalCanvas);
@@ -3875,6 +4121,7 @@ export default function App() {
           tokensUsed: res.usage?.totalTokens,
           generatedTaskCount: generatedCount,
           canvas: finalCanvas ?? m.canvas,
+          canvases: finalCanvases.length > 0 ? finalCanvases : m.canvases,
           vaultPrompt: resolvedVault,
           generatedPdfs: (() => {
             const base = m.generatedPdfs ?? [];
@@ -4219,6 +4466,7 @@ export default function App() {
   const xoxBusy =
     xoxState === "thinking" ||
     xoxState === "reading" ||
+    xoxState === "coding" ||
     xoxState === "talking" ||
     xoxState === "syncing";
 
@@ -4280,11 +4528,19 @@ export default function App() {
 
   const handleUpdateCanvas = (updated: CanvasArtifact) => {
     setActiveCanvas(updated);
-    const nextMessages = chatMessagesRef.current.map((m) =>
-      m.id === updated.sourceMessageId || m.canvas?.id === updated.id
-        ? { ...m, canvas: updated }
-        : m
-    );
+    const nextMessages = chatMessagesRef.current.map((m) => {
+      const hasMatch =
+        m.id === updated.sourceMessageId ||
+        m.canvas?.id === updated.id ||
+        Boolean(m.canvases?.some((c) => c.id === updated.id));
+      if (!hasMatch) return m;
+      const nextCanvases = m.canvases?.map((c) => (c.id === updated.id ? updated : c));
+      return {
+        ...m,
+        canvas: m.canvas?.id === updated.id || !m.canvas ? updated : m.canvas,
+        ...(nextCanvases ? { canvases: nextCanvases } : {}),
+      };
+    });
     setChatMessages(nextMessages);
     void persistConversation(nextMessages);
   };
@@ -4293,19 +4549,25 @@ export default function App() {
     setActiveCanvas(canvas);
     setShowCanvas(true);
     const noun =
-      canvas.kind === "plan"
-        ? "el plan"
-        : canvas.kind === "diagram"
-          ? "el diagrama"
-          : canvas.kind === "dashboard"
-            ? "el dashboard"
-            : canvas.kind === "form"
-              ? canvas.form?.purpose === "study_quiz"
-                ? "el cuestionario"
-                : "el formulario"
-              : canvas.kind === "document"
-                ? "el documento"
-                : "la tabla";
+      canvas.kind === "composite"
+        ? "la vista compuesta"
+        : canvas.kind === "interactive"
+          ? "la interfaz interactiva"
+          : canvas.kind === "custom_app"
+            ? "la mini-app"
+            : canvas.kind === "plan"
+              ? "el plan"
+              : canvas.kind === "diagram"
+                ? "el diagrama"
+                : canvas.kind === "dashboard"
+                  ? "el dashboard"
+                  : canvas.kind === "form"
+                    ? canvas.form?.purpose === "study_quiz"
+                      ? "el cuestionario"
+                      : "el formulario"
+                    : canvas.kind === "document"
+                      ? "el documento"
+                      : "la tabla";
     setInputPrompt((prev) =>
       prev.trim() ? prev : `Sobre ${noun} "${canvas.title}": `
     );
@@ -4467,6 +4729,25 @@ export default function App() {
           `Envío el formulario "${action.canvas.title}" con los siguientes datos:\n\n${lines.join("\n")}\n\nConfirma la recepción y continúa con el análisis o siguiente paso usando esta información.`
         );
       }
+      return;
+    }
+
+    if (action.type === "interactive_submit") {
+      handleUpdateCanvas(action.canvas);
+      const fallback = `Desde la interfaz interactiva "${action.canvas.title}" se activó "${action.actionLabel ?? "Enviar escenario"}".`;
+      void runPromptQuery(action.prompt || fallback);
+      return;
+    }
+
+    if (action.type === "custom_app_message") {
+      handleUpdateCanvas(action.canvas);
+      const extraPayload =
+        action.payload !== undefined
+          ? `\n\nDatos adjuntos:\n\`\`\`json\n${JSON.stringify(action.payload, null, 2)}\n\`\`\``
+          : "";
+      void runPromptQuery(
+        `Desde la mini-app "${action.canvas.title}": ${action.prompt}${extraPayload}`
+      );
     }
   };
 
@@ -5483,7 +5764,12 @@ export default function App() {
         )}
 
         {/* COLUMNA CENTRAL: Xox + Conversación + Input Pinned al fondo */}
-        <section className="flex-1 min-w-0 flex flex-col bg-[#060709] overflow-hidden relative">
+        <section
+          style={getXoxCosmosVars(displayAccentPreset)}
+          className={`xook-gemini-backdrop flex-1 min-w-0 flex flex-col overflow-hidden relative ${
+            showXoxStudio ? "is-studio-open" : ""
+          }`}
+        >
           
           {/* Notificación de Sistema: flota sobre el contenido, no lo desplaza */}
           {statusToastPresence.mounted && displayStatusMessage && (
@@ -5514,7 +5800,7 @@ export default function App() {
 
           {/* Barra mínima fija de acciones de conversación (sin título truncado de mensaje) */}
           {chatMessages.length > 0 && !(showLeftSidebar && leftTab === "chats") && (
-            <div className="shrink-0 bg-[#060709]/95 backdrop-blur-md px-4 sm:px-6 z-10">
+            <div className="shrink-0 bg-[#0f0f11]/70 backdrop-blur-md px-4 sm:px-6 z-10">
               <div className="max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto pt-2.5 pb-1 flex items-center justify-end gap-2">
                 {!activeModel.is_free && accountUsage && !accountUsage.can_use_paid_models && (
                   <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[9px] font-medium shrink-0 mr-auto">
@@ -5551,7 +5837,7 @@ export default function App() {
           )}
 
           {/* Área de Trabajo con Scroll: Xox Hero / Chat en vivo */}
-          <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-6">
+          <div className="relative z-[1] flex-1 overflow-y-auto px-4 sm:px-6 py-6">
             <div
               className={`max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto space-y-6 transition-[padding] duration-200 ${
                 activeChecklist && !checklistCollapsed && !hasRightSplitOpen
@@ -5591,6 +5877,7 @@ export default function App() {
                         className="w-[308px] h-[308px] sm:w-[384px] sm:h-[384px] lg:w-[408px] lg:h-[408px] xl:w-[456px] xl:h-[456px]"
                         summonTrigger={summonSeq}
                         onClick={handleXoxClick}
+                        terminal={xoxTerminalFeed}
                         subagents={
                           activeMode === "agent" && subagentTeamMode === "custom"
                             ? subagentRoster
@@ -5732,6 +6019,7 @@ export default function App() {
                     xoxAwayInStudio={showXoxStudio && !xoxExitingStage}
                     xoxTravelPhase={xoxTravelPhase}
                     glideSeq={xoxGlideSeq}
+                    xoxTerminal={xoxTerminalFeed}
                     rosterSubagents={
                       activeMode === "agent" && subagentTeamMode === "custom"
                         ? subagentRoster
@@ -6527,6 +6815,17 @@ export default function App() {
             >
               <CanvasPanel
                 canvas={activeCanvas}
+                siblingCanvases={(() => {
+                  const sourceMsg = chatMessages.find(
+                    (m) =>
+                      m.id === activeCanvas.sourceMessageId ||
+                      Boolean(m.canvases?.some((c) => c.id === activeCanvas.id))
+                  );
+                  return sourceMsg?.canvases && sourceMsg.canvases.length > 1
+                    ? sourceMsg.canvases
+                    : undefined;
+                })()}
+                onSelectSiblingCanvas={handleOpenCanvas}
                 visible={canvasPresence.visible}
                 expanded={canvasExpanded}
                 onToggleExpand={() => setCanvasExpanded((v) => !v)}

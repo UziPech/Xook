@@ -6,6 +6,7 @@ Refleja 1:1 el esquema TypeScript en `src-ui/features/task-decisions/taskSchema.
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import html
+import json
 import re
 import unicodedata
 from typing import Any, Dict, List, Optional
@@ -404,7 +405,18 @@ def sanitize_clarification(raw: Any) -> Optional[Dict[str, Any]]:
     return out
 
 
-ALLOWED_CANVAS_KINDS = frozenset({"comparison", "table", "document", "diagram", "plan", "dashboard", "form"})
+ALLOWED_CANVAS_KINDS = frozenset({
+    "comparison",
+    "table",
+    "document",
+    "diagram",
+    "plan",
+    "dashboard",
+    "form",
+    "composite",
+    "interactive",
+    "custom_app",
+})
 ALLOWED_COLUMN_ALIGN = frozenset({"left", "center", "right"})
 ALLOWED_COLUMN_KINDS = frozenset({"text", "number", "currency", "badge", "rating"})
 ALLOWED_ROW_HIGHLIGHTS = frozenset({"recommended", "warning", "muted"})
@@ -672,6 +684,22 @@ def canvas_has_cell_data(canvas: Optional[Dict[str, Any]]) -> bool:
         return True
     form = canvas.get("form")
     if isinstance(form, dict) and isinstance(form.get("fields"), list) and len(form["fields"]) > 0:
+        return True
+    interactive = canvas.get("interactive")
+    if isinstance(interactive, dict) and (
+        (isinstance(interactive.get("controls"), list) and len(interactive["controls"]) > 0)
+        or (isinstance(interactive.get("computed"), list) and len(interactive["computed"]) > 0)
+    ):
+        return True
+    custom_app = canvas.get("customApp") or canvas.get("custom_app")
+    if isinstance(custom_app, dict) and (
+        bool(_as_str(custom_app.get("html")))
+        or bool(_as_str(custom_app.get("js")))
+        or bool(_as_str(custom_app.get("css")))
+    ):
+        return True
+    blocks = canvas.get("blocks")
+    if isinstance(blocks, list) and len(blocks) > 0:
         return True
     cols = canvas.get("columns") or []
     rows = canvas.get("rows") or []
@@ -1659,15 +1687,582 @@ def _sanitize_form_spec(raw: Any) -> Optional[Dict[str, Any]]:
     return out
 
 
+ALLOWED_INTERACTIVE_CONTROL_TYPES = frozenset({
+    "number",
+    "slider",
+    "toggle",
+    "select",
+    "segmented",
+    "text",
+    "textarea",
+    "checklist",
+    "kanban",
+})
+
+
+def _sanitize_interactive_spec(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+
+    raw_controls = next(
+        (
+            raw.get(k)
+            for k in ("controls", "controles", "widgets", "fields", "campos", "items")
+            if isinstance(raw.get(k), list)
+        ),
+        [],
+    )
+    raw_computed = next(
+        (
+            raw.get(k)
+            for k in ("computed", "calculos", "metrics", "resultados", "kpis")
+            if isinstance(raw.get(k), list)
+        ),
+        [],
+    )
+    raw_tabs = next(
+        (raw.get(k) for k in ("tabs", "pestanas") if isinstance(raw.get(k), list)),
+        [],
+    )
+    raw_actions = next(
+        (raw.get(k) for k in ("actions", "acciones", "buttons", "botones") if isinstance(raw.get(k), list)),
+        [],
+    )
+
+    tabs: List[Dict[str, Any]] = []
+    used_tab_ids: set = set()
+    for t_idx, t in enumerate(raw_tabs[:8]):
+        if isinstance(t, str) and t.strip():
+            tid = _normalize_col_id(t, t_idx, used_tab_ids)
+            tabs.append({"id": tid, "label": t.strip()})
+            continue
+        if not isinstance(t, dict):
+            continue
+        tlbl = _as_str(t.get("label") or t.get("title") or t.get("titulo") or t.get("name"))
+        if not tlbl:
+            continue
+        tid_raw = _as_str(t.get("id")) or tlbl
+        tid = _normalize_col_id(tid_raw, t_idx, used_tab_ids)
+        t_obj: Dict[str, Any] = {"id": tid, "label": tlbl}
+        tdesc = _as_str(t.get("description") or t.get("descripcion"))
+        if tdesc:
+            t_obj["description"] = tdesc
+        tabs.append(t_obj)
+
+    state: Dict[str, Any] = {}
+    raw_state = raw.get("state") if isinstance(raw.get("state"), dict) else raw.get("estado")
+    if isinstance(raw_state, dict):
+        for k, v in list(raw_state.items())[:60]:
+            ks = _as_str(k)
+            if not ks:
+                continue
+            if isinstance(v, (str, int, float, bool)):
+                state[ks] = v
+            elif isinstance(v, list):
+                state[ks] = [_as_str(x) for x in v[:100] if _as_str(x)]
+
+    controls: List[Dict[str, Any]] = []
+    used_ctrl_ids: set = set()
+    for c_idx, item in enumerate(raw_controls[:30]):
+        if not isinstance(item, dict):
+            continue
+        lbl = _as_str(item.get("label") or item.get("title") or item.get("titulo") or item.get("name"))
+        if not lbl:
+            continue
+        raw_t = _as_str(item.get("type") or item.get("tipo") or item.get("kind")).lower().replace("-", "_").replace(" ", "_")
+        if raw_t in ("range", "deslizador"):
+            ctype = "slider"
+        elif raw_t in ("bool", "boolean", "switch", "checkbox"):
+            ctype = "toggle"
+        elif raw_t in ("dropdown", "lista"):
+            ctype = "select"
+        elif raw_t in ("radio", "pills", "segmentado", "tabs"):
+            ctype = "segmented"
+        elif raw_t in ("textarea", "long_text", "texto_largo"):
+            ctype = "textarea"
+        elif raw_t in ("checklist", "lista_verificacion", "tasks"):
+            ctype = "checklist"
+        elif raw_t in ("kanban", "board", "tablero"):
+            ctype = "kanban"
+        elif raw_t in ("number", "numeric", "numero", "currency", "money"):
+            ctype = "number"
+        elif raw_t in ALLOWED_INTERACTIVE_CONTROL_TYPES:
+            ctype = raw_t
+        else:
+            ctype = "slider" if (item.get("min") is not None and item.get("max") is not None) else (
+                "checklist" if isinstance(item.get("items"), list) else (
+                    "select" if isinstance(item.get("options"), list) else "text"
+                )
+            )
+
+        cid = _normalize_col_id(_as_str(item.get("id")) or lbl, c_idx, used_ctrl_ids)
+        state_key = _as_str(item.get("stateKey") or item.get("state_key") or item.get("key") or item.get("var")) or cid
+
+        ctrl: Dict[str, Any] = {
+            "id": cid,
+            "stateKey": state_key,
+            "label": lbl,
+            "type": ctype,
+        }
+        helper = _as_str(item.get("helperText") or item.get("helper_text") or item.get("description") or item.get("hint"))
+        if helper:
+            ctrl["helperText"] = helper
+        tab_id = _as_str(item.get("tabId") or item.get("tab_id") or item.get("tab"))
+        if tab_id:
+            ctrl["tabId"] = tab_id
+        unit = _as_str(item.get("unit") or item.get("unidad"))
+        if unit:
+            ctrl["unit"] = unit
+        prefix = _as_str(item.get("prefix") or item.get("prefijo"))
+        if prefix:
+            ctrl["prefix"] = prefix
+        placeholder = _as_str(item.get("placeholder"))
+        if placeholder:
+            ctrl["placeholder"] = placeholder
+
+        for num_k in ("min", "max", "step"):
+            nv = _parse_numeric_metric_value(item.get(num_k))
+            if nv is not None:
+                ctrl[num_k] = nv
+
+        raw_opts = next((item.get(k) for k in ("options", "opciones", "choices") if isinstance(item.get(k), list)), None)
+        if raw_opts is not None:
+            opts = [_as_str(o) for o in raw_opts[:20] if _as_str(o)]
+            if opts:
+                ctrl["options"] = opts
+
+        raw_cols = next((item.get(k) for k in ("columns", "columnas") if isinstance(item.get(k), list)), None)
+        if raw_cols is not None:
+            k_cols: List[Dict[str, str]] = []
+            for kc_idx, kc in enumerate(raw_cols[:8]):
+                if isinstance(kc, str) and kc.strip():
+                    k_cols.append({"id": _normalize_col_id(kc, kc_idx, set()), "label": kc.strip()})
+                elif isinstance(kc, dict):
+                    klbl = _as_str(kc.get("label") or kc.get("title") or kc.get("name"))
+                    kid = _as_str(kc.get("id")) or _normalize_col_id(klbl or f"col_{kc_idx+1}", kc_idx, set())
+                    if klbl or kid:
+                        k_cols.append({"id": kid, "label": klbl or kid})
+            if k_cols:
+                ctrl["columns"] = k_cols
+
+        raw_items = next((item.get(k) for k in ("items", "elementos", "cards") if isinstance(item.get(k), list)), None)
+        if raw_items is not None:
+            c_items: List[Dict[str, Any]] = []
+            used_item_ids: set = set()
+            for it_idx, it in enumerate(raw_items[:80]):
+                if isinstance(it, str) and it.strip():
+                    iid = f"it_{it_idx + 1}"
+                    used_item_ids.add(iid)
+                    c_items.append({"id": iid, "label": it.strip()})
+                elif isinstance(it, dict):
+                    ilbl = _as_str(it.get("label") or it.get("title") or it.get("titulo") or it.get("name") or it.get("text"))
+                    if not ilbl:
+                        continue
+                    iid = _as_str(it.get("id")) or f"it_{it_idx + 1}"
+                    if iid in used_item_ids:
+                        iid = f"{iid}_{it_idx + 1}"
+                    used_item_ids.add(iid)
+                    it_obj: Dict[str, Any] = {"id": iid, "label": ilbl}
+                    idetail = _as_str(it.get("detail") or it.get("detalle") or it.get("subtitle"))
+                    if idetail:
+                        it_obj["detail"] = idetail
+                    ibadge = _as_str(it.get("badge") or it.get("tag") or it.get("etiqueta"))
+                    if ibadge:
+                        it_obj["badge"] = ibadge
+                    icol = _as_str(it.get("column") or it.get("columna") or it.get("stage") or it.get("status"))
+                    if icol:
+                        it_obj["column"] = icol
+                    if isinstance(it.get("checked"), bool):
+                        it_obj["checked"] = it["checked"]
+                    c_items.append(it_obj)
+            if c_items:
+                ctrl["items"] = c_items
+
+        # Inicializar valor en `state` si el usuario no lo definió explícitamente
+        if state_key not in state:
+            default_val = item.get("defaultValue") if "defaultValue" in item else item.get("default_value") if "default_value" in item else item.get("value")
+            if default_val is not None:
+                if isinstance(default_val, (str, int, float, bool)):
+                    state[state_key] = default_val
+                elif isinstance(default_val, list):
+                    state[state_key] = [_as_str(x) for x in default_val if _as_str(x)]
+            elif ctype in ("number", "slider"):
+                state[state_key] = ctrl.get("min", 0)
+            elif ctype == "toggle":
+                state[state_key] = False
+            elif ctype in ("select", "segmented") and ctrl.get("options"):
+                state[state_key] = ctrl["options"][0]
+            elif ctype == "checklist":
+                state[state_key] = [
+                    it["id"] for it in ctrl.get("items", []) if it.get("checked") is True
+                ]
+            elif ctype == "kanban":
+                cols_list = ctrl.get("columns") or [{"id": "pendiente", "label": "Pendiente"}, {"id": "en_curso", "label": "En curso"}, {"id": "listo", "label": "Listo"}]
+                if "columns" not in ctrl:
+                    ctrl["columns"] = cols_list
+                first_col_id = cols_list[0]["id"]
+                col_lookup = {c["id"].lower(): c["id"] for c in cols_list}
+                for c in cols_list:
+                    col_lookup[c["label"].strip().lower()] = c["id"]
+                kmap = {
+                    it["id"]: col_lookup.get(str(it.get("column") or "").strip().lower(), first_col_id)
+                    for it in ctrl.get("items", [])
+                }
+                state[state_key] = json.dumps(kmap, ensure_ascii=False)
+            else:
+                state[state_key] = ""
+
+        vis_ctrl = _as_str(item.get("visibleWhen") or item.get("visible_when") or item.get("show_if"))
+        if vis_ctrl:
+            ctrl["visibleWhen"] = vis_ctrl
+
+        controls.append(ctrl)
+
+    computed: List[Dict[str, Any]] = []
+    for m_idx, m in enumerate(raw_computed[:16]):
+        if not isinstance(m, dict):
+            continue
+        mlbl = _as_str(m.get("label") or m.get("title") or m.get("titulo") or m.get("name"))
+        expr = _as_str(m.get("expr") or m.get("formula") or m.get("expression"))
+        if not mlbl or not expr:
+            continue
+        fmt = _as_str(m.get("format") or m.get("valueFormat") or m.get("value_format")).lower()
+        if fmt not in ("number", "currency", "percent", "text"):
+            fmt = "currency" if "$" in _as_str(m.get("unit")) else ("percent" if "%" in _as_str(m.get("unit")) else "number")
+        comp_obj: Dict[str, Any] = {
+            "id": _as_str(m.get("id")) or f"comp_{m_idx + 1}",
+            "label": mlbl,
+            "expr": expr,
+            "format": fmt,
+            "tone": _sanitize_metric_tone(_as_str(m.get("tone") or m.get("tono"))),
+        }
+        m_role = _as_str(m.get("role") or m.get("rol") or m.get("tier")).lower()
+        if m_role in ("hero", "primary", "principal"):
+            comp_obj["role"] = "hero"
+        elif m_role in ("breakdown", "desglose", "step", "secondary", "secundario"):
+            comp_obj["role"] = "breakdown"
+        m_vis = _as_str(m.get("visibleWhen") or m.get("visible_when") or m.get("show_if"))
+        if m_vis:
+            comp_obj["visibleWhen"] = m_vis
+        m_unit = _as_str(m.get("unit") or m.get("unidad"))
+        if m_unit:
+            comp_obj["unit"] = m_unit
+        m_cap = _as_str(m.get("caption") or m.get("subtitle") or m.get("nota"))
+        if m_cap:
+            comp_obj["caption"] = m_cap
+        m_tab = _as_str(m.get("tabId") or m.get("tab_id") or m.get("tab"))
+        if m_tab:
+            comp_obj["tabId"] = m_tab
+        computed.append(comp_obj)
+
+    actions: List[Dict[str, Any]] = []
+    for a_idx, a in enumerate(raw_actions[:6]):
+        if not isinstance(a, dict):
+            continue
+        albl = _as_str(a.get("label") or a.get("title") or a.get("text"))
+        if not albl:
+            continue
+        atype = _as_str(a.get("action") or a.get("type")).lower()
+        if atype not in ("send_to_xox", "reset"):
+            atype = "reset" if "reset" in albl.lower() or "reinic" in albl.lower() else "send_to_xox"
+        astyle = _as_str(a.get("style")).lower()
+        act_obj: Dict[str, Any] = {
+            "id": _as_str(a.get("id")) or f"act_{a_idx + 1}",
+            "label": albl,
+            "style": "secondary" if astyle == "secondary" or atype == "reset" else "primary",
+            "action": atype,
+        }
+        ptpl = _as_str(a.get("promptTemplate") or a.get("prompt_template") or a.get("prompt"))
+        if ptpl:
+            act_obj["promptTemplate"] = ptpl
+        actions.append(act_obj)
+
+    if not controls and not computed:
+        return None
+
+    raw_layout = _as_str(raw.get("layout")).lower()
+    layout = raw_layout if raw_layout in ("stack", "grid", "split", "tabs") else ("tabs" if tabs else "stack")
+
+    out: Dict[str, Any] = {
+        "layout": layout,
+        "state": state,
+        "controls": controls,
+    }
+    desc = _as_str(raw.get("description") or raw.get("descripcion"))
+    if desc:
+        out["description"] = desc
+    if tabs:
+        out["tabs"] = tabs
+    if computed:
+        out["computed"] = computed
+    if actions:
+        out["actions"] = actions
+    if raw.get("submitted") is True:
+        out["submitted"] = True
+    if _as_str(raw.get("submittedAt")):
+        out["submittedAt"] = _as_str(raw.get("submittedAt"))
+    return out
+
+
+def _strip_unsafe_external_html_tags(code: str) -> str:
+    if not code:
+        return ""
+    out = re.sub(r"<script\b[^>]*\bsrc\s*=[^>]*>[\s\S]*?</script>", "", code, flags=re.I)
+    out = re.sub(r"<link\b[^>]*\bhref\s*=\s*[\"']?(?:https?:)?//[^>]*>", "", out, flags=re.I)
+    out = re.sub(r"<(?:iframe|object|embed|base)\b[^>]*?(?:>[\s\S]*?</(?:iframe|object|embed)>|/>|>)", "", out, flags=re.I)
+    out = re.sub(r"<meta\b[^>]*http-equiv\s*=\s*[\"']?refresh[^>]*>", "", out, flags=re.I)
+    return out.strip()
+
+
+def _sanitize_custom_app_spec(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    html_raw = str(raw.get("html") or raw.get("body") or raw.get("markup") or "").strip()
+    css_raw = str(raw.get("css") or raw.get("styles") or "").strip()
+    js_raw = str(raw.get("js") or raw.get("script") or "").strip()
+    html_clean = _strip_unsafe_external_html_tags(html_raw)
+    if not html_clean and not css_raw and not js_raw:
+        return None
+
+    out: Dict[str, Any] = {
+        "html": html_clean or "<div id=\"app\"></div>",
+    }
+    if css_raw:
+        out["css"] = css_raw[:35000]
+    if js_raw:
+        out["js"] = js_raw[:45000]
+    desc = _as_str(raw.get("description") or raw.get("descripcion"))
+    if desc:
+        out["description"] = desc
+    raw_state = raw.get("state") if isinstance(raw.get("state"), dict) else raw.get("initial_state")
+    if isinstance(raw_state, dict):
+        out["state"] = raw_state
+    h_raw = _parse_numeric_metric_value(raw.get("height"))
+    if h_raw is not None:
+        out["height"] = max(260, min(780, int(round(h_raw))))
+    saved_path = _as_str(raw.get("savedAppPath") or raw.get("saved_app_path"))
+    if saved_path:
+        out["savedAppPath"] = saved_path
+    return out
+
+
+def _sanitize_canvas_blocks(raw_blocks: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_blocks, list):
+        return []
+    blocks: List[Dict[str, Any]] = []
+    for blk in raw_blocks[:20]:
+        if not isinstance(blk, dict):
+            continue
+        btype = _as_str(blk.get("type") or blk.get("kind")).lower()
+        btitle = _as_str(blk.get("title") or blk.get("titulo"))
+        if btype in ("callout", "alert", "tip", "warning"):
+            txt = _as_str(blk.get("text") or blk.get("content") or blk.get("texto"))
+            if not txt:
+                continue
+            tone = _as_str(blk.get("tone") or blk.get("tono") or (btype if btype in ("warning",) else "")).lower()
+            if tone not in ("info", "warning", "success", "critical"):
+                tone = "warning" if btype == "alert" else "info"
+            item: Dict[str, Any] = {"type": "callout", "text": txt, "tone": tone}
+            if btitle:
+                item["title"] = btitle
+            blocks.append(item)
+        elif btype in ("markdown", "text", "paragraph", "prose", "note", "resumen"):
+            content = _as_str(blk.get("content") or blk.get("markdown") or blk.get("text"))
+            if not content:
+                continue
+            item = {"type": "markdown", "content": content}
+            if btitle:
+                item["title"] = btitle
+            blocks.append(item)
+        elif btype == "diagram":
+            d_src = blk.get("diagram") if isinstance(blk.get("diagram"), dict) else blk
+            diag = _sanitize_diagram_spec(d_src)
+            if diag:
+                item = {"type": "diagram", "diagram": diag}
+                if btitle:
+                    item["title"] = btitle
+                blocks.append(item)
+        elif btype == "plan":
+            p_src = blk.get("plan") if isinstance(blk.get("plan"), dict) else blk
+            pln = _sanitize_plan_spec(p_src, btitle)
+            if pln:
+                item = {"type": "plan", "plan": pln}
+                if btitle:
+                    item["title"] = btitle
+                blocks.append(item)
+        elif btype == "dashboard":
+            ds_src = blk.get("dashboard") if isinstance(blk.get("dashboard"), dict) else blk
+            dash = _sanitize_dashboard_spec(ds_src)
+            if dash:
+                item = {"type": "dashboard", "dashboard": dash}
+                if btitle:
+                    item["title"] = btitle
+                blocks.append(item)
+        elif btype == "form":
+            f_src = blk.get("form") if isinstance(blk.get("form"), dict) else blk
+            frm = _sanitize_form_spec(f_src)
+            if frm:
+                item = {"type": "form", "form": frm}
+                if btitle:
+                    item["title"] = btitle
+                blocks.append(item)
+        elif btype == "interactive":
+            i_src = blk.get("interactive") if isinstance(blk.get("interactive"), dict) else blk
+            inter = _sanitize_interactive_spec(i_src)
+            if inter:
+                item = {"type": "interactive", "interactive": inter}
+                if btitle:
+                    item["title"] = btitle
+                blocks.append(item)
+        elif btype == "table":
+            tbl_canvas = sanitize_canvas_artifact({
+                "title": btitle or "Tabla",
+                "columns": blk.get("columns") or blk.get("headers"),
+                "rows": blk.get("rows") or blk.get("data"),
+            })
+            if tbl_canvas and tbl_canvas.get("columns") and tbl_canvas.get("rows"):
+                item = {
+                    "type": "table",
+                    "columns": tbl_canvas["columns"],
+                    "rows": tbl_canvas["rows"],
+                }
+                if btitle:
+                    item["title"] = btitle
+                blocks.append(item)
+    return blocks
+
+
+def apply_canvas_patch(base_canvas: Dict[str, Any], patch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Aplica una actualización incremental (`update_canvas`) sobre un artefacto Canvas existente
+    manteniendo su `id` y preservando los datos no modificados.
+    """
+    if not isinstance(base_canvas, dict) or not isinstance(patch, dict):
+        return None
+    merged = json.loads(json.dumps(base_canvas))
+    if _as_str(patch.get("title")):
+        merged["title"] = _as_str(patch.get("title"))
+    if "subtitle" in patch:
+        sub = _as_str(patch.get("subtitle"))
+        if sub:
+            merged["subtitle"] = sub
+        else:
+            merged.pop("subtitle", None)
+    if "summary" in patch:
+        sm = _as_str(patch.get("summary"))
+        if sm:
+            merged["summary"] = sm
+        else:
+            merged.pop("summary", None)
+    if "markdown" in patch and patch.get("markdown") is not None:
+        merged["markdown"] = str(patch.get("markdown"))
+
+    # Parches sobre tablas existentes
+    if isinstance(patch.get("columns"), list) and patch["columns"]:
+        merged["columns"] = patch["columns"]
+    if isinstance(patch.get("rows"), list):
+        merged["rows"] = patch["rows"]
+    elif isinstance(patch.get("append_rows"), list) and isinstance(merged.get("columns"), list) and merged["columns"]:
+        existing_rows = list(merged.get("rows") or [])
+        existing_rows.extend(patch["append_rows"])
+        merged["rows"] = existing_rows
+
+    if isinstance(patch.get("diagram"), dict) or patch.get("nodes") or patch.get("edges"):
+        d_src = patch.get("diagram") if isinstance(patch.get("diagram"), dict) else patch
+        base_d = dict(merged.get("diagram") or {})
+        base_d.update({k: v for k, v in d_src.items() if v is not None})
+        merged["diagram"] = base_d
+        merged["kind"] = "diagram"
+
+    if isinstance(patch.get("plan"), dict) or patch.get("phases"):
+        p_src = patch.get("plan") if isinstance(patch.get("plan"), dict) else patch
+        base_p = dict(merged.get("plan") or {})
+        base_p.update({k: v for k, v in p_src.items() if v is not None})
+        merged["plan"] = base_p
+        merged["kind"] = "plan"
+
+    if isinstance(patch.get("dashboard"), dict) or patch.get("kpis") or patch.get("charts"):
+        ds_src = patch.get("dashboard") if isinstance(patch.get("dashboard"), dict) else patch
+        base_ds = dict(merged.get("dashboard") or {})
+        base_ds.update({k: v for k, v in ds_src.items() if v is not None})
+        merged["dashboard"] = base_ds
+        merged["kind"] = "dashboard"
+
+    if isinstance(patch.get("form"), dict) or patch.get("fields"):
+        f_src = patch.get("form") if isinstance(patch.get("form"), dict) else patch
+        base_f = dict(merged.get("form") or {})
+        base_f.update({k: v for k, v in f_src.items() if v is not None})
+        merged["form"] = base_f
+        merged["kind"] = "form"
+
+    if isinstance(patch.get("interactive"), dict) or patch.get("controls") or patch.get("computed") or patch.get("state"):
+        i_src = patch.get("interactive") if isinstance(patch.get("interactive"), dict) else patch
+        base_i = dict(merged.get("interactive") or {})
+        if isinstance(i_src.get("state"), dict) and isinstance(base_i.get("state"), dict):
+            merged_state = {**base_i["state"], **i_src["state"]}
+            base_i.update({k: v for k, v in i_src.items() if v is not None})
+            base_i["state"] = merged_state
+        else:
+            base_i.update({k: v for k, v in i_src.items() if v is not None})
+        merged["interactive"] = base_i
+        merged["kind"] = "interactive"
+
+    if isinstance(patch.get("custom_app"), dict) or isinstance(patch.get("customApp"), dict) or any(
+        k in patch for k in ("html", "css", "js")
+    ):
+        c_src = (
+            patch.get("customApp")
+            if isinstance(patch.get("customApp"), dict)
+            else patch.get("custom_app")
+            if isinstance(patch.get("custom_app"), dict)
+            else patch
+        )
+        base_c = dict(merged.get("customApp") or merged.get("custom_app") or {})
+        base_c.update({k: v for k, v in c_src.items() if v is not None})
+        merged["customApp"] = base_c
+        merged["kind"] = "custom_app"
+
+    if isinstance(patch.get("blocks"), list):
+        merged["blocks"] = patch["blocks"]
+        merged["kind"] = "composite"
+    elif isinstance(patch.get("append_blocks"), list):
+        existing_blks = list(merged.get("blocks") or [])
+        existing_blks.extend(patch["append_blocks"])
+        merged["blocks"] = existing_blks
+        merged["kind"] = "composite"
+
+    merged["id"] = _as_str(base_canvas.get("id")) or _as_str(patch.get("id"))
+    merged["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    sanitized = sanitize_canvas_artifact(merged, fallback_id=merged["id"])
+    if sanitized and canvas_has_cell_data(sanitized):
+        return sanitized
+    return None
+
+
 def sanitize_canvas_artifact(raw: Any, fallback_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    Valida y normaliza un artefacto Canvas (tabla comparativa, tabla, documento, diagrama, plan, dashboard o formulario)
+    Valida y normaliza un artefacto Canvas (tabla comparativa, tabla, documento, diagrama, plan,
+    dashboard, formulario, compuesto por bloques, interfaz interactiva o mini-app personalizada)
     generado por el agente mediante tool calling o bloque <canvas>.
     """
     if not isinstance(raw, dict):
         return None
 
     has_explicit_table = bool(raw.get("columns") or raw.get("columnas") or raw.get("rows") or raw.get("filas"))
+    is_composite_hint = bool(isinstance(raw.get("blocks"), list) and len(raw["blocks"]) > 0)
+    is_custom_app_hint = bool(
+        raw.get("customApp")
+        or raw.get("custom_app")
+        or raw.get("html")
+        or raw.get("js")
+    )
+    is_interactive_hint = bool(
+        raw.get("interactive")
+        or raw.get("interactivo")
+        or raw.get("controls")
+        or raw.get("controles")
+        or raw.get("computed")
+    )
     is_plan_hint = bool(raw.get("plan") or raw.get("phases") or raw.get("fases"))
     is_diagram_hint = bool(
         raw.get("diagram")
@@ -1680,13 +2275,19 @@ def sanitize_canvas_artifact(raw: Any, fallback_id: Optional[str] = None) -> Opt
     is_form_hint = bool(
         raw.get("form")
         or raw.get("formulario")
-        or (not has_explicit_table and (raw.get("fields") or raw.get("questions") or raw.get("preguntas") or raw.get("campos")))
+        or (not has_explicit_table and not is_interactive_hint and (raw.get("fields") or raw.get("questions") or raw.get("preguntas") or raw.get("campos")))
     )
     is_dashboard_hint = bool(
         raw.get("dashboard") or raw.get("kpis") or raw.get("charts") or raw.get("graficas") or raw.get("chart")
     )
     title = _as_str(raw.get("title") or raw.get("titulo")) or (
-        "Plan de ejecución"
+        "Interfaz personalizada"
+        if is_custom_app_hint
+        else "Herramienta interactiva"
+        if is_interactive_hint
+        else "Lienzo compuesto"
+        if is_composite_hint
+        else "Plan de ejecución"
         if is_plan_hint
         else "Diagrama visual"
         if is_diagram_hint
@@ -1701,7 +2302,13 @@ def sanitize_canvas_artifact(raw: Any, fallback_id: Optional[str] = None) -> Opt
     markdown = _as_str(raw.get("markdown") or raw.get("contenido")) or None
 
     raw_kind = _as_str(raw.get("kind") or raw.get("tipo")).lower()
-    if raw_kind in ("comparison", "comparativa"):
+    if raw_kind in ("custom_app", "custom_ui", "app", "widget_html", "html_app"):
+        kind = "custom_app"
+    elif raw_kind in ("interactive", "interactivo", "calculator", "simulator", "widget"):
+        kind = "interactive"
+    elif raw_kind in ("composite", "compuesto", "blocks"):
+        kind = "composite"
+    elif raw_kind in ("comparison", "comparativa"):
         kind = "comparison"
     elif raw_kind in ("document", "documento"):
         kind = "document"
@@ -1713,6 +2320,12 @@ def sanitize_canvas_artifact(raw: Any, fallback_id: Optional[str] = None) -> Opt
         kind = "form"
     elif raw_kind in ("dashboard", "chart", "grafica", "tablero"):
         kind = "dashboard"
+    elif is_custom_app_hint:
+        kind = "custom_app"
+    elif is_interactive_hint:
+        kind = "interactive"
+    elif is_composite_hint:
+        kind = "composite"
     elif is_plan_hint:
         kind = "plan"
     elif is_diagram_hint:
@@ -1728,6 +2341,80 @@ def sanitize_canvas_artifact(raw: Any, fallback_id: Optional[str] = None) -> Opt
 
     now_iso = _as_str(raw.get("updatedAt")) or datetime.now(timezone.utc).isoformat()
     canvas_id = _as_str(raw.get("id")) or fallback_id or f"canvas_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
+
+    if kind == "custom_app" or is_custom_app_hint:
+        app_src = (
+            raw.get("customApp")
+            if isinstance(raw.get("customApp"), dict)
+            else raw.get("custom_app")
+            if isinstance(raw.get("custom_app"), dict)
+            else raw
+        )
+        app_obj = _sanitize_custom_app_spec(app_src)
+        if app_obj is not None:
+            out_app: Dict[str, Any] = {
+                "id": canvas_id,
+                "title": title,
+                "kind": "custom_app",
+                "columns": [],
+                "rows": [],
+                "customApp": app_obj,
+                "updatedAt": now_iso,
+            }
+            if subtitle:
+                out_app["subtitle"] = subtitle
+            if summary and summary != app_obj.get("description"):
+                out_app["summary"] = summary
+            if markdown:
+                out_app["markdown"] = markdown
+            return out_app
+
+    if kind == "interactive" or is_interactive_hint:
+        inter_src = (
+            raw.get("interactive")
+            if isinstance(raw.get("interactive"), dict)
+            else raw.get("interactivo")
+            if isinstance(raw.get("interactivo"), dict)
+            else raw
+        )
+        inter_obj = _sanitize_interactive_spec(inter_src)
+        if inter_obj is not None:
+            out_inter: Dict[str, Any] = {
+                "id": canvas_id,
+                "title": title,
+                "kind": "interactive",
+                "columns": [],
+                "rows": [],
+                "interactive": inter_obj,
+                "updatedAt": now_iso,
+            }
+            if subtitle:
+                out_inter["subtitle"] = subtitle
+            if summary and summary != inter_obj.get("description"):
+                out_inter["summary"] = summary
+            if markdown:
+                out_inter["markdown"] = markdown
+            return out_inter
+
+    if kind == "composite" or is_composite_hint:
+        blocks = _sanitize_canvas_blocks(raw.get("blocks"))
+        if blocks:
+            out_comp: Dict[str, Any] = {
+                "id": canvas_id,
+                "title": title,
+                "kind": "composite",
+                "columns": [],
+                "rows": [],
+                "blocks": blocks,
+                "updatedAt": now_iso,
+            }
+            if subtitle:
+                out_comp["subtitle"] = subtitle
+            if summary:
+                out_comp["summary"] = summary
+            if markdown:
+                out_comp["markdown"] = markdown
+            return out_comp
 
     if kind == "plan" or is_plan_hint:
         plan_src = raw.get("plan") if isinstance(raw.get("plan"), dict) else raw

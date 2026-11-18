@@ -3681,6 +3681,425 @@ def test_xox_studio_global_profile_and_block_skills():
     print("✅ Perfil global de Xox, customize_xox, update_skill y skills por bloques verificados.")
 
 
+def test_workspace_cleanup_scan_and_safe_hitl_batch():
+    import sqlite3
+    import tempfile
+    from slices.agent_tools.toolkit import WorkspaceToolExecutor
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        for rel_dir in (
+            ".xook",
+            "empresa",
+            "datos",
+            "memoria",
+            "habilidades/analisis",
+            "agente/ordenes",
+            "agente/borradores",
+            "agente/reportes",
+            "agente/.tmp_exports",
+            "agente/.papelera",
+            "agente/__pycache__",
+        ):
+            (ws / rel_dir).mkdir(parents=True, exist_ok=True)
+
+        # Archivos núcleo protegidos
+        (ws / ".xook" / "config.json").write_text('{"ok": true}', encoding="utf-8")
+        (ws / "empresa" / "operacion.md").write_text("Operación principal", encoding="utf-8")
+        (ws / "datos" / "catalogo.csv").write_text("sku,nombre\nA1,Cafe\n", encoding="utf-8")
+        (ws / "memoria" / "hechos.md").write_text("Preferencias reales", encoding="utf-8")
+        (ws / "habilidades" / "analisis" / "SKILL.md").write_text("# Skill", encoding="utf-8")
+        (ws / "agente" / "ordenes" / "manual.md").write_text("Orden fija", encoding="utf-8")
+        (ws / "agente" / "notas-xox.md").write_text("Notas Xox", encoding="utf-8")
+
+        # Borrador pendiente + evidencia en SQLite (.xook/xook.db) que deben protegerse
+        (ws / "agente" / "borradores" / "activo.md").write_text("Borrador pendiente", encoding="utf-8")
+        (ws / "agente" / "reportes" / "auditoria_keep.md").write_text("Evidencia auditoría", encoding="utf-8")
+
+        conn = sqlite3.connect(str(ws / ".xook" / "xook.db"))
+        conn.execute(
+            "CREATE TABLE tasks (card_id TEXT PRIMARY KEY, status TEXT, staging_payload_json TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE decision_history (id TEXT PRIMARY KEY, execution_artifact_path TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO tasks (card_id, status, staging_payload_json) VALUES (?, ?, ?)",
+            ("draft_keep", "pending", json.dumps({"draftPath": "agente/borradores/activo.md"})),
+        )
+        conn.execute(
+            "INSERT INTO decision_history (id, execution_artifact_path) VALUES (?, ?)",
+            ("dec_1", "agente/reportes/auditoria_keep.md"),
+        )
+        conn.commit()
+        conn.close()
+
+        # Candidatos seguros a limpieza
+        (ws / "agente" / ".tmp_exports" / "temp_export.pdf").write_bytes(b"%PDF-1.4\n")
+        (ws / "empresa" / ".DS_Store").write_bytes(b"junk")
+        (ws / "agente" / "__pycache__" / "mod.cpython-312.pyc").write_bytes(b"pyc")
+        (ws / "agente" / "borradores" / "huerfano.md").write_text("Borrador viejo", encoding="utf-8")
+        (ws / "agente" / "reportes" / "viejito.md").write_text("Reporte temporal", encoding="utf-8")
+        (ws / "agente" / ".papelera" / "viejo_borrado.txt").write_text("Papelera", encoding="utf-8")
+
+        executor = WorkspaceToolExecutor(workspace_root=ws)
+        scan = executor.execute("scan_workspace_cleanup", {"include_deliverables": True})
+        assert scan["ok"] is True, f"scan falló: {scan}"
+
+        temp_paths = {item["path"] for item in scan["temp_cache"]}
+        orphan_paths = {item["path"] for item in scan["orphan_drafts"]}
+        deliv_paths = {item["path"] for item in scan["agent_deliverables"]}
+        trash_paths = {item["path"] for item in scan["trash"]}
+
+        assert "agente/.tmp_exports/temp_export.pdf" in temp_paths, temp_paths
+        assert "empresa/.DS_Store" in temp_paths, temp_paths
+        assert "agente/__pycache__" in temp_paths, temp_paths
+        assert "agente/borradores/huerfano.md" in orphan_paths, orphan_paths
+        assert "agente/borradores/activo.md" not in orphan_paths, orphan_paths
+        assert "agente/reportes/viejito.md" in deliv_paths, deliv_paths
+        assert "agente/reportes/auditoria_keep.md" not in deliv_paths, deliv_paths
+        assert "agente/.papelera/viejo_borrado.txt" in trash_paths, trash_paths
+
+        # Propuesta HITL intentando mezclar rutas protegidas y escape
+        propose = executor.execute(
+            "propose_workspace_cleanup",
+            {
+                "reason": "Limpiar caché, borradores huérfanos y entregables obsoletos tras entrega",
+                "include_temp": True,
+                "include_orphan_drafts": True,
+                "empty_trash": True,
+                "paths": [
+                    ".xook/xook.db",
+                    "empresa/operacion.md",
+                    "datos/catalogo.csv",
+                    "memoria/hechos.md",
+                    "habilidades/analisis/SKILL.md",
+                    "agente/ordenes/manual.md",
+                    "agente/notas-xox.md",
+                    "agente/borradores/activo.md",
+                    "agente/reportes/auditoria_keep.md",
+                    "agente/reportes/viejito.md",
+                    "../escape.txt",
+                ],
+            },
+        )
+        assert propose["ok"] is True, f"propose falló: {propose}"
+        assert len(executor.staged_tasks) == 1
+        card = executor.staged_tasks[0]
+        sp = card["stagingPayload"]
+        assert sp["kind"] == "workspace_cleanup"
+
+        staged_by_path = {it["targetPath"]: it["action"] for it in sp["items"]}
+        for protected in (
+            ".xook/xook.db",
+            "empresa/operacion.md",
+            "datos/catalogo.csv",
+            "memoria/hechos.md",
+            "habilidades/analisis/SKILL.md",
+            "agente/ordenes/manual.md",
+            "agente/notas-xox.md",
+            "agente/borradores/activo.md",
+            "agente/reportes/auditoria_keep.md",
+            "../escape.txt",
+        ):
+            assert protected not in staged_by_path, f"Se coló ruta protegida: {protected}"
+
+        assert len(propose["rejected"]) >= 10, f"Faltaron rechazos explícitos: {propose['rejected']}"
+        assert staged_by_path.get("agente/.tmp_exports/temp_export.pdf") == "purge_temp"
+        assert staged_by_path.get("empresa/.DS_Store") == "purge_temp"
+        assert staged_by_path.get("agente/__pycache__") == "purge_temp"
+        assert staged_by_path.get("agente/borradores/huerfano.md") == "move_to_trash"
+        assert staged_by_path.get("agente/reportes/viejito.md") == "move_to_trash"
+        assert staged_by_path.get("agente/.papelera/viejo_borrado.txt") == "empty_trash"
+
+        # Verificar que nada se haya eliminado físicamente antes de aprobar HITL
+        assert (ws / "agente" / "reportes" / "viejito.md").is_file()
+        assert (ws / "agente" / ".tmp_exports" / "temp_export.pdf").is_file()
+        assert (ws / "agente" / "ordenes" / "manual.md").is_file()
+
+    print("✅ scan_workspace_cleanup y propose_workspace_cleanup (HITL batch seguro) verificados.")
+
+
+def test_upgraded_canvas_tools_and_multi_canvas():
+    import tempfile
+    from slices.ai_service import openrouter_client, model_router
+    from slices.task_ui.schemas import sanitize_canvas_artifact
+
+    # 1. Enrutador detecta UI interactiva y limpieza segura
+    route_ui = model_router.classify_task_intent(
+        "Hazme una calculadora interactiva con sliders y tablero kanban",
+        has_workspace=True,
+    )
+    assert route_ui.needs_tools is True
+    assert route_ui.needs_canvas is True
+    route_clean = model_router.classify_task_intent(
+        "Limpia el workspace y borra archivos temporales sin romper mi carpeta empresa",
+        has_workspace=True,
+    )
+    assert route_clean.needs_tools is True
+    assert route_clean.task_kind == "agent_execution"
+
+    # 2. Composite Canvas + Interactive UI + Custom App + Multi-canvas + Update incremental
+    with tempfile.TemporaryDirectory() as tmp:
+        ws = Path(tmp)
+        (ws / "agente").mkdir(parents=True, exist_ok=True)
+
+        tool_calls = [
+            {
+                "id": "tc_1",
+                "type": "function",
+                "function": {
+                    "name": "create_composite_canvas",
+                    "arguments": json.dumps({
+                        "id": "comp_roadmap_1",
+                        "title": "Resumen ejecutivo y tablero",
+                        "blocks": [
+                            {"type": "callout", "tone": "info", "title": "Nota", "text": "Panorama general"},
+                            {"type": "markdown", "title": "Contexto", "content": "- Punto A\n- Punto B"},
+                            {"type": "table", "title": "Costos", "columns": ["Item", "Costo"], "rows": [["Café", "$120"]]},
+                            {
+                                "type": "interactive",
+                                "title": "Simulador rápido",
+                                "interactive": {
+                                    "controls": [
+                                        {"id": "qty", "stateKey": "qty", "label": "Unidades", "type": "slider", "min": 1, "max": 50, "defaultValue": 10},
+                                    ],
+                                    "computed": [
+                                        {"id": "tot", "label": "Total", "expr": "qty * 120", "format": "currency", "tone": "accent"}
+                                    ],
+                                },
+                            },
+                        ],
+                    }),
+                },
+            },
+            {
+                "id": "tc_2",
+                "type": "function",
+                "function": {
+                    "name": "create_interactive_ui",
+                    "arguments": json.dumps({
+                        "id": "calc_margen",
+                        "title": "Simulador de Margen",
+                        "layout": "tabs",
+                        "tabs": [
+                            {"id": "precios", "label": "Precios"},
+                            {"id": "kanban_tab", "label": "Seguimiento"},
+                        ],
+                        "controls": [
+                            {"id": "precio", "stateKey": "precio", "label": "Precio unitario", "type": "number", "tabId": "precios", "defaultValue": 250},
+                            {"id": "costo", "stateKey": "costo", "label": "Costo", "type": "slider", "tabId": "precios", "min": 50, "max": 200, "defaultValue": 120},
+                            {
+                                "id": "tareas",
+                                "stateKey": "tareas",
+                                "label": "Checklist lanzamiento",
+                                "type": "checklist",
+                                "tabId": "kanban_tab",
+                                "items": [
+                                    {"id": "t1", "label": "Validar proveedor", "checked": True},
+                                    {"id": "t2", "label": "Publicar catálogo", "checked": False},
+                                ],
+                            },
+                            {
+                                "id": "tablero",
+                                "stateKey": "tablero",
+                                "label": "Pipeline",
+                                "type": "kanban",
+                                "tabId": "kanban_tab",
+                                "columns": [
+                                    {"id": "todo", "label": "Por hacer"},
+                                    {"id": "doing", "label": "En curso"},
+                                    {"id": "done", "label": "Listo"},
+                                ],
+                                "items": [{"id": "c1", "label": "Cotizar envases", "column": "doing"}],
+                            },
+                        ],
+                        "computed": [
+                            {"id": "margen", "label": "Margen", "expr": "precio - costo", "format": "currency", "tone": "success"},
+                        ],
+                        "actions": [{"id": "send", "label": "Enviar escenario", "action": "send_to_xox"}],
+                    }),
+                },
+            },
+            {
+                "id": "tc_3",
+                "type": "function",
+                "function": {
+                    "name": "update_canvas",
+                    "arguments": json.dumps({
+                        "id": "calc_margen",
+                        "title": "Simulador de Margen v2",
+                        "state": {"precio": 300},
+                    }),
+                },
+            },
+            {
+                "id": "tc_4",
+                "type": "function",
+                "function": {
+                    "name": "create_custom_ui",
+                    "arguments": json.dumps({
+                        "id": "miniapp_reloj",
+                        "title": "Cronómetro Visual",
+                        "html": "<div id='app'>Hola</div><script src='https://evil.example/x.js'></script><iframe src='https://evil.example'></iframe>",
+                        "css": "body{font-family:sans-serif}",
+                        "js": "window.xook.setState({ticks: 1});",
+                        "state": {"ticks": 0},
+                        "height": 420,
+                        "save_to_workspace": True,
+                        "app_slug": "cronometro-visual",
+                    }),
+                },
+            },
+        ]
+
+        canvases = openrouter_client._resolve_canvases_artifacts(
+            tool_calls=tool_calls,
+            canvas_buf="",
+            actions_canvas=None,
+            full_reply="",
+            user_message="Crea varias vistas interactivas",
+        )
+        assert len(canvases) == 3, f"Se esperaban 3 canvases distintos tras update_canvas in-place, obtuvimos: {len(canvases)}"
+        by_id = {c["id"]: c for c in canvases}
+
+        # Composite check
+        comp = by_id["comp_roadmap_1"]
+        assert comp["kind"] == "composite"
+        assert len(comp["blocks"]) == 4
+        assert comp["blocks"][3]["type"] == "interactive"
+
+        # Updated interactive UI check (preservó id y controles mientras aplicó parche!)
+        inter_v2 = by_id["calc_margen"]
+        assert inter_v2["kind"] == "interactive"
+        assert inter_v2["title"] == "Simulador de Margen v2"
+        assert inter_v2["interactive"]["state"]["precio"] == 300
+        assert inter_v2["interactive"]["state"]["costo"] == 120
+        assert len(inter_v2["interactive"]["controls"]) == 4
+
+        # Custom UI sanitization + workspace save check
+        capp_canvas = by_id["miniapp_reloj"]
+        assert capp_canvas["kind"] == "custom_app"
+        capp_spec = capp_canvas["customApp"]
+        assert "<script src" not in capp_spec["html"].lower()
+        assert "<iframe" not in capp_spec["html"].lower()
+        assert "<div id='app'>Hola</div>" in capp_spec["html"]
+
+        saved_rel = openrouter_client._maybe_save_custom_app_html(ws, capp_canvas, tool_calls)
+        assert saved_rel == "agente/apps/cronometro-visual.html", saved_rel
+        saved_file = ws / saved_rel
+        assert saved_file.is_file()
+        saved_html = saved_file.read_text(encoding="utf-8")
+        assert "Content-Security-Policy" in saved_html
+        assert "default-src 'none'" in saved_html
+
+        # Sanitize direct dict fallback + block aliases + kanban label->id
+        direct_inter = sanitize_canvas_artifact({
+            "id": "direct_1",
+            "title": "Directo",
+            "controls": [{"label": "Factor", "type": "slider", "min": 1, "max": 10}],
+            "computed": [{"label": "Doble", "expr": "factor * 2"}],
+        })
+        assert direct_inter is not None and direct_inter["kind"] == "interactive"
+
+        kanban_alias = sanitize_canvas_artifact({
+            "id": "k_lbl",
+            "title": "Campaña",
+            "controls": [
+                {
+                    "id": "board",
+                    "state_key": "board",
+                    "label": "Tablero",
+                    "type": "kanban",
+                    "columns": [
+                        {"id": "todo", "label": "Por hacer"},
+                        {"id": "doing", "label": "En curso"},
+                    ],
+                    "items": [{"id": "c1", "label": "Post", "column": "En curso"}],
+                }
+            ],
+        })
+        assert kanban_alias is not None
+        assert json.loads(kanban_alias["interactive"]["state"]["board"])["c1"] == "doing"
+
+        comp_alias = sanitize_canvas_artifact({
+            "id": "comp_alias",
+            "title": "Compuesto alias",
+            "blocks": [
+                {"type": "alert", "text": "Ojo"},
+                {"type": "text", "content": "Detalle"},
+            ],
+        })
+        assert comp_alias is not None and comp_alias["blocks"][0]["type"] == "callout"
+        assert comp_alias["blocks"][1]["type"] == "markdown"
+
+        # Enrutamiento implícito sin palabras clave ("canvas"/"simulador") y jerarquía hero/breakdown sin duplicar summary
+        implicit_route = model_router.classify_task_intent(
+            "Vendo en $250, me cuesta $150 y quiero aplicar 45% de descuento, ¿me conviene?",
+            has_workspace=False,
+            has_active_canvas=False,
+        )
+        assert implicit_route.needs_canvas is True and implicit_route.needs_tools is True
+
+        hier_inter = sanitize_canvas_artifact({
+            "id": "sim_q4",
+            "title": "Simulador Comercial Q4",
+            "description": "Ajusta volumen y precio.",
+            "controls": [
+                {"id": "canal", "state_key": "canal", "label": "Canal", "type": "select", "options": ["Tienda", "Marketplace"]},
+                {"id": "com_pct", "state_key": "com_pct", "label": "Comisión %", "type": "slider", "visible_when": "canal == 'Marketplace'"},
+            ],
+            "computed": [
+                {"label": "Utilidad Estimada", "expr": "100", "role": "hero", "format": "currency"},
+                {"label": "Comisión", "expr": "12", "role": "breakdown", "visible_when": "canal == 'Marketplace'"},
+            ],
+        })
+        assert hier_inter is not None
+        assert "summary" not in hier_inter  # No duplica description dentro de summary
+        assert hier_inter["interactive"]["controls"][1]["visibleWhen"] == "canal == 'Marketplace'"
+        assert hier_inter["interactive"]["computed"][0]["role"] == "hero"
+        assert hier_inter["interactive"]["computed"][1]["role"] == "breakdown"
+        assert hier_inter["interactive"]["computed"][1]["visibleWhen"] == "canal == 'Marketplace'"
+
+        # Validación estricta de esquemas JSON en herramientas (cero `{}` vacíos y cero `type: object` sin properties/additionalProperties)
+        from slices.agent_tools import AGENT_TOOL_DEFS
+
+        all_tool_defs = [
+            *AGENT_TOOL_DEFS,
+            openrouter_client.CANVAS_TOOL_DEF,
+            openrouter_client.CREATE_DIAGRAM_TOOL_DEF,
+            openrouter_client.CREATE_PLAN_TOOL_DEF,
+            openrouter_client.CREATE_DASHBOARD_TOOL_DEF,
+            openrouter_client.CREATE_FORM_TOOL_DEF,
+            openrouter_client.CREATE_COMPOSITE_CANVAS_TOOL_DEF,
+            openrouter_client.CREATE_INTERACTIVE_UI_TOOL_DEF,
+            openrouter_client.CREATE_CUSTOM_UI_TOOL_DEF,
+            openrouter_client.UPDATE_CANVAS_TOOL_DEF,
+            openrouter_client.ASK_CLARIFICATION_TOOL_DEF,
+            openrouter_client.VAULT_CONFIG_TOOL_DEF,
+            openrouter_client.CHECKLIST_TOOL_DEF,
+        ]
+
+        def _assert_valid_tool_schema(obj, path: str) -> None:
+            if isinstance(obj, dict):
+                assert obj != {}, f"Esquema vacío inválido en {path}"
+                if obj.get("type") == "object":
+                    assert ("properties" in obj) or ("additionalProperties" in obj), (
+                        f"Objeto sin properties ni additionalProperties en {path}"
+                    )
+                for k, v in obj.items():
+                    _assert_valid_tool_schema(v, f"{path}.{k}")
+            elif isinstance(obj, list):
+                for idx, v in enumerate(obj):
+                    _assert_valid_tool_schema(v, f"{path}[{idx}]")
+
+        for td in all_tool_defs:
+            fn_def = td["function"]
+            _assert_valid_tool_schema(fn_def["parameters"], fn_def["name"])
+
+    print("✅ Canvas compuesto, UI interactiva, Mini-app sandboxed, update_canvas y multi-canvas verificados.")
+
+
 if __name__ == "__main__":
     test_sidecar_ping_and_inventory()
     test_canvas_schema_and_stream_router()
@@ -3701,4 +4120,6 @@ if __name__ == "__main__":
     test_multi_language_code_formatting_and_fence_protection()
     test_openrouter_rate_limits_and_free_tier_key()
     test_xox_studio_global_profile_and_block_skills()
+    test_workspace_cleanup_scan_and_safe_hitl_batch()
+    test_upgraded_canvas_tools_and_multi_canvas()
 

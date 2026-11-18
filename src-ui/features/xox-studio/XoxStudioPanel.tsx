@@ -28,6 +28,7 @@ import {
   XoxAccentPreset,
   XoxStar,
   XoxState,
+  getXoxCosmosVars,
   resolveXoxAccentPreset,
 } from "../../components/XoxStar";
 import {
@@ -228,7 +229,8 @@ const XOX_ANIMATION_CATALOG: Array<{
   { id: "success", label: "Feliz", detail: "Pirueta, ojos ^^, sonrisa cálida y sonrojo suave" },
   { id: "thinking", label: "Pensando", detail: "Anillo orbital de datos, burbuja '...' y núcleo profundo" },
   { id: "reading", label: "Leyendo", detail: "Lupa escaneando el entorno con cabeceo curioso" },
-  { id: "talking", label: "Hablando", detail: "Boca articulada al hablar y ondas laterales de voz" },
+  { id: "coding", label: "Programando", detail: "Mini-laptop flotante: edita código y revisa la salida de terminal" },
+  { id: "talking", label: "Hablando", detail: "Boca orgánica articulada con sílabas y ondas armónicas de voz" },
   { id: "syncing", label: "Sincronizando", detail: "Doble aro giratorio y piruetas periódicas" },
   { id: "alert", label: "Alerta", detail: "Aviso en rojo semántico con vibración y señal '!'" },
 ];
@@ -312,6 +314,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     success: null,
     thinking: null,
     reading: null,
+    coding: null,
     talking: null,
     syncing: null,
     alert: null,
@@ -776,11 +779,8 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
         {/* Ventana amplia, alta y centrada de Xox con tamaño protagonista */}
         <div
           id={`${uid}-xox-stage`}
-          className="relative rounded-2xl border overflow-hidden min-h-[296px] sm:min-h-[344px] px-4 py-3.5 flex flex-col items-center justify-between transition-[border-color,background] duration-500"
-          style={{
-            borderColor: `${activeAccentSpec.glow}40`,
-            background: `radial-gradient(64% 72% at 22% 24%, ${activeAccentSpec.accessory}1a 0%, transparent 56%), radial-gradient(88% 96% at 50% 48%, ${activeAccentSpec.glow}26 0%, ${activeAccentSpec.rim2}0f 44%, rgba(6, 8, 14, 0.96) 82%)`,
-          }}
+          className="xook-gemini-stage relative rounded-2xl border overflow-hidden min-h-[296px] sm:min-h-[344px] px-4 py-3.5 flex flex-col items-center justify-between transition-[border-color,background] duration-500"
+          style={getXoxCosmosVars(activeAccent)}
         >
           {/* Barra superior flotante dentro de la ventana */}
           <div className="relative z-10 w-full flex items-center justify-between gap-2 flex-wrap">

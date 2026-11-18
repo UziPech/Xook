@@ -6,8 +6,19 @@ import {
   diagramSpecToMermaid,
   parseMermaidToDiagramSpec,
 } from "./diagramMermaidParser";
+import { evaluateSafeFormula, formatComputedValue } from "./safeFormulaEval";
 
-export type CanvasKind = "comparison" | "table" | "document" | "diagram" | "plan" | "dashboard" | "form";
+export type CanvasKind =
+  | "comparison"
+  | "table"
+  | "document"
+  | "diagram"
+  | "plan"
+  | "dashboard"
+  | "form"
+  | "composite"
+  | "interactive"
+  | "custom_app";
 
 export type CanvasColumnKind = "text" | "number" | "currency" | "badge" | "rating";
 
@@ -195,13 +206,109 @@ export interface CanvasFormSpec {
   score?: CanvasFormScore;
 }
 
+export type CanvasInteractiveControlType =
+  | "number"
+  | "slider"
+  | "toggle"
+  | "select"
+  | "segmented"
+  | "text"
+  | "textarea"
+  | "checklist"
+  | "kanban";
+
+export interface CanvasInteractiveTab {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+export interface CanvasInteractiveControlItem {
+  id: string;
+  label: string;
+  detail?: string;
+  badge?: string;
+  column?: string;
+  checked?: boolean;
+}
+
+export interface CanvasInteractiveControl {
+  id: string;
+  stateKey: string;
+  label: string;
+  type: CanvasInteractiveControlType;
+  helperText?: string;
+  visibleWhen?: string;
+  tabId?: string;
+  unit?: string;
+  prefix?: string;
+  placeholder?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: string[];
+  columns?: { id: string; label: string }[];
+  items?: CanvasInteractiveControlItem[];
+}
+
+export interface CanvasInteractiveComputed {
+  id: string;
+  label: string;
+  expr: string;
+  format: "number" | "currency" | "percent" | "text";
+  tone: "neutral" | "accent" | "success" | "warning" | "critical";
+  role?: "hero" | "breakdown";
+  visibleWhen?: string;
+  unit?: string;
+  caption?: string;
+  tabId?: string;
+}
+
+export interface CanvasInteractiveAction {
+  id: string;
+  label: string;
+  style: "primary" | "secondary";
+  action: "send_to_xox" | "reset";
+  promptTemplate?: string;
+}
+
+export interface CanvasInteractiveSpec {
+  layout: "stack" | "grid" | "split" | "tabs";
+  description?: string;
+  tabs?: CanvasInteractiveTab[];
+  state: Record<string, unknown>;
+  controls: CanvasInteractiveControl[];
+  computed?: CanvasInteractiveComputed[];
+  actions?: CanvasInteractiveAction[];
+  submitted?: boolean;
+  submittedAt?: string;
+}
+
+export interface CanvasCustomAppSpec {
+  html: string;
+  css?: string;
+  js?: string;
+  description?: string;
+  state?: Record<string, unknown>;
+  height?: number;
+  savedAppPath?: string;
+}
+
+export interface CanvasVersionSnapshot {
+  version: number;
+  updatedAt: string;
+  summary?: string;
+  artifact: CanvasArtifact;
+}
+
 export type CanvasBlock =
-  | { type: "callout"; title?: string; text: string; tone?: "info" | "warning" | "success" }
+  | { type: "callout"; title?: string; text: string; tone?: "info" | "warning" | "success" | "critical" }
   | { type: "markdown"; title?: string; content: string }
   | { type: "diagram"; title?: string; diagram: CanvasDiagramSpec }
   | { type: "plan"; title?: string; plan: CanvasPlanSpec }
   | { type: "dashboard"; title?: string; dashboard: CanvasDashboardSpec }
   | { type: "form"; title?: string; form: CanvasFormSpec }
+  | { type: "interactive"; title?: string; interactive: CanvasInteractiveSpec }
   | { type: "table"; title?: string; columns: CanvasColumn[]; rows: CanvasRow[] };
 
 export type CanvasActionPayload =
@@ -210,6 +317,8 @@ export type CanvasActionPayload =
   | { type: "diagram_ask_node"; canvas: CanvasArtifact; node: CanvasDiagramNode }
   | { type: "dashboard_ask_item"; canvas: CanvasArtifact; label: string; detail?: string }
   | { type: "form_submit"; canvas: CanvasArtifact }
+  | { type: "interactive_submit"; canvas: CanvasArtifact; prompt?: string; actionLabel?: string }
+  | { type: "custom_app_message"; canvas: CanvasArtifact; prompt: string; payload?: unknown }
   | { type: "ask_edit"; canvas: CanvasArtifact };
 
 export interface CanvasColumn {
@@ -239,7 +348,10 @@ export interface CanvasArtifact {
   plan?: CanvasPlanSpec;
   dashboard?: CanvasDashboardSpec;
   form?: CanvasFormSpec;
+  interactive?: CanvasInteractiveSpec;
+  customApp?: CanvasCustomAppSpec;
   blocks?: CanvasBlock[];
+  versions?: CanvasVersionSnapshot[];
   updatedAt: string;
   sourceMessageId?: string;
 }
@@ -490,6 +602,27 @@ export function canvasHasCellData(canvas: CanvasArtifact | null | undefined): bo
   }
   if (canvas.kind === "form" || canvas.form) {
     if (canvas.form && canvas.form.fields.length > 0) {
+      return true;
+    }
+  }
+  if (canvas.kind === "interactive" || canvas.interactive) {
+    if (
+      canvas.interactive &&
+      (canvas.interactive.controls.length > 0 ||
+        Boolean(canvas.interactive.computed?.length))
+    ) {
+      return true;
+    }
+  }
+  if (canvas.kind === "custom_app" || canvas.customApp) {
+    if (
+      canvas.customApp &&
+      Boolean(
+        canvas.customApp.html.trim() ||
+          canvas.customApp.css?.trim() ||
+          canvas.customApp.js?.trim()
+      )
+    ) {
       return true;
     }
   }
@@ -1897,6 +2030,649 @@ export function sanitizeFormSpec(raw: unknown): CanvasFormSpec | undefined {
   };
 }
 
+const FORBIDDEN_STATE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+function sanitizeSafeRecord(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>).slice(0, 80)) {
+    const key = asNonEmptyString(k);
+    if (!key || FORBIDDEN_STATE_KEYS.has(key)) continue;
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+      out[key] = v;
+    } else if (Array.isArray(v)) {
+      out[key] = v
+        .slice(0, 100)
+        .map((x) => asNonEmptyString(x))
+        .filter(Boolean);
+    } else if (v && typeof v === "object") {
+      out[key] = sanitizeSafeRecord(v);
+    }
+  }
+  return out;
+}
+
+function sanitizeInteractiveSpec(raw: unknown): CanvasInteractiveSpec | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+
+  const rawControls =
+    (Array.isArray(obj.controls) && obj.controls) ||
+    (Array.isArray(obj.controles) && obj.controles) ||
+    (Array.isArray(obj.widgets) && obj.widgets) ||
+    (Array.isArray(obj.fields) && obj.fields) ||
+    (Array.isArray(obj.campos) && obj.campos) ||
+    (Array.isArray(obj.items) && obj.items) ||
+    [];
+  const rawComputed =
+    (Array.isArray(obj.computed) && obj.computed) ||
+    (Array.isArray(obj.calculos) && obj.calculos) ||
+    (Array.isArray(obj.metrics) && obj.metrics) ||
+    (Array.isArray(obj.resultados) && obj.resultados) ||
+    (Array.isArray(obj.kpis) && obj.kpis) ||
+    [];
+  const rawTabs =
+    (Array.isArray(obj.tabs) && obj.tabs) ||
+    (Array.isArray(obj.pestanas) && obj.pestanas) ||
+    [];
+  const rawActions =
+    (Array.isArray(obj.actions) && obj.actions) ||
+    (Array.isArray(obj.acciones) && obj.acciones) ||
+    (Array.isArray(obj.buttons) && obj.buttons) ||
+    (Array.isArray(obj.botones) && obj.botones) ||
+    [];
+
+  const tabs: CanvasInteractiveTab[] = [];
+  const usedTabIds = new Set<string>();
+  rawTabs.slice(0, 8).forEach((t, tIdx) => {
+    if (typeof t === "string" && t.trim()) {
+      const label = t.trim();
+      const id = normalizeColId(label, tIdx, usedTabIds);
+      tabs.push({ id, label });
+      return;
+    }
+    if (!t || typeof t !== "object") return;
+    const tObj = t as Record<string, unknown>;
+    const label =
+      asNonEmptyString(tObj.label) ||
+      asNonEmptyString(tObj.title) ||
+      asNonEmptyString(tObj.titulo) ||
+      asNonEmptyString(tObj.name);
+    if (!label) return;
+    const id = normalizeColId(asNonEmptyString(tObj.id) || label, tIdx, usedTabIds);
+    const description =
+      asNonEmptyString(tObj.description) || asNonEmptyString(tObj.descripcion) || undefined;
+    tabs.push({ id, label, ...(description ? { description } : {}) });
+  });
+
+  const state: Record<string, unknown> = sanitizeSafeRecord(obj.state ?? obj.estado);
+
+  const controls: CanvasInteractiveControl[] = [];
+  const usedCtrlIds = new Set<string>();
+  const allowedControlTypes = new Set<CanvasInteractiveControlType>([
+    "number",
+    "slider",
+    "toggle",
+    "select",
+    "segmented",
+    "text",
+    "textarea",
+    "checklist",
+    "kanban",
+  ]);
+
+  rawControls.slice(0, 30).forEach((item, cIdx) => {
+    if (!item || typeof item !== "object") return;
+    const cObj = item as Record<string, unknown>;
+    const label =
+      asNonEmptyString(cObj.label) ||
+      asNonEmptyString(cObj.title) ||
+      asNonEmptyString(cObj.titulo) ||
+      asNonEmptyString(cObj.name);
+    if (!label) return;
+
+    const rawType = (
+      asNonEmptyString(cObj.type) ||
+      asNonEmptyString(cObj.tipo) ||
+      asNonEmptyString(cObj.kind)
+    )
+      .toLowerCase()
+      .replace(/[-\s]+/g, "_");
+
+    let ctype: CanvasInteractiveControlType = "text";
+    if (rawType === "range" || rawType === "deslizador") ctype = "slider";
+    else if (rawType === "bool" || rawType === "boolean" || rawType === "switch" || rawType === "checkbox") ctype = "toggle";
+    else if (rawType === "dropdown" || rawType === "lista") ctype = "select";
+    else if (rawType === "radio" || rawType === "pills" || rawType === "segmentado" || rawType === "tabs") ctype = "segmented";
+    else if (rawType === "long_text" || rawType === "texto_largo") ctype = "textarea";
+    else if (rawType === "lista_verificacion" || rawType === "tasks") ctype = "checklist";
+    else if (rawType === "board" || rawType === "tablero") ctype = "kanban";
+    else if (rawType === "numeric" || rawType === "numero" || rawType === "currency" || rawType === "money") ctype = "number";
+    else if (allowedControlTypes.has(rawType as CanvasInteractiveControlType)) {
+      ctype = rawType as CanvasInteractiveControlType;
+    } else if (cObj.min !== undefined && cObj.max !== undefined) ctype = "slider";
+    else if (Array.isArray(cObj.items)) ctype = "checklist";
+    else if (Array.isArray(cObj.options)) ctype = "select";
+
+    const id = normalizeColId(asNonEmptyString(cObj.id) || label, cIdx, usedCtrlIds);
+    const rawStateKey =
+      asNonEmptyString(cObj.stateKey) ||
+      asNonEmptyString(cObj.state_key) ||
+      asNonEmptyString(cObj.key) ||
+      asNonEmptyString(cObj.var) ||
+      id;
+    const stateKey = FORBIDDEN_STATE_KEYS.has(rawStateKey) ? id : rawStateKey;
+
+    const ctrl: CanvasInteractiveControl = {
+      id,
+      stateKey,
+      label,
+      type: ctype,
+    };
+
+    const helperText =
+      asNonEmptyString(cObj.helperText) ||
+      asNonEmptyString(cObj.helper_text) ||
+      asNonEmptyString(cObj.description) ||
+      asNonEmptyString(cObj.hint);
+    if (helperText) ctrl.helperText = helperText;
+
+    const tabId = asNonEmptyString(cObj.tabId) || asNonEmptyString(cObj.tab_id) || asNonEmptyString(cObj.tab);
+    if (tabId) ctrl.tabId = tabId;
+
+    const visibleWhen =
+      asNonEmptyString(cObj.visibleWhen) ||
+      asNonEmptyString(cObj.visible_when) ||
+      asNonEmptyString(cObj.show_if);
+    if (visibleWhen) ctrl.visibleWhen = visibleWhen;
+
+    const unit = asNonEmptyString(cObj.unit) || asNonEmptyString(cObj.unidad);
+    if (unit) ctrl.unit = unit;
+
+    const prefix = asNonEmptyString(cObj.prefix) || asNonEmptyString(cObj.prefijo);
+    if (prefix) ctrl.prefix = prefix;
+
+    const placeholder = asNonEmptyString(cObj.placeholder);
+    if (placeholder) ctrl.placeholder = placeholder;
+
+    const minV = parseNumericMetricValue(cObj.min);
+    if (minV !== null) ctrl.min = minV;
+    const maxV = parseNumericMetricValue(cObj.max);
+    if (maxV !== null) ctrl.max = maxV;
+    const stepV = parseNumericMetricValue(cObj.step);
+    if (stepV !== null) ctrl.step = stepV;
+
+    const rawOpts =
+      (Array.isArray(cObj.options) && cObj.options) ||
+      (Array.isArray(cObj.opciones) && cObj.opciones) ||
+      (Array.isArray(cObj.choices) && cObj.choices) ||
+      null;
+    if (rawOpts) {
+      const opts = rawOpts.slice(0, 20).map(asNonEmptyString).filter(Boolean);
+      if (opts.length > 0) ctrl.options = opts;
+    }
+
+    const rawCols =
+      (Array.isArray(cObj.columns) && cObj.columns) ||
+      (Array.isArray(cObj.columnas) && cObj.columnas) ||
+      null;
+    if (rawCols) {
+      const kCols: { id: string; label: string }[] = [];
+      const usedKCols = new Set<string>();
+      rawCols.slice(0, 8).forEach((kc, kcIdx) => {
+        if (typeof kc === "string" && kc.trim()) {
+          const klbl = kc.trim();
+          kCols.push({ id: normalizeColId(klbl, kcIdx, usedKCols), label: klbl });
+        } else if (kc && typeof kc === "object") {
+          const kcObj = kc as Record<string, unknown>;
+          const klbl =
+            asNonEmptyString(kcObj.label) ||
+            asNonEmptyString(kcObj.title) ||
+            asNonEmptyString(kcObj.name);
+          const kid = normalizeColId(
+            asNonEmptyString(kcObj.id) || klbl || `col_${kcIdx + 1}`,
+            kcIdx,
+            usedKCols
+          );
+          if (klbl || kid) {
+            kCols.push({ id: kid, label: klbl || kid });
+          }
+        }
+      });
+      if (kCols.length > 0) ctrl.columns = kCols;
+    }
+
+    const rawItems =
+      (Array.isArray(cObj.items) && cObj.items) ||
+      (Array.isArray(cObj.elementos) && cObj.elementos) ||
+      (Array.isArray(cObj.cards) && cObj.cards) ||
+      null;
+    if (rawItems) {
+      const cItems: CanvasInteractiveControlItem[] = [];
+      const usedItemIds = new Set<string>();
+      rawItems.slice(0, 80).forEach((it, itIdx) => {
+        if (typeof it === "string" && it.trim()) {
+          const iid = `it_${itIdx + 1}`;
+          usedItemIds.add(iid);
+          cItems.push({ id: iid, label: it.trim() });
+          return;
+        }
+        if (!it || typeof it !== "object") return;
+        const itObj = it as Record<string, unknown>;
+        const ilbl =
+          asNonEmptyString(itObj.label) ||
+          asNonEmptyString(itObj.title) ||
+          asNonEmptyString(itObj.titulo) ||
+          asNonEmptyString(itObj.name) ||
+          asNonEmptyString(itObj.text);
+        if (!ilbl) return;
+        let iid = asNonEmptyString(itObj.id) || `it_${itIdx + 1}`;
+        if (usedItemIds.has(iid)) iid = `${iid}_${itIdx + 1}`;
+        usedItemIds.add(iid);
+        const itemOut: CanvasInteractiveControlItem = { id: iid, label: ilbl };
+        const idetail =
+          asNonEmptyString(itObj.detail) ||
+          asNonEmptyString(itObj.detalle) ||
+          asNonEmptyString(itObj.subtitle);
+        if (idetail) itemOut.detail = idetail;
+        const ibadge =
+          asNonEmptyString(itObj.badge) ||
+          asNonEmptyString(itObj.tag) ||
+          asNonEmptyString(itObj.etiqueta);
+        if (ibadge) itemOut.badge = ibadge;
+        const icol =
+          asNonEmptyString(itObj.column) ||
+          asNonEmptyString(itObj.columna) ||
+          asNonEmptyString(itObj.stage) ||
+          asNonEmptyString(itObj.status);
+        if (icol) itemOut.column = icol;
+        if (typeof itObj.checked === "boolean") itemOut.checked = itObj.checked;
+        cItems.push(itemOut);
+      });
+      if (cItems.length > 0) ctrl.items = cItems;
+    }
+
+    if (!(stateKey in state)) {
+      const defaultVal =
+        "defaultValue" in cObj
+          ? cObj.defaultValue
+          : "default_value" in cObj
+            ? cObj.default_value
+            : "value" in cObj
+              ? cObj.value
+              : undefined;
+      if (defaultVal !== undefined && defaultVal !== null) {
+        if (
+          typeof defaultVal === "string" ||
+          typeof defaultVal === "number" ||
+          typeof defaultVal === "boolean"
+        ) {
+          state[stateKey] = defaultVal;
+        } else if (Array.isArray(defaultVal)) {
+          state[stateKey] = defaultVal.map(asNonEmptyString).filter(Boolean);
+        } else if (typeof defaultVal === "object") {
+          state[stateKey] = sanitizeSafeRecord(defaultVal);
+        }
+      } else if (ctype === "number" || ctype === "slider") {
+        state[stateKey] = ctrl.min ?? 0;
+      } else if (ctype === "toggle") {
+        state[stateKey] = false;
+      } else if ((ctype === "select" || ctype === "segmented") && ctrl.options?.length) {
+        state[stateKey] = ctrl.options[0];
+      } else if (ctype === "checklist") {
+        state[stateKey] = (ctrl.items ?? [])
+          .filter((it) => it.checked === true)
+          .map((it) => it.id);
+      } else if (ctype === "kanban") {
+        const colsList = ctrl.columns ?? [
+          { id: "pendiente", label: "Pendiente" },
+          { id: "en_curso", label: "En curso" },
+          { id: "listo", label: "Listo" },
+        ];
+        if (!ctrl.columns) ctrl.columns = colsList;
+        const firstColId = colsList[0]?.id ?? "pendiente";
+        const kmap: Record<string, string> = {};
+        (ctrl.items ?? []).forEach((it) => {
+          kmap[it.id] = it.column || firstColId;
+        });
+        state[stateKey] = JSON.stringify(kmap);
+      } else {
+        state[stateKey] = "";
+      }
+    }
+
+    controls.push(ctrl);
+  });
+
+  const computed: CanvasInteractiveComputed[] = [];
+  rawComputed.slice(0, 16).forEach((m, mIdx) => {
+    if (!m || typeof m !== "object") return;
+    const mObj = m as Record<string, unknown>;
+    const mlbl =
+      asNonEmptyString(mObj.label) ||
+      asNonEmptyString(mObj.title) ||
+      asNonEmptyString(mObj.titulo) ||
+      asNonEmptyString(mObj.name);
+    const expr =
+      asNonEmptyString(mObj.expr) ||
+      asNonEmptyString(mObj.formula) ||
+      asNonEmptyString(mObj.expression);
+    if (!mlbl || !expr) return;
+    const mUnit = asNonEmptyString(mObj.unit) || asNonEmptyString(mObj.unidad) || undefined;
+    const rawFmt = (
+      asNonEmptyString(mObj.format) ||
+      asNonEmptyString(mObj.valueFormat) ||
+      asNonEmptyString(mObj.value_format)
+    ).toLowerCase();
+    const mappedFmt =
+      rawFmt === "text" || rawFmt === "currency" || rawFmt === "percent" || rawFmt === "number"
+        ? rawFmt
+        : sanitizeValueFormat(rawFmt, mUnit);
+    const format: CanvasInteractiveComputed["format"] =
+      mappedFmt === "compact" ? "number" : mappedFmt;
+    const rawToneStr = (asNonEmptyString(mObj.tone) || asNonEmptyString(mObj.tono)).toLowerCase();
+    const computedTone: CanvasInteractiveComputed["tone"] =
+      rawToneStr === "success" || rawToneStr === "positive"
+        ? "success"
+        : rawToneStr === "accent"
+          ? "accent"
+          : rawToneStr === "warning"
+            ? "warning"
+            : rawToneStr === "critical"
+              ? "critical"
+              : "neutral";
+    const caption =
+      asNonEmptyString(mObj.caption) ||
+      asNonEmptyString(mObj.subtitle) ||
+      asNonEmptyString(mObj.nota) ||
+      undefined;
+    const tabId =
+      asNonEmptyString(mObj.tabId) ||
+      asNonEmptyString(mObj.tab_id) ||
+      asNonEmptyString(mObj.tab) ||
+      undefined;
+    const rawRole = (
+      asNonEmptyString(mObj.role) ||
+      asNonEmptyString(mObj.rol) ||
+      asNonEmptyString(mObj.tier)
+    ).toLowerCase();
+    const role: CanvasInteractiveComputed["role"] =
+      rawRole === "hero" || rawRole === "primary" || rawRole === "principal"
+        ? "hero"
+        : rawRole === "breakdown" ||
+            rawRole === "desglose" ||
+            rawRole === "step" ||
+            rawRole === "secondary" ||
+            rawRole === "secundario"
+          ? "breakdown"
+          : undefined;
+    const visibleWhen =
+      asNonEmptyString(mObj.visibleWhen) ||
+      asNonEmptyString(mObj.visible_when) ||
+      asNonEmptyString(mObj.show_if) ||
+      undefined;
+
+    computed.push({
+      id: asNonEmptyString(mObj.id) || `comp_${mIdx + 1}`,
+      label: mlbl,
+      expr,
+      format,
+      tone: computedTone,
+      ...(role ? { role } : {}),
+      ...(visibleWhen ? { visibleWhen } : {}),
+      ...(mUnit ? { unit: mUnit } : {}),
+      ...(caption ? { caption } : {}),
+      ...(tabId ? { tabId } : {}),
+    });
+  });
+
+  const actions: CanvasInteractiveAction[] = [];
+  rawActions.slice(0, 6).forEach((a, aIdx) => {
+    if (!a || typeof a !== "object") return;
+    const aObj = a as Record<string, unknown>;
+    const albl =
+      asNonEmptyString(aObj.label) ||
+      asNonEmptyString(aObj.title) ||
+      asNonEmptyString(aObj.text);
+    if (!albl) return;
+    const rawAct = (asNonEmptyString(aObj.action) || asNonEmptyString(aObj.type)).toLowerCase();
+    const action: "send_to_xox" | "reset" =
+      rawAct === "send_to_xox" || rawAct === "reset"
+        ? rawAct
+        : /reset|reinic/i.test(albl)
+          ? "reset"
+          : "send_to_xox";
+    const rawStyle = asNonEmptyString(aObj.style).toLowerCase();
+    const style: "primary" | "secondary" =
+      rawStyle === "secondary" || action === "reset" ? "secondary" : "primary";
+    const promptTemplate =
+      asNonEmptyString(aObj.promptTemplate) ||
+      asNonEmptyString(aObj.prompt_template) ||
+      asNonEmptyString(aObj.prompt) ||
+      undefined;
+
+    actions.push({
+      id: asNonEmptyString(aObj.id) || `act_${aIdx + 1}`,
+      label: albl,
+      style,
+      action,
+      ...(promptTemplate ? { promptTemplate } : {}),
+    });
+  });
+
+  if (controls.length === 0 && computed.length === 0) return undefined;
+
+  const rawLayout = asNonEmptyString(obj.layout).toLowerCase();
+  const layout: CanvasInteractiveSpec["layout"] =
+    rawLayout === "stack" || rawLayout === "grid" || rawLayout === "split" || rawLayout === "tabs"
+      ? rawLayout
+      : tabs.length > 0
+        ? "tabs"
+        : "stack";
+
+  const description =
+    asNonEmptyString(obj.description) || asNonEmptyString(obj.descripcion) || undefined;
+  const submitted = obj.submitted === true ? true : undefined;
+  const submittedAt = asNonEmptyString(obj.submittedAt) || undefined;
+
+  return {
+    layout,
+    ...(description ? { description } : {}),
+    ...(tabs.length > 0 ? { tabs } : {}),
+    state,
+    controls,
+    ...(computed.length > 0 ? { computed } : {}),
+    ...(actions.length > 0 ? { actions } : {}),
+    ...(submitted ? { submitted } : {}),
+    ...(submittedAt ? { submittedAt } : {}),
+  };
+}
+
+export function stripUnsafeExternalHtmlTags(code: string): string {
+  if (!code) return "";
+  return code
+    .replace(/<script\b[^>]*\bsrc\s*=[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<link\b[^>]*\bhref\s*=\s*["']?(?:https?:)?\/\/[^>]*>/gi, "")
+    .replace(/<(?:iframe|object|embed|base)\b[^>]*?(?:>[\s\S]*?<\/(?:iframe|object|embed)>|\/>|>)/gi, "")
+    .replace(/<meta\b[^>]*http-equiv\s*=\s*["']?refresh[^>]*>/gi, "")
+    .trim();
+}
+
+function sanitizeCustomAppSpec(raw: unknown): CanvasCustomAppSpec | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const htmlRaw = String(obj.html ?? obj.body ?? obj.markup ?? "").trim();
+  const cssRaw = String(obj.css ?? obj.styles ?? "").trim();
+  const jsRaw = String(obj.js ?? obj.script ?? "").trim();
+  const htmlClean = stripUnsafeExternalHtmlTags(htmlRaw);
+  if (!htmlClean && !cssRaw && !jsRaw) return undefined;
+
+  const description =
+    asNonEmptyString(obj.description) || asNonEmptyString(obj.descripcion) || undefined;
+  const rawState = obj.state ?? obj.initial_state;
+  const state =
+    rawState && typeof rawState === "object" && !Array.isArray(rawState)
+      ? sanitizeSafeRecord(rawState)
+      : undefined;
+  const hRaw = parseNumericMetricValue(obj.height);
+  const height = hRaw !== null ? Math.max(260, Math.min(780, Math.round(hRaw))) : undefined;
+  const savedAppPath =
+    asNonEmptyString(obj.savedAppPath) || asNonEmptyString(obj.saved_app_path) || undefined;
+
+  return {
+    html: htmlClean || '<div id="app"></div>',
+    ...(cssRaw ? { css: cssRaw.slice(0, 35000) } : {}),
+    ...(jsRaw ? { js: jsRaw.slice(0, 45000) } : {}),
+    ...(description ? { description } : {}),
+    ...(state && Object.keys(state).length > 0 ? { state } : {}),
+    ...(height !== undefined ? { height } : {}),
+    ...(savedAppPath ? { savedAppPath } : {}),
+  };
+}
+
+function sanitizeCanvasBlocks(rawBlocks: unknown): CanvasBlock[] {
+  if (!Array.isArray(rawBlocks)) return [];
+  const blocks: CanvasBlock[] = [];
+  for (const blk of rawBlocks.slice(0, 20)) {
+    if (!blk || typeof blk !== "object" || Array.isArray(blk)) continue;
+    const bObj = blk as Record<string, unknown>;
+    const btype = (asNonEmptyString(bObj.type) || asNonEmptyString(bObj.kind)).toLowerCase();
+    const btitle = asNonEmptyString(bObj.title) || asNonEmptyString(bObj.titulo) || undefined;
+
+    if (btype === "callout") {
+      const txt =
+        asNonEmptyString(bObj.text) ||
+        asNonEmptyString(bObj.content) ||
+        asNonEmptyString(bObj.texto);
+      if (!txt) continue;
+      const rawTone = (asNonEmptyString(bObj.tone) || asNonEmptyString(bObj.tono)).toLowerCase();
+      const tone: "info" | "warning" | "success" | "critical" =
+        rawTone === "warning" || rawTone === "success" || rawTone === "critical"
+          ? rawTone
+          : "info";
+      blocks.push({ type: "callout", ...(btitle ? { title: btitle } : {}), text: txt, tone });
+    } else if (btype === "markdown") {
+      const content =
+        asNonEmptyString(bObj.content) ||
+        asNonEmptyString(bObj.markdown) ||
+        asNonEmptyString(bObj.text);
+      if (!content) continue;
+      blocks.push({ type: "markdown", ...(btitle ? { title: btitle } : {}), content });
+    } else if (btype === "diagram") {
+      const dSrc = bObj.diagram && typeof bObj.diagram === "object" ? bObj.diagram : bObj;
+      const diag = sanitizeDiagramSpec(dSrc);
+      if (diag) blocks.push({ type: "diagram", ...(btitle ? { title: btitle } : {}), diagram: diag });
+    } else if (btype === "plan") {
+      const pSrc = bObj.plan && typeof bObj.plan === "object" ? bObj.plan : bObj;
+      const pln = sanitizePlanSpec(pSrc, btitle);
+      if (pln) blocks.push({ type: "plan", ...(btitle ? { title: btitle } : {}), plan: pln });
+    } else if (btype === "dashboard") {
+      const dsSrc = bObj.dashboard && typeof bObj.dashboard === "object" ? bObj.dashboard : bObj;
+      const dash = sanitizeDashboardSpec(dsSrc);
+      if (dash) blocks.push({ type: "dashboard", ...(btitle ? { title: btitle } : {}), dashboard: dash });
+    } else if (btype === "form") {
+      const fSrc = bObj.form && typeof bObj.form === "object" ? bObj.form : bObj;
+      const frm = sanitizeFormSpec(fSrc);
+      if (frm) blocks.push({ type: "form", ...(btitle ? { title: btitle } : {}), form: frm });
+    } else if (btype === "interactive") {
+      const iSrc = bObj.interactive && typeof bObj.interactive === "object" ? bObj.interactive : bObj;
+      const inter = sanitizeInteractiveSpec(iSrc);
+      if (inter) blocks.push({ type: "interactive", ...(btitle ? { title: btitle } : {}), interactive: inter });
+    } else if (btype === "table") {
+      const tbl = sanitizeCanvasArtifact({
+        title: btitle || "Tabla",
+        columns: bObj.columns || bObj.headers || bObj.columnas,
+        rows: bObj.rows || bObj.data || bObj.filas,
+      });
+      if (tbl && tbl.columns.length > 0 && tbl.rows.length > 0) {
+        blocks.push({
+          type: "table",
+          ...(btitle ? { title: btitle } : {}),
+          columns: tbl.columns,
+          rows: tbl.rows,
+        });
+      }
+    }
+  }
+  return blocks;
+}
+
+export function applyCanvasPatch(
+  baseCanvas: CanvasArtifact,
+  patch: Record<string, unknown>
+): CanvasArtifact | null {
+  if (!baseCanvas || !patch || typeof patch !== "object") return null;
+  const merged: Record<string, unknown> = JSON.parse(
+    JSON.stringify({ ...baseCanvas, versions: undefined })
+  ) as Record<string, unknown>;
+
+  const nextTitle = asNonEmptyString(patch.title);
+  if (nextTitle) merged.title = nextTitle;
+  if ("subtitle" in patch) {
+    const sub = asNonEmptyString(patch.subtitle);
+    if (sub) merged.subtitle = sub;
+    else delete merged.subtitle;
+  }
+  if ("summary" in patch) {
+    const sm = asNonEmptyString(patch.summary);
+    if (sm) merged.summary = sm;
+    else delete merged.summary;
+  }
+  if ("markdown" in patch && patch.markdown !== undefined && patch.markdown !== null) {
+    merged.markdown = String(patch.markdown);
+  }
+  if (Array.isArray(patch.columns) && patch.columns.length > 0) merged.columns = patch.columns;
+  if (Array.isArray(patch.rows)) merged.rows = patch.rows;
+  else if (Array.isArray(patch.append_rows) && Array.isArray(merged.columns) && merged.columns.length > 0) {
+    merged.rows = [...(Array.isArray(merged.rows) ? merged.rows : []), ...patch.append_rows];
+  }
+  if ((patch.interactive && typeof patch.interactive === "object") || patch.controls || patch.computed || patch.state) {
+    const iSrc = (patch.interactive && typeof patch.interactive === "object"
+      ? patch.interactive
+      : patch) as Record<string, unknown>;
+    const baseI = (merged.interactive && typeof merged.interactive === "object"
+      ? { ...(merged.interactive as Record<string, unknown>) }
+      : {}) as Record<string, unknown>;
+    if (iSrc.state && typeof iSrc.state === "object" && baseI.state && typeof baseI.state === "object") {
+      const mergedState = {
+        ...(baseI.state as Record<string, unknown>),
+        ...(iSrc.state as Record<string, unknown>),
+      };
+      Object.assign(baseI, iSrc);
+      baseI.state = mergedState;
+    } else {
+      Object.assign(baseI, iSrc);
+    }
+    merged.interactive = baseI;
+    merged.kind = "interactive";
+  }
+  if (patch.customApp || patch.custom_app || "html" in patch || "css" in patch || "js" in patch) {
+    const cSrc = (patch.customApp && typeof patch.customApp === "object"
+      ? patch.customApp
+      : patch.custom_app && typeof patch.custom_app === "object"
+        ? patch.custom_app
+        : patch) as Record<string, unknown>;
+    const baseC = (merged.customApp && typeof merged.customApp === "object"
+      ? { ...(merged.customApp as Record<string, unknown>) }
+      : {}) as Record<string, unknown>;
+    Object.assign(baseC, cSrc);
+    merged.customApp = baseC;
+    merged.kind = "custom_app";
+  }
+  if (Array.isArray(patch.blocks)) {
+    merged.blocks = patch.blocks;
+    merged.kind = "composite";
+  } else if (Array.isArray(patch.append_blocks)) {
+    merged.blocks = [...(Array.isArray(merged.blocks) ? merged.blocks : []), ...patch.append_blocks];
+    merged.kind = "composite";
+  }
+
+  merged.id = baseCanvas.id;
+  merged.updatedAt = new Date().toISOString();
+  const next = sanitizeCanvasArtifact(merged, baseCanvas.id);
+  return next && canvasHasCellData(next) ? next : null;
+}
+
 export function sanitizeCanvasArtifact(
   raw: unknown,
   fallbackId?: string
@@ -1907,26 +2683,37 @@ export function sanitizeCanvasArtifact(
   const hasExplicitTable = Boolean(
     obj.columns || obj.columnas || obj.rows || obj.filas
   );
+  const isCompositeHint = Boolean(Array.isArray(obj.blocks) && obj.blocks.length > 0);
+  const isCustomAppHint = Boolean(obj.customApp || obj.custom_app || obj.html || obj.js);
+  const isInteractiveHint = Boolean(
+    obj.interactive || obj.interactivo || obj.controls || obj.controles || obj.computed
+  );
   const hasDashboardHint = Boolean(
     obj.dashboard || obj.kpis || obj.charts || obj.graficas || obj.chart
   );
   const hasFormHint = Boolean(
     obj.form ||
       obj.formulario ||
-      (!hasExplicitTable && (obj.fields || obj.questions || obj.preguntas || obj.campos))
+      (!hasExplicitTable && !isInteractiveHint && (obj.fields || obj.questions || obj.preguntas || obj.campos))
   );
   const title =
     asNonEmptyString(obj.title) ||
     asNonEmptyString(obj.titulo) ||
-    (obj.plan || obj.phases || obj.fases
-      ? "Plan de ejecución"
-      : obj.diagram || obj.diagrama || obj.nodes || obj.mermaid
-        ? "Diagrama visual"
-        : hasDashboardHint
-          ? "Dashboard de análisis"
-          : hasFormHint
-            ? "Cuestionario interactivo"
-            : "Tabla en Canvas");
+    (isCustomAppHint
+      ? "Mini-app interactiva"
+      : isInteractiveHint
+        ? "Interfaz interactiva"
+        : isCompositeHint
+          ? "Vista compuesta"
+          : obj.plan || obj.phases || obj.fases
+            ? "Plan de ejecución"
+            : obj.diagram || obj.diagrama || obj.nodes || obj.mermaid
+              ? "Diagrama visual"
+              : hasDashboardHint
+                ? "Dashboard de análisis"
+                : hasFormHint
+                  ? "Cuestionario interactivo"
+                  : "Tabla en Canvas");
   const subtitle = asNonEmptyString(obj.subtitle) || asNonEmptyString(obj.subtitulo) || undefined;
   const summary = asNonEmptyString(obj.summary) || asNonEmptyString(obj.resumen) || undefined;
   const markdown = asNonEmptyString(obj.markdown) || asNonEmptyString(obj.contenido) || undefined;
@@ -1939,6 +2726,12 @@ export function sanitizeCanvasArtifact(
   else if (rawKind === "plan" || rawKind === "roadmap") kind = "plan";
   else if (rawKind === "dashboard" || rawKind === "chart" || rawKind === "grafica" || rawKind === "tablero") kind = "dashboard";
   else if (rawKind === "form" || rawKind === "quiz" || rawKind === "cuestionario" || rawKind === "formulario" || rawKind === "examen" || rawKind === "survey" || rawKind === "encuesta") kind = "form";
+  else if (rawKind === "composite" || rawKind === "compuesto" || rawKind === "blocks") kind = "composite";
+  else if (rawKind === "interactive" || rawKind === "interactivo" || rawKind === "widget" || rawKind === "calculator" || rawKind === "kanban") kind = "interactive";
+  else if (rawKind === "custom_app" || rawKind === "custom" || rawKind === "app" || rawKind === "miniapp" || rawKind === "html") kind = "custom_app";
+  else if (isCompositeHint) kind = "composite";
+  else if (isCustomAppHint) kind = "custom_app";
+  else if (isInteractiveHint) kind = "interactive";
   else if (obj.plan || obj.phases || obj.fases) kind = "plan";
   else if (obj.diagram || obj.diagrama || obj.nodes || obj.nodos || obj.mermaid || obj.mermaid_code) kind = "diagram";
   else if (hasFormHint) kind = "form";
@@ -1947,6 +2740,84 @@ export function sanitizeCanvasArtifact(
 
   const nowIso = asNonEmptyString(obj.updatedAt) || new Date().toISOString();
   const canvasId = asNonEmptyString(obj.id) || fallbackId || `canvas_${Date.now()}`;
+  const versions = Array.isArray(obj.versions)
+    ? (obj.versions as CanvasVersionSnapshot[]).filter(
+        (v) => v && typeof v === "object" && typeof v.version === "number" && v.artifact
+      )
+    : undefined;
+  const versionMeta = versions && versions.length > 0 ? { versions } : {};
+
+  // 0) Artefacto Compuesto por Bloques
+  if (kind === "composite" || isCompositeHint) {
+    const blocks = sanitizeCanvasBlocks(obj.blocks);
+    if (blocks.length > 0) {
+      return {
+        id: canvasId,
+        title,
+        subtitle,
+        kind: "composite",
+        columns: [],
+        rows: [],
+        summary,
+        markdown,
+        blocks,
+        ...versionMeta,
+        updatedAt: nowIso,
+      };
+    }
+  }
+
+  // 0.25) Mini-app HTML/CSS/JS aislada
+  if (kind === "custom_app" || isCustomAppHint) {
+    const customSrc =
+      obj.customApp && typeof obj.customApp === "object"
+        ? obj.customApp
+        : obj.custom_app && typeof obj.custom_app === "object"
+          ? obj.custom_app
+          : obj;
+    const customApp = sanitizeCustomAppSpec(customSrc);
+    if (customApp) {
+      return {
+        id: canvasId,
+        title,
+        subtitle,
+        kind: "custom_app",
+        columns: [],
+        rows: [],
+        summary: summary && summary !== customApp.description ? summary : undefined,
+        markdown,
+        customApp,
+        ...versionMeta,
+        updatedAt: nowIso,
+      };
+    }
+  }
+
+  // 0.5) Interfaz Interactiva declarativa
+  if (kind === "interactive" || isInteractiveHint) {
+    const interSrc =
+      obj.interactive && typeof obj.interactive === "object"
+        ? obj.interactive
+        : obj.interactivo && typeof obj.interactivo === "object"
+          ? obj.interactivo
+          : obj;
+    const interactive = sanitizeInteractiveSpec(interSrc);
+    if (interactive) {
+      return {
+        id: canvasId,
+        title,
+        subtitle,
+        kind: "interactive",
+        columns: [],
+        rows: [],
+        summary: summary && summary !== interactive.description ? summary : undefined,
+        markdown,
+        interactive,
+        ...versionMeta,
+        updatedAt: nowIso,
+      };
+    }
+  }
 
   // 1) Artefacto tipo Plan de Acción (estilo Antigravity)
   if (kind === "plan" || obj.plan || obj.phases || obj.fases) {
@@ -2340,6 +3211,125 @@ export function canvasArtifactToMarkdown(canvas: CanvasArtifact): string {
   const parts: string[] = [`# ${canvas.title}`];
   if (canvas.subtitle) parts.push(`_${canvas.subtitle}_`);
   if (canvas.summary) parts.push(`\n> ${canvas.summary}`);
+
+  if (canvas.blocks && canvas.blocks.length > 0) {
+    canvas.blocks.forEach((blk) => {
+      if (blk.title) parts.push(`\n## ${blk.title}`);
+      if (blk.type === "callout") {
+        parts.push(`\n> **[${(blk.tone || "info").toUpperCase()}]** ${blk.text}`);
+      } else if (blk.type === "markdown") {
+        parts.push(`\n${blk.content}`);
+      } else if (blk.type === "table") {
+        const sub = canvasArtifactToMarkdown({
+          id: canvas.id,
+          title: blk.title || "Tabla",
+          kind: "table",
+          columns: blk.columns,
+          rows: blk.rows,
+          updatedAt: canvas.updatedAt,
+        });
+        parts.push(`\n${sub.replace(/^#\s+.*\n?/, "")}`);
+      } else if (blk.type === "diagram") {
+        const mermaidCode = diagramSpecToMermaid(blk.diagram);
+        if (mermaidCode) parts.push(`\n\`\`\`mermaid\n${mermaidCode}\n\`\`\``);
+      } else if (blk.type === "plan") {
+        const sub = canvasArtifactToMarkdown({
+          id: canvas.id,
+          title: blk.title || "Plan",
+          kind: "plan",
+          columns: [],
+          rows: [],
+          plan: blk.plan,
+          updatedAt: canvas.updatedAt,
+        });
+        parts.push(`\n${sub.replace(/^#\s+.*\n?/, "")}`);
+      } else if (blk.type === "dashboard") {
+        const sub = canvasArtifactToMarkdown({
+          id: canvas.id,
+          title: blk.title || "Dashboard",
+          kind: "dashboard",
+          columns: [],
+          rows: [],
+          dashboard: blk.dashboard,
+          updatedAt: canvas.updatedAt,
+        });
+        parts.push(`\n${sub.replace(/^#\s+.*\n?/, "")}`);
+      } else if (blk.type === "form") {
+        const sub = canvasArtifactToMarkdown({
+          id: canvas.id,
+          title: blk.title || "Formulario",
+          kind: "form",
+          columns: [],
+          rows: [],
+          form: blk.form,
+          updatedAt: canvas.updatedAt,
+        });
+        parts.push(`\n${sub.replace(/^#\s+.*\n?/, "")}`);
+      } else if (blk.type === "interactive") {
+        const sub = canvasArtifactToMarkdown({
+          id: canvas.id,
+          title: blk.title || "Interfaz interactiva",
+          kind: "interactive",
+          columns: [],
+          rows: [],
+          interactive: blk.interactive,
+          updatedAt: canvas.updatedAt,
+        });
+        parts.push(`\n${sub.replace(/^#\s+.*\n?/, "")}`);
+      }
+    });
+  }
+
+  if (canvas.interactive) {
+    const inter = canvas.interactive;
+    if (inter.description && inter.description !== canvas.summary) {
+      parts.push(`\n${inter.description}`);
+    }
+    if (inter.computed && inter.computed.length > 0) {
+      parts.push("\n## Resultados calculados");
+      inter.computed.forEach((comp) => {
+        const res = evaluateSafeFormula(comp.expr, inter.state);
+        const formatted = formatComputedValue(res.value, comp.format, comp.unit);
+        parts.push(`- **${comp.label}:** ${formatted}`);
+      });
+    }
+    if (inter.controls.length > 0) {
+      parts.push("\n## Parámetros y controles");
+      inter.controls.forEach((ctrl) => {
+        const val = inter.state[ctrl.stateKey];
+        if (ctrl.type === "checklist" && ctrl.items) {
+          const checkedSet = new Set(Array.isArray(val) ? val.map(String) : []);
+          parts.push(`\n### ${ctrl.label}`);
+          ctrl.items.forEach((it) => {
+            parts.push(`- [${checkedSet.has(it.id) ? "x" : " "}] ${it.label}`);
+          });
+        } else {
+          const displayVal =
+            typeof val === "boolean"
+              ? val
+                ? "Activado"
+                : "Desactivado"
+              : Array.isArray(val)
+                ? val.join(", ")
+                : String(val ?? "—");
+          parts.push(`- **${ctrl.label}:** ${ctrl.prefix ?? ""}${displayVal}${ctrl.unit ? ` ${ctrl.unit}` : ""}`);
+        }
+      });
+    }
+  }
+
+  if (canvas.customApp) {
+    const app = canvas.customApp;
+    if (app.description && app.description !== canvas.summary) {
+      parts.push(`\n${app.description}`);
+    }
+    if (app.savedAppPath) {
+      parts.push(`\n_Archivo guardado:_ \`${app.savedAppPath}\``);
+    }
+    if (app.state && Object.keys(app.state).length > 0) {
+      parts.push(`\n## Estado actual\n\`\`\`json\n${JSON.stringify(app.state, null, 2)}\n\`\`\``);
+    }
+  }
 
   if (canvas.dashboard) {
     const d = canvas.dashboard;

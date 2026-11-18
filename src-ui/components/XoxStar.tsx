@@ -12,7 +12,18 @@ export type XoxState =
   | "talking"
   | "alert"
   | "reading"
-  | "syncing";
+  | "syncing"
+  | "coding";
+
+/** Actividad de código/terminal que Xox muestra en la pantalla de su laptop. */
+export interface XoxTerminalFeed {
+  /** Incrementar en cada evento para que Xox reaccione aunque el contenido se repita. */
+  seq: number;
+  mode: "edit" | "terminal";
+  status: "running" | "ok" | "error";
+  command?: string;
+  outputLines?: string[];
+}
 
 export interface XoxDragMotion {
   active: boolean;
@@ -150,6 +161,32 @@ export function getXoxBubbleVars(accentPreset?: string | null): React.CSSPropert
   } as React.CSSProperties;
 }
 
+/**
+ * Variables CSS semánticas para el fondo cósmico estilo Gemini (tanto cuando está Xox
+ * como cuando no está). En el preset predeterminado (`classic` / Estelar) conserva
+ * intacto el azul cobalto/índigo profundo de Gemini; en otros presets mezcla en `oklab`.
+ */
+export function getXoxCosmosVars(accentPreset?: string | null): React.CSSProperties {
+  const preset = resolveXoxAccentPreset(accentPreset);
+  if (preset === "classic") {
+    return {
+      "--xox-cosmos-bloom": "var(--ref-gemini-bloom-core)",
+      "--xox-cosmos-bloom-warm": "var(--ref-gemini-bloom-warm)",
+      "--xox-cosmos-corona": "var(--ref-gemini-corona)",
+      "--xox-cosmos-halo": "var(--ref-gemini-halo)",
+      "--xox-cosmos-border": "color-mix(in oklab, var(--ref-gemini-bloom-core) 58%, rgba(255, 255, 255, 0.16))",
+    } as React.CSSProperties;
+  }
+  const spec = XOX_ACCENT_PRESETS[preset];
+  return {
+    "--xox-cosmos-bloom": `color-mix(in oklab, var(--ref-gemini-bloom-core) 64%, ${spec.deep})`,
+    "--xox-cosmos-bloom-warm": `color-mix(in oklab, var(--ref-gemini-bloom-warm) 60%, ${spec.glow})`,
+    "--xox-cosmos-corona": `color-mix(in oklab, var(--ref-gemini-corona) 68%, ${spec.deep})`,
+    "--xox-cosmos-halo": `color-mix(in oklab, var(--ref-gemini-halo) 74%, ${spec.deep})`,
+    "--xox-cosmos-border": `color-mix(in oklab, ${spec.glow} 38%, rgba(255, 255, 255, 0.14))`,
+  } as React.CSSProperties;
+}
+
 export interface XoxSubagentOrbitItem {
   id: string;
   name: string;
@@ -183,6 +220,8 @@ interface XoxStarProps {
   glideDir?: "right" | "left";
   /** Satélites orbitales opcionales representando sub-agentes trabajando con Xox. */
   subagents?: XoxSubagentOrbitItem[];
+  /** Edición de código / respuesta de terminal que Xox revisa en su laptop (estado `coding`). */
+  terminal?: XoxTerminalFeed | null;
 }
 
 /**
@@ -291,12 +330,12 @@ export function resolveXoxStateColors(
       blushCore: spec.blushCore,
     };
   }
-  if (state === "syncing") {
+  if (state === "syncing" || state === "coding") {
     return {
       bodyTint: spec.tint,
       bodyGlow: spec.glow,
       rim1: spec.rim,
-      rim2: spec.rim2,
+      rim2: state === "coding" ? spec.accessory : spec.rim2,
       core: "#FFFFFF",
       mid: spec.mid,
       glow: spec.accessory,
@@ -328,6 +367,10 @@ const step = (s: Spring, target: number, k: number, c: number, dt: number) => {
 };
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const toRad = (d: number) => (d * Math.PI) / 180;
+const smooth01 = (e0: number, e1: number, x: number) => {
+  const k = clamp((x - e0) / (e1 - e0), 0, 1);
+  return k * k * (3 - 2 * k);
+};
 
 type OklabTriple = [number, number, number];
 const srgbChannelToLin = (v: number): number => {
@@ -424,20 +467,20 @@ function roundedPath(pts: number[][], radii: number[]): string {
 }
 
 interface ShapeParams {
-  t: number;
+  /** Fase acumulada (dt * velocidad): cambiar de velocidad no provoca saltos de forma. */
+  phase: number;
   amp: number;
-  speed: number;
   lag: number; // grados que las puntas se arrastran tras el giro
   reach: number; // estiramiento extra de las puntas (hover)
   wave: number; // fase del saludo (-1 = sin saludo)
 }
 
-function buildStar({ t, amp, speed, lag, reach, wave }: ShapeParams): string {
+function buildStar({ phase, amp, lag, reach, wave }: ShapeParams): string {
   for (let i = 0; i < 5; i++) {
-    let pa = PEAKS[i].a + lag + 2.2 * amp * Math.sin(t * 1.1 * speed + i * 2.1);
-    let pr = PEAKS[i].r * (1 + 0.035 * amp * Math.sin(t * 1.6 * speed + i * 1.35) + reach);
+    let pa = PEAKS[i].a + lag + 2.2 * amp * Math.sin(phase * 1.1 + i * 2.1);
+    let pr = PEAKS[i].r * (1 + 0.035 * amp * Math.sin(phase * 1.6 + i * 1.35) + reach);
 
-    // Saludo con el brazo superior derecho
+    // Saludo con la punta superior derecha (sin agregar brazos ni manos)
     if (i === 1 && wave >= 0 && wave < 1.3) {
       const env = Math.sin((wave / 1.3) * Math.PI);
       pa += Math.sin(wave * 13) * 14 * env * amp;
@@ -450,13 +493,26 @@ function buildStar({ t, amp, speed, lag, reach, wave }: ShapeParams): string {
     STAR_RADII[pIdx] = PEAK_ROUND;
 
     const va = VALLEYS[i].a + lag * 0.4;
-    const vr = VALLEYS[i].r * (1 + 0.045 * amp * Math.sin(t * 2 * speed + i * 0.9 + 1));
+    const vr = VALLEYS[i].r * (1 + 0.045 * amp * Math.sin(phase * 2 + i * 0.9 + 1));
     const vIdx = pIdx + 1;
     STAR_PTS[vIdx][0] = C + vr * Math.cos(toRad(va));
     STAR_PTS[vIdx][1] = C + vr * Math.sin(toRad(va));
     STAR_RADII[vIdx] = VALLEY_ROUND;
   }
   return roundedPath(STAR_PTS, STAR_RADII);
+}
+
+/** Construye una boca orgánica articulada (labio superior curvado en sonrisa + mandíbula suave). */
+function buildOrganicTalkMouthPath(cx: number, cy: number, halfW: number, openAmt: number, smileLift: number): string {
+  const xL = (cx - halfW).toFixed(2);
+  const xR = (cx + halfW).toFixed(2);
+  const yCorner = (cy - smileLift * 0.7).toFixed(2);
+  const yTopCtrl = (cy - 1.15 - openAmt * 1.1 + smileLift * 0.25).toFixed(2);
+  const yBotCtrl = (cy + 1.85 + openAmt * 6.4).toFixed(2);
+  const xCtrl = (halfW * 0.72).toFixed(2);
+  const xLCtrl = (cx - Number(xCtrl)).toFixed(2);
+  const xRCtrl = (cx + Number(xCtrl)).toFixed(2);
+  return `M ${xL} ${yCorner} Q ${cx.toFixed(2)} ${yTopCtrl} ${xR} ${yCorner} C ${xRCtrl} ${yBotCtrl} ${xLCtrl} ${yBotCtrl} ${xL} ${yCorner} Z`;
 }
 
 export const XoxStar: React.FC<XoxStarProps> = ({
@@ -474,6 +530,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   glideTrigger,
   glideDir = "right",
   subagents,
+  terminal,
 }) => {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const ids = {
@@ -483,6 +540,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     glow: `xox-glow-${uid}`,
     cradle: `xox-cradle-${uid}`,
     blush: `xox-blush-${uid}`,
+    mouthClip: `xox-mouth-clip-${uid}`,
+    eyeClipL: `xox-eye-clip-l-${uid}`,
+    eyeClipR: `xox-eye-clip-r-${uid}`,
+    laptopScreen: `xox-lap-scr-${uid}`,
   };
   const resolvedAccent = resolveXoxAccentPreset(accentPreset);
   const currentColors = resolveXoxStateColors(resolvedAccent, state);
@@ -502,25 +563,64 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const faceRef = useRef<SVGGElement>(null);
   const eyeLRef = useRef<SVGGElement>(null);
   const eyeRRef = useRef<SVGGElement>(null);
+  const eyeOpenLRef = useRef<SVGGElement>(null);
+  const eyeOpenRRef = useRef<SVGGElement>(null);
+  const eyeScleraLRef = useRef<SVGEllipseElement>(null);
+  const eyeScleraRRef = useRef<SVGEllipseElement>(null);
+  const eyeClipEllipseLRef = useRef<SVGEllipseElement>(null);
+  const eyeClipEllipseRRef = useRef<SVGEllipseElement>(null);
+  const irisLRef = useRef<SVGCircleElement>(null);
+  const irisRRef = useRef<SVGCircleElement>(null);
   const pupilLRef = useRef<SVGCircleElement>(null);
   const pupilRRef = useRef<SVGCircleElement>(null);
+  const glintLRef = useRef<SVGCircleElement>(null);
+  const glintRRef = useRef<SVGCircleElement>(null);
+  const lidShadeLRef = useRef<SVGRectElement>(null);
+  const lidShadeRRef = useRef<SVGRectElement>(null);
+  const eyeHappyLRef = useRef<SVGPathElement>(null);
+  const eyeHappyRRef = useRef<SVGPathElement>(null);
   const cheekLRef = useRef<SVGGElement>(null);
   const cheekRRef = useRef<SVGGElement>(null);
   const cheekLCoreRef = useRef<SVGEllipseElement>(null);
   const cheekRCoreRef = useRef<SVGEllipseElement>(null);
   const mouthRef = useRef<SVGPathElement>(null);
-  const talkMouthRef = useRef<SVGEllipseElement>(null);
+  const talkMouthGroupRef = useRef<SVGGElement>(null);
+  const talkMouthPathRef = useRef<SVGPathElement>(null);
+  const talkMouthClipPathRef = useRef<SVGPathElement>(null);
+  const talkInnerShadeRef = useRef<SVGEllipseElement>(null);
+  const talkTongueRef = useRef<SVGEllipseElement>(null);
+  const talkUpperLipRef = useRef<SVGPathElement>(null);
   const talkWaveRef = useRef<SVGGElement>(null);
   const talkWave1Ref = useRef<SVGPathElement>(null);
   const talkWave2Ref = useRef<SVGPathElement>(null);
+  const talkWave3Ref = useRef<SVGPathElement>(null);
   const sparkRefs = useRef<(SVGCircleElement | null)[]>([]);
   const subagentSatRefs = useRef<(SVGGElement | null)[]>([]);
   const subagentsRef = useRef<XoxSubagentOrbitItem[] | undefined>(subagents);
   subagentsRef.current = subagents;
+  const terminalRef = useRef<XoxTerminalFeed | null | undefined>(terminal);
+  terminalRef.current = terminal;
   const syncPathRefs = useRef<(SVGPathElement | null)[]>([]);
   const syncArrowRefs = useRef<(SVGPolygonElement | null)[]>([]);
   const lensHandleRef = useRef<SVGLineElement>(null);
   const lensRingRef = useRef<SVGCircleElement>(null);
+  // Refs de la mini-laptop flotante (edición de código + terminal sin brazos)
+  const laptopRef = useRef<SVGGElement>(null);
+  const laptopLidRef = useRef<SVGGElement>(null);
+  const laptopBaseRimRef = useRef<SVGPathElement>(null);
+  const laptopScreenRimRef = useRef<SVGRectElement>(null);
+  const laptopScreenGlowRef = useRef<SVGEllipseElement>(null);
+  const laptopCodeGroupRef = useRef<SVGGElement>(null);
+  const laptopTermGroupRef = useRef<SVGGElement>(null);
+  const laptopActiveLineRef = useRef<SVGRectElement>(null);
+  const laptopCodeLineRefs = useRef<(SVGRectElement | null)[]>([]);
+  const laptopCodeSecRefs = useRef<(SVGRectElement | null)[]>([]);
+  const laptopCaretRef = useRef<SVGRectElement>(null);
+  const laptopTermCmdRef = useRef<SVGRectElement>(null);
+  const laptopTermOutRefs = useRef<(SVGRectElement | null)[]>([]);
+  const laptopTermBadgeRef = useRef<SVGCircleElement>(null);
+  const laptopTermCheckRef = useRef<SVGPathElement>(null);
+  const laptopKeyGlowRefs = useRef<(SVGRectElement | null)[]>([]);
   const stopRefs = useRef<{
     bodyTint: SVGStopElement | null;
     bodyGlow: SVGStopElement | null;
@@ -558,6 +658,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const syncRef = useRef<SVGGElement>(null);
 
   const prevAccentRef = useRef<XoxAccentPreset>(resolvedAccent);
+  const prevStateRef = useRef<XoxState>(state);
   const stateRef = useRef<XoxState>(state);
   const accentRef = useRef<XoxAccentPreset>(resolvedAccent);
   const hoverRef = useRef(false);
@@ -575,6 +676,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   // Estado mutable compartido entre handlers y el loop de animación
   const anim = useRef({
     t: 0,
+    starPhase: 0,
+    bobPhase: 0,
     reduce: false,
     spinTarget: 0,
     windupUntil: 0,
@@ -584,6 +687,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     waveStart: -10,
     summonAt: -10,
     colorMorphAt: -10,
+    stateChangeAt: -10,
+    forceBlinkAt: -10,
+    termPulseAt: -10,
     blushBoostUntil: -10,
     blushPeak: 0,
     blushKick: 0,
@@ -615,7 +721,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   }, [resolvedAccent, state]);
 
   const initialPath = useMemo(
-    () => buildStar({ t: 0, amp: 1, speed: 1, lag: 0, reach: 0, wave: -1 }),
+    () => buildStar({ phase: 0, amp: 1, lag: 0, reach: 0, wave: -1 }),
     []
   );
 
@@ -632,9 +738,32 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   };
 
   useEffect(() => {
+    const prev = prevStateRef.current;
+    prevStateRef.current = state;
     stateRef.current = state;
+    const a = anim.current;
+
+    // Coreografía de transición suave al cambiar entre CUALQUIER par de estados
+    if (prev !== state) {
+      a.stateChangeAt = a.t;
+      // Parpadeo puente al cambiar de expresión facial (ej. success <-> idle, thinking -> talking)
+      if (prev === "success" || state === "success" || prev === "talking" || state === "talking" || prev === "coding" || state === "coding") {
+        a.forceBlinkAt = a.t;
+      }
+      if (!a.reduce) {
+        if (state === "idle" && prev === "success") {
+          // Aterrizaje acolchado al pasar de Feliz a Reposo
+          a.squashKick += 1.45;
+          a.jumpKick += 28;
+        } else if (state !== "success") {
+          // Micro-anticipación orgánica al entrar a un nuevo estado
+          a.squashKick += 1.15;
+          a.jumpKick -= 26;
+        }
+      }
+    }
+
     if (state === "success") {
-      const a = anim.current;
       a.blushBoostUntil = Math.max(a.blushBoostUntil, a.t + 1.4);
       a.blushPeak = 1;
       if (!a.reduce) a.blushKick += 1.6;
@@ -647,6 +776,21 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       return () => window.clearInterval(id);
     }
   }, [state, active]);
+
+  // Reacción física de Xox cuando la terminal devuelve resultado en modo coding
+  useEffect(() => {
+    if (!terminal) return;
+    const a = anim.current;
+    a.termPulseAt = a.t;
+    if (!a.reduce && (terminal.status === "ok" || terminal.status === "error")) {
+      a.squashKick += terminal.status === "ok" ? 1.35 : 1.75;
+      a.jumpKick += terminal.status === "ok" ? -42 : 24;
+      if (terminal.status === "ok") {
+        a.blushBoostUntil = Math.max(a.blushBoostUntil, a.t + 1.1);
+        a.blushPeak = Math.max(a.blushPeak, 0.55);
+      }
+    }
+  }, [terminal?.seq, terminal?.status]);
 
   // Coreografía de entrada al invocar con ⌘⇧X (micro-salto, saludo y pulso estelar)
   useEffect(() => {
@@ -707,12 +851,26 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     const squash: Spring = { x: 0, v: 0 };
     const hover: Spring = { x: 0, v: 0 };
     const blush: Spring = { x: 0, v: 0 };
-    // Resortes de aparición (pop con overshoot) de cada accesorio
-    const popLens: Spring = { x: 0, v: 0 };
-    const popBubble: Spring = { x: 0, v: 0 };
-    const popBang: Spring = { x: 0, v: 0 };
-    const popSync: Spring = { x: 0, v: 0 };
-    const popTalk: Spring = { x: 0, v: 0 };
+    // Resortes continuos (0..1) por estado para transiciones suaves de ida y vuelta
+    const initSt = stateRef.current;
+    const wSuccess: Spring = { x: initSt === "success" ? 1 : 0, v: 0 };
+    const popLens: Spring = { x: initSt === "reading" ? 1 : 0, v: 0 };
+    const popBubble: Spring = { x: initSt === "thinking" ? 1 : 0, v: 0 };
+    const popBang: Spring = { x: initSt === "alert" ? 1 : 0, v: 0 };
+    const popSync: Spring = { x: initSt === "syncing" ? 1 : 0, v: 0 };
+    const popTalk: Spring = { x: initSt === "talking" ? 1 : 0, v: 0 };
+    const popLaptop: Spring = { x: initSt === "coding" ? 1 : 0, v: 0 };
+    const lidOpen: Spring = { x: initSt === "coding" ? 1 : 0, v: 0 };
+    const termModeBlend: Spring = { x: 0, v: 0 };
+    const mouthOpenSpring: Spring = { x: 0, v: 0 };
+    const mouthWidthSpring: Spring = { x: 3.8, v: 0 };
+    const squintL: Spring = { x: 0, v: 0 };
+    const squintR: Spring = { x: 0, v: 0 };
+    const pupilScaleL: Spring = { x: 1, v: 0 };
+    const pupilScaleR: Spring = { x: 1, v: 0 };
+    const saccadeX: Spring = { x: 0, v: 0 };
+    const saccadeY: Spring = { x: 0, v: 0 };
+
     const setProp = (el: SVGElement | null, pop: number, transform: string) => {
       if (!el) return;
       const s = Math.max(pop, 0.0001);
@@ -744,6 +902,86 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const talking = st === "talking";
       const alerting = st === "alert";
       const syncing = st === "syncing";
+      const coding = st === "coding";
+      const succeeding = st === "success";
+
+      // Pesos continuos de transición para que ningún estado cambie de golpe
+      step(wSuccess, succeeding ? 1 : 0, 130, 16, dt);
+      step(popLens, reading ? 1 : 0, 155, 14, dt);
+      step(popBubble, thinking ? 1 : 0, 155, 14, dt);
+      step(popBang, alerting ? 1 : 0, 220, 12, dt);
+      step(popSync, syncing ? 1 : 0, 125, 14, dt);
+      step(popTalk, talking ? 1 : 0, 175, 16, dt);
+      step(popLaptop, coding ? 1 : 0, 150, 14.5, dt);
+      // La tapa de la laptop se despliega al entrar en coding y se pliega al salir
+      step(lidOpen, coding && popLaptop.x > 0.18 ? 1 : 0, 145, 13.5, dt);
+
+      const wThink = clamp(popBubble.x, 0, 1);
+      const wRead = clamp(popLens.x, 0, 1);
+      const wTalk = clamp(popTalk.x, 0, 1);
+      const wAlert = clamp(popBang.x, 0, 1);
+      const wCode = clamp(popLaptop.x, 0, 1);
+      const wSucc = clamp(wSuccess.x, 0, 1);
+
+      // En modo coding: determina si está editando código o viendo la respuesta de la terminal
+      const tf = terminalRef.current;
+      // Si no hay evento explícito (ej. catálogo de Xox Studio), alterna entre edición y terminal cada ~6.4s
+      const autoCycle = t % 6.4;
+      const isTermPhase = tf ? tf.mode === "terminal" : autoCycle >= 3.4;
+      const isTermDoneOk = tf ? tf.status === "ok" : autoCycle >= 4.8;
+      const isTermErr = tf ? tf.status === "error" : false;
+      step(termModeBlend, isTermPhase ? 1 : 0, 140, 16, dt);
+      const wTerm = clamp(termModeBlend.x, 0, 1);
+
+      // Trayectoria lateral de la laptop: pasa suavemente de un lado a otro frente a Xox
+      const lapSideWave = Math.sin(t * 0.92);
+
+      // Juego de ojos analítico ("inspector"): alterna entre zoom en un ojo y enfoque en el otro (O o <-> o O <-> - -)
+      const analyzeWeight = clamp(wCode + wRead * 0.55 + wThink * 0.35, 0, 1);
+      const analyzePhase = (t * 0.82) % 3.6;
+      let targetSquintL = 0;
+      let targetSquintR = 0;
+      let targetPupScaleL = 1;
+      let targetPupScaleR = 1;
+      if (analyzeWeight > 0.01) {
+        if (coding && isTermPhase && isTermDoneOk) {
+          // "¡Ajá!": al llegar la respuesta de la terminal, ambos ojos se abren grandes con pupilas brillantes
+          targetSquintL = -0.16;
+          targetSquintR = -0.16;
+          targetPupScaleL = 1.24;
+          targetPupScaleR = 1.24;
+        } else if (analyzePhase < 1.25) {
+          // Fase 1 (O o): Ojo izquierdo hace zoom amplio, ojo derecho entrecierra enfocando
+          targetSquintL = -0.18;
+          targetSquintR = 0.38;
+          targetPupScaleL = 1.22;
+          targetPupScaleR = 0.88;
+        } else if (analyzePhase < 2.5) {
+          // Fase 2 (o O): Se intercambian — ojo izquierdo entrecierra enfocando, ojo derecho hace zoom
+          targetSquintL = 0.38;
+          targetSquintR = -0.18;
+          targetPupScaleL = 0.88;
+          targetPupScaleR = 1.22;
+        } else {
+          // Fase 3 (- -): Ambos ojos enfocan en paralelo comparando líneas rápidamente
+          targetSquintL = 0.28;
+          targetSquintR = 0.28;
+          targetPupScaleL = 1.08;
+          targetPupScaleR = 1.08;
+        }
+      }
+      step(squintL, targetSquintL * analyzeWeight, 145, 15, dt);
+      step(squintR, targetSquintR * analyzeWeight, 145, 15, dt);
+      step(pupilScaleL, 1 + (targetPupScaleL - 1) * analyzeWeight, 160, 16, dt);
+      step(pupilScaleR, 1 + (targetPupScaleR - 1) * analyzeWeight, 160, 16, dt);
+
+      // Sacadas oculares discretas (saltos rápidos de lectura token por token como al analizar código)
+      const tokenStep = Math.floor(t * 5.5) % 5;
+      const lineStep = Math.floor(t * 1.4) % 3;
+      const rawSacX = tokenStep === 4 ? -0.85 : -0.75 + tokenStep * 0.5;
+      const rawSacY = -0.35 + lineStep * 0.35;
+      step(saccadeX, rawSacX * analyzeWeight, 280, 19, dt);
+      step(saccadeY, rawSacY * analyzeWeight, 240, 18, dt);
 
       const dm = dragMotionPropRef.current?.current ?? null;
       const dragging = Boolean(dm?.active);
@@ -784,6 +1022,13 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         // Sigue la lupa mientras escanea
         tx = Math.sin(t * 1.6) * 0.9;
         ty = 0.45;
+      } else if (coding) {
+        // Sigue a la laptop mientras pasa de un lado a otro + micro-sacadas leyendo el código
+        const lineReadSweep = ((t * 1.65) % 1) * 0.22 - 0.11;
+        tx = clamp(lapSideWave * 0.82 + (isTermPhase ? 0 : lineReadSweep), -0.95, 0.95);
+        ty = isTermPhase
+          ? (isTermDoneOk ? 0.16 : 0.30)
+          : 0.22 + 0.12 * Math.floor(((t * 1.55) % 4)) * 0.25;
       } else if (alerting) {
         // Inquieto: mira nervioso de un lado a otro
         tx = 0.85 * Math.sin(t * 5.3) * Math.cos(t * 1.7);
@@ -802,8 +1047,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         tx = glance.x;
         ty = glance.y;
       }
-      step(lookX, tx, 90, 13, dt);
-      step(lookY, ty, 90, 13, dt);
+      step(lookX, tx, 85, 13.5, dt);
+      step(lookY, ty, 85, 13.5, dt);
 
       // --- Giro con anticipación ------------------------------------------
       if (a.windupUntil && t >= a.windupUntil) {
@@ -825,18 +1070,29 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
       const interactiveBlush = hoverRef.current ? 0.62 : 0;
       const boostBlush = t <= a.blushBoostUntil ? a.blushPeak : 0;
-      const successBlush = st === "success" ? 0.96 : 0;
-      const blushTarget = alerting
-        ? 0
-        : clamp(Math.max(successBlush, boostBlush, interactiveBlush), 0, 1);
+      const successBlush = wSucc * 0.96;
+      const codingOkBlush = wCode * (isTermPhase && isTermDoneOk ? 0.48 : 0);
+      const blushTarget =
+        (1 - wAlert) *
+        clamp(Math.max(successBlush, boostBlush, interactiveBlush, codingOkBlush), 0, 1);
       const blushRising = blushTarget > blush.x;
       const windup = a.windupUntil ? -18 : 0;
-      const sway =
-        (thinking
-          ? 5.5 * Math.sin(t * 2.2)
-          : talking
-          ? 4.4 * Math.sin(t * 3.1)
-          : 3.4 * Math.sin(t * 0.85) + (alerting ? 3.2 * Math.sin(t * 23) : 0)) * A;
+
+      // Balanceo mezclado continuamente (conservando la vibración clásica exacta en `alert`)
+      const swayIdle = 3.4 * Math.sin(t * 0.85);
+      const swayThink = 5.5 * Math.sin(t * 2.2);
+      const swayRead = -3.8 * Math.sin(t * 1.6);
+      const swayTalk = 4.2 * Math.sin(t * 3.1) + 1.4 * Math.cos(t * 5.2);
+      const swayCode = 5.0 * lapSideWave + 1.6 * Math.sin(t * 3.2);
+      const sway = alerting
+        ? (3.4 * Math.sin(t * 0.85) + 3.2 * Math.sin(t * 23)) * A
+        : (swayIdle * (1 - Math.max(wThink, wRead, wTalk, wCode)) +
+            swayThink * wThink +
+            swayRead * wRead +
+            swayTalk * wTalk +
+            swayCode * wCode) *
+          A;
+
       const dragTilt = dragging ? -dragNx * 14 * A : 0;
       const subSteps = dt > 0.018 ? 2 : 1;
       const h = dt / subSteps;
@@ -867,15 +1123,21 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const stretch = Math.min(Math.abs(jump.v) * 0.0005, 0.12);
       const sy = (1 - squash.x * 0.45) * (1 + stretch);
       const sx = (1 + squash.x * 0.4) * (1 - stretch * 0.55);
-      const bob = (
-        thinking
-          ? 4.5 * Math.sin(t * 2.4)
-          : talking
-          ? 2.8 * Math.sin(t * 6.4) + 1.8 * Math.sin(t * 2.0)
-          : alerting
-          ? 2 * Math.sin(t * 9)
-          : 3.2 * Math.sin(t * 1.15)
-      ) * A;
+
+      // Flotación vertical continua (conservando el pulso rápido exacto en `alert`)
+      const bobIdle = 3.2 * Math.sin(t * 1.15);
+      const bobThink = 4.5 * Math.sin(t * 2.4);
+      const bobTalk = 2.4 * Math.sin(t * 5.8) + 1.8 * Math.sin(t * 2.0);
+      const bobCode = 2.4 * Math.sin(t * 2.8) + (isTermPhase && isTermDoneOk ? -2.2 * Math.abs(Math.sin(t * 4.5)) : 0);
+      const activeBobWeight = clamp(wThink + wTalk + wCode, 0, 1);
+      const bob = alerting
+        ? 2 * Math.sin(t * 9) * A
+        : (bobIdle * (1 - activeBobWeight) +
+            bobThink * wThink +
+            bobTalk * wTalk +
+            bobCode * wCode) *
+          A;
+
       const y = C + bob + jump.x;
       const shakeX = alerting ? 1.8 * Math.sin(t * 37) * A : 0;
 
@@ -891,31 +1153,34 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         `translate(${(C - lookX.x * 2.5).toFixed(2)} ${C}) scale(${yaw.toFixed(4)} 1) translate(${-C} ${-C})`
       );
 
-      // --- Cuerpo gelatinoso (follow-through en las puntas) ---------------
+      // --- Cuerpo gelatinoso (follow-through en las puntas, estrella pura sin brazos) ---
+      const starSpeed = alerting ? 3.2 : 1 + 0.8 * wThink + 0.35 * wCode + 0.25 * wTalk;
+      a.starPhase += dt * starSpeed;
+      const starAmp = (alerting ? 2.1 : 1 + 0.6 * wThink + 0.18 * wCode) * A;
       const lag = clamp(-rot.v * 0.014, -14, 14);
       const starPath = buildStar({
-        t,
-        amp: (thinking ? 1.6 : alerting ? 2.1 : 1) * A,
-        speed: thinking ? 1.8 : alerting ? 3.2 : 1,
+        phase: a.starPhase,
+        amp: starAmp,
         lag,
-        reach: hover.x * 0.03,
+        reach: hover.x * 0.03 + wSucc * 0.02,
         wave: t - a.waveStart,
       });
       starRef.current?.setAttribute("d", starPath);
       starUnderlayRef.current?.setAttribute("d", starPath);
 
-      // --- Núcleo y aura --------------------------------------------------
-      coreRef.current?.setAttribute(
-        "r",
-        (thinking
-          ? 19 + 3 * Math.sin(t * 6)
-          : talking
-          ? 15.5 + 2.5 * Math.abs(Math.sin(t * 9.5))
-          : alerting
-          ? 16 + 3 * Math.sin(t * 9)
-          : 14 + 1.2 * Math.sin(t * 2)
-        ).toFixed(2)
-      );
+      // --- Núcleo y aura (mezclados suavemente) ---------------------------
+      const coreBase = 14 + 1.2 * Math.sin(t * 2);
+      const coreThink = 19 + 3 * Math.sin(t * 6);
+      const coreTalk = 15.5 + 2.2 * Math.abs(Math.sin(t * 8.5));
+      const coreCode = 16.5 + 2.0 * Math.sin(t * 5.2);
+      const coreR = alerting
+        ? 16 + 3 * Math.sin(t * 9)
+        : coreBase * (1 - clamp(wThink + wTalk + wCode, 0, 1)) +
+          coreThink * wThink +
+          coreTalk * wTalk +
+          coreCode * wCode;
+      coreRef.current?.setAttribute("r", coreR.toFixed(2));
+
       const summonPhase = (t - a.summonAt) / 0.65;
       const summonActive = summonPhase >= 0 && summonPhase <= 1 && !a.reduce;
       const colorMorphPhase = (t - a.colorMorphAt) / 0.72;
@@ -923,7 +1188,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
 
       // Interpolación perceptual en OKLab sobre stops, accesorios, pupilas y sonrojo
       const cs = colorStateRef.current;
-      const colorAlpha = a.reduce ? 1 : 1 - Math.exp(-9.5 * dt);
+      const colorAlpha = a.reduce ? 1 : 1 - Math.exp(-8.5 * dt);
       const cBodyTint = stepOklab(cs.cur.bodyTint, cs.target.bodyTint, colorAlpha);
       const cBodyGlow = stepOklab(cs.cur.bodyGlow, cs.target.bodyGlow, colorAlpha);
       const cRim1 = stepOklab(cs.cur.rim1, cs.target.rim1, colorAlpha);
@@ -954,15 +1219,24 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       cheekRCoreRef.current?.setAttribute("fill", cBlushCore);
       pupilLRef.current?.setAttribute("fill", cPupil);
       pupilRRef.current?.setAttribute("fill", cPupil);
+      irisLRef.current?.setAttribute("fill", cPupil);
+      irisRRef.current?.setAttribute("fill", cPupil);
+      lidShadeLRef.current?.setAttribute("fill", cPupil);
+      lidShadeRRef.current?.setAttribute("fill", cPupil);
       ringRef.current?.setAttribute("stroke", cAccessory);
       talkWave1Ref.current?.setAttribute("stroke", cRim1);
       talkWave2Ref.current?.setAttribute("stroke", cGlow);
+      talkWave3Ref.current?.setAttribute("stroke", cAccessory);
+      talkInnerShadeRef.current?.setAttribute("fill", cPupil);
+      talkTongueRef.current?.setAttribute("fill", cBlushCore);
       syncPathRefs.current.forEach((p) => p?.setAttribute("stroke", cAccessory));
       syncArrowRefs.current.forEach((p) => p?.setAttribute("fill", cAccessory));
       lensHandleRef.current?.setAttribute("stroke", cRim1);
       lensRingRef.current?.setAttribute("stroke", cBodyTint);
       lensRingRef.current?.setAttribute("fill", cRim1);
       summonRingRef.current?.setAttribute("stroke", cGlow);
+      laptopBaseRimRef.current?.setAttribute("stroke", cRim1);
+      laptopScreenRimRef.current?.setAttribute("stroke", cAccessory);
 
       if (cradleRef.current) {
         cradleRef.current.setAttribute("transform", `translate(0 ${(bob + jump.x).toFixed(2)})`);
@@ -972,17 +1246,15 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         const summonBoost = summonActive ? 0.38 * (1 - summonPhase) : 0;
         const colorBoost = colorMorphActive && !a.reduce ? 0.25 * Math.sin(colorMorphPhase * Math.PI) : 0;
         glowRef.current.setAttribute("transform", `translate(0 ${(bob + jump.x).toFixed(2)})`);
+        const baseGlowOp =
+          0.55 +
+          0.3 * hover.x +
+          wThink * (0.3 + 0.15 * Math.sin(t * 5)) +
+          wAlert * (0.2 + 0.25 * Math.sin(t * 8)) +
+          wCode * (0.18 + 0.1 * Math.sin(t * 4));
         glowRef.current.setAttribute(
           "opacity",
-          clamp(
-            (thinking
-              ? 0.85 + 0.15 * Math.sin(t * 5)
-              : alerting
-              ? 0.75 + 0.25 * Math.sin(t * 8)
-              : 0.55 + 0.3 * hover.x) + summonBoost + colorBoost,
-            0,
-            1
-          ).toFixed(3)
+          clamp(baseGlowOp + summonBoost + colorBoost, 0, 1).toFixed(3)
         );
       }
       if (summonRingRef.current) {
@@ -996,21 +1268,18 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           summonRingRef.current.setAttribute("opacity", "0");
         }
       }
+      // Anillo de datos orbital: transición suave con wThink (escala + opacidad)
       if (ringRef.current) {
+        const ringScale = 0.72 + 0.28 * popBubble.x;
         ringRef.current.setAttribute(
           "transform",
-          `translate(${C} ${y.toFixed(2)}) rotate(-18)`
+          `translate(${C} ${y.toFixed(2)}) rotate(-18) scale(${ringScale.toFixed(3)})`
         );
         ringRef.current.setAttribute("stroke-dashoffset", (-t * 40).toFixed(1));
+        ringRef.current.setAttribute("opacity", (clamp(wThink, 0, 1) * 0.72).toFixed(3));
       }
 
-      // --- Accesorios por estado (aparecen con pop elástico) ---------------
-      step(popLens, reading ? 1 : 0, 170, 13, dt);
-      step(popBubble, thinking ? 1 : 0, 170, 13, dt);
-      step(popBang, alerting ? 1 : 0, 220, 12, dt);
-      step(popSync, syncing ? 1 : 0, 120, 14, dt);
-      step(popTalk, talking ? 1 : 0, 220, 16, dt);
-
+      // --- Accesorios por estado (aparecen y desaparecen con transición elástica) ---
       // Lupa: barrido horizontal sobre el cuerpo con leve cabeceo
       setProp(
         lensRef.current,
@@ -1047,38 +1316,339 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         `translate(${C} ${y.toFixed(2)}) rotate(${(t * 140).toFixed(1)}) scale($S)`
       );
 
-      // --- Rostro: mirada, parpadeo, perspectiva --------------------------
-      if (t > nextBlink) {
+      // --- Mini-Laptop flotante que pasa de un lado a otro frente a Xox ---
+      if (laptopRef.current) {
+        const lapPop = Math.max(popLaptop.x, 0.0001);
+        const lapX = C + 54 * lapSideWave;
+        const lapArcY = 7 * Math.cos(t * 0.92 * 2);
+        const lapHoverY = y + 26 + lapArcY + (1 - clamp(popLaptop.x, 0, 1)) * 16 + 2.0 * Math.sin(t * 3.4);
+        const lapRot = -7.5 * lapSideWave + 1.6 * Math.sin(t * 2.6);
+        laptopRef.current.setAttribute(
+          "transform",
+          `translate(${lapX.toFixed(2)} ${lapHoverY.toFixed(2)}) rotate(${lapRot.toFixed(2)}) scale(${lapPop.toFixed(4)})`
+        );
+        laptopRef.current.setAttribute("opacity", clamp(popLaptop.x * 1.35, 0, 1).toFixed(3));
+      }
+      if (laptopLidRef.current) {
+        // La pantalla pivota su perspectiva 3/4 según el lado por el que viaja la laptop
+        const lidSy = Math.max(0.06, lidOpen.x);
+        const lidSkew = -6.5 * lapSideWave + (1 - clamp(lidOpen.x, 0, 1)) * 14;
+        laptopLidRef.current.setAttribute(
+          "transform",
+          `skewX(${lidSkew.toFixed(1)}) scale(1 ${lidSy.toFixed(3)})`
+        );
+      }
+      if (wCode > 0.01) {
+        // Alternancia suave entre vista de editor de código y vista de consola/terminal
+        laptopCodeGroupRef.current?.setAttribute("opacity", (1 - wTerm).toFixed(3));
+        laptopTermGroupRef.current?.setAttribute("opacity", wTerm.toFixed(3));
+
+        // Destello telequinético en las teclas de la base mientras Xox programa
+        laptopKeyGlowRefs.current.forEach((kEl, idx) => {
+          if (!kEl) return;
+          const activeKey = (Math.floor(t * 13) + idx * 2) % 7 === 0;
+          kEl.setAttribute("opacity", activeKey ? "0.95" : "0.28");
+          kEl.setAttribute("fill", activeKey ? cAccessory : "#94A3B8");
+        });
+
+        // Animación de escritura de líneas de código, barra de línea activa y cursor parpadeante
+        const typeCycle = (t * 1.55) % 4;
+        const activeRow = Math.floor(typeCycle);
+        const rowFrac = typeCycle - activeRow;
+        const primaryWidths = [9.5, 7.5, 11.0, 8.5];
+        const secondaryWidths = [13.5, 11.0, 9.5, 12.0];
+        const rowIndents = [-14.5, -11.0, -11.0, -14.5];
+        const rowYs = [-21.6, -16.8, -12.0, -7.2];
+
+        if (laptopActiveLineRef.current) {
+          laptopActiveLineRef.current.setAttribute("y", (rowYs[activeRow] - 1.1).toFixed(2));
+        }
+
+        laptopCodeLineRefs.current.forEach((lineEl, rIdx) => {
+          if (!lineEl) return;
+          const pMax = primaryWidths[rIdx] ?? 9;
+          const sMax = secondaryWidths[rIdx] ?? 11;
+          const totalMax = pMax + 1.6 + sMax;
+          const progress =
+            rIdx < activeRow
+              ? 1
+              : rIdx === activeRow
+              ? smooth01(0, 0.86, rowFrac)
+              : 0.22;
+          const curTotal = totalMax * progress;
+          const pW = clamp(curTotal, 2.2, pMax);
+          const sW = clamp(curTotal - pMax - 1.6, 0, sMax);
+          lineEl.setAttribute("width", pW.toFixed(2));
+          lineEl.setAttribute("opacity", rIdx <= activeRow ? "0.95" : "0.28");
+          const secEl = laptopCodeSecRefs.current[rIdx];
+          if (secEl) {
+            secEl.setAttribute("x", (rowIndents[rIdx] + pMax + 1.6).toFixed(2));
+            secEl.setAttribute("width", sW.toFixed(2));
+            secEl.setAttribute("opacity", sW > 0.4 && rIdx <= activeRow ? "0.88" : "0");
+          }
+        });
+        if (laptopCaretRef.current) {
+          const rIdx = clamp(activeRow, 0, 3);
+          const pMax = primaryWidths[rIdx] ?? 9;
+          const sMax = secondaryWidths[rIdx] ?? 11;
+          const curTotal = (pMax + 1.6 + sMax) * smooth01(0, 0.86, rowFrac);
+          laptopCaretRef.current.setAttribute("x", (rowIndents[rIdx] + curTotal + 0.9).toFixed(2));
+          laptopCaretRef.current.setAttribute("y", (rowYs[rIdx] - 0.5).toFixed(2));
+          laptopCaretRef.current.setAttribute(
+            "opacity",
+            Math.sin(t * 16) > -0.2 ? "0.98" : "0.15"
+          );
+          laptopCaretRef.current.setAttribute("fill", "#FFFFFF");
+        }
+
+        // Animación de terminal: comando escribiéndose + líneas de respuesta + badge de estado
+        const termLocalT = tf ? clamp(t - a.termPulseAt, 0, 3) : Math.max(0, autoCycle - 3.4);
+        const cmdProgress = smooth01(0, 0.65, termLocalT);
+        laptopTermCmdRef.current?.setAttribute("width", (4 + 20 * cmdProgress).toFixed(2));
+        laptopTermCmdRef.current?.setAttribute("fill", "#FFFFFF");
+
+        const outWidths = [25, 19, 22];
+        laptopTermOutRefs.current.forEach((oEl, idx) => {
+          if (!oEl) return;
+          const appear = smooth01(0.5 + idx * 0.26, 0.86 + idx * 0.26, termLocalT);
+          oEl.setAttribute("width", (outWidths[idx] * appear).toFixed(2));
+          oEl.setAttribute("opacity", (0.9 * appear).toFixed(3));
+          oEl.setAttribute(
+            "fill",
+            isTermErr && idx === 2
+              ? "#FCA5A5"
+              : isTermDoneOk && idx === 2
+              ? "#6EE7B7"
+              : idx === 0
+              ? cRim1
+              : "#CBD5E1"
+          );
+        });
+
+        if (laptopTermBadgeRef.current && laptopTermCheckRef.current) {
+          const badgePop = isTermDoneOk || isTermErr ? smooth01(1.2, 1.55, termLocalT) : 0;
+          laptopTermBadgeRef.current.setAttribute(
+            "fill",
+            isTermErr ? "#EF4444" : "#10B981"
+          );
+          laptopTermBadgeRef.current.setAttribute("opacity", badgePop.toFixed(3));
+          laptopTermCheckRef.current.setAttribute("opacity", badgePop.toFixed(3));
+        }
+      }
+
+      // --- Rostro: mirada, pupila viva ("ojo dentro del ojo") y gestos coherentes ---
+      if (a.forceBlinkAt > blinkStart && t - a.forceBlinkAt < 0.05) {
+        blinkStart = a.forceBlinkAt;
+        nextBlink = t + 2.4 + Math.random() * 2.8;
+      } else if (t > nextBlink) {
         blinkStart = t;
         nextBlink = t + (Math.random() < 0.2 ? 0.28 : 2.8 + Math.random() * 3.5);
       }
       const bt = t - blinkStart;
-      const blink = bt >= 0 && bt < 0.15 ? Math.sin((bt / 0.15) * Math.PI) : 0;
+      const blink = bt >= 0 && bt < 0.16 ? Math.sin((bt / 0.16) * Math.PI) : 0;
 
       faceRef.current?.setAttribute(
         "transform",
         `translate(${(lookX.x * 9).toFixed(2)} ${(lookY.x * 6 - hover.x * 1.5).toFixed(2)})`
       );
       const sep = 8 * (1 - 0.22 * Math.abs(lookX.x));
-      const eyeSY = (1 - 0.9 * blink) * (1 + hover.x * 0.08) * (st === "alert" ? 1.15 : 1);
+      const eyeAlertScale = 1 + 0.15 * wAlert;
+      const blinkScaleY = (1 - 0.92 * blink) * (1 + hover.x * 0.08) * eyeAlertScale;
       const lsx = (1 - Math.max(0, -lookX.x) * 0.3) * (1 + hover.x * 0.06);
       const rsx = (1 - Math.max(0, lookX.x) * 0.3) * (1 + hover.x * 0.06);
       eyeLRef.current?.setAttribute(
         "transform",
-        `translate(${(C - sep).toFixed(2)} ${C - 3}) scale(${lsx.toFixed(3)} ${eyeSY.toFixed(3)})`
+        `translate(${(C - sep).toFixed(2)} ${C - 3}) scale(${lsx.toFixed(3)} ${blinkScaleY.toFixed(3)})`
       );
       eyeRRef.current?.setAttribute(
         "transform",
-        `translate(${(C + sep).toFixed(2)} ${C - 3}) scale(${rsx.toFixed(3)} ${eyeSY.toFixed(3)})`
+        `translate(${(C + sep).toFixed(2)} ${C - 3}) scale(${rsx.toFixed(3)} ${blinkScaleY.toFixed(3)})`
       );
-      const talkWeight = clamp(popTalk.x, 0, 1);
-      const talkCadence = talking || talkWeight > 0.02
-        ? Math.pow(0.5 + 0.5 * Math.sin(t * 14.5) * Math.cos(t * 6.1), 1.25)
-        : 0;
-      mouthRef.current?.setAttribute(
-        "opacity",
-        (Math.max(hover.x, st === "success" ? 1 : 0) * (1 - talkWeight) * 0.85).toFixed(3)
-      );
+
+      // Geometría independiente de la esclerótica blanca vs. la pupila redonda ("el ojo dentro del ojo")
+      // Así al entrecerrar un ojo para analizar, la pupila NO se aplasta y se ve enfocando por dentro
+      const rxL = clamp(3.4 - squintL.x * 0.35, 3.0, 3.95);
+      const ryL = clamp(5.2 * (1 - squintL.x), 3.0, 6.15);
+      const rxR = clamp(3.4 - squintR.x * 0.35, 3.0, 3.95);
+      const ryR = clamp(5.2 * (1 - squintR.x), 3.0, 6.15);
+
+      eyeScleraLRef.current?.setAttribute("rx", rxL.toFixed(2));
+      eyeScleraLRef.current?.setAttribute("ry", ryL.toFixed(2));
+      eyeClipEllipseLRef.current?.setAttribute("rx", rxL.toFixed(2));
+      eyeClipEllipseLRef.current?.setAttribute("ry", ryL.toFixed(2));
+
+      eyeScleraRRef.current?.setAttribute("rx", rxR.toFixed(2));
+      eyeScleraRRef.current?.setAttribute("ry", ryR.toFixed(2));
+      eyeClipEllipseRRef.current?.setAttribute("rx", rxR.toFixed(2));
+      eyeClipEllipseRRef.current?.setAttribute("ry", ryR.toFixed(2));
+
+      // Sombra interna de párpado superior recortada dentro del ojo cuando ese ojo entrecierra analizando
+      const lidDropL = clamp(squintL.x * 4.2, 0, 2.2);
+      const lidDropR = clamp(squintR.x * 4.2, 0, 2.2);
+      lidShadeLRef.current?.setAttribute("y", (-ryL - 2.6 + lidDropL).toFixed(2));
+      lidShadeLRef.current?.setAttribute("opacity", clamp(squintL.x * 0.85, 0, 0.36).toFixed(3));
+      lidShadeRRef.current?.setAttribute("y", (-ryR - 2.6 + lidDropR).toFixed(2));
+      lidShadeRRef.current?.setAttribute("opacity", clamp(squintR.x * 0.85, 0, 0.36).toFixed(3));
+
+      // Movimiento vivo de iris, pupila y brillo especular (con sacadas de análisis y zoom por ojo)
+      const pupX = clamp(0.45 + lookX.x * 1.25 + saccadeX.x * 0.95, -1.65, 1.85);
+      const pupY = clamp(-1.1 + lookY.x * 1.45 + saccadeY.x * 0.85, -2.5, 1.65);
+      const pupRL = (1.18 * pupilScaleL.x).toFixed(2);
+      const pupRR = (1.18 * pupilScaleR.x).toFixed(2);
+      const irisRL = (1.92 * pupilScaleL.x).toFixed(2);
+      const irisRR = (1.92 * pupilScaleR.x).toFixed(2);
+
+      irisLRef.current?.setAttribute("cx", pupX.toFixed(2));
+      irisLRef.current?.setAttribute("cy", pupY.toFixed(2));
+      irisLRef.current?.setAttribute("r", irisRL);
+      pupilLRef.current?.setAttribute("cx", pupX.toFixed(2));
+      pupilLRef.current?.setAttribute("cy", pupY.toFixed(2));
+      pupilLRef.current?.setAttribute("r", pupRL);
+      glintLRef.current?.setAttribute("cx", (pupX - 0.48).toFixed(2));
+      glintLRef.current?.setAttribute("cy", (pupY - 0.52).toFixed(2));
+
+      irisRRef.current?.setAttribute("cx", pupX.toFixed(2));
+      irisRRef.current?.setAttribute("cy", pupY.toFixed(2));
+      irisRRef.current?.setAttribute("r", irisRR);
+      pupilRRef.current?.setAttribute("cx", pupX.toFixed(2));
+      pupilRRef.current?.setAttribute("cy", pupY.toFixed(2));
+      pupilRRef.current?.setAttribute("r", pupRR);
+      glintRRef.current?.setAttribute("cx", (pupX - 0.48).toFixed(2));
+      glintRRef.current?.setAttribute("cy", (pupY - 0.52).toFixed(2));
+
+      // Transición continua entre ojos abiertos y ojos felices (^^) sin corte brusco
+      const openEyeOp = clamp(1 - smooth01(0.18, 0.72, wSucc), 0, 1);
+      const openEyeSquashY = Math.max(0.18, 1 - 0.75 * wSucc);
+      const happyEyeOp = clamp(smooth01(0.15, 0.75, wSucc), 0, 1);
+      const arcPeakY = -0.8 - 4.2 * wSucc;
+      const arcEndY = 1.5 - 1.1 * (1 - wSucc);
+      const happyArcD = `M -4.5 ${arcEndY.toFixed(2)} Q 0 ${arcPeakY.toFixed(2)} 4.5 ${arcEndY.toFixed(2)}`;
+
+      eyeOpenLRef.current?.setAttribute("opacity", openEyeOp.toFixed(3));
+      eyeOpenLRef.current?.setAttribute("transform", `scale(1 ${openEyeSquashY.toFixed(3)})`);
+      eyeOpenRRef.current?.setAttribute("opacity", openEyeOp.toFixed(3));
+      eyeOpenRRef.current?.setAttribute("transform", `scale(1 ${openEyeSquashY.toFixed(3)})`);
+      eyeHappyLRef.current?.setAttribute("d", happyArcD);
+      eyeHappyLRef.current?.setAttribute("opacity", happyEyeOp.toFixed(3));
+      eyeHappyRRef.current?.setAttribute("d", happyArcD);
+      eyeHappyRRef.current?.setAttribute("opacity", happyEyeOp.toFixed(3));
+
+      // --- Boca coherente con cada fase: concentrada al editar, atenta en terminal y sonriente al terminar ---
+      const codingMouthWeight = wCode * 0.92;
+      const smileTargetWeight = Math.max(hover.x * 0.85, wSucc, codingMouthWeight) * (1 - wTalk);
+      if (mouthRef.current) {
+        if (wCode > 0.25 && wSucc < 0.2) {
+          if (isTermPhase && isTermDoneOk) {
+            // La terminal respondió OK: sonrisa cálida de satisfacción
+            mouthRef.current.setAttribute(
+              "d",
+              `M ${(C - 3.8).toFixed(2)} ${(C + 6.3).toFixed(2)} Q ${C} ${(C + 10.2).toFixed(2)} ${(C + 3.8).toFixed(2)} ${(C + 6.3).toFixed(2)}`
+            );
+          } else if (isTermPhase && isTermErr) {
+            // Error en terminal: gesto de sorpresa/atención invertido
+            mouthRef.current.setAttribute(
+              "d",
+              `M ${(C - 3.0).toFixed(2)} ${(C + 8.0).toFixed(2)} Q ${C} ${(C + 5.6).toFixed(2)} ${(C + 3.0).toFixed(2)} ${(C + 8.0).toFixed(2)}`
+            );
+          } else if (isTermPhase) {
+            // Ejecutando comando en terminal: boca pequeña de expectativa/atención (no sonriente)
+            const tenseW = 2.1 + 0.3 * Math.sin(t * 7);
+            mouthRef.current.setAttribute(
+              "d",
+              `M ${(C - tenseW).toFixed(2)} ${(C + 7.4).toFixed(2)} Q ${C} ${(C + 6.3).toFixed(2)} ${(C + tenseW).toFixed(2)} ${(C + 7.4).toFixed(2)}`
+            );
+          } else {
+            // Editando código: gesto pensativo de concentración (~ / línea modulada sin sonrisa)
+            const focusShift = 0.8 * Math.sin(t * 3.8);
+            const xL = C - 2.7 + focusShift * 0.4;
+            const xR = C + 2.7 + focusShift * 0.4;
+            const yBase = C + 7.2;
+            const waveAmp = 0.95 * Math.cos(t * 2.6);
+            mouthRef.current.setAttribute(
+              "d",
+              `M ${xL.toFixed(2)} ${yBase.toFixed(2)} C ${(C - 0.9).toFixed(2)} ${(yBase - waveAmp).toFixed(2)} ${(C + 0.9).toFixed(2)} ${(yBase + waveAmp).toFixed(2)} ${xR.toFixed(2)} ${yBase.toFixed(2)}`
+            );
+          }
+        } else {
+          const mw = 3.0 + 1.5 * wSucc;
+          const mTopY = C + 6.5 - 0.5 * wSucc;
+          const mCtrlY = C + 9.0 + 2.1 * wSucc;
+          mouthRef.current.setAttribute(
+            "d",
+            `M ${(C - mw).toFixed(2)} ${mTopY.toFixed(2)} Q ${C} ${mCtrlY.toFixed(2)} ${(C + mw).toFixed(2)} ${mTopY.toFixed(2)}`
+          );
+        }
+        mouthRef.current.setAttribute("opacity", clamp(smileTargetWeight, 0, 0.94).toFixed(3));
+      }
+
+      // --- Boca blanca luminosa con tonalidades al hablar (sílabas vivas y expresivas) ---
+      // Envolvente de frase suave que nunca aplasta la boca a una sola línea
+      const phraseWave = 0.65 + 0.35 * Math.sin(t * 2.9) * Math.cos(t * 1.3);
+      const rawSyllable =
+        0.58 +
+        0.34 * Math.sin(t * 15.6) +
+        0.24 * Math.sin(t * 9.8 + 0.7) +
+        0.18 * Math.cos(t * 22.0);
+      const targetMouthOpen = talking ? clamp(rawSyllable * phraseWave, 0.22, 1.05) * wTalk : 0;
+      // Alternancia entre vocales amplias ("a/e") y vocales redondeadas ("o/u")
+      const vowelRound = 0.5 + 0.5 * Math.sin(t * 5.8 + 1.1);
+      const targetHalfW = talking
+        ? (4.8 - 1.25 * vowelRound + 0.55 * targetMouthOpen) * (0.72 + 0.28 * wTalk)
+        : 3.6;
+
+      step(mouthOpenSpring, targetMouthOpen, 280, 19, dt);
+      step(mouthWidthSpring, targetHalfW, 220, 18, dt);
+
+      const mOpen = clamp(mouthOpenSpring.x, 0, 1.12);
+      const mHalfW = clamp(mouthWidthSpring.x, 2.7, 5.5);
+      const smileLift = 0.65 + 0.4 * (1 - vowelRound);
+
+      if (talkMouthGroupRef.current) {
+        if (wTalk > 0.01) {
+          const mouthCy = C + 6.8;
+          const mouthD = buildOrganicTalkMouthPath(C, mouthCy, mHalfW, mOpen, smileLift);
+          talkMouthPathRef.current?.setAttribute("d", mouthD);
+          talkMouthClipPathRef.current?.setAttribute("d", mouthD);
+          // Borde superior luminoso en sonrisa
+          const xL = (C - mHalfW).toFixed(2);
+          const xR = (C + mHalfW).toFixed(2);
+          const yCorner = (mouthCy - smileLift * 0.7).toFixed(2);
+          const yTopCtrl = (mouthCy - 1.15 - mOpen * 1.1 + smileLift * 0.25).toFixed(2);
+          talkUpperLipRef.current?.setAttribute(
+            "d",
+            `M ${xL} ${yCorner} Q ${C} ${yTopCtrl} ${xR} ${yCorner}`
+          );
+          // Tonalidad media celeste/acento e interior cálido sobre la base blanca de la boca
+          talkInnerShadeRef.current?.setAttribute("cy", (mouthCy + 1.4 + mOpen * 2.2).toFixed(2));
+          talkInnerShadeRef.current?.setAttribute("rx", (mHalfW * 0.82).toFixed(2));
+          talkInnerShadeRef.current?.setAttribute("ry", (1.2 + mOpen * 2.6).toFixed(2));
+          talkTongueRef.current?.setAttribute("cy", (mouthCy + 3.0 + mOpen * 3.8).toFixed(2));
+          talkTongueRef.current?.setAttribute("rx", (mHalfW * 0.64).toFixed(2));
+          talkTongueRef.current?.setAttribute("ry", (1.1 + mOpen * 1.8).toFixed(2));
+          talkMouthGroupRef.current.setAttribute("opacity", clamp(wTalk * 1.08, 0, 1).toFixed(3));
+        } else {
+          talkMouthGroupRef.current.setAttribute("opacity", "0");
+        }
+      }
+
+      if (talkWaveRef.current) {
+        const waveScale = Math.max(wTalk * (0.9 + 0.16 * mOpen), 0.0001);
+        talkWaveRef.current.setAttribute(
+          "transform",
+          `translate(${(C + 68).toFixed(2)} ${(y - 8 + 2 * Math.sin(t * 7)).toFixed(2)}) scale(${waveScale.toFixed(4)})`
+        );
+        talkWaveRef.current.setAttribute(
+          "opacity",
+          (wTalk * (0.45 + 0.55 * mOpen)).toFixed(3)
+        );
+        // Propagación escalonada en las 3 ondas de voz
+        const w1 = 0.5 + 0.5 * Math.sin(t * 14);
+        const w2 = 0.5 + 0.5 * Math.sin(t * 14 - 1.1);
+        const w3 = 0.5 + 0.5 * Math.sin(t * 14 - 2.2);
+        talkWave1Ref.current?.setAttribute("opacity", (0.55 + 0.45 * w1).toFixed(3));
+        talkWave2Ref.current?.setAttribute("opacity", (0.35 + 0.5 * w2).toFixed(3));
+        talkWave3Ref.current?.setAttribute("opacity", (0.2 + 0.45 * w3).toFixed(3));
+      }
 
       // Mejillas con sonrojo orgánico (expansión cálida, elevación y pulso suave)
       const bAmt = clamp(blush.x, 0, 1.15);
@@ -1100,30 +1670,11 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       );
       cheekRRef.current?.setAttribute("opacity", cheekOpacity);
 
-      if (talkMouthRef.current) {
-        const rx = 4.8 - 1.2 * talkCadence;
-        const ry = 1.35 + 3.45 * talkCadence;
-        talkMouthRef.current.setAttribute("rx", rx.toFixed(2));
-        talkMouthRef.current.setAttribute("ry", ry.toFixed(2));
-        talkMouthRef.current.setAttribute("opacity", (talkWeight * 0.96).toFixed(3));
-      }
-      if (talkWaveRef.current) {
-        const waveScale = Math.max(popTalk.x * (0.92 + 0.14 * talkCadence), 0.0001);
-        talkWaveRef.current.setAttribute(
-          "transform",
-          `translate(${(C + 68).toFixed(2)} ${(y - 8 + 2 * Math.sin(t * 7)).toFixed(2)}) scale(${waveScale.toFixed(4)})`
-        );
-        talkWaveRef.current.setAttribute(
-          "opacity",
-          (talkWeight * (0.55 + 0.45 * talkCadence)).toFixed(3)
-        );
-      }
-
       // --- Chispas en órbita elíptica (profundidad por opacidad + color morph) ---
       const colorOrbitBoost =
         colorMorphActive && !a.reduce ? 1.8 * Math.sin(colorMorphPhase * Math.PI) : 0;
       const orbitBoost =
-        (thinking ? 2.2 : talking ? 1.45 : dragging ? 1 + dragSpeed * 1.4 : 1) + colorOrbitBoost;
+        1 + 1.2 * wThink + 0.45 * wTalk + 0.55 * wCode + (dragging ? dragSpeed * 1.4 : 0) + colorOrbitBoost;
       sparkRefs.current.forEach((el, i) => {
         if (!el) return;
         const ang = t * (0.35 + i * 0.12) * orbitBoost + i * 2.094;
@@ -1199,7 +1750,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const triggerWave = () => {
     hoverRef.current = true;
     const a = anim.current;
-    if (a.t - a.waveStart > 4) a.waveStart = a.t; // saluda con el brazo
+    if (a.t - a.waveStart > 4) a.waveStart = a.t; // saluda con la punta estelar
   };
 
   const starOnlyHit = hitArea === "star";
@@ -1274,10 +1825,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             <stop ref={(el) => { stopRefs.current.core1 = el; }} offset="50%" stopColor={initialColors.mid} stopOpacity={glassContrast ? "0.42" : "0.3"} />
             <stop ref={(el) => { stopRefs.current.core2 = el; }} offset="100%" stopColor={initialColors.mid} stopOpacity="0" />
           </radialGradient>
-          {/* Aura dibujada dentro del SVG: se desvanece a 0 antes del borde */}
+          {/* Aura dibujada dentro del SVG: halo íntimo sutil para no teñir de cian el fondo cósmico */}
           <radialGradient id={ids.glow} cx="50%" cy="50%" r="50%">
-            <stop ref={(el) => { stopRefs.current.glow0 = el; }} offset="0%" stopColor={initialColors.glow} stopOpacity="0.32" />
-            <stop ref={(el) => { stopRefs.current.glow1 = el; }} offset="45%" stopColor={initialColors.glow} stopOpacity="0.10" />
+            <stop ref={(el) => { stopRefs.current.glow0 = el; }} offset="0%" stopColor={initialColors.glow} stopOpacity="0.15" />
+            <stop ref={(el) => { stopRefs.current.glow1 = el; }} offset="45%" stopColor={initialColors.glow} stopOpacity="0.045" />
             <stop ref={(el) => { stopRefs.current.glow2 = el; }} offset="100%" stopColor={initialColors.glow} stopOpacity="0" />
           </radialGradient>
           {/* Sonrojo orgánico difuminado sin bordes duros ni exceso de rojez */}
@@ -1286,6 +1837,18 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             <stop ref={(el) => { stopRefs.current.blush1 = el; }} offset="50%" stopColor={initialColors.blush} stopOpacity="0.24" />
             <stop ref={(el) => { stopRefs.current.blush2 = el; }} offset="100%" stopColor={initialColors.blush} stopOpacity="0" />
           </radialGradient>
+          <clipPath id={ids.mouthClip}>
+            <path
+              ref={talkMouthClipPathRef}
+              d={buildOrganicTalkMouthPath(C, C + 7.2, 3.6, 0.2, 0.6)}
+            />
+          </clipPath>
+          <clipPath id={ids.eyeClipL}>
+            <ellipse ref={eyeClipEllipseLRef} cx="0" cy="0" rx="3.4" ry="5.2" />
+          </clipPath>
+          <clipPath id={ids.eyeClipR}>
+            <ellipse ref={eyeClipEllipseRRef} cx="0" cy="0" rx="3.4" ry="5.2" />
+          </clipPath>
           {glassContrast && (
             <radialGradient id={ids.cradle} cx="50%" cy="50%" r="50%">
               <stop offset="0%" stopColor="#050914" stopOpacity="0.56" />
@@ -1326,7 +1889,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         )}
 
         {/* Aura */}
-        <circle ref={glowRef} cx={C} cy={C} r="105" fill={`url(#${ids.glow})`} opacity="0.55" />
+        <circle ref={glowRef} cx={C} cy={C} r="84" fill={`url(#${ids.glow})`} opacity="0.55" />
 
         {/* Destello estelar al aparecer */}
         <circle
@@ -1431,23 +1994,21 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           </>
         )}
 
-        {/* Anillo de datos al pensar */}
-        {state === "thinking" && (
-          <ellipse
-            ref={ringRef}
-            cx="0"
-            cy="0"
-            rx="86"
-            ry="28"
-            transform={`translate(${C} ${C}) rotate(-18)`}
-            fill="none"
-            stroke={currentColors.accessory}
-            strokeWidth="1.2"
-            strokeDasharray="5 7"
-            strokeLinecap="round"
-            opacity="0.7"
-          />
-        )}
+        {/* Anillo de datos al pensar (siempre montado para animar su entrada/salida con suavidad) */}
+        <ellipse
+          ref={ringRef}
+          cx="0"
+          cy="0"
+          rx="86"
+          ry="28"
+          transform={`translate(${C} ${C}) rotate(-18) scale(0.72)`}
+          fill="none"
+          stroke={currentColors.accessory}
+          strokeWidth="1.2"
+          strokeDasharray="5 7"
+          strokeLinecap="round"
+          opacity="0"
+        />
 
         {/* Cuerpo */}
         <g ref={bodyRef}>
@@ -1497,71 +2058,128 @@ export const XoxStar: React.FC<XoxStarProps> = ({
               <ellipse ref={cheekRCoreRef} cx="0" cy="-0.2" rx="3.8" ry="2.0" transform="rotate(9)" fill={initialColors.blushCore} opacity="0.20" />
             </g>
 
+            {/* Ojo izquierdo: esclerótica con zoom/squint independiente + iris/pupila redonda recortada ("ojo dentro del ojo") */}
             <g ref={eyeLRef} transform={`translate(${C - 8} ${C - 3})`}>
-              {state === "success" ? (
-                <path d="M -4.5 1.5 Q 0 -5 4.5 1.5" stroke="#FFFFFF" strokeWidth="2.2" strokeLinecap="round" fill="none" />
-              ) : (
-                <>
-                  <ellipse cx="0" cy="0" rx="3.4" ry="5.2" fill="#FFFFFF" opacity="0.96" />
-                  <circle ref={pupilLRef} cx="1.3" cy="-1.9" r="1.15" fill={currentColors.pupil} />
-                </>
-              )}
+              <g ref={eyeOpenLRef}>
+                <ellipse ref={eyeScleraLRef} cx="0" cy="0" rx="3.4" ry="5.2" fill="#FFFFFF" opacity="0.96" />
+                <g clipPath={`url(#${ids.eyeClipL})`}>
+                  <circle ref={irisLRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.pupil} opacity="0.26" />
+                  <circle ref={pupilLRef} cx="1.1" cy="-1.5" r="1.18" fill={currentColors.pupil} />
+                  <circle ref={glintLRef} cx="0.65" cy="-2.0" r="0.45" fill="#FFFFFF" opacity="0.92" />
+                  <rect ref={lidShadeLRef} x="-5" y="-7.5" width="10" height="3.2" fill={currentColors.pupil} opacity="0" />
+                </g>
+              </g>
+              <path
+                ref={eyeHappyLRef}
+                d="M -4.5 1.5 Q 0 -5 4.5 1.5"
+                stroke="#FFFFFF"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                fill="none"
+                opacity="0"
+              />
             </g>
+            {/* Ojo derecho: esclerótica con zoom/squint independiente + iris/pupila redonda recortada ("ojo dentro del ojo") */}
             <g ref={eyeRRef} transform={`translate(${C + 8} ${C - 3})`}>
-              {state === "success" ? (
-                <path d="M -4.5 1.5 Q 0 -5 4.5 1.5" stroke="#FFFFFF" strokeWidth="2.2" strokeLinecap="round" fill="none" />
-              ) : (
-                <>
-                  <ellipse cx="0" cy="0" rx="3.4" ry="5.2" fill="#FFFFFF" opacity="0.96" />
-                  <circle ref={pupilRRef} cx="1.3" cy="-1.9" r="1.15" fill={currentColors.pupil} />
-                </>
-              )}
+              <g ref={eyeOpenRRef}>
+                <ellipse ref={eyeScleraRRef} cx="0" cy="0" rx="3.4" ry="5.2" fill="#FFFFFF" opacity="0.96" />
+                <g clipPath={`url(#${ids.eyeClipR})`}>
+                  <circle ref={irisRRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.pupil} opacity="0.26" />
+                  <circle ref={pupilRRef} cx="1.1" cy="-1.5" r="1.18" fill={currentColors.pupil} />
+                  <circle ref={glintRRef} cx="0.65" cy="-2.0" r="0.45" fill="#FFFFFF" opacity="0.92" />
+                  <rect ref={lidShadeRRef} x="-5" y="-7.5" width="10" height="3.2" fill={currentColors.pupil} opacity="0" />
+                </g>
+              </g>
+              <path
+                ref={eyeHappyRRef}
+                d="M -4.5 1.5 Q 0 -5 4.5 1.5"
+                stroke="#FFFFFF"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                fill="none"
+                opacity="0"
+              />
             </g>
 
-            {/* Boca: aparece al hacer hover o al celebrar */}
+            {/* Boca de sonrisa / concentración (hover / celebración / programación) */}
             <path
               ref={mouthRef}
-              d={state === "success" ? `M ${C - 4.5} ${C + 6} Q ${C} ${C + 11} ${C + 4.5} ${C + 6}` : `M ${C - 3} ${C + 6.5} Q ${C} ${C + 9} ${C + 3} ${C + 6.5}`}
+              d={`M ${C - 3} ${C + 6.5} Q ${C} ${C + 9} ${C + 3} ${C + 6.5}`}
               stroke="#FFFFFF"
               strokeWidth="1.6"
               strokeLinecap="round"
               fill="none"
               opacity="0"
             />
-            {/* Boca articulada al hablar en vivo */}
-            <ellipse
-              ref={talkMouthRef}
-              cx={C}
-              cy={C + 8.5}
-              rx="4.6"
-              ry="2.6"
-              fill="#0B1324"
-              stroke="#FFFFFF"
-              strokeWidth="1.35"
-              opacity="0"
-            />
+            {/* Boca blanca luminosa con tonalidades internas al hablar */}
+            <g ref={talkMouthGroupRef} opacity="0">
+              <path
+                ref={talkMouthPathRef}
+                d={buildOrganicTalkMouthPath(C, C + 6.8, 3.8, 0.4, 0.7)}
+                fill="#FFFFFF"
+                opacity="0.96"
+              />
+              <g clipPath={`url(#${ids.mouthClip})`}>
+                <ellipse
+                  ref={talkInnerShadeRef}
+                  cx={C}
+                  cy={C + 8.8}
+                  rx="3.0"
+                  ry="2.2"
+                  fill={initialColors.pupil}
+                  opacity="0.38"
+                />
+                <ellipse
+                  ref={talkTongueRef}
+                  cx={C}
+                  cy={C + 10.6}
+                  rx="2.4"
+                  ry="1.6"
+                  fill={initialColors.blushCore}
+                  opacity="0.78"
+                />
+              </g>
+              <path
+                ref={talkUpperLipRef}
+                d={`M ${C - 3.8} ${C + 6.4} Q ${C} ${C + 5.8} ${C + 3.8} ${C + 6.4}`}
+                fill="none"
+                stroke="#FFFFFF"
+                strokeWidth="1.35"
+                strokeLinecap="round"
+                opacity="0.98"
+              />
+            </g>
           </g>
         </g>
 
-        {/* Ondas discretas de voz al hablar (talking) */}
+        {/* Ondas armónicas de voz al hablar (talking) */}
         <g ref={talkWaveRef} opacity="0" transform={`translate(${C + 68} ${C - 8}) scale(0.0001)`}>
           <path
             ref={talkWave1Ref}
-            d="M 0 -7 Q 6 0 0 7"
+            d="M 0 -6.5 Q 5.5 0 0 6.5"
             fill="none"
             stroke={initialColors.rim1}
-            strokeWidth="2.1"
+            strokeWidth="2.0"
             strokeLinecap="round"
             opacity="0.9"
           />
           <path
             ref={talkWave2Ref}
-            d="M 6.5 -12 Q 15 0 6.5 12"
+            d="M 6 -11.5 Q 14 0 6 11.5"
             fill="none"
             stroke={initialColors.glow}
-            strokeWidth="1.8"
+            strokeWidth="1.75"
             strokeLinecap="round"
             opacity="0.65"
+          />
+          <path
+            ref={talkWave3Ref}
+            d="M 12 -16 Q 22 0 12 16"
+            fill="none"
+            stroke={initialColors.accessory}
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            opacity="0.4"
           />
         </g>
 
@@ -1597,6 +2215,230 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           <line ref={lensHandleRef} x1="9.5" y1="9.5" x2="22" y2="22" stroke={initialColors.rim1} strokeWidth="4.5" strokeLinecap="round" />
           <circle ref={lensRingRef} cx="0" cy="0" r="14" fill={initialColors.rim1} fillOpacity="0.14" stroke={initialColors.bodyTint} strokeWidth="2.6" />
           <path d="M -8 -4 A 9 9 0 0 1 -2 -9" fill="none" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" opacity="0.8" />
+        </g>
+
+        {/* Mini-Laptop holográfica lateral en perspectiva 3/4 (edición de código + terminal, sin brazos) */}
+        <g ref={laptopRef} opacity="0" transform={`translate(${C + 58} ${C + 20}) scale(0.0001)`}>
+          {/* Resplandor difuminado con gradiente radial (sin bordes duros) */}
+          <ellipse
+            ref={laptopScreenGlowRef}
+            cx="0"
+            cy="-12"
+            rx="34"
+            ry="24"
+            fill={`url(#${ids.glow})`}
+            opacity="0.65"
+          />
+
+          {/* Tapa / Pantalla desplegable desde la bisagra (y=0) */}
+          <g ref={laptopLidRef}>
+            {/* Carcasa exterior y bisel de cristal oscuro */}
+            <rect
+              ref={laptopScreenRimRef}
+              x="-22"
+              y="-31"
+              width="44"
+              height="30"
+              rx="4.4"
+              fill="#070B14"
+              fillOpacity="0.96"
+              stroke={initialColors.accessory}
+              strokeWidth="1.25"
+            />
+            <rect
+              x="-20.6"
+              y="-29.6"
+              width="41.2"
+              height="27.2"
+              rx="3.4"
+              fill="none"
+              stroke="#FFFFFF"
+              strokeOpacity="0.14"
+              strokeWidth="0.6"
+            />
+            {/* Reflejo diagonal de cristal en la pantalla */}
+            <path
+              d="M -20 -29 L -5 -29 L -15 -2.5 L -20 -2.5 Z"
+              fill="#FFFFFF"
+              opacity="0.045"
+            />
+            {/* Barra superior del IDE + notch central */}
+            <rect x="-5" y="-30.4" width="10" height="1.8" rx="0.9" fill="#111827" />
+            <circle cx="-16.8" cy="-26.8" r="1.05" fill="#F87171" opacity="0.9" />
+            <circle cx="-13.6" cy="-26.8" r="1.05" fill="#FBBF24" opacity="0.9" />
+            <circle cx="-10.4" cy="-26.8" r="1.05" fill="#34D399" opacity="0.9" />
+            <rect x="-5.5" y="-27.8" width="14" height="2.0" rx="1.0" fill="#FFFFFF" opacity="0.10" />
+            <line x1="-20" y1="-24.0" x2="20" y2="-24.0" stroke="#FFFFFF" strokeOpacity="0.10" strokeWidth="0.7" />
+
+            {/* Vista 1: Editor de código multi-token con barra de línea activa y cursor */}
+            <g ref={laptopCodeGroupRef}>
+              {/* Resaltado de la línea activa */}
+              <rect
+                ref={laptopActiveLineRef}
+                x="-19.5"
+                y="-22.7"
+                width="39"
+                height="4.0"
+                rx="1.2"
+                fill="#FFFFFF"
+                opacity="0.06"
+              />
+              {/* Columna de números de línea */}
+              {[-21.6, -16.8, -12.0, -7.2].map((ry, idx) => (
+                <rect
+                  key={`ln-${idx}`}
+                  x="-18.2"
+                  y={ry}
+                  width="1.8"
+                  height="1.8"
+                  rx="0.6"
+                  fill="#64748B"
+                  opacity="0.45"
+                />
+              ))}
+              {/* Tokens de sintaxis (primario + secundario por fila) */}
+              {[
+                { y: -21.6, x: -14.5, c1: "#38BDF8", c2: "#E2E8F0" },
+                { y: -16.8, x: -11.0, c1: "#C084FC", c2: "#6EE7B7" },
+                { y: -12.0, x: -11.0, c1: "#34D399", c2: "#FDE68A" },
+                { y: -7.2, x: -14.5, c1: "#F472B6", c2: "#93C5FD" },
+              ].map((row, idx) => (
+                <React.Fragment key={idx}>
+                  <rect
+                    ref={(el) => {
+                      laptopCodeLineRefs.current[idx] = el;
+                    }}
+                    x={row.x}
+                    y={row.y}
+                    width="9"
+                    height="2.1"
+                    rx="1.05"
+                    fill={row.c1}
+                    opacity="0.92"
+                  />
+                  <rect
+                    ref={(el) => {
+                      laptopCodeSecRefs.current[idx] = el;
+                    }}
+                    x={row.x + 10.6}
+                    y={row.y}
+                    width="11"
+                    height="2.1"
+                    rx="1.05"
+                    fill={row.c2}
+                    opacity="0.85"
+                  />
+                </React.Fragment>
+              ))}
+              <rect
+                ref={laptopCaretRef}
+                x="4"
+                y="-17.2"
+                width="1.4"
+                height="3.1"
+                rx="0.6"
+                fill="#FFFFFF"
+              />
+            </g>
+
+            {/* Vista 2: Consola / Terminal ejecutando comando y mostrando respuesta */}
+            <g ref={laptopTermGroupRef} opacity="0">
+              {/* Fondo sutil de panel de terminal */}
+              <rect x="-19.2" y="-22.6" width="38.4" height="19.6" rx="2.4" fill="#030712" fillOpacity="0.65" />
+              {/* Prompt `>_` */}
+              <path
+                d="M -16.8 -20.0 L -14.5 -18.7 L -16.8 -17.4"
+                fill="none"
+                stroke="#38BDF8"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <rect
+                ref={laptopTermCmdRef}
+                x="-12.2"
+                y="-19.7"
+                width="18"
+                height="2.0"
+                rx="1.0"
+                fill="#FFFFFF"
+              />
+              {/* Líneas de respuesta de la terminal (stdout) */}
+              {[-14.6, -10.6, -6.6].map((ry, idx) => (
+                <rect
+                  key={idx}
+                  ref={(el) => {
+                    laptopTermOutRefs.current[idx] = el;
+                  }}
+                  x="-16.8"
+                  y={ry}
+                  width="18"
+                  height="1.85"
+                  rx="0.9"
+                  fill="#CBD5E1"
+                  opacity="0.85"
+                />
+              ))}
+              {/* Badge de estado de salida de la terminal (✓ ok / ! error) */}
+              <circle
+                ref={laptopTermBadgeRef}
+                cx="14.5"
+                cy="-7.5"
+                r="3.8"
+                fill="#10B981"
+                opacity="0"
+              />
+              <path
+                ref={laptopTermCheckRef}
+                d="M 12.8 -7.5 L 14.1 -6.2 L 16.4 -8.8"
+                fill="none"
+                stroke="#FFFFFF"
+                strokeWidth="1.35"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity="0"
+              />
+            </g>
+          </g>
+
+          {/* Base del teclado en perspectiva 3/4 con 2 hileras de teclas y trackpad */}
+          <path
+            ref={laptopBaseRimRef}
+            d="M -22.5 0 L 22.5 0 L 28.5 7.4 Q 29.2 9.0 26.8 9.0 L -24.5 9.0 Q -26.8 9.0 -26.0 7.4 Z"
+            fill="#0F172A"
+            fillOpacity="0.96"
+            stroke={initialColors.rim1}
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+          />
+          {/* Bisagra oscura central */}
+          <rect x="-15" y="-0.6" width="30" height="1.3" rx="0.65" fill="#020617" opacity="0.85" />
+          {/* Teclas iluminadas por telequinesis */}
+          {[
+            { x: -18.5, y: 1.6, w: 4.4 },
+            { x: -12.5, y: 1.6, w: 4.4 },
+            { x: -6.5, y: 1.6, w: 4.4 },
+            { x: -0.5, y: 1.6, w: 4.4 },
+            { x: 5.5, y: 1.6, w: 4.4 },
+            { x: 11.5, y: 1.6, w: 4.4 },
+            { x: -7.5, y: 4.0, w: 14.0 },
+          ].map((k, idx) => (
+            <rect
+              key={idx}
+              ref={(el) => {
+                laptopKeyGlowRefs.current[idx] = el;
+              }}
+              x={k.x}
+              y={k.y}
+              width={k.w}
+              height="1.7"
+              rx="0.65"
+              fill="#94A3B8"
+              opacity="0.3"
+            />
+          ))}
+          {/* Trackpad frontal sutil */}
+          <rect x="-5.5" y="6.3" width="11" height="1.6" rx="0.7" fill="#FFFFFF" opacity="0.24" />
         </g>
 
         {/* Burbuja de pensamiento "..." */}
@@ -1639,7 +2481,7 @@ function ellipseCutoutPath(cx: number, cy: number, rx: number, ry: number): stri
 }
 
 const XOX_SILHOUETTE_PATH =
-  buildStar({ t: 0, amp: 0, speed: 1, lag: 0, reach: 0, wave: -1 }) +
+  buildStar({ phase: 0, amp: 0, lag: 0, reach: 0, wave: -1 }) +
   ellipseCutoutPath(C - 8.5 * 1.15, C - 3, 6.0, 9.2) +
   ellipseCutoutPath(C + 8.5 * 1.15, C - 3, 6.0, 9.2);
 

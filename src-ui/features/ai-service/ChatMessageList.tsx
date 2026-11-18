@@ -5,7 +5,9 @@ import {
   type CommandPermissionUiItem,
 } from "./CommandPermissionCard";
 import {
+  AppWindow,
   BarChart3,
+  Blocks,
   Check,
   ClipboardCheck,
   Copy,
@@ -24,6 +26,7 @@ import {
   Pencil,
   RotateCcw,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Square,
   Table2,
@@ -41,6 +44,7 @@ import {
   resolveXoxAccentPreset,
   type XoxAccentPreset,
   type XoxSubagentOrbitItem,
+  type XoxTerminalFeed,
 } from "../../components/XoxStar";
 import { ProviderIcon } from "./ProviderIcon";
 import {
@@ -104,6 +108,7 @@ export interface UiChatMessage {
   tokensUsed?: number;
   generatedTaskCount?: number;
   canvas?: CanvasArtifact;
+  canvases?: CanvasArtifact[];
   generatedPdfs?: GeneratedPdfArtifact[];
   isError?: boolean;
   vaultPrompt?: VaultPromptSpec;
@@ -161,6 +166,7 @@ interface ChatMessageListProps {
   xoxTravelPhase?: "idle" | "to-studio" | "from-studio";
   glideSeq?: number;
   rosterSubagents?: XoxSubagentOrbitItem[];
+  xoxTerminal?: XoxTerminalFeed | null;
 }
 
 function FormattedReply({
@@ -288,6 +294,7 @@ function FormattedReply({
 
 const STREAM_PHASE_LABEL: Partial<Record<XoxState, string>> = {
   reading: "Leyendo contexto…",
+  coding: "Ejecutando código y terminal…",
   talking: "Respondiendo…",
   syncing: "Preparando Canvas y tareas…",
 };
@@ -550,6 +557,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   xoxTravelPhase = "idle",
   glideSeq = 0,
   rosterSubagents,
+  xoxTerminal,
   onOpenTasksTab,
   onRegenerateMessage,
   onRateMessage,
@@ -702,6 +710,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     className="w-[110px] h-[110px] @sm:w-[130px] @sm:h-[130px] @md:w-[150px] @md:h-[150px] @lg:w-[174px] @lg:h-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] @2xl:h-[clamp(198px,19.5cqi,264px)]"
                     summonTrigger={summonTrigger}
                     onClick={onXoxClick}
+                    terminal={xoxTerminal}
                     subagents={
                       msg.subagents?.length
                         ? msg.subagents
@@ -973,7 +982,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 )}
 
               {/* Indicador en vivo mientras Xox diseña Canvas */}
-              {msg.isStreaming && isActiveGuideTurn && xoxState === "syncing" && !msg.canvas && (
+              {msg.isStreaming && isActiveGuideTurn && xoxState === "syncing" && !msg.canvas && !(msg.canvases && msg.canvases.length > 0) && (
                 <div className="rounded-2xl border border-white/[0.1] bg-[#0b0c10] px-3.5 py-2.5 flex items-center gap-2.5 text-[12px] text-zinc-200">
                   <Sparkles className="w-3.5 h-3.5 text-zinc-300 animate-pulse shrink-0" />
                   <span className="xox-shimmer font-medium">
@@ -982,254 +991,141 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 </div>
               )}
 
-              {/* Tarjeta interactiva de Canvas sobria en negro/gris Liquid Glass (sin gradientes de colores) */}
-              {msg.canvas && (() => {
-                const isOpen = activeCanvasId === msg.canvas.id;
-                const kindLabel =
-                  msg.canvas.kind === "plan"
-                    ? "Plan de acción"
-                    : msg.canvas.kind === "diagram"
-                      ? "Diagrama"
-                      : msg.canvas.kind === "dashboard"
-                        ? "Dashboard"
-                        : msg.canvas.kind === "form"
-                          ? msg.canvas.form?.purpose === "study_quiz"
-                            ? "Cuestionario"
-                            : "Formulario"
-                          : msg.canvas.kind === "comparison"
-                            ? "Comparativa"
-                            : msg.canvas.kind === "document"
-                              ? "Documento"
-                              : "Tabla";
-                const CardIcon =
-                  msg.canvas.kind === "plan"
-                    ? ListChecks
-                    : msg.canvas.kind === "diagram"
-                      ? Workflow
-                      : msg.canvas.kind === "dashboard"
-                        ? BarChart3
-                        : msg.canvas.kind === "form"
-                          ? ClipboardCheck
-                          : msg.canvas.kind === "document"
-                            ? FileText
-                            : Table2;
-                const planStepsTotal = msg.canvas.plan
-                  ? msg.canvas.plan.phases.reduce((acc, ph) => acc + ph.steps.length, 0)
-                  : 0;
-                const planStatusLabel = msg.canvas.plan
-                  ? msg.canvas.plan.status === "approved"
-                    ? "Aprobado"
-                    : msg.canvas.plan.status === "completed"
-                      ? "Completado"
-                      : msg.canvas.plan.status === "in_progress"
-                        ? "En ejecución"
-                        : msg.canvas.plan.status === "changes_requested"
-                          ? "Ajustes solicitados"
-                          : "Listo para revisión"
-                  : null;
-                const visibleColumns = msg.canvas.columns.slice(0, 4);
-                const extraColumns = msg.canvas.columns.length - visibleColumns.length;
+              {/* Tarjetas interactivas de Canvas sobrias en negro/gris Liquid Glass */}
+              {(() => {
+                const msgCanvases =
+                  msg.canvases && msg.canvases.length > 0
+                    ? msg.canvases
+                    : msg.canvas
+                      ? [msg.canvas]
+                      : [];
+                if (msgCanvases.length === 0) return null;
 
-                return (
-                  <button
-                    type="button"
-                    onClick={() => onOpenCanvas?.(msg.canvas!)}
-                    style={{
-                      boxShadow:
-                        "inset 0 1px 0 rgba(255,255,255,0.08), 0 12px 28px -18px rgba(0,0,0,0.85)",
-                    }}
-                    className={`group relative overflow-hidden w-full max-w-[490px] @5xl:max-w-[560px] text-left rounded-2xl border p-3.5 transition-all duration-200 cursor-pointer ${
-                      isOpen
-                        ? "bg-[#0e1015] border-white/[0.18]"
-                        : "bg-[#0a0b0f] hover:bg-[#0e1015] border-white/[0.09] hover:border-white/[0.16]"
-                    }`}
-                  >
-                    <div className="relative flex items-center justify-between gap-2.5 mb-2.5">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="w-7 h-7 rounded-xl bg-zinc-900 border border-white/[0.12] flex items-center justify-center shrink-0">
-                          <CardIcon className="w-3.5 h-3.5 text-zinc-200" />
+                return msgCanvases.map((cItem) => {
+                  const isOpen = activeCanvasId === cItem.id;
+                  const kindLabel =
+                    cItem.kind === "composite"
+                      ? "Vista compuesta"
+                      : cItem.kind === "interactive"
+                        ? "Interactivo"
+                        : cItem.kind === "custom_app"
+                          ? "Mini-app"
+                          : cItem.kind === "plan"
+                            ? "Plan de acción"
+                            : cItem.kind === "diagram"
+                              ? "Diagrama"
+                              : cItem.kind === "dashboard"
+                                ? "Dashboard"
+                                : cItem.kind === "form"
+                                  ? cItem.form?.purpose === "study_quiz"
+                                    ? "Cuestionario"
+                                    : "Formulario"
+                                  : cItem.kind === "comparison"
+                                    ? "Comparativa"
+                                    : cItem.kind === "document"
+                                      ? "Documento"
+                                      : "Tabla";
+                  const CardIcon =
+                    cItem.kind === "composite"
+                      ? Blocks
+                      : cItem.kind === "interactive"
+                        ? SlidersHorizontal
+                        : cItem.kind === "custom_app"
+                          ? AppWindow
+                          : cItem.kind === "plan"
+                            ? ListChecks
+                            : cItem.kind === "diagram"
+                              ? Workflow
+                              : cItem.kind === "dashboard"
+                                ? BarChart3
+                                : cItem.kind === "form"
+                                  ? ClipboardCheck
+                                  : cItem.kind === "document"
+                                    ? FileText
+                                    : Table2;
+                  const planStepsTotal = cItem.plan
+                    ? cItem.plan.phases.reduce((acc, ph) => acc + ph.steps.length, 0)
+                    : 0;
+                  const planStatusLabel = cItem.plan
+                    ? cItem.plan.status === "approved"
+                      ? "Aprobado"
+                      : cItem.plan.status === "completed"
+                        ? "Completado"
+                        : cItem.plan.status === "in_progress"
+                          ? "En ejecución"
+                          : cItem.plan.status === "changes_requested"
+                            ? "Ajustes solicitados"
+                            : "Listo para revisión"
+                    : null;
+                  const conciseSubtext =
+                    cItem.subtitle ||
+                    (cItem.summary && cItem.summary !== cItem.title ? cItem.summary : undefined) ||
+                    (cItem.plan
+                      ? `${cItem.plan.phases.length} ${cItem.plan.phases.length === 1 ? "fase" : "fases"} · ${planStepsTotal} pasos`
+                      : cItem.dashboard
+                        ? `${cItem.dashboard.kpis.length} KPIs · ${cItem.dashboard.charts.length} ${cItem.dashboard.charts.length === 1 ? "gráfica" : "gráficas"}`
+                        : cItem.columns.length > 0
+                          ? `${cItem.rows.length} ${cItem.rows.length === 1 ? "fila" : "filas"} · ${cItem.columns.length} columnas`
+                          : undefined);
+
+                  return (
+                    <button
+                      key={cItem.id}
+                      type="button"
+                      onClick={() => onOpenCanvas?.(cItem)}
+                      style={{
+                        boxShadow:
+                          "inset 0 1px 0 rgba(255,255,255,0.08), 0 12px 28px -18px rgba(0,0,0,0.85)",
+                      }}
+                      className={`group relative overflow-hidden w-full max-w-[490px] @5xl:max-w-[560px] text-left rounded-2xl border px-3.5 py-3 transition-all duration-200 cursor-pointer ${
+                        isOpen
+                          ? "bg-[#0e1015] border-white/[0.18]"
+                          : "bg-[#0a0b0f] hover:bg-[#0e1015] border-white/[0.09] hover:border-white/[0.16]"
+                      }`}
+                    >
+                      <div className="relative flex items-center justify-between gap-2 mb-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-7 h-7 rounded-xl bg-zinc-900 border border-white/[0.12] flex items-center justify-center shrink-0">
+                            <CardIcon className="w-3.5 h-3.5 text-zinc-200" />
+                          </div>
+                          <span className="px-2 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.09] text-[10px] font-medium text-zinc-300 shrink-0">
+                            {planStatusLabel ?? kindLabel}
+                          </span>
                         </div>
-                        <span className="px-2 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.09] text-[10px] font-medium text-zinc-200 shrink-0">
-                          {kindLabel}
-                        </span>
-                        <span className="text-[11px] text-zinc-400 truncate">
-                          {msg.canvas.plan
-                            ? `${msg.canvas.plan.phases.length} ${
-                                msg.canvas.plan.phases.length === 1 ? "fase" : "fases"
-                              } · ${planStepsTotal} pasos`
-                            : msg.canvas.diagram
-                              ? `${msg.canvas.diagram.nodes.length} nodos · ${msg.canvas.diagram.edges.length} enlaces`
-                              : msg.canvas.dashboard
-                                ? `${msg.canvas.dashboard.kpis.length} KPIs · ${msg.canvas.dashboard.charts.length} ${
-                                    msg.canvas.dashboard.charts.length === 1 ? "gráfica" : "gráficas"
-                                  }`
-                                : msg.canvas.form
-                                  ? `${msg.canvas.form.fields.length} ${
-                                      msg.canvas.form.fields.length === 1
-                                        ? msg.canvas.form.purpose === "study_quiz"
-                                          ? "pregunta"
-                                          : "campo"
-                                        : msg.canvas.form.purpose === "study_quiz"
-                                          ? "preguntas"
-                                          : "campos"
-                                    }${
-                                      msg.canvas.form.score && msg.canvas.form.score.gradableCount > 0
-                                        ? ` · ${msg.canvas.form.score.percent}%`
-                                        : msg.canvas.form.submitted
-                                          ? " · Enviado"
-                                          : ""
-                                    }`
-                                  : msg.canvas.columns.length > 0
-                                  ? `${msg.canvas.rows.length} ${
-                                      msg.canvas.rows.length === 1 ? "fila" : "filas"
-                                    } · ${msg.canvas.columns.length} cols`
-                                  : "Vista Canvas"}
+                        <span
+                          className={`quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium shrink-0 ${
+                            isOpen
+                              ? "text-white"
+                              : "text-zinc-200 group-hover:text-white"
+                          }`}
+                        >
+                          {isOpen && <span className="w-1.5 h-1.5 rounded-full bg-zinc-200" />}
+                          <span>{isOpen ? "Abierto" : "Abrir"}</span>
+                          <ExternalLink className="w-3 h-3 text-zinc-300" />
                         </span>
                       </div>
-                      <span
-                        className={`quick-liquid-btn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium shrink-0 ${
-                          isOpen
-                            ? "text-white"
-                            : "text-zinc-200 group-hover:text-white"
-                        }`}
-                      >
-                        {isOpen && <span className="w-1.5 h-1.5 rounded-full bg-zinc-200" />}
-                        <span>{isOpen ? "Abierto" : "Abrir"}</span>
-                        <ExternalLink className="w-3 h-3 text-zinc-300" />
-                      </span>
-                    </div>
 
-                    <div className="relative space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
+                      <div className="relative space-y-0.5">
                         <h4 className="text-[13.5px] font-semibold text-white leading-snug line-clamp-2 tracking-[-0.01em]">
-                          {renderInlineMarkdown(msg.canvas.title, {
+                          {renderInlineMarkdown(cItem.title, {
                             variant: "default",
                             preserveLineBreaks: false,
-                            keyPrefix: `cc-t-${msg.canvas.id}`,
+                            keyPrefix: `cc-t-${cItem.id}`,
                           })}
                         </h4>
-                        {planStatusLabel && (
-                          <span className="px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/[0.12] text-[10px] text-zinc-200">
-                            {planStatusLabel}
-                          </span>
-                        )}
-                      </div>
-                      {msg.canvas.subtitle && (
-                        <p className="text-[11px] text-zinc-400 leading-snug line-clamp-1">
-                          {renderInlineMarkdown(msg.canvas.subtitle, {
-                            variant: "default",
-                            preserveLineBreaks: false,
-                            keyPrefix: `cc-s-${msg.canvas.id}`,
-                          })}
-                        </p>
-                      )}
-                    </div>
-
-                    {msg.canvas.plan && msg.canvas.plan.phases.length > 0 && (
-                      <div className="relative mt-2.5 flex flex-wrap items-center gap-1.5">
-                        {msg.canvas.plan.phases.slice(0, 3).map((ph, idx) => (
-                          <span
-                            key={ph.id}
-                            className="px-2 py-0.5 rounded-md bg-white/[0.045] border border-white/[0.08] text-[10.5px] text-zinc-300 truncate max-w-[170px]"
-                          >
-                            {idx + 1}. {ph.title}
-                          </span>
-                        ))}
-                        {msg.canvas.plan.phases.length > 3 && (
-                          <span className="px-1.5 py-0.5 text-[10px] text-zinc-500">
-                            +{msg.canvas.plan.phases.length - 3}
-                          </span>
-                        )}
-                      </div>
-                    )}
-
-                    {msg.canvas.diagram && msg.canvas.diagram.nodes.length > 0 && (
-                      <div className="relative mt-2.5 flex flex-wrap items-center gap-1.5">
-                        {msg.canvas.diagram.nodes.slice(0, 4).map((nd) => (
-                          <span
-                            key={nd.id}
-                            className="px-2 py-0.5 rounded-md bg-white/[0.045] border border-white/[0.08] text-[10.5px] text-zinc-300 truncate max-w-[140px]"
-                          >
-                            {nd.label}
-                          </span>
-                        ))}
-                        {msg.canvas.diagram.nodes.length > 4 && (
-                          <span className="px-1.5 py-0.5 text-[10px] text-zinc-500">
-                            +{msg.canvas.diagram.nodes.length - 4}
-                          </span>
-                        )}
-                      </div>
-                    )}
-
-                    {msg.canvas.dashboard && msg.canvas.dashboard.kpis.length > 0 && (
-                      <div className="relative mt-2.5 grid grid-cols-3 gap-1.5">
-                        {msg.canvas.dashboard.kpis.slice(0, 3).map((kpi) => (
-                          <div
-                            key={kpi.id}
-                            className="px-2 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.08] min-w-0"
-                          >
-                            <span className="block text-[9.5px] text-zinc-400 truncate">
-                              {kpi.label}
-                            </span>
-                            <span className="block text-[12px] font-semibold font-mono text-white truncate">
-                              {kpi.value}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {msg.canvas.form && msg.canvas.form.fields.length > 0 && (
-                      <div className="relative mt-2.5 flex flex-wrap items-center gap-1.5">
-                        {msg.canvas.form.fields.slice(0, 3).map((fld, idx) => (
-                          <span
-                            key={fld.id}
-                            className="px-2 py-0.5 rounded-md bg-white/[0.045] border border-white/[0.08] text-[10.5px] text-zinc-300 truncate max-w-[175px]"
-                          >
-                            {idx + 1}. {fld.label}
-                          </span>
-                        ))}
-                        {msg.canvas.form.fields.length > 3 && (
-                          <span className="px-1.5 py-0.5 text-[10px] text-zinc-500">
-                            +{msg.canvas.form.fields.length - 3}
-                          </span>
-                        )}
-                      </div>
-                    )}
-
-                    {visibleColumns.length > 0 && (
-                      <div className="relative mt-2.5 flex flex-wrap items-center gap-1.5">
-                        {visibleColumns.map((col) => (
-                          <span
-                            key={col.id}
-                            className="px-2 py-0.5 rounded-md bg-white/[0.045] border border-white/[0.08] text-[10.5px] text-zinc-300"
-                          >
-                            {renderInlineMarkdown(col.label, {
+                        {conciseSubtext && (
+                          <p className="text-[11px] text-zinc-400 leading-snug line-clamp-1">
+                            {renderInlineMarkdown(conciseSubtext, {
                               variant: "default",
                               preserveLineBreaks: false,
-                              keyPrefix: `cc-col-${msg.canvas!.id}-${col.id}`,
+                              keyPrefix: `cc-s-${cItem.id}`,
                             })}
-                          </span>
-                        ))}
-                        {extraColumns > 0 && (
-                          <span className="px-1.5 py-0.5 text-[10px] text-zinc-500">
-                            +{extraColumns}
-                          </span>
+                          </p>
                         )}
                       </div>
-                    )}
-
-                    {msg.canvas.summary && (
-                      <div className="relative mt-2.5 px-2.5 py-2 rounded-xl bg-black/35 border border-white/[0.06] text-[11.5px] leading-relaxed text-zinc-300 line-clamp-2">
-                        {renderInlineMarkdown(msg.canvas.summary, {
-                          variant: "default",
-                          preserveLineBreaks: false,
-                          keyPrefix: `cc-sum-${msg.canvas.id}`,
-                        })}
-                      </div>
-                    )}
-                  </button>
-                );
+                    </button>
+                  );
+                });
               })()}
 
               {/* Tarjetas Liquid Glass en negro/gris para PDFs entregados */}

@@ -203,6 +203,75 @@ def _matches_rel_or_child(candidate: str, target_rel: str, is_dir: bool) -> bool
     return is_dir and cand.startswith(f"{tgt}/")
 
 
+def _is_safe_cleanup_purge_target(clean_rel: str) -> Optional[str]:
+    parts = [p.lower() for p in Path(clean_rel).parts if p not in ("", ".")]
+    if not parts:
+        return None
+    if parts[0] == ".xook" or parts[0].startswith(".git") or any(p in ("node_modules", ".venv") for p in parts):
+        return None
+    if len(parts) >= 3 and parts[0] == "agente" and parts[1] == ".tmp_exports":
+        return "purge_temp"
+    if len(parts) >= 3 and parts[0] == "agente" and parts[1] == ".papelera":
+        return "empty_trash"
+    last = parts[-1]
+    if last in (".ds_store", "__pycache__", ".pytest_cache") or ".tmp." in last:
+        return "purge_temp"
+    return None
+
+
+def _collect_active_db_refs(workspace_root: Path) -> Tuple[set[str], set[str]]:
+    pending_refs: set[str] = set()
+    audit_refs: set[str] = set()
+    db_path = workspace_root / ".xook" / "xook.db"
+    if not db_path.is_file():
+        return pending_refs, audit_refs
+    conn: Optional[sqlite3.Connection] = None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            for (sp_raw,) in conn.execute(
+                "SELECT staging_payload_json FROM tasks WHERE status = 'pending' AND staging_payload_json IS NOT NULL"
+            ):
+                try:
+                    sp = json.loads(sp_raw)
+                except Exception:
+                    continue
+                if not isinstance(sp, dict):
+                    continue
+                for key in ("draftPath", "draft_path", "targetPath", "target_path"):
+                    ref = sp.get(key)
+                    if isinstance(ref, str) and ref.strip():
+                        pending_refs.add(_normalize_rel_for_compare(ref))
+                if isinstance(sp.get("items"), list):
+                    for item in sp["items"]:
+                        if isinstance(item, dict):
+                            ref = item.get("targetPath") or item.get("target_path")
+                            if isinstance(ref, str) and ref.strip():
+                                pending_refs.add(_normalize_rel_for_compare(ref))
+        except sqlite3.Error:
+            pass
+        try:
+            for (art_raw,) in conn.execute(
+                "SELECT execution_artifact_path FROM decision_history WHERE execution_artifact_path IS NOT NULL"
+            ):
+                art = _normalize_rel_for_compare(art_raw)
+                if not art:
+                    continue
+                audit_refs.add(art)
+                if art.endswith(".json"):
+                    audit_refs.add(f"{art[:-5]}.md")
+                elif art.endswith(".md"):
+                    audit_refs.add(f"{art[:-3]}.json")
+        except sqlite3.Error:
+            pass
+    except sqlite3.Error:
+        return pending_refs, audit_refs
+    finally:
+        if conn is not None:
+            conn.close()
+    return pending_refs, audit_refs
+
+
 def _check_active_db_dependencies(workspace_root: Path, clean_target: str, is_dir: bool) -> Optional[str]:
     db_path = workspace_root / ".xook" / "xook.db"
     if not db_path.is_file():
@@ -561,6 +630,67 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "scan_workspace_cleanup",
+            "description": (
+                "Escanea en solo lectura el espacio de trabajo activo para detectar archivos temporales seguros "
+                "(`.tmp_exports/`, `.DS_Store`, `__pycache__`, `*.tmp.*`), borradores huérfanos en `agente/borradores/`, "
+                "archivos en `agente/.papelera/` y entregables antiguos en `agente/` que NO están vinculados a decisiones ni "
+                "tareas pendientes. Nunca incluye `.xook/`, `empresa/`, `datos/`, `memoria/`, `habilidades/` ni `agente/ordenes/`."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "include_deliverables": {
+                        "type": "boolean",
+                        "description": "Si true (default), lista también reportes, revisiones, logs o adjuntos no ligados a auditoría.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_workspace_cleanup",
+            "description": (
+                "Prepara UNA sola tarjeta HITL unificada en Por aceptar para limpiar en lote el espacio de trabajo "
+                "del agente sin romper su entorno: purga temporales seguros (`.tmp_exports/`, `.DS_Store`, `__pycache__`) "
+                "y mueve entregables o borradores huérfanos seleccionados dentro de `agente/` a `agente/.papelera/` tras aprobación. "
+                "Jamás modifica `.xook/`, `empresa/`, `datos/`, `memoria/`, `habilidades/`, `agente/ordenes/` ni archivos núcleo."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Rutas relativas candidatas obtenidas con `scan_workspace_cleanup`.",
+                    },
+                    "include_temp": {
+                        "type": "boolean",
+                        "description": "Si true (default), incluye temporales seguros (`.tmp_exports/*`, `.DS_Store`, `__pycache__`, `*.tmp.*`).",
+                    },
+                    "include_orphan_drafts": {
+                        "type": "boolean",
+                        "description": "Si true, incluye borradores huérfanos sin tarjeta pendiente.",
+                    },
+                    "empty_trash": {
+                        "type": "boolean",
+                        "description": "Si true, incluye el vaciado permanente de `agente/.papelera/*` (solo si el usuario lo pidió).",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Explicación clara en español de qué se limpiará y qué se conserva intacto.",
+                    },
+                    "title": {"type": "string", "description": "Título breve para la tarjeta HITL."},
+                },
+                "required": ["reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "propose_schedule_automation",
             "description": (
                 "Crea una tarjeta HITL en Por aceptar para activar un recordatorio o revisión automática recurrente "
@@ -599,7 +729,7 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
                     "tasks": {
                         "type": "array",
                         "description": "Lista de objetos TaskProposal válidos (title, category, urgency, blocks, intent).",
-                        "items": {"type": "object"},
+                        "items": {"type": "object", "additionalProperties": True},
                     },
                 },
                 "required": ["tasks"],
@@ -1487,6 +1617,8 @@ class WorkspaceToolExecutor:
             "run_business_review": self._tool_run_business_review,
             "propose_company_file_edit": self._tool_propose_company_edit,
             "propose_delete_path": self._tool_propose_delete_path,
+            "scan_workspace_cleanup": self._tool_scan_workspace_cleanup,
+            "propose_workspace_cleanup": self._tool_propose_workspace_cleanup,
             "propose_schedule_automation": self._tool_propose_schedule_automation,
             "propose_tasks": self._tool_propose_tasks,
             "run_workspace_command": self._tool_run_workspace_command,
@@ -2416,6 +2548,352 @@ class WorkspaceToolExecutor:
             "staged_card_id": card_id,
             "target_path": clean_target,
             "message": "Tarjeta HITL creada; nada se moverá ni borrará hasta que el usuario apruebe.",
+        }
+
+    def _scan_cleanup_candidates(self, *, include_deliverables: bool = True) -> Dict[str, Any]:
+        pending_refs, audit_refs = _collect_active_db_refs(self.workspace_root)
+        temp_cache: List[Dict[str, Any]] = []
+        orphan_drafts: List[Dict[str, Any]] = []
+        trash_items: List[Dict[str, Any]] = []
+        agent_deliverables: List[Dict[str, Any]] = []
+        protected_skipped: List[str] = []
+        seen: set[str] = set()
+
+        def _measure(p: Path) -> int:
+            if p.is_file():
+                try:
+                    return p.stat().st_size
+                except OSError:
+                    return 0
+            _, b = _summarize_dir_contents(p)
+            return b
+
+        def _is_db_linked(rel_str: str, is_dir: bool) -> bool:
+            return any(_matches_rel_or_child(ref, rel_str, is_dir) for ref in pending_refs | audit_refs)
+
+        # 1. Temporales internos seguros: agente/.tmp_exports/*
+        tmp_dir = self.workspace_root / "agente" / ".tmp_exports"
+        if tmp_dir.is_dir():
+            for child in sorted(tmp_dir.iterdir(), key=lambda p: p.name.lower()):
+                rel = child.relative_to(self.workspace_root).as_posix()
+                seen.add(rel)
+                temp_cache.append({
+                    "path": rel,
+                    "action": "purge_temp",
+                    "category": "temp_cache",
+                    "size_bytes": _measure(child),
+                    "kind": "dir" if child.is_dir() else "file",
+                })
+
+        # 2. Papelera actual: agente/.papelera/*
+        trash_dir = self.workspace_root / "agente" / ".papelera"
+        if trash_dir.is_dir():
+            for child in sorted(trash_dir.iterdir(), key=lambda p: p.name.lower()):
+                rel = child.relative_to(self.workspace_root).as_posix()
+                seen.add(rel)
+                trash_items.append({
+                    "path": rel,
+                    "action": "empty_trash",
+                    "category": "trash",
+                    "size_bytes": _measure(child),
+                    "kind": "dir" if child.is_dir() else "file",
+                })
+
+        # 3. Basura de SO / cachés Python (.DS_Store, __pycache__, .pytest_cache, *.tmp.*) fuera de .xook/.git/node_modules/.venv
+        skip_walk_roots = {".xook", ".git", "node_modules", ".venv", "target"}
+        for dirpath, dirnames, filenames in os.walk(self.workspace_root):
+            cur_dir = Path(dirpath)
+            rel_dir = cur_dir.relative_to(self.workspace_root)
+            dir_parts = rel_dir.parts
+            if any(part in skip_walk_roots for part in dir_parts):
+                dirnames[:] = []
+                continue
+            kept_dirs: List[str] = []
+            for dname in sorted(dirnames):
+                if dname in skip_walk_roots:
+                    continue
+                d_abs = cur_dir / dname
+                d_rel = d_abs.relative_to(self.workspace_root).as_posix()
+                if dname in ("__pycache__", ".pytest_cache") and d_rel not in seen:
+                    seen.add(d_rel)
+                    temp_cache.append({
+                        "path": d_rel,
+                        "action": "purge_temp",
+                        "category": "temp_cache",
+                        "size_bytes": _measure(d_abs),
+                        "kind": "dir",
+                    })
+                    continue
+                kept_dirs.append(dname)
+            dirnames[:] = kept_dirs
+
+            for fname in sorted(filenames):
+                if fname == ".DS_Store" or ".tmp." in fname:
+                    f_abs = cur_dir / fname
+                    f_rel = f_abs.relative_to(self.workspace_root).as_posix()
+                    if f_rel in seen or f_rel.startswith("agente/.papelera/"):
+                        continue
+                    seen.add(f_rel)
+                    temp_cache.append({
+                        "path": f_rel,
+                        "action": "purge_temp",
+                        "category": "temp_cache",
+                        "size_bytes": _measure(f_abs),
+                        "kind": "file",
+                    })
+
+        # 4. Borradores en agente/borradores/* (huérfanos vs pendientes)
+        drafts_dir = self.workspace_root / "agente" / "borradores"
+        if drafts_dir.is_dir():
+            for child in sorted(drafts_dir.iterdir(), key=lambda p: p.name.lower()):
+                rel = child.relative_to(self.workspace_root).as_posix()
+                if rel in seen or child.name.startswith("."):
+                    continue
+                if _is_db_linked(rel, child.is_dir()):
+                    protected_skipped.append(f"{rel} (borrador de tarea pendiente)")
+                    continue
+                seen.add(rel)
+                orphan_drafts.append({
+                    "path": rel,
+                    "action": "move_to_trash",
+                    "category": "orphan_drafts",
+                    "size_bytes": _measure(child),
+                    "kind": "dir" if child.is_dir() else "file",
+                })
+
+        # 5. Entregables del agente fuera de carpetas núcleo/órdenes
+        if include_deliverables:
+            agent_dir = self.workspace_root / "agente"
+            if agent_dir.is_dir():
+                cleanable_subfolders = ("reportes", "revisiones", "adjuntos", "logs", "proyectos", "apps")
+                for sub in cleanable_subfolders:
+                    sub_path = agent_dir / sub
+                    if not sub_path.is_dir():
+                        continue
+                    for child in sorted(sub_path.iterdir(), key=lambda p: p.name.lower()):
+                        rel = child.relative_to(self.workspace_root).as_posix()
+                        if rel in seen or child.name.startswith("."):
+                            continue
+                        if rel.lower() in PROTECTED_CORE_FILES or rel.lower() in PROTECTED_STRUCTURAL_DIRS:
+                            continue
+                        if _is_db_linked(rel, child.is_dir()):
+                            protected_skipped.append(f"{rel} (evidencia/propuesta activa)")
+                            continue
+                        seen.add(rel)
+                        agent_deliverables.append({
+                            "path": rel,
+                            "action": "move_to_trash",
+                            "category": "agent_deliverables",
+                            "size_bytes": _measure(child),
+                            "kind": "dir" if child.is_dir() else "file",
+                        })
+
+        # 6. Detección opcional de repositorio de software (p.ej. XOOK u otro proyecto)
+        dev_repo_info: Optional[Dict[str, Any]] = None
+        clean_script = self.workspace_root / "scripts" / "clean-workspace.sh"
+        rust_target = self.workspace_root / "src-tauri" / "target"
+        if clean_script.is_file() or rust_target.is_dir():
+            dev_repo_info = {
+                "has_clean_script": clean_script.is_file(),
+                "recommended_command": "bash scripts/clean-workspace.sh --auto" if clean_script.is_file() else None,
+                "rust_target_debug_bytes": _measure(rust_target / "debug") if (rust_target / "debug").is_dir() else 0,
+            }
+
+        all_items = [*temp_cache, *orphan_drafts, *agent_deliverables, *trash_items]
+        total_reclaimable = sum(int(i["size_bytes"]) for i in [*temp_cache, *orphan_drafts, *agent_deliverables])
+        return {
+            "ok": True,
+            "temp_cache": temp_cache,
+            "orphan_drafts": orphan_drafts,
+            "agent_deliverables": agent_deliverables,
+            "trash": trash_items,
+            "protected_skipped": protected_skipped[:25],
+            "counts": {
+                "temp_cache": len(temp_cache),
+                "orphan_drafts": len(orphan_drafts),
+                "agent_deliverables": len(agent_deliverables),
+                "trash": len(trash_items),
+                "total_candidates": len(all_items),
+            },
+            "reclaimable_bytes": total_reclaimable,
+            "trash_bytes": sum(int(i["size_bytes"]) for i in trash_items),
+            "dev_repo": dev_repo_info,
+            "preserved_zones": [
+                ".xook/",
+                "empresa/",
+                "datos/",
+                "memoria/",
+                "habilidades/",
+                "agente/ordenes/",
+                "agente/notas-xox.md",
+            ],
+        }
+
+    def _tool_scan_workspace_cleanup(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        include_deliverables = True if args.get("include_deliverables") is None else bool(args.get("include_deliverables"))
+        return self._scan_cleanup_candidates(include_deliverables=include_deliverables)
+
+    def _tool_propose_workspace_cleanup(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        reason = str(args.get("reason") or "").strip()
+        if not reason:
+            return {"ok": False, "error": "Falta el parámetro 'reason'."}
+
+        raw_paths = args.get("paths")
+        explicit_paths = [str(p).strip() for p in raw_paths if str(p).strip()] if isinstance(raw_paths, list) else []
+        include_temp = True if args.get("include_temp") is None else bool(args.get("include_temp"))
+        include_orphan_drafts = bool(args.get("include_orphan_drafts"))
+        empty_trash = bool(args.get("empty_trash"))
+
+        scan = self._scan_cleanup_candidates(include_deliverables=True)
+        catalog_by_path: Dict[str, Dict[str, Any]] = {}
+        for group_key in ("temp_cache", "orphan_drafts", "agent_deliverables", "trash"):
+            for entry in scan[group_key]:
+                catalog_by_path[entry["path"]] = entry
+
+        selected_items: List[Dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        rejected: List[str] = []
+
+        def _try_add_path(raw_rel: str) -> None:
+            norm_target, is_ext = _try_relativize_workspace_host_path(self.workspace_root, raw_rel)
+            if is_ext:
+                rejected.append(f"{raw_rel} (fuera del workspace)")
+                return
+            try:
+                target_abs, clean_rel, top_zone = resolve_workspace_path(self.workspace_root, norm_target)
+            except Exception as exc:
+                rejected.append(f"{raw_rel} ({exc})")
+                return
+            if clean_rel == "." or top_zone in ("root", "", ".xook") or clean_rel.startswith(".git"):
+                rejected.append(f"{clean_rel} (zona protegida del sistema)")
+                return
+            if not target_abs.exists():
+                return
+            clean_low = _normalize_rel_for_compare(clean_rel).lower()
+            if clean_low in PROTECTED_STRUCTURAL_DIRS or clean_low in PROTECTED_CORE_FILES:
+                rejected.append(f"{clean_rel} (estructura o archivo núcleo protegido)")
+                return
+            if dep_err := _check_active_db_dependencies(self.workspace_root, clean_rel, target_abs.is_dir()):
+                rejected.append(f"{clean_rel} ({dep_err})")
+                return
+
+            purge_kind = _is_safe_cleanup_purge_target(clean_rel)
+            if purge_kind in ("purge_temp", "empty_trash"):
+                action = purge_kind
+            else:
+                if top_zone != "agente" or clean_low == "agente/ordenes" or clean_low.startswith("agente/ordenes/"):
+                    rejected.append(f"{clean_rel} (protegido fuera de limpieza masiva de agente/)")
+                    return
+                if _has_hidden_component(clean_rel):
+                    rejected.append(f"{clean_rel} (archivo oculto protegido)")
+                    return
+                action = "move_to_trash"
+
+            if clean_rel in seen_paths:
+                return
+            seen_paths.add(clean_rel)
+            size_b = (
+                catalog_by_path[clean_rel]["size_bytes"]
+                if clean_rel in catalog_by_path
+                else (_summarize_dir_contents(target_abs)[1] if target_abs.is_dir() else target_abs.stat().st_size)
+            )
+            selected_items.append({
+                "targetPath": clean_rel,
+                "action": action,
+                "sizeBytes": int(size_b),
+            })
+
+        for p in explicit_paths[:200]:
+            _try_add_path(p)
+
+        if include_temp:
+            for entry in scan["temp_cache"]:
+                _try_add_path(entry["path"])
+        if include_orphan_drafts or (not explicit_paths and not scan["temp_cache"]):
+            for entry in scan["orphan_drafts"]:
+                _try_add_path(entry["path"])
+        if empty_trash:
+            for entry in scan["trash"]:
+                _try_add_path(entry["path"])
+
+        if not selected_items:
+            return {
+                "ok": True,
+                "nothing_to_clean": True,
+                "rejected": rejected,
+                "message": "El espacio de trabajo ya está limpio; no hay temporales, borradores huérfanos ni elementos seleccionados por limpiar.",
+            }
+
+        trash_moves = [i for i in selected_items if i["action"] == "move_to_trash"]
+        temp_purges = [i for i in selected_items if i["action"] == "purge_temp"]
+        trash_empties = [i for i in selected_items if i["action"] == "empty_trash"]
+        total_bytes = sum(i["sizeBytes"] for i in selected_items)
+        size_label = (
+            f"{total_bytes / (1024 * 1024):.2f} MB"
+            if total_bytes >= 1024 * 1024
+            else f"{max(1, round(total_bytes / 1024))} KB"
+        )
+
+        rows: List[Dict[str, str]] = [
+            {"label": "Elementos totales", "value": f"{len(selected_items)} elemento(s) · ~{size_label}"},
+        ]
+        if temp_purges:
+            rows.append({"label": "Purgar temporales seguros", "value": f"{len(temp_purges)} archivo(s)/caché"})
+        if trash_moves:
+            rows.append({"label": "Archivar en agente/.papelera/", "value": f"{len(trash_moves)} elemento(s)"})
+        if trash_empties:
+            rows.append({"label": "Vaciar papelera", "value": f"{len(trash_empties)} elemento(s)"})
+        rows.append({"label": "Protegido e intacto", "value": ".xook, empresa, datos, memoria, habilidades, ordenes"})
+
+        sample_preview = ", ".join(i["targetPath"] for i in selected_items[:5])
+        if len(selected_items) > 5:
+            sample_preview += f" (+{len(selected_items) - 5} más)"
+        rows.append({"label": "Vista previa", "value": sample_preview})
+
+        ts = int(time.time())
+        card_id = f"cleanup_{ts}_{len(selected_items)}"
+        title = str(args.get("title") or "").strip() or f"Limpiar espacio de trabajo ({len(selected_items)} elementos)"
+        proposal = sanitize_task_proposal({
+            "cardId": card_id,
+            "dedupKey": f"workspace_cleanup:{len(selected_items)}:{total_bytes}",
+            "title": title,
+            "subtitle": reason,
+            "category": "regla",
+            "urgency": "media",
+            "statusChip": f"Limpieza segura · {size_label}",
+            "defaultExpanded": True,
+            "generatedBy": "Xox Workspace",
+            "blocks": [
+                {"type": "kv_list", "rows": rows},
+                {"type": "insight", "text": reason, "source": "Requiere autorización HITL"},
+            ],
+            "intent": {
+                "type": "apply_rule",
+                "targetLabel": "Espacio de trabajo del agente",
+                "primaryLabel": "Aplicar limpieza segura",
+            },
+            "paramValues": {},
+            "stagingPayload": {
+                "kind": "workspace_cleanup",
+                "items": [
+                    {"targetPath": i["targetPath"], "action": i["action"]}
+                    for i in selected_items
+                ],
+            },
+        })
+        if proposal:
+            self.staged_tasks.append(proposal)
+        return {
+            "ok": True,
+            "staged_card_id": card_id,
+            "items_count": len(selected_items),
+            "move_to_trash_count": len(trash_moves),
+            "purge_temp_count": len(temp_purges),
+            "empty_trash_count": len(trash_empties),
+            "total_bytes": total_bytes,
+            "rejected": rejected,
+            "items": selected_items,
+            "message": "Tarjeta HITL de limpieza en lote creada; nada se moverá ni borrará hasta que el usuario apruebe.",
         }
 
     def _tool_propose_schedule_automation(self, args: Dict[str, Any]) -> Dict[str, Any]:

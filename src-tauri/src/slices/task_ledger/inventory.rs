@@ -7,7 +7,8 @@ use crate::slices::workspace_manager::registry::{
     scaffold_and_heal_workspace_dir, snapshot_core_file,
 };
 use crate::slices::workspace_manager::sandbox::{
-    WorkspaceZone, is_protected_workspace_rel_path, resolve_inside_workspace, write_string_atomic,
+    WorkspaceZone, is_protected_workspace_rel_path, is_safe_workspace_cleanup_purge_target,
+    resolve_inside_workspace, write_string_atomic,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Local, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -1718,6 +1719,185 @@ pub fn apply_post_hitl_side_effects(
                     generated_artifact = Some(trash_rel);
                 }
             }
+        } else if kind == "workspace_cleanup" {
+            if let Some(sp) = staging.as_ref() {
+                let raw_items = sp
+                    .get("items")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| "La propuesta de limpieza no incluye la lista `items`.".to_string())?;
+                if raw_items.is_empty() {
+                    return Err("La lista de limpieza está vacía.".to_string());
+                }
+
+                #[derive(Clone)]
+                enum CleanupOp {
+                    MoveToTrash,
+                    PurgeDirect,
+                }
+                struct ValidatedCleanupEntry {
+                    abs_target: PathBuf,
+                    clean_str: String,
+                    zone: WorkspaceZone,
+                    op: CleanupOp,
+                }
+
+                let mut validated: Vec<ValidatedCleanupEntry> = Vec::new();
+                let mut seen_targets: HashSet<String> = HashSet::new();
+
+                for entry in raw_items.iter().take(200) {
+                    let Some(target_rel) = entry
+                        .get("targetPath")
+                        .or_else(|| entry.get("target_path"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    else {
+                        continue;
+                    };
+                    let requested_action = entry
+                        .get("action")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("move_to_trash")
+                        .trim()
+                        .to_ascii_lowercase();
+
+                    let (abs_target, clean_rel, zone) =
+                        resolve_inside_workspace(workspace_root, target_rel, false)?;
+                    let clean_str = clean_rel.to_string_lossy().replace('\\', "/");
+                    if !seen_targets.insert(clean_str.clone()) {
+                        continue;
+                    }
+                    if !abs_target.exists() {
+                        continue;
+                    }
+
+                    if zone.is_protected_system() || clean_str.starts_with(".git") {
+                        return Err(format!(
+                            "Bloqueado: `{clean_str}` pertenece a una zona interna protegida."
+                        ));
+                    }
+
+                    check_delete_db_dependencies(conn, &clean_str, abs_target.is_dir())?;
+
+                    let op = if requested_action == "purge_temp" || requested_action == "empty_trash" {
+                        let Some(allowed) = is_safe_workspace_cleanup_purge_target(&clean_rel) else {
+                            return Err(format!(
+                                "Bloqueado: `{clean_str}` no es un archivo temporal ni elemento de papelera purgable directamente."
+                            ));
+                        };
+                        if allowed != requested_action {
+                            return Err(format!(
+                                "Acción de limpieza inconsistente para `{clean_str}`."
+                            ));
+                        }
+                        CleanupOp::PurgeDirect
+                    } else {
+                        // Limpieza en lote por mover a papelera se restringe estrictamente al espacio del agente
+                        // (excluyendo notas núcleo, órdenes auditadas, archivos ocultos y carpetas estructurales).
+                        if zone != WorkspaceZone::Agente {
+                            return Err(format!(
+                                "Bloqueado: la limpieza masiva solo puede mover elementos dentro de `agente/` (`{clean_str}`)."
+                            ));
+                        }
+                        let low = clean_str.to_ascii_lowercase();
+                        if low == "agente/ordenes" || low.starts_with("agente/ordenes/") {
+                            return Err(format!(
+                                "Bloqueado: `{clean_str}` forma parte del historial de órdenes."
+                            ));
+                        }
+                        if clean_str.starts_with("agente/.papelera")
+                            || clean_rel.components().any(|c| {
+                                matches!(
+                                    c,
+                                    std::path::Component::Normal(s)
+                                        if s.to_string_lossy().starts_with('.')
+                                )
+                            })
+                        {
+                            return Err(format!(
+                                "`{clean_str}` es oculto o interno; usa la acción de purga temporal/papelera según corresponda."
+                            ));
+                        }
+                        if is_protected_workspace_rel_path(&clean_rel).is_some() {
+                            return Err(format!(
+                                "Bloqueado: `{clean_str}` es una carpeta estructural o archivo núcleo protegido."
+                            ));
+                        }
+                        CleanupOp::MoveToTrash
+                    };
+
+                    validated.push(ValidatedCleanupEntry {
+                        abs_target,
+                        clean_str,
+                        zone,
+                        op,
+                    });
+                }
+
+                let mut trashed_count: usize = 0;
+                let mut purged_count: usize = 0;
+                for item in validated {
+                    if !item.abs_target.exists() {
+                        continue;
+                    }
+                    match item.op {
+                        CleanupOp::MoveToTrash => {
+                            let file_name = item
+                                .abs_target
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("archivo");
+                            let (trash_rel, abs_trash) =
+                                allocate_unique_trash_rel(workspace_root, now, file_name)?;
+                            if let Some(parent) = abs_trash.parent() {
+                                let _ = fs::create_dir_all(parent);
+                            }
+                            fs::rename(&item.abs_target, &abs_trash).map_err(|e| {
+                                format!("No se pudo mover `{}` a agente/.papelera/: {e}", item.clean_str)
+                            })?;
+                            let _ = store::try_record_audit_event_for_root(
+                                workspace_root,
+                                payload.decided_by.unwrap_or("user"),
+                                "path_trashed",
+                                &item.clean_str,
+                                item.zone.as_str(),
+                                Some(&trash_rel),
+                            );
+                            trashed_count += 1;
+                        }
+                        CleanupOp::PurgeDirect => {
+                            if item.abs_target.is_dir() {
+                                fs::remove_dir_all(&item.abs_target).map_err(|e| {
+                                    format!("No se pudo limpiar carpeta temporal `{}`: {e}", item.clean_str)
+                                })?;
+                            } else {
+                                fs::remove_file(&item.abs_target).map_err(|e| {
+                                    format!("No se pudo limpiar archivo temporal `{}`: {e}", item.clean_str)
+                                })?;
+                            }
+                            let _ = store::try_record_audit_event_for_root(
+                                workspace_root,
+                                payload.decided_by.unwrap_or("user"),
+                                "temp_purged",
+                                &item.clean_str,
+                                item.zone.as_str(),
+                                None,
+                            );
+                            purged_count += 1;
+                        }
+                    }
+                }
+
+                let detail = format!("{trashed_count} movidos a papelera, {purged_count} temporales purgados");
+                let _ = store::try_record_audit_event_for_root(
+                    workspace_root,
+                    payload.decided_by.unwrap_or("user"),
+                    "workspace_cleanup_applied",
+                    "agente",
+                    "agente",
+                    Some(&detail),
+                );
+            }
         }
     }
 
@@ -2241,6 +2421,90 @@ mod tests {
         assert!(root.join("empresa/roles.md").is_file());
         assert!(root.join("datos/backlog.csv").is_file());
         assert_eq!(h_bp_ok.execution_artifact_path.as_deref(), Some("empresa/perfil.json"));
+
+        // 7) Limpieza en lote (`workspace_cleanup`): bloquea cualquier intento fuera de agente/ o archivos núcleo/activos,
+        //    y ejecuta de forma segura temporales + entregables obsoletos + vaciado de papelera.
+        fs::create_dir_all(root.join("agente/.tmp_exports")).unwrap();
+        fs::write(root.join("agente/.tmp_exports/stale.pdf"), b"%PDF").unwrap();
+        fs::write(root.join("agente/.DS_Store"), b"ds").unwrap();
+        fs::write(root.join("agente/reportes/viejo_reporte.md"), "# Viejo\n").unwrap();
+        fs::write(root.join("agente/borradores/huerfano.draft"), "viejo").unwrap();
+
+        let bad_cleanup = json!({
+            "cardId": "cl-bad",
+            "stagingPayload": {
+                "kind": "workspace_cleanup",
+                "items": [
+                    { "targetPath": "agente/reportes/viejo_reporte.md", "action": "move_to_trash" },
+                    { "targetPath": "datos/backlog.csv", "action": "move_to_trash" }
+                ]
+            }
+        });
+        let mut h_cl_bad = h_bp_ok.clone();
+        assert!(
+            apply_post_hitl_side_effects(
+                &mut conn,
+                &root,
+                HitlSideEffectInput {
+                    card_id: "cl-bad",
+                    title: "Limpieza inválida",
+                    category: "regla",
+                    summary: "",
+                    decided_by: Some("user"),
+                    adjusted_qty: None,
+                    verified_cost: None,
+                    currency: None,
+                    notes: None,
+                    updated_proposal: Some(&bad_cleanup),
+                },
+                "approved",
+                &mut h_cl_bad,
+                now,
+            )
+            .is_err()
+        );
+        assert!(root.join("agente/reportes/viejo_reporte.md").is_file(), "no debe tocar nada si un elemento es inválido");
+
+        let ok_cleanup = json!({
+            "cardId": "cl-ok",
+            "stagingPayload": {
+                "kind": "workspace_cleanup",
+                "items": [
+                    { "targetPath": "agente/.tmp_exports/stale.pdf", "action": "purge_temp" },
+                    { "targetPath": "agente/.DS_Store", "action": "purge_temp" },
+                    { "targetPath": "agente/reportes/viejo_reporte.md", "action": "move_to_trash" },
+                    { "targetPath": "agente/borradores/huerfano.draft", "action": "move_to_trash" }
+                ]
+            }
+        });
+        let mut h_cl_ok = h_bp_ok;
+        apply_post_hitl_side_effects(
+            &mut conn,
+            &root,
+            HitlSideEffectInput {
+                card_id: "cl-ok",
+                title: "Limpieza segura del espacio de trabajo",
+                category: "regla",
+                summary: "",
+                decided_by: Some("user"),
+                adjusted_qty: None,
+                verified_cost: None,
+                currency: None,
+                notes: None,
+                updated_proposal: Some(&ok_cleanup),
+            },
+            "approved",
+            &mut h_cl_ok,
+            now,
+        )
+        .unwrap();
+        assert!(!root.join("agente/.tmp_exports/stale.pdf").exists());
+        assert!(!root.join("agente/.DS_Store").exists());
+        assert!(!root.join("agente/reportes/viejo_reporte.md").exists());
+        assert!(!root.join("agente/borradores/huerfano.draft").exists());
+        assert!(root.join("agente/.tmp_exports").is_dir(), "carpeta estructural se conserva");
+        assert!(root.join("agente/reportes").is_dir(), "carpeta estructural se conserva");
+        assert!(root.join("agente/notas-xox.md").is_file(), "archivo núcleo se conserva");
 
         let _ = fs::remove_dir_all(&root);
     }

@@ -5,6 +5,7 @@ import {
 } from "../task-decisions/taskSchema";
 import {
   CanvasArtifact,
+  applyCanvasPatch,
   canvasHasCellData,
   cleanVisibleReply,
   extractFirstHtmlTable,
@@ -40,6 +41,7 @@ const BROWSER_CANVAS_TOOL_DEF = {
     parameters: {
       type: "object",
       properties: {
+        id: { type: "string", description: "Opcional: identificador único si deseas actualizar un Canvas existente" },
         title: { type: "string", description: "Título claro del Canvas o tabla" },
         subtitle: { type: "string", description: "Contexto breve o unidades" },
         kind: { type: "string", enum: ["comparison", "table", "document"] },
@@ -83,6 +85,7 @@ const BROWSER_DIAGRAM_TOOL_DEF = {
     parameters: {
       type: "object",
       properties: {
+        id: { type: "string", description: "Opcional: identificador estable para actualizar este diagrama" },
         title: { type: "string", description: "Título claro del diagrama" },
         subtitle: { type: "string", description: "Subtítulo breve o contexto" },
         summary: { type: "string", description: "Idea principal en 1 oración" },
@@ -142,6 +145,7 @@ const BROWSER_PLAN_TOOL_DEF = {
     parameters: {
       type: "object",
       properties: {
+        id: { type: "string", description: "Opcional: identificador estable del plan para iterarlo" },
         title: { type: "string", description: "Título del plan" },
         subtitle: { type: "string", description: "Contexto breve o duración estimada" },
         goal: { type: "string", description: "Objetivo concreto del plan en 1-2 oraciones" },
@@ -207,6 +211,7 @@ const BROWSER_DASHBOARD_TOOL_DEF = {
     parameters: {
       type: "object",
       properties: {
+        id: { type: "string", description: "Opcional: identificador estable del dashboard" },
         title: { type: "string", description: "Título claro del dashboard" },
         subtitle: { type: "string", description: "Periodo o contexto breve" },
         summary: { type: "string", description: "Conclusión ejecutiva en 1 oración" },
@@ -293,6 +298,7 @@ const BROWSER_FORM_TOOL_DEF = {
     parameters: {
       type: "object",
       properties: {
+        id: { type: "string", description: "Opcional: identificador estable del formulario/cuestionario" },
         title: { type: "string", description: "Título claro del cuestionario o formulario" },
         subtitle: { type: "string", description: "Tema, materia o contexto breve" },
         description: { type: "string", description: "Instrucciones breves para el usuario" },
@@ -341,6 +347,227 @@ const BROWSER_FORM_TOOL_DEF = {
         },
       },
       required: ["title", "fields"],
+    },
+  },
+};
+
+const BROWSER_COMPOSITE_CANVAS_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "create_composite_canvas",
+    description:
+      "Crea un Canvas compuesto que combina múltiples bloques visuales e interactivos en un solo lienzo (callout, markdown, tabla, diagrama, plan, dashboard, formulario e interfaz interactiva).",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Opcional: identificador estable del Canvas compuesto" },
+        title: { type: "string", description: "Título principal del Canvas compuesto" },
+        subtitle: { type: "string" },
+        summary: { type: "string", description: "Resumen ejecutivo breve" },
+        blocks: {
+          type: "array",
+          description: "Secuencia ordenada de bloques",
+          items: {
+            type: "object",
+            properties: {
+              type: {
+                type: "string",
+                enum: ["callout", "markdown", "table", "diagram", "plan", "dashboard", "form", "interactive"],
+              },
+              title: { type: "string" },
+              tone: { type: "string", enum: ["info", "warning", "success", "critical"] },
+              text: { type: "string" },
+              content: { type: "string" },
+              columns: { type: "array", items: { type: "string" } },
+              rows: { type: "array", items: { type: "array", items: { type: "string" } } },
+              diagram: { type: "object", additionalProperties: true },
+              plan: { type: "object", additionalProperties: true },
+              dashboard: { type: "object", additionalProperties: true },
+              form: { type: "object", additionalProperties: true },
+              interactive: {
+                type: "object",
+                additionalProperties: true,
+                properties: {
+                  layout: { type: "string", enum: ["stack", "grid", "split", "tabs"] },
+                  state: { type: "object", additionalProperties: true },
+                  controls: { type: "array", items: { type: "object", additionalProperties: true } },
+                  computed: { type: "array", items: { type: "object", additionalProperties: true } },
+                },
+              },
+            },
+            required: ["type"],
+          },
+        },
+      },
+      required: ["title", "blocks"],
+    },
+  },
+};
+
+const BROWSER_INTERACTIVE_UI_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "create_interactive_ui",
+    description:
+      "Crea una interfaz interactiva declarativa en Canvas con controles reactivos (números, sliders, toggles, select, segmented, texto, checklist, tablero kanban), pestañas y KPIs calculados en tiempo real mediante fórmulas seguras (min, max, round, sum, avg, clamp, if, count, len).",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Opcional: identificador estable para poder actualizar esta interfaz con update_canvas" },
+        title: { type: "string" },
+        subtitle: { type: "string" },
+        description: { type: "string" },
+        layout: { type: "string", enum: ["stack", "grid", "split", "tabs"] },
+        tabs: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              label: { type: "string" },
+              description: { type: "string" },
+            },
+            required: ["id", "label"],
+          },
+        },
+        state: { type: "object", additionalProperties: true, description: "Estado inicial clave->valor para los controles" },
+        controls: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              stateKey: { type: "string" },
+              label: { type: "string" },
+              type: {
+                type: "string",
+                enum: ["number", "slider", "toggle", "select", "segmented", "text", "textarea", "checklist", "kanban"],
+              },
+              helperText: { type: "string" },
+              tabId: { type: "string" },
+              unit: { type: "string" },
+              prefix: { type: "string" },
+              placeholder: { type: "string" },
+              min: { type: "number" },
+              max: { type: "number" },
+              step: { type: "number" },
+              options: { type: "array", items: { type: "string" } },
+              columns: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: { id: { type: "string" }, label: { type: "string" } },
+                },
+              },
+              items: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    label: { type: "string" },
+                    detail: { type: "string" },
+                    badge: { type: "string" },
+                    column: { type: "string" },
+                    checked: { type: "boolean" },
+                  },
+                },
+              },
+            },
+            required: ["label", "type"],
+          },
+        },
+        computed: {
+          type: "array",
+          description: "Resultados o KPIs calculados en tiempo real a partir de state",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              label: { type: "string" },
+              expr: { type: "string", description: "Expresión usando claves de state y operadores/funciones seguras" },
+              format: { type: "string", enum: ["number", "currency", "percent", "text"] },
+              tone: { type: "string", enum: ["neutral", "accent", "success", "warning", "critical"] },
+              unit: { type: "string" },
+              caption: { type: "string" },
+              tabId: { type: "string" },
+            },
+            required: ["label", "expr"],
+          },
+        },
+        actions: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              label: { type: "string" },
+              action: { type: "string", enum: ["send_to_xox", "reset"] },
+              style: { type: "string", enum: ["primary", "secondary"] },
+              promptTemplate: { type: "string" },
+            },
+            required: ["label", "action"],
+          },
+        },
+      },
+      required: ["title", "controls"],
+    },
+  },
+};
+
+const BROWSER_CUSTOM_UI_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "create_custom_ui",
+    description:
+      "Construye una mini-app HTML/CSS/JS a medida dentro de un iframe sandbox aislado sin scripts externos, con acceso al SDK local `window.xook` (getState, setState, sendToXox, onStateChange).",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        title: { type: "string" },
+        subtitle: { type: "string" },
+        description: { type: "string" },
+        html: { type: "string", description: "Markup HTML local sin <script src> ni iframes externos" },
+        css: { type: "string" },
+        js: { type: "string", description: "JavaScript inline que interactúa con el DOM y window.xook" },
+        state: { type: "object", additionalProperties: true, description: "Estado JSON inicial para window.xook.getState()" },
+        height: { type: "number", description: "Altura sugerida en px (260 a 780)" },
+        save_to_workspace: { type: "boolean" },
+        app_slug: { type: "string" },
+      },
+      required: ["title", "html"],
+    },
+  },
+};
+
+const BROWSER_UPDATE_CANVAS_TOOL_DEF = {
+  type: "function",
+  function: {
+    name: "update_canvas",
+    description:
+      "Actualiza incrementalmente un Canvas existente manteniendo su `id` y conservando el contenido previo (permite editar títulos, filas, append_rows, bloques, controles interactivos o código customApp).",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "ID exacto del Canvas activo o generado previamente a actualizar" },
+        title: { type: "string" },
+        subtitle: { type: "string" },
+        summary: { type: "string" },
+        markdown: { type: "string" },
+        columns: { type: "array", items: { type: "string" } },
+        rows: { type: "array", items: { type: "array", items: { type: "string" } } },
+        append_rows: { type: "array", items: { type: "array", items: { type: "string" } } },
+        diagram: { type: "object", additionalProperties: true },
+        plan: { type: "object", additionalProperties: true },
+        dashboard: { type: "object", additionalProperties: true },
+        form: { type: "object", additionalProperties: true },
+        interactive: { type: "object", additionalProperties: true },
+        custom_app: { type: "object", additionalProperties: true },
+        blocks: { type: "array", items: { type: "object", additionalProperties: true } },
+        append_blocks: { type: "array", items: { type: "object", additionalProperties: true } },
+      },
+      required: ["id"],
     },
   },
 };
@@ -1379,6 +1606,7 @@ export interface XoxAiChatResponse {
   operation: "none" | "add_tasks" | "replace_tasks" | "ask_clarification";
   tasks: TaskProposal[];
   canvas?: CanvasArtifact;
+  canvases?: CanvasArtifact[];
   clarification?: ClarificationSpec;
   vaultAction?: VaultPromptSpec;
   generatedPdfs?: GeneratedPdfArtifact[];
@@ -1394,9 +1622,22 @@ export interface XoxAiChatResponse {
   failoverEvents?: ProviderFailoverEvent[];
 }
 
+/** Actividad de código/terminal que Xox muestra en la pantalla de su laptop. */
+export interface XoxTerminalEvent {
+  mode: "edit" | "terminal";
+  status: "running" | "ok" | "error";
+  command?: string;
+  target?: string;
+  outputLines?: string[];
+}
+
 export interface XoxStreamCallbacks {
   onStreamStart?: (streamId: string) => void;
-  onPhase?: (state: "reading" | "thinking" | "talking" | "syncing", label?: string) => void;
+  onPhase?: (
+    state: "reading" | "thinking" | "talking" | "syncing" | "coding",
+    label?: string
+  ) => void;
+  onTerminal?: (event: XoxTerminalEvent) => void;
   onProviderFailover?: (event: ProviderFailoverEvent) => void;
   onVaultAction?: (action: VaultPromptSpec) => void;
   onSteps?: (steps: ThinkingStep[]) => void;
@@ -4088,11 +4329,24 @@ function isCanvasLikeToolName(fnName: string): boolean {
     low.includes("create_plan") ||
     low.includes("create_dashboard") ||
     low.includes("create_form") ||
+    low.includes("create_composite_canvas") ||
+    low.includes("create_interactive_ui") ||
+    low.includes("create_custom_ui") ||
+    low.includes("update_canvas") ||
     low === "canvas"
   );
 }
 
 function formatCanvasFallbackSummary(canvas: CanvasArtifact): string {
+  if (canvas.blocks && canvas.blocks.length > 0) {
+    return `Listo, preparé la vista compuesta "${canvas.title}" en Canvas (${canvas.blocks.length} bloques).${canvas.summary ? `\n\n${canvas.summary}` : ""}`;
+  }
+  if (canvas.interactive) {
+    return `Listo, preparé la interfaz interactiva "${canvas.title}" en Canvas (${canvas.interactive.controls.length} controles${canvas.interactive.computed?.length ? ` · ${canvas.interactive.computed.length} cálculos en vivo` : ""}).${canvas.summary ? `\n\n${canvas.summary}` : ""}`;
+  }
+  if (canvas.customApp) {
+    return `Listo, construí la mini-app "${canvas.title}" en Canvas dentro de un sandbox aislado.${canvas.summary ? `\n\n${canvas.summary}` : ""}`;
+  }
   if (canvas.plan) {
     const stepsTotal = canvas.plan.phases.reduce((acc, ph) => acc + ph.steps.length, 0);
     return `Listo, preparé el plan "${canvas.title}" en Canvas (${canvas.plan.phases.length} fases · ${stepsTotal} pasos) para tu revisión.${canvas.summary ? `\n\n${canvas.summary}` : ""}`;
@@ -4134,7 +4388,16 @@ function extractCanvasToolMetadata(toolCalls: AccumulatedToolCall[]): Record<str
   return {};
 }
 
-function extractCanvasFromToolCalls(toolCalls: AccumulatedToolCall[]): CanvasArtifact | undefined {
+function extractCanvasesFromToolCalls(
+  toolCalls: AccumulatedToolCall[],
+  activeCanvas?: CanvasArtifact | null
+): CanvasArtifact[] {
+  const results: CanvasArtifact[] = [];
+  const byId = new Map<string, CanvasArtifact>();
+  if (activeCanvas) {
+    byId.set(activeCanvas.id, activeCanvas);
+  }
+
   for (const tc of toolCalls) {
     const fnName = (tc.function?.name ?? "").trim().toLowerCase();
     if (!fnName || !isCanvasLikeToolName(fnName)) continue;
@@ -4147,6 +4410,25 @@ function extractCanvasFromToolCalls(toolCalls: AccumulatedToolCall[]): CanvasArt
           : parsedArgs.arguments && typeof parsedArgs.arguments === "object"
             ? (parsedArgs.arguments as Record<string, unknown>)
             : parsedArgs;
+
+      if (fnName.includes("update_canvas")) {
+        const targetId = typeof innerRaw.id === "string" ? innerRaw.id.trim() : "";
+        const base =
+          (targetId && byId.get(targetId)) ||
+          (activeCanvas && (!targetId || activeCanvas.id === targetId) ? activeCanvas : undefined) ||
+          results[results.length - 1];
+        if (base) {
+          const patched = applyCanvasPatch(base, innerRaw);
+          if (patched) {
+            byId.set(patched.id, patched);
+            const existingIdx = results.findIndex((c) => c.id === patched.id);
+            if (existingIdx >= 0) results[existingIdx] = patched;
+            else results.push(patched);
+            continue;
+          }
+        }
+      }
+
       const inner: Record<string, unknown> = fnName.includes("create_diagram")
         ? { ...innerRaw, kind: "diagram" }
         : fnName.includes("create_plan")
@@ -4155,15 +4437,37 @@ function extractCanvasFromToolCalls(toolCalls: AccumulatedToolCall[]): CanvasArt
             ? { ...innerRaw, kind: "dashboard" }
             : fnName.includes("create_form")
               ? { ...innerRaw, kind: "form" }
-              : innerRaw;
+              : fnName.includes("create_composite_canvas")
+                ? { ...innerRaw, kind: "composite" }
+                : fnName.includes("create_interactive_ui")
+                  ? { ...innerRaw, kind: "interactive" }
+                  : fnName.includes("create_custom_ui")
+                    ? { ...innerRaw, kind: "custom_app" }
+                    : innerRaw;
       const sanitized = sanitizeCanvasArtifact(inner);
-      if (sanitized && canvasHasCellData(sanitized)) return sanitized;
+      if (sanitized && canvasHasCellData(sanitized)) {
+        byId.set(sanitized.id, sanitized);
+        const existingIdx = results.findIndex((c) => c.id === sanitized.id);
+        if (existingIdx >= 0) results[existingIdx] = sanitized;
+        else results.push(sanitized);
+      }
     } else if (hasStructuredTableMarkup(rawArgs)) {
       const tbl = sanitizeCanvasArtifact({ title: "Tabla comparativa", markdown: rawArgs });
-      if (tbl && canvasHasCellData(tbl)) return tbl;
+      if (tbl && canvasHasCellData(tbl)) {
+        byId.set(tbl.id, tbl);
+        results.push(tbl);
+      }
     }
   }
-  return undefined;
+  return results;
+}
+
+function extractCanvasFromToolCalls(
+  toolCalls: AccumulatedToolCall[],
+  activeCanvas?: CanvasArtifact | null
+): CanvasArtifact | undefined {
+  const all = extractCanvasesFromToolCalls(toolCalls, activeCanvas);
+  return all.length > 0 ? all[all.length - 1] : undefined;
 }
 
 function extractClarificationFromToolCalls(
@@ -4221,14 +4525,30 @@ function extractVaultActionFromToolCalls(
   return undefined;
 }
 
+function resolveBrowserCanvases(params: {
+  toolCalls: AccumulatedToolCall[];
+  canvasBuf: string;
+  actionsCanvas?: unknown;
+  fullReply: string;
+  userMessage: string;
+  activeCanvas?: CanvasArtifact | null;
+}): CanvasArtifact[] {
+  const fromTools = extractCanvasesFromToolCalls(params.toolCalls, params.activeCanvas);
+  if (fromTools.length > 0) return fromTools;
+
+  const single = resolveBrowserCanvasArtifact(params);
+  return single ? [single] : [];
+}
+
 function resolveBrowserCanvasArtifact(params: {
   toolCalls: AccumulatedToolCall[];
   canvasBuf: string;
   actionsCanvas?: unknown;
   fullReply: string;
   userMessage: string;
+  activeCanvas?: CanvasArtifact | null;
 }): CanvasArtifact | undefined {
-  const fromTool = extractCanvasFromToolCalls(params.toolCalls);
+  const fromTool = extractCanvasFromToolCalls(params.toolCalls, params.activeCanvas);
   if (fromTool && canvasHasCellData(fromTool)) return fromTool;
 
   const trimmedCanvas = params.canvasBuf.trim();
@@ -4295,6 +4615,7 @@ function extractBrowserJson(rawContent: string): {
   operation: "none" | "add_tasks" | "replace_tasks" | "ask_clarification";
   tasks: TaskProposal[];
   canvas?: CanvasArtifact;
+  canvases?: CanvasArtifact[];
   clarification?: ClarificationSpec;
 } {
   const parsed = parseJsonObjectCandidate(rawContent);
@@ -4381,6 +4702,7 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       operation?: "none" | "add_tasks" | "replace_tasks" | "ask_clarification";
       tasks?: TaskProposal[];
       canvas?: unknown;
+      canvases?: unknown[];
       clarification?: unknown;
       generated_pdfs?: unknown[];
       provider_used?: string;
@@ -4439,13 +4761,23 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
     const safeClarification = res.clarification
       ? sanitizeClarificationSpec(res.clarification) ?? undefined
       : undefined;
+    const safeCanvases = Array.isArray(res.canvases)
+      ? res.canvases
+          .map((item) => sanitizeCanvasArtifact(item))
+          .filter((c): c is CanvasArtifact => Boolean(c && canvasHasCellData(c)))
+      : undefined;
+    const resCanvas = res.canvas ? sanitizeCanvasArtifact(res.canvas) ?? undefined : undefined;
+    const primaryCanvas =
+      resCanvas ??
+      (safeCanvases && safeCanvases.length > 0 ? safeCanvases[safeCanvases.length - 1] : undefined);
     return {
       reply: res.reply,
       reasoning: res.reasoning,
       xoxMood: res.xox_mood ?? "talking",
       operation: safeClarification ? "ask_clarification" : res.operation ?? "none",
       tasks: (res.tasks ?? []).map(sanitizeTaskProposal),
-      canvas: res.canvas ? sanitizeCanvasArtifact(res.canvas) ?? undefined : undefined,
+      canvas: primaryCanvas,
+      ...(safeCanvases && safeCanvases.length > 0 ? { canvases: safeCanvases } : {}),
       clarification: safeClarification,
       generatedPdfs: sanitizeGeneratedPdfList(res.generated_pdfs),
       providerUsed: res.provider_used,
@@ -4907,6 +5239,40 @@ function buildBrowserSystemPrompt(
               },
             }
           : {}),
+        ...(req.activeCanvas.interactive
+          ? {
+              interactive: {
+                layout: req.activeCanvas.interactive.layout,
+                controlsCount: req.activeCanvas.interactive.controls.length,
+                state: req.activeCanvas.interactive.state,
+                controls: req.activeCanvas.interactive.controls.slice(0, 15).map((c) => ({
+                  id: c.id,
+                  stateKey: c.stateKey,
+                  label: c.label,
+                  type: c.type,
+                })),
+                computed: (req.activeCanvas.interactive.computed ?? []).slice(0, 8),
+              },
+            }
+          : {}),
+        ...(req.activeCanvas.customApp
+          ? {
+              customApp: {
+                description: req.activeCanvas.customApp.description,
+                height: req.activeCanvas.customApp.height,
+                state: req.activeCanvas.customApp.state,
+                savedAppPath: req.activeCanvas.customApp.savedAppPath,
+              },
+            }
+          : {}),
+        ...(req.activeCanvas.blocks && req.activeCanvas.blocks.length > 0
+          ? {
+              blocks: req.activeCanvas.blocks.slice(0, 10).map((b) => ({
+                type: b.type,
+                title: b.title,
+              })),
+            }
+          : {}),
       })}`
     : "";
 
@@ -4963,6 +5329,10 @@ CAPACIDADES:
 - Planes revisables (\`create_plan\`): cuando el usuario pida un plan por fases, roadmap o esté en \`/plan\`, usa \`create_plan\` para mostrar un Plan Maestro aprobable en Canvas.
 - Mini-dashboards y gráficas (\`create_dashboard\`): cuando el usuario pida gráficas, métricas visuales, KPIs o un dashboard con los datos analizados, usa \`create_dashboard\` para mostrar tarjetas KPI, gráficas interactivas y tabla de respaldo en Canvas.
 - Formularios y cuestionarios interactivos (\`create_form\`): cuando el usuario pida un examen, quiz, hoja de práctica o repaso evaluable (\`purpose="study_quiz"\`) o necesite llenar un formulario/encuesta estructurada (\`purpose="data_capture"\` o \`"survey"\`), usa \`create_form\` para abrirlo interactivo en Canvas.
+- Canvas compuesto (\`create_composite_canvas\`): combina múltiples bloques en un mismo Canvas (callouts, markdown, tablas, diagramas, planes, dashboards, formularios e interfaces interactivas).
+- Interfaces interactivas declarativas (\`create_interactive_ui\`): crea calculadoras, simuladores con sliders/toggles, tableros Kanban y checklists con KPIs recalculados en tiempo real.
+- Mini-apps personalizadas (\`create_custom_ui\`): crea herramientas o interfaces HTML/CSS/JS a medida dentro de un sandbox aislado usando \`window.xook\` (sin scripts ni dependencias externas).
+- Edición incremental (\`update_canvas\`): cuando exista un \`CANVAS ACTIVO EN PANTALLA\` y el usuario pida ajustarlo o ampliarlo, usa \`update_canvas\` pasando su exacto \`id\` en lugar de perder el trabajo previo. Puedes generar varios Canvas distintos en un mismo turno si ayuda al usuario.
 - Aclaraciones (\`ask_clarification\`): analiza primero qué ya especificó el usuario. Si ya dio evento/acción + fecha/hora (ej. "cita para mañana a las 10 pm"), NO pidas aclaraciones y genera la tarjeta directo (solo avisa si choca con AGENDA ACTIVA). Úsala únicamente si falta un dato esencial (como en "agenda algo" o "haz una cita mañana" sin hora), preguntando SOLO lo que falta y nunca datos que ya indicó.
 - Bóveda y proveedores IA (\`configure_ai_vault\`): TÚ SÍ PUEDES configurar proveedores en la bóveda local de XOOK (openrouter, deepseek, groq, gemini, openai, anthropic). Si el usuario pide agregar, configurar o cambiar su API key o proveedor en XOOK, PROHIBIDO sugerir \`.env\` o código; llama de inmediato a \`configure_ai_vault\` para mostrar el formulario seguro Zero-Trust en tu respuesta.
 - Agenda vs Reloj: para recordatorios o entregas con fecha/hora del reloj (ej. "mañana 18:00", "viernes 13 a las 19:00", "1 hora antes") usa SIEMPRE \`intent.type="schedule_event"\` y \`schedule.mode="alarm"\` (NUNCA \`start_timer\`). Usa \`start_timer\` solo para temporizadores cortos que arrancan ahora con \`paramValues.duration_min\` explícito.
@@ -5009,7 +5379,7 @@ export async function runXoxAiChatStream(
       stream_id?: string;
       event?: {
         type?: string;
-        xox_state?: "reading" | "thinking" | "talking" | "syncing";
+        xox_state?: "reading" | "thinking" | "talking" | "syncing" | "coding";
         label?: string;
         steps?: ThinkingStep[];
         delta?: string;
@@ -5029,6 +5399,20 @@ export async function runXoxAiChatStream(
       const evt = payload.event;
       if (evt.type === "phase" && evt.xox_state) {
         callbacks?.onPhase?.(evt.xox_state, evt.label);
+      } else if (evt.type === "xox_terminal") {
+        const status =
+          evt.status === "ok" || evt.status === "error" ? evt.status : "running";
+        const rawLines = Array.isArray(evt.output_lines) ? evt.output_lines : [];
+        callbacks?.onTerminal?.({
+          mode: evt.mode === "edit" ? "edit" : "terminal",
+          status,
+          command: typeof evt.command === "string" ? evt.command.slice(0, 160) : undefined,
+          target: typeof evt.target === "string" ? evt.target.slice(0, 160) : undefined,
+          outputLines: rawLines
+            .filter((l): l is string => typeof l === "string")
+            .slice(-4)
+            .map((l) => l.slice(0, 120)),
+        });
       } else if (evt.type === "rate_limit_update" && evt.rate_limits) {
         const evtProvider =
           typeof evt.provider === "string" && evt.provider.trim()
@@ -5165,6 +5549,7 @@ export async function runXoxAiChatStream(
         operation?: "none" | "add_tasks" | "replace_tasks" | "ask_clarification";
         tasks?: TaskProposal[];
         canvas?: unknown;
+        canvases?: unknown[];
         clarification?: unknown;
         generated_pdfs?: unknown[];
         vault_action?: { provider?: string; intent?: string; note?: string };
@@ -5233,8 +5618,17 @@ export async function runXoxAiChatStream(
         : undefined;
       const rateLimits = normalizeRateLimitsSnapshot(res.rate_limits) ?? undefined;
 
+      const resCanvases = Array.isArray(res.canvases)
+        ? res.canvases
+            .map((item) => sanitizeCanvasArtifact(item))
+            .filter((c): c is CanvasArtifact => Boolean(c && canvasHasCellData(c)))
+        : [];
       const resCanvas = res.canvas ? sanitizeCanvasArtifact(res.canvas) ?? undefined : undefined;
-      const safeCanvas = resCanvas && canvasHasCellData(resCanvas) ? resCanvas : undefined;
+      const safeCanvas =
+        (resCanvas && canvasHasCellData(resCanvas) ? resCanvas : undefined) ??
+        (resCanvases.length > 0 ? resCanvases[resCanvases.length - 1] : undefined);
+      const safeCanvases =
+        resCanvases.length > 0 ? resCanvases : safeCanvas ? [safeCanvas] : undefined;
       const safeClarification = res.clarification
         ? sanitizeClarificationSpec(res.clarification) ?? undefined
         : undefined;
@@ -5270,6 +5664,7 @@ export async function runXoxAiChatStream(
         operation: safeClarification ? "ask_clarification" : res.operation ?? "none",
         tasks: (res.tasks ?? []).map(sanitizeTaskProposal),
         canvas: safeCanvas,
+        ...(safeCanvases && safeCanvases.length > 0 ? { canvases: safeCanvases } : {}),
         clarification: safeClarification,
         vaultAction: safeVaultAction,
         generatedPdfs: sanitizeGeneratedPdfList(res.generated_pdfs),
@@ -5424,6 +5819,10 @@ export async function runXoxAiChatStream(
           BROWSER_PLAN_TOOL_DEF,
           BROWSER_DASHBOARD_TOOL_DEF,
           BROWSER_FORM_TOOL_DEF,
+          BROWSER_COMPOSITE_CANVAS_TOOL_DEF,
+          BROWSER_INTERACTIVE_UI_TOOL_DEF,
+          BROWSER_CUSTOM_UI_TOOL_DEF,
+          BROWSER_UPDATE_CANVAS_TOOL_DEF,
           BROWSER_CLARIFICATION_TOOL_DEF,
           BROWSER_VAULT_CONFIG_TOOL_DEF,
           BROWSER_CHECKLIST_TOOL_DEF,
@@ -5893,45 +6292,66 @@ export async function runXoxAiChatStream(
     callbacks?.onVaultAction?.(vaultAction);
   }
 
-  const canvasArtifact = resolveBrowserCanvasArtifact({
+  const canvasesList = resolveBrowserCanvases({
     toolCalls: toolCallsList,
     canvasBuf: router.canvasBuf,
     actionsCanvas: parsedActions.canvas,
     fullReply: replyText.trim() || parsedActions.reply,
     userMessage: req.message,
+    activeCanvas: req.activeCanvas ?? null,
   });
+  const canvasArtifact = canvasesList.length > 0 ? canvasesList[canvasesList.length - 1] : undefined;
 
   if (canvasArtifact) {
-    const stepLabel = canvasArtifact.plan
-      ? `Plan listo en Canvas: "${canvasArtifact.title}"`
-      : canvasArtifact.dashboard
-        ? `Dashboard listo en Canvas: "${canvasArtifact.title}"`
-        : canvasArtifact.form
-          ? `${canvasArtifact.form.purpose === "study_quiz" ? "Cuestionario" : "Formulario"} listo en Canvas: "${canvasArtifact.title}"`
-          : canvasArtifact.diagram
-            ? `Diagrama listo en Canvas: "${canvasArtifact.title}"`
-            : `Tabla lista en Canvas: "${canvasArtifact.title}"`;
+    const stepLabel =
+      canvasesList.length > 1
+        ? `${canvasesList.length} artefactos listos en Canvas`
+        : canvasArtifact.blocks && canvasArtifact.blocks.length > 0
+          ? `Canvas compuesto listo: "${canvasArtifact.title}"`
+          : canvasArtifact.interactive
+            ? `Interfaz interactiva lista: "${canvasArtifact.title}"`
+            : canvasArtifact.customApp
+              ? `Mini-app lista en Canvas: "${canvasArtifact.title}"`
+              : canvasArtifact.plan
+                ? `Plan listo en Canvas: "${canvasArtifact.title}"`
+                : canvasArtifact.dashboard
+                  ? `Dashboard listo en Canvas: "${canvasArtifact.title}"`
+                  : canvasArtifact.form
+                    ? `${canvasArtifact.form.purpose === "study_quiz" ? "Cuestionario" : "Formulario"} listo en Canvas: "${canvasArtifact.title}"`
+                    : canvasArtifact.diagram
+                      ? `Diagrama listo en Canvas: "${canvasArtifact.title}"`
+                      : `Tabla lista en Canvas: "${canvasArtifact.title}"`;
     upsertStep("build_canvas", stepLabel, "done");
-    callbacks?.onCanvas?.(canvasArtifact);
+    for (const cItem of canvasesList) {
+      callbacks?.onCanvas?.(cItem);
+    }
     callbacks?.onSteps?.([...steps]);
 
     if (toolCallsList.length > 0 && !replyText.trim()) {
       const followupRouter = new BrowserStreamTagRouter(pushReasoning, pushReply, handlePhase);
       const toolResultContent = JSON.stringify({
         ok: true,
+        canvas_id: canvasArtifact.id,
         canvas_title: canvasArtifact.title,
         canvas_kind: canvasArtifact.kind,
+        canvases_count: canvasesList.length,
         columns: canvasArtifact.columns.length,
         rows: canvasArtifact.rows.length,
-        instruction: canvasArtifact.plan
-          ? "El plan ya está abierto en Canvas para revisión y aprobación del usuario. Responde en 1 a 3 oraciones breves en español explicando que puede revisar, comentar o aprobar el plan."
-          : canvasArtifact.dashboard
-            ? "El dashboard ya está abierto en Canvas con KPIs y gráficas interactivas. Responde en 1 a 3 oraciones breves en español destacando la conclusión principal y recomendación."
-            : canvasArtifact.form
-              ? "El formulario/cuestionario ya está abierto en Canvas. Responde en 1 a 3 oraciones breves en español invitando al usuario a responderlo ahí (sin repetir todas las preguntas ni revelar las respuestas correctas)."
-              : canvasArtifact.diagram
-                ? "El diagrama ya está abierto en Canvas. Responde en 1 a 3 oraciones breves en español explicando lo más relevante del flujo sin repetir texto innecesario."
-                : "La tabla ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves de conclusión en español directamente en Markdown (sin etiquetas XML). NO repitas la tabla ni escribas HTML.",
+        instruction: canvasArtifact.interactive
+          ? "La interfaz interactiva ya está abierta en Canvas con controles y cálculos en vivo. Responde en 1 a 3 oraciones breves en español explicando cómo usar los controles o escenarios."
+          : canvasArtifact.customApp
+            ? "La mini-app personalizada ya está ejecutándose en Canvas en un sandbox aislado. Responde en 1 a 3 oraciones breves en español explicando lo que construiste."
+            : canvasArtifact.blocks && canvasArtifact.blocks.length > 0
+              ? "El Canvas compuesto ya está abierto con sus bloques interactivos. Responde en 1 a 3 oraciones breves en español resumiendo lo más útil."
+              : canvasArtifact.plan
+                ? "El plan ya está abierto en Canvas para revisión y aprobación del usuario. Responde en 1 a 3 oraciones breves en español explicando que puede revisar, comentar o aprobar el plan."
+                : canvasArtifact.dashboard
+                  ? "El dashboard ya está abierto en Canvas con KPIs y gráficas interactivas. Responde en 1 a 3 oraciones breves en español destacando la conclusión principal y recomendación."
+                  : canvasArtifact.form
+                    ? "El formulario/cuestionario ya está abierto en Canvas. Responde en 1 a 3 oraciones breves en español invitando al usuario a responderlo ahí (sin repetir todas las preguntas ni revelar las respuestas correctas)."
+                    : canvasArtifact.diagram
+                      ? "El diagrama ya está abierto en Canvas. Responde en 1 a 3 oraciones breves en español explicando lo más relevante del flujo sin repetir texto innecesario."
+                      : "La tabla ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves de conclusión en español directamente en Markdown (sin etiquetas XML). NO repitas la tabla ni escribas HTML.",
       });
       try {
         await runBrowserStreamPass(
@@ -6022,6 +6442,7 @@ export async function runXoxAiChatStream(
     operation: clarificationSpec ? "ask_clarification" : parsedActions.operation,
     tasks: parsedActions.tasks,
     canvas: canvasArtifact,
+    ...(canvasesList.length > 0 ? { canvases: canvasesList } : {}),
     clarification: clarificationSpec,
     vaultAction,
     providerUsed: activeBrowserPid,
@@ -6069,6 +6490,10 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
         BROWSER_PLAN_TOOL_DEF,
         BROWSER_DASHBOARD_TOOL_DEF,
         BROWSER_FORM_TOOL_DEF,
+        BROWSER_COMPOSITE_CANVAS_TOOL_DEF,
+        BROWSER_INTERACTIVE_UI_TOOL_DEF,
+        BROWSER_CUSTOM_UI_TOOL_DEF,
+        BROWSER_UPDATE_CANVAS_TOOL_DEF,
         BROWSER_CLARIFICATION_TOOL_DEF,
         BROWSER_VAULT_CONFIG_TOOL_DEF,
       ];
@@ -6142,13 +6567,15 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
         }
       : undefined);
   const vaultAction = extractVaultActionFromToolCalls(toolCalls);
-  const canvasArtifact = resolveBrowserCanvasArtifact({
+  const canvasesList = resolveBrowserCanvases({
     toolCalls,
     canvasBuf: "",
     actionsCanvas: parsed.canvas,
     fullReply: parsed.reply,
     userMessage: req.message,
+    activeCanvas: req.activeCanvas ?? null,
   });
+  const canvasArtifact = canvasesList.length > 0 ? canvasesList[canvasesList.length - 1] : undefined;
 
   const cleanedSyncReply = cleanVisibleReply(parsed.reply || "", { stripTables: false });
   const finalReply =
@@ -6193,6 +6620,7 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
     operation: clarificationSpec ? "ask_clarification" : parsed.operation,
     reply: finalReply,
     canvas: canvasArtifact,
+    ...(canvasesList.length > 0 ? { canvases: canvasesList } : {}),
     clarification: clarificationSpec,
     vaultAction,
     xoxMood: canvasArtifact && parsed.xoxMood === "talking" ? "success" : parsed.xoxMood,

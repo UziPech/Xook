@@ -107,6 +107,38 @@ pub fn is_protected_workspace_rel_path(rel_path: &Path) -> Option<&'static str> 
     None
 }
 
+/// Indica si una ruta relativa dentro del workspace puede purgarse directamente durante una limpieza segura
+/// (únicamente archivos temporales internos en `agente/.tmp_exports/`, elementos dentro de `agente/.papelera/`,
+/// `.DS_Store`, `__pycache__`, `.pytest_cache` o archivos `*.tmp.*`, nunca carpetas estructurales ni `.xook`/`.git`).
+pub fn is_safe_workspace_cleanup_purge_target(rel_path: &Path) -> Option<&'static str> {
+    let mut parts: Vec<String> = Vec::new();
+    for comp in rel_path.components() {
+        if let Component::Normal(os_str) = comp {
+            parts.push(os_str.to_string_lossy().to_ascii_lowercase());
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    if parts[0] == ".xook"
+        || parts[0].starts_with(".git")
+        || parts.iter().any(|p| p == "node_modules" || p == ".venv")
+    {
+        return None;
+    }
+    if parts.len() >= 3 && parts[0] == "agente" && parts[1] == ".tmp_exports" {
+        return Some("purge_temp");
+    }
+    if parts.len() >= 3 && parts[0] == "agente" && parts[1] == ".papelera" {
+        return Some("empty_trash");
+    }
+    let last = parts.last().map(String::as_str).unwrap_or("");
+    if matches!(last, ".ds_store" | "__pycache__" | ".pytest_cache") || last.contains(".tmp.") {
+        return Some("purge_temp");
+    }
+    None
+}
+
 /// Igual que `is_protected_workspace_rel_path`, pero evaluando una ruta absoluta canonicalizada frente a `canonical_ws`.
 #[allow(dead_code)]
 pub fn is_protected_workspace_abs_path(canonical_target: &Path, canonical_ws: &Path) -> Option<&'static str> {
@@ -357,6 +389,32 @@ mod tests {
                 "expected custom path to be deletable/editable: {allowed}"
             );
         }
+    }
+
+    #[test]
+    fn cleanup_purge_targets_allow_only_safe_temp_and_trash_children() {
+        assert_eq!(
+            is_safe_workspace_cleanup_purge_target(Path::new("agente/.tmp_exports/abc.pdf")),
+            Some("purge_temp")
+        );
+        assert_eq!(
+            is_safe_workspace_cleanup_purge_target(Path::new("agente/.papelera/123_old.pdf")),
+            Some("empty_trash")
+        );
+        assert_eq!(
+            is_safe_workspace_cleanup_purge_target(Path::new("agente/.DS_Store")),
+            Some("purge_temp")
+        );
+        assert_eq!(
+            is_safe_workspace_cleanup_purge_target(Path::new("agente/proyectos/__pycache__")),
+            Some("purge_temp")
+        );
+        // Never allow purging structural folders or core/internal files
+        assert_eq!(is_safe_workspace_cleanup_purge_target(Path::new("agente/.tmp_exports")), None);
+        assert_eq!(is_safe_workspace_cleanup_purge_target(Path::new("agente/.papelera")), None);
+        assert_eq!(is_safe_workspace_cleanup_purge_target(Path::new(".xook/.DS_Store")), None);
+        assert_eq!(is_safe_workspace_cleanup_purge_target(Path::new("empresa/perfil.json")), None);
+        assert_eq!(is_safe_workspace_cleanup_purge_target(Path::new("agente/reportes/q1.pdf")), None);
     }
 }
 

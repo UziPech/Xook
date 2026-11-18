@@ -16,7 +16,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { XoxDragMotion, XoxStar, XoxState, resolveXoxAccentPreset, type XoxAccentPreset } from "./XoxStar";
+import { XoxDragMotion, XoxStar, XoxState, resolveXoxAccentPreset, type XoxAccentPreset, type XoxTerminalFeed } from "./XoxStar";
 import {
   getGlobalXoxProfile,
   subscribeGlobalXoxProfile,
@@ -156,6 +156,7 @@ export const QuickBar: React.FC = () => {
   const [settleSeq, setSettleSeq] = useState<number>(0);
   const [inputPrompt, setInputPrompt] = useState<string>("");
   const [xoxState, setXoxState] = useState<XoxState>("idle");
+  const [xoxTerminalFeed, setXoxTerminalFeed] = useState<XoxTerminalFeed | null>(null);
   const [statusNote, setStatusNote] = useState<string>("");
   const [reply, setReply] = useState<string | null>(null);
   const [quickCanvas, setQuickCanvas] = useState<CanvasArtifact | null>(null);
@@ -954,7 +955,7 @@ export const QuickBar: React.FC = () => {
     const TALKING_MIN_MS = 950;
     const readingStartedAt = performance.now();
     let talkingStartedAt = 0;
-    let latestPhase: "reading" | "thinking" | "talking" | "syncing" = "reading";
+    let latestPhase: XoxState = "reading";
     let hasEnteredTalking = false;
 
     try {
@@ -1077,7 +1078,7 @@ export const QuickBar: React.FC = () => {
             }
           },
           onPhase: (phase, label) => {
-            if (hasEnteredTalking && (phase === "reading" || phase === "thinking")) {
+            if (hasEnteredTalking && (phase === "reading" || phase === "thinking" || phase === "coding")) {
               return;
             }
             if (phase === "talking") {
@@ -1108,10 +1109,21 @@ export const QuickBar: React.FC = () => {
               label ||
                 (phase === "syncing"
                   ? "Diseñando tabla en Canvas..."
-                  : phase === "reading"
-                    ? "Leyendo contexto..."
-                    : `Consultando ${activeModel.name}...`)
+                  : phase === "coding"
+                    ? "Ejecutando código y terminal..."
+                    : phase === "reading"
+                      ? "Leyendo contexto..."
+                      : `Consultando ${activeModel.name}...`)
             );
+          },
+          onTerminal: (termEvt) => {
+            setXoxTerminalFeed((prev) => ({
+              seq: (prev?.seq ?? 0) + 1,
+              mode: termEvt.mode,
+              status: termEvt.status,
+              command: termEvt.command ?? termEvt.target,
+              outputLines: termEvt.outputLines,
+            }));
           },
           onSteps: (steps) => {
             if (hasEnteredTalking || !Array.isArray(steps) || steps.length === 0) return;
@@ -1366,7 +1378,11 @@ export const QuickBar: React.FC = () => {
   }, [modelId, liveCatalog, activeSpec.curatedModels, modelOptions]);
 
   const isBusy =
-    isStreaming || xoxState === "thinking" || xoxState === "reading" || xoxState === "syncing";
+    isStreaming ||
+    xoxState === "thinking" ||
+    xoxState === "reading" ||
+    xoxState === "coding" ||
+    xoxState === "syncing";
   const canSubmit = Boolean(inputPrompt.trim()) && !isStreaming;
 
   const modelsPresence = useAnimatedPresence(showModels, 150);
@@ -1524,6 +1540,7 @@ export const QuickBar: React.FC = () => {
                   active={isQuickVisible && !isLeaving}
                   summonTrigger={summonSeq}
                   dragMotionRef={xoxDragMotionRef}
+                  terminal={xoxTerminalFeed}
                   className={isDragging ? "!cursor-grabbing" : "!cursor-grab"}
                   onClick={() => {
                     if (suppressNextXoxClickRef.current) {

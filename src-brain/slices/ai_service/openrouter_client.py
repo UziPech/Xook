@@ -4,6 +4,7 @@ Ejecuta inferencia real vía OpenRouter Chat Completions y traduce respuestas
 al contrato seguro de bloques visuales (TaskProposal) sin exponer JSON crudo al usuario.
 """
 
+import html
 import http.client
 import json
 import re
@@ -56,6 +57,7 @@ from slices.ai_service.provider_registry import (
     select_equivalent_model_for_provider,
 )
 from slices.task_ui.schemas import (
+    apply_canvas_patch,
     canvas_has_cell_data,
     clean_visible_reply,
     sanitize_canvas_artifact,
@@ -121,6 +123,35 @@ def _collect_active_secrets(
     return secrets
 
 
+_XOX_CODE_TOOLS = ("run_workspace_command", "workspace_edit_file", "workspace_write_file")
+
+
+def _xox_terminal_event(fn_name: str, args: Dict[str, Any], tool_res: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Evento ligero para que Xox muestre en su laptop la edición o la respuesta de la terminal.
+
+    Solo viaja al UI local; se limita a las últimas líneas recortadas para no inflar el stream.
+    """
+    mode = "terminal" if fn_name == "run_workspace_command" else "edit"
+    evt: Dict[str, Any] = {"type": "xox_terminal", "mode": mode}
+    if mode == "terminal":
+        evt["command"] = str(args.get("command") or args.get("purpose") or "")[:160]
+    else:
+        evt["target"] = str(args.get("path") or args.get("target_path") or "")[:160]
+    if tool_res is None:
+        evt["status"] = "running"
+        return evt
+    ok = bool(tool_res.get("ok"))
+    evt["status"] = "ok" if ok else "error"
+    raw_parts = []
+    for key in ("stdout", "stderr", "error"):
+        val = tool_res.get(key)
+        if isinstance(val, str) and val.strip():
+            raw_parts.append(val)
+    lines = [ln.rstrip() for ln in "\n".join(raw_parts).splitlines() if ln.strip()]
+    evt["output_lines"] = [ln[:120] for ln in lines[-4:]]
+    return evt
+
+
 def _tool_step_meta(fn_name: str, args: Dict[str, Any]) -> Tuple[str, str]:
     target = str(args.get("path") or args.get("target_path") or args.get("query") or "").strip()
     if fn_name == "workspace_list":
@@ -143,6 +174,11 @@ def _tool_step_meta(fn_name: str, args: Dict[str, Any]) -> Tuple[str, str]:
         return "Preparando cambio para aprobación", str(args.get("target_path") or "")
     if fn_name == "propose_delete_path":
         return "Preparando borrado para aprobación", str(args.get("target_path") or "")
+    if fn_name == "scan_workspace_cleanup":
+        return "Auditando archivos limpiables del espacio", "solo lectura segura"
+    if fn_name == "propose_workspace_cleanup":
+        cnt = len(args.get("paths") or []) if isinstance(args.get("paths"), list) else 0
+        return "Preparando limpieza segura para aprobación", f"{cnt} seleccionado(s)" if cnt else "temporales y borradores"
     if fn_name == "propose_schedule_automation":
         return "Preparando automatización en Agenda", str(args.get("title") or "")
     if fn_name == "propose_tasks":
@@ -321,6 +357,7 @@ CANVAS_TOOL_DEF: Dict[str, Any] = {
         "parameters": {
             "type": "object",
             "properties": {
+                "id": {"type": "string", "description": "Opcional: ID del Canvas activo si deseas actualizarlo manteniendo el mismo artefacto."},
                 "title": {"type": "string", "description": "Título claro del Canvas o tabla"},
                 "subtitle": {"type": "string", "description": "Contexto breve o unidades"},
                 "kind": {"type": "string", "enum": ["comparison", "table", "document"]},
@@ -368,6 +405,7 @@ CREATE_DIAGRAM_TOOL_DEF: Dict[str, Any] = {
         "parameters": {
             "type": "object",
             "properties": {
+                "id": {"type": "string", "description": "Opcional: ID del diagrama existente si lo estás actualizando."},
                 "title": {"type": "string", "description": "Título claro del diagrama"},
                 "subtitle": {"type": "string", "description": "Contexto breve"},
                 "summary": {"type": "string", "description": "Conclusión o idea principal en 1 oración"},
@@ -437,6 +475,7 @@ CREATE_PLAN_TOOL_DEF: Dict[str, Any] = {
         "parameters": {
             "type": "object",
             "properties": {
+                "id": {"type": "string", "description": "Opcional: ID del plan existente si estás aplicando ajustes solicitados."},
                 "title": {"type": "string", "description": "Título claro del plan"},
                 "subtitle": {"type": "string", "description": "Contexto o horizonte estimado"},
                 "goal": {"type": "string", "description": "Objetivo del plan en 1-2 oraciones"},
@@ -508,6 +547,7 @@ CREATE_DASHBOARD_TOOL_DEF: Dict[str, Any] = {
         "parameters": {
             "type": "object",
             "properties": {
+                "id": {"type": "string", "description": "Opcional: ID del dashboard existente si lo estás actualizando."},
                 "title": {"type": "string", "description": "Título claro del dashboard"},
                 "subtitle": {"type": "string", "description": "Periodo o contexto breve"},
                 "summary": {"type": "string", "description": "Conclusión ejecutiva en 1 oración"},
@@ -601,6 +641,7 @@ CREATE_FORM_TOOL_DEF: Dict[str, Any] = {
         "parameters": {
             "type": "object",
             "properties": {
+                "id": {"type": "string", "description": "Opcional: ID del formulario existente si lo estás actualizando."},
                 "title": {"type": "string", "description": "Título claro del cuestionario o formulario"},
                 "subtitle": {"type": "string", "description": "Tema, materia o contexto breve"},
                 "description": {"type": "string", "description": "Instrucciones breves para el usuario"},
@@ -653,6 +694,299 @@ CREATE_FORM_TOOL_DEF: Dict[str, Any] = {
                 },
             },
             "required": ["title", "fields"],
+        },
+    },
+}
+
+CREATE_COMPOSITE_CANVAS_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "create_composite_canvas",
+        "description": (
+            "Crea un Canvas compuesto por múltiples bloques combinados en orden (callout, markdown, dashboard, "
+            "table, diagram, plan, form, interactive). Úsalo cuando convenga presentar un análisis completo o "
+            "herramienta mixta en una sola vista coherente. Mantén textos y propiedades concisos para evitar JSON truncado."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Opcional: ID de un Canvas existente si lo estás actualizando."},
+                "title": {"type": "string", "description": "Título del lienzo compuesto"},
+                "subtitle": {"type": "string", "description": "Contexto breve"},
+                "summary": {"type": "string", "description": "Conclusión clave en 1 oración"},
+                "blocks": {
+                    "type": "array",
+                    "description": "Lista ordenada de bloques visuales e interactivos",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["callout", "markdown", "table", "diagram", "plan", "dashboard", "form", "interactive"],
+                            },
+                            "title": {"type": "string"},
+                            "text": {"type": "string"},
+                            "tone": {"type": "string", "enum": ["info", "warning", "success", "critical"]},
+                            "content": {"type": "string"},
+                            "columns": {"type": "array", "items": {"type": "string"}},
+                            "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+                            "diagram": {"type": "object", "additionalProperties": True, "description": "Opcional para type='diagram' ({diagram_type, direction, nodes, edges})"},
+                            "plan": {"type": "object", "additionalProperties": True, "description": "Opcional para type='plan' ({goal, phases})"},
+                            "dashboard": {"type": "object", "additionalProperties": True, "description": "Opcional para type='dashboard' ({kpis, charts})"},
+                            "form": {"type": "object", "additionalProperties": True, "description": "Opcional para type='form' ({purpose, fields})"},
+                            "interactive": {
+                                "type": "object",
+                                "additionalProperties": True,
+                                "description": "Para type='interactive': objeto con {state, controls, computed, actions}",
+                                "properties": {
+                                    "layout": {"type": "string", "enum": ["stack", "grid", "split", "tabs"]},
+                                    "state": {"type": "object", "additionalProperties": True},
+                                    "controls": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {"type": "string"},
+                                                "state_key": {"type": "string"},
+                                                "label": {"type": "string"},
+                                                "type": {"type": "string", "enum": ["number", "slider", "toggle", "select", "segmented", "text", "textarea", "checklist", "kanban"]},
+                                                "min": {"type": "number"},
+                                                "max": {"type": "number"},
+                                                "step": {"type": "number"},
+                                                "unit": {"type": "string"},
+                                                "prefix": {"type": "string"},
+                                                "options": {"type": "array", "items": {"type": "string"}},
+                                            },
+                                        },
+                                    },
+                                    "computed": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "label": {"type": "string"},
+                                                "expr": {"type": "string"},
+                                                "format": {"type": "string", "enum": ["number", "currency", "percent", "text"]},
+                                                "unit": {"type": "string"},
+                                                "tone": {"type": "string", "enum": ["neutral", "positive", "warning", "critical"]},
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                        "required": ["type"],
+                    },
+                },
+                "save_report": {"type": "boolean"},
+            },
+            "required": ["title", "blocks"],
+        },
+    },
+}
+
+CREATE_INTERACTIVE_UI_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "create_interactive_ui",
+        "description": (
+            "Crea una interfaz interactiva reactiva estructurada en Canvas (calculadoras de margen/punto de equilibrio/préstamos, "
+            "simuladores what-if, cotizadores, tableros Kanban, checklists operativas o herramientas con pestañas). "
+            "Marca 1 o 2 métricas protagonistas con `role='hero'` y el resto del desglose con `role='breakdown'` para evitar muros de cajas iguales. "
+            "Usa `visible_when` para mostrar métricas o controles solo cuando apliquen (ej. `canal == 'Marketplace'`)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Opcional: ID del Canvas existente si lo actualizas."},
+                "title": {"type": "string", "description": "Título de la herramienta o interfaz interactiva"},
+                "subtitle": {"type": "string"},
+                "description": {"type": "string", "description": "Breve guía de uso en 1 oración (no la repitas en summary)"},
+                "layout": {"type": "string", "enum": ["stack", "grid", "split", "tabs"]},
+                "tabs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "label": {"type": "string"},
+                            "description": {"type": "string"},
+                        },
+                        "required": ["id", "label"],
+                    },
+                },
+                "state": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "description": "Valores iniciales del estado reactivo por `state_key` (números, textos, booleanos o listas de IDs).",
+                },
+                "controls": {
+                    "type": "array",
+                    "description": "Controles interactivos que modifican `state` en vivo",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "state_key": {"type": "string", "description": "Clave en `state` que lee y actualiza este control"},
+                            "tab_id": {"type": "string"},
+                            "label": {"type": "string"},
+                            "helper_text": {"type": "string"},
+                            "visible_when": {"type": "string", "description": "Opcional: condición con claves de state para mostrar este control (ej. \"canal == 'Marketplace'\")"},
+                            "type": {
+                                "type": "string",
+                                "enum": ["number", "slider", "toggle", "select", "segmented", "text", "textarea", "checklist", "kanban"],
+                            },
+                            "min": {"type": "number"},
+                            "max": {"type": "number"},
+                            "step": {"type": "number"},
+                            "unit": {"type": "string"},
+                            "prefix": {"type": "string"},
+                            "options": {"type": "array", "items": {"type": "string"}},
+                            "columns": {
+                                "type": "array",
+                                "description": "Para type='kanban': columnas del tablero [{id, label}]",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {"id": {"type": "string"}, "label": {"type": "string"}},
+                                },
+                            },
+                            "items": {
+                                "type": "array",
+                                "description": "Para checklist o kanban: elementos interactivos",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "label": {"type": "string"},
+                                        "detail": {"type": "string"},
+                                        "badge": {"type": "string"},
+                                        "column": {"type": "string"},
+                                        "checked": {"type": "boolean"},
+                                    },
+                                },
+                            },
+                        },
+                        "required": ["label", "type", "state_key"],
+                    },
+                },
+                "computed": {
+                    "type": "array",
+                    "description": "Métricas calculadas en tiempo real usando fórmulas con las claves de `state` (ej. 'precio * cantidad * (1 - descuento / 100)')",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string"},
+                            "expr": {"type": "string", "description": "Expresión matemática o condicional usando claves de state (+ - * / % ? : min max round clamp sum avg if count len)"},
+                            "format": {"type": "string", "enum": ["number", "currency", "percent", "text"]},
+                            "role": {"type": "string", "enum": ["hero", "breakdown"], "description": "'hero' para los 1-2 resultados principales; 'breakdown' para pasos del desglose"},
+                            "visible_when": {"type": "string", "description": "Opcional: expresión booleana para mostrar esta métrica solo cuando aplique"},
+                            "unit": {"type": "string"},
+                            "tone": {"type": "string", "enum": ["neutral", "positive", "warning", "critical"]},
+                            "caption": {"type": "string"},
+                            "tab_id": {"type": "string"},
+                        },
+                        "required": ["label", "expr"],
+                    },
+                },
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "label": {"type": "string"},
+                            "action": {"type": "string", "enum": ["send_to_xox", "reset"]},
+                            "style": {"type": "string", "enum": ["primary", "secondary"]},
+                            "prompt_template": {"type": "string"},
+                        },
+                        "required": ["label", "action"],
+                    },
+                },
+                "save_report": {"type": "boolean"},
+            },
+            "required": ["title", "controls"],
+        },
+    },
+}
+
+CREATE_CUSTOM_UI_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "create_custom_ui",
+        "description": (
+            "Lienzo de diseño libre de primera clase para construir una vista o aplicación interactiva a medida "
+            "(HTML + CSS + JavaScript autocontenidos, sin URLs externas) adaptada exactamente a la situación del usuario: "
+            "simuladores comerciales personalizados con cascada financiera y comparador de canales lado a lado, "
+            "cotizadores interactivos, calculadoras visuales con barras de punto de equilibrio, matrices de decisión, "
+            "visualizadores SVG o herramientas operativas únicas. El documento ya incluye el UI Kit CSS nativo de XOOK "
+            "(`.xook-split`, `.xook-hero-card`, `.xook-waterfall`, `.xook-pill-group`, `.xook-progress`, `.is-positive`, `.is-warning`, `.is-critical`)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Opcional: ID de un Canvas existente si lo estás actualizando."},
+                "title": {"type": "string", "description": "Título claro de la vista personalizada"},
+                "subtitle": {"type": "string"},
+                "summary": {"type": "string", "description": "Opcional: conclusión breve en 1 oración"},
+                "description": {"type": "string"},
+                "html": {"type": "string", "description": "Marcado HTML autocontenido del cuerpo de la interfaz (sin scripts externos)."},
+                "css": {
+                    "type": "string",
+                    "description": (
+                        "Estilos CSS adicionales. REGLA DE DISEÑO XOOK: PROHIBIDO usar `linear-gradient`, `radial-gradient` o rellenos morados/azules/neón (`#6366f1`, `#818cf8`, `#3b82f6`). "
+                        "Usa estrictamente superficies oscuras sólidas (`#090a0e`, `#0d0f14`, `rgba(255,255,255,0.03)`), bordes sutiles (`rgba(255,255,255,0.08)`), "
+                        "botones/píldoras activas en blanco traslúcido (`rgba(255,255,255,0.10)` con borde `rgba(255,255,255,0.22)` y texto `#ffffff`) "
+                        "y usa color (`--xook-positive` `#34d399`, `--xook-warning` `#fbbf24`, `--xook-critical` `#fb7185`) ÚNICAMENTE en el texto de las cifras."
+                    ),
+                },
+                "js": {
+                    "type": "string",
+                    "description": (
+                        "JavaScript interactivo puro. Tienes disponible `window.xook.getState()`, "
+                        "`window.xook.setState(obj)` para persistir estado y `window.xook.sendToXox(texto, datos)` "
+                        "para enviar acciones o escenarios de vuelta al chat."
+                    ),
+                },
+                "initial_state": {"type": "object", "additionalProperties": True, "description": "Estado JSON inicial opcional"},
+                "height": {"type": "integer", "description": "Altura mínima opcional en px (el lienzo se auto-ajusta dinámicamente al contenido)"},
+                "save_to_workspace": {"type": "boolean", "description": "true para guardar una copia reutilizable en `agente/apps/`"},
+                "app_slug": {"type": "string", "description": "Nombre corto de archivo si `save_to_workspace=true`"},
+            },
+            "required": ["title", "html"],
+        },
+    },
+}
+
+UPDATE_CANVAS_TOOL_DEF: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "update_canvas",
+        "description": (
+            "Actualiza incrementalmente un Canvas activo manteniendo su mismo `id` y su historial de versiones, "
+            "sin perder datos no modificados (ej. cambiar título/resumen, agregar o actualizar filas, ajustar pasos del plan, "
+            "cambiar controles/estado de una interfaz interactiva o mejorar una custom_app)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "ID exacto del Canvas activo a modificar"},
+                "title": {"type": "string"},
+                "subtitle": {"type": "string"},
+                "summary": {"type": "string"},
+                "markdown": {"type": "string"},
+                "columns": {"type": "array", "items": {"type": "string"}},
+                "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+                "append_rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+                "diagram": {"type": "object", "additionalProperties": True},
+                "plan": {"type": "object", "additionalProperties": True},
+                "dashboard": {"type": "object", "additionalProperties": True},
+                "form": {"type": "object", "additionalProperties": True},
+                "interactive": {"type": "object", "additionalProperties": True},
+                "custom_app": {"type": "object", "additionalProperties": True},
+                "blocks": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+                "append_blocks": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            },
+            "required": ["id"],
         },
     },
 }
@@ -2049,21 +2383,63 @@ def _build_system_prompt(
                     if isinstance(fld, dict)
                 ],
             }
+        if isinstance(active_canvas.get("interactive"), dict):
+            inter = active_canvas["interactive"]
+            compact_canvas["interactive"] = {
+                "layout": inter.get("layout"),
+                "state": inter.get("state"),
+                "controls": [
+                    {"id": c.get("id"), "stateKey": c.get("stateKey"), "label": c.get("label"), "type": c.get("type")}
+                    for c in (inter.get("controls") or [])[:15]
+                    if isinstance(c, dict)
+                ],
+                "computed": [
+                    {"label": m.get("label"), "expr": m.get("expr")}
+                    for m in (inter.get("computed") or [])[:10]
+                    if isinstance(m, dict)
+                ],
+            }
+        if isinstance(active_canvas.get("customApp"), dict):
+            capp = active_canvas["customApp"]
+            compact_canvas["customApp"] = {
+                "description": capp.get("description"),
+                "state": capp.get("state"),
+                "height": capp.get("height"),
+                "savedAppPath": capp.get("savedAppPath"),
+                "hasHtml": bool(capp.get("html")),
+                "hasJs": bool(capp.get("js")),
+            }
+        if isinstance(active_canvas.get("blocks"), list) and active_canvas["blocks"]:
+            compact_canvas["blocksCount"] = len(active_canvas["blocks"])
+            compact_canvas["blockTypes"] = [
+                b.get("type") for b in active_canvas["blocks"][:12] if isinstance(b, dict)
+            ]
         canvas_ctx = (
-            "\nCANVAS ACTIVO EN PANTALLA (si el usuario pide modificar, filtrar, ampliar o mejorar el contenido de Canvas, actualiza este Canvas manteniendo su id):\n"
+            "\nCANVAS ACTIVO EN PANTALLA (si el usuario pide modificar, filtrar, ampliar o mejorar este Canvas, usa `update_canvas` con su `id` o la herramienta `create_*` pasando este mismo `id`):\n"
             + json.dumps(compact_canvas, ensure_ascii=False)
         )
 
-    canvas_hint = """USO DE CANVAS PARA TABLAS, DIAGRAMAS, PLANES, DASHBOARDS Y FORMULARIOS (IMPORTANTE):
-Cuando el usuario pida o convenga mostrar una TABLA, tabla comparativa, desglose, matriz de opciones o presupuesto:
-- Usa la herramienta `create_canvas` (preferida; evita emitir etiquetas `<canvas>` manualmente) pasando columnas en texto simple y TODAS las filas completas en `rows`, o en último caso incluye una sección `<canvas>{...}</canvas>` con:
-  {"title":"Título corto","subtitle":"Criterio breve","kind":"comparison","summary":"Conclusión clave en 1 oración","columns":["Criterio","Opción A","Opción B"],"rows":[["Precio","$100","$120"],["Tiempo","2 días","5 días"]],"recommended_row":0,"recommended_badge":"Recomendado"}
-- Cuando el usuario pida un diagrama de flujo, proceso, mapa conceptual, secuencia o arquitectura (o cuando un diagrama visual ayude a entender una explicación), usa `create_diagram` con `nodes` y `edges` (o `mermaid`) para abrirlo interactivo en Canvas.
-- Cuando el usuario pida un plan estructurado por fases o esté en `/plan`, usa `create_plan` para abrir un Plan Maestro revisable y aprobable en Canvas.
-- Cuando el usuario pida gráficas, métricas visuales, KPIs o un mini-dashboard con los datos analizados, usa `create_dashboard` para abrir KPIs + gráficas interactivas + tabla de respaldo en Canvas.
-- Cuando el usuario pida un cuestionario, examen, quiz o hoja de práctica evaluable (`purpose="study_quiz"`), o necesite un formulario/encuesta interactiva para capturar datos (`purpose="data_capture"` o `"survey"`), usa `create_form` para abrirlo en Canvas.
-- NUNCA envíes `rows` con celdas vacías ni escribas etiquetas HTML (<table>, <tr>, <th>, <td>, <pdf>) en tu respuesta al usuario.
-- En tu mensaje responde libremente con una explicación clara o la conclusión clave sin duplicar tablas HTML ni envolver el texto en etiquetas XML."""
+    canvas_hint = """CRITERIO DE RAZONAMIENTO AUTÓNOMO Y DISEÑO PERSONALIZADO EN CANVAS (MUY IMPORTANTE):
+1. RAZONA POR LA SITUACIÓN, NO POR PALABRAS CLAVE:
+   - La mayoría de los usuarios NO saben qué es "Canvas", "simulador" ni "dashboard", ni te los van a pedir por nombre.
+   - Evalúa por iniciativa propia la intención detrás del mensaje:
+     * ¿El usuario plantea números, precios, costos, descuentos, comisiones, presupuestos o metas donde le ayudaría mover variables en vivo ("¿me conviene?", "¿cuánto gano/pierdo si...?")? -> Abre una herramienta interactiva o vista a medida en Canvas.
+     * ¿Está comparando opciones, canales, proveedores o escenarios con trade-offs? -> Abre una comparativa clara o simulador de escenarios en Canvas.
+     * ¿Está tratando de estructurar un proyecto, entender un flujo/proceso o practicar un tema de estudio? -> Abre un plan, diagrama o cuestionario interactivo en Canvas.
+     * ¿Es una charla casual, saludo o pregunta puntual que se responde mejor en 1-2 párrafos directos? -> Responde solo en el chat sin abrir Canvas.
+
+2. LIBERTAD DE DISEÑO PERSONALIZADO (EVITA VISTAS GENÉRICAS Y SATURADAS):
+   - No satures al usuario con muros de 8 o 10 cajas iguales ni textos repetidos. Diseña pensando en claridad ejecutiva:
+   - `create_custom_ui` (LIENZO DE DISEÑO LIBRE RECOMENDADO PARA EXPERIENCIAS A MEDIDA):
+     * Tienes plena libertad para diseñar la interfaz exacta que pide la situación usando HTML + CSS + JS autocontenido (sin URLs externas).
+     * ESTÉTICA SOBRIA MONOCROMÁTICA XOOK (OBLIGATORIA): PROHIBIDO usar `linear-gradient`, `radial-gradient` o rellenos morados/azules/neón (`#6366f1`, `#818cf8`, `#3b82f6`). Usa superficies oscuras sólidas (`#090a0e`, `#0d0f14`), bordes sutiles (`rgba(255,255,255,0.08)`), botones/píldoras activas en blanco traslúcido (`rgba(255,255,255,0.10)` con borde `rgba(255,255,255,0.22)` y texto `#ffffff`) y reserva el color (`#34d399`, `#fbbf24`, `#fb7185`) exclusivamente para el texto de las cifras.
+     * Ya cuentas con el UI Kit CSS nativo de XOOK pre-cargado: `.xook-split` (panel dividido adaptable), `.xook-hero-card` y `.xook-hero-value` (1-2 métricas protagonistas grandes), `.xook-waterfall` y `.xook-breakdown-row` (desglose financiero limpio tipo estado de resultados), `.xook-pill-group` y `.xook-pill` (selectores de 1 clic), `.xook-progress` y `.xook-progress-bar` (barras de meta/punto de equilibrio), `.xook-card`, y semáforos `.is-positive`, `.is-warning`, `.is-critical`, `.is-accent`, más `window.xook.getState()`, `window.xook.setState(patch)` y `window.xook.sendToXox(mensaje, datos)`.
+   - `create_interactive_ui`: para calculadoras o tableros declarativos rápidos. Marca siempre 1-2 resultados principales con `role="hero"` y los pasos intermedios con `role="breakdown"`, y usa `visible_when` para ocultar métricas/controles condicionales cuando no apliquen. No repitas el mismo texto en `summary` y `description`.
+   - `create_dashboard`: para KPIs + gráficas interactivas (`bar`, `horizontal_bar`, `line`, `area`, `donut`) y hallazgos clave.
+   - `create_diagram` / `create_plan` / `create_form` / `create_canvas` / `create_composite_canvas`: según la naturaleza visual del problema.
+   - `update_canvas`: cuando exista un `CANVAS ACTIVO EN PANTALLA` y el usuario pida ajustes o nuevos parámetros sobre ese mismo tema, actualízalo manteniendo su `id` (o pasa ese mismo `id` a `create_*`).
+   - Mantén tu razonamiento interno directo y breve al construir herramientas Canvas para invocar la herramienta cuanto antes sin exceder el presupuesto de tokens.
+   - NUNCA envíes `rows` con celdas vacías ni escribas etiquetas HTML (`<table>`, `<tr>`, `<th>`, `<td>`, `<pdf>`) en tu mensaje de chat. En el chat da una conclusión breve y accionable sin repetir todo el contenido del Canvas."""
 
     task_schema_hint = """ESQUEMA DE CADA TaskProposal EN "tasks":
 {
@@ -2125,6 +2501,10 @@ Responde directamente al usuario en español (o en el idioma que pida) usando Ma
   * `create_plan`: para abrir un Plan Maestro revisable y aprobable por fases en Canvas.
   * `create_dashboard`: para abrir mini-dashboards con KPIs, gráficas interactivas y hallazgos de negocio en Canvas.
   * `create_form`: para abrir cuestionarios/exámenes interactivos con calificación (`study_quiz`) o formularios de captura/encuestas en Canvas.
+  * `create_composite_canvas`: para combinar varios bloques (KPIs, tablas, diagramas, formularios, callouts) en un mismo Canvas.
+  * `create_interactive_ui`: para construir calculadoras, simuladores what-if, checklists o tableros Kanban reactivos nativos en Canvas.
+  * `create_custom_ui`: para crear interfaces personalizadas libres HTML/CSS/JS dentro de sandbox seguro cuando el usuario necesite una mini-app visual a la medida.
+  * `update_canvas`: para editar incrementalmente un Canvas abierto manteniendo su `id`.
   * `configure_ai_vault`: cuando el usuario pida configurar, cambiar o guardar su API key o proveedor (`openrouter`, `deepseek`, `groq`, `gemini`, `openai`, `anthropic`) en la bóveda local de XOOK.
   * `pdf_generate` / `pdf_read`: para generar o leer archivos PDF.
 - En preguntas generales, análisis de imágenes, lectura de documentos, programación, redacción o charla cotidiana, responde directamente en Markdown libre sin forzar tareas ni Canvas.
@@ -2178,10 +2558,13 @@ HERRAMIENTAS DEL ESPACIO DE TRABAJO Y EQUIPO DEL USUARIO (OBLIGATORIO CUANDO OPE
     - `discover_official_skills` e `install_official_skill`: busca capacidades en `skills.sh` filtrando ESTRICTAMENTE a publicadores oficiales verificados (`anthropics`, `vercel-labs`, `google`, `google-gemini`, `modelcontextprotocol`, `agentskills`, `openai`, etc.) y las guarda tras pasar escaneo anti-inyección.
     - SIEMPRE que edites tu nombre, personalidad, voz, reglas o alguna habilidad a petición del usuario, explícale claramente en tu respuesta qué cambiaste y dile que puede verlo o seguir editándolo en su **Espacio de Xox**.
   * Fuera del workspace (`~/...`, `/...`, `C:\\...`): usa `workspace_edit_file`, `workspace_write_file` o `workspace_mkdir` pasando la ruta explícita; el Guardián mostrará vista previa y pedirá confirmación al usuario.
-- PROTECCIÓN DE ESTRUCTURA Y LIMPIEZA SEGURA (`propose_delete_path`):
-  * JAMÁS propongas eliminar, mover ni "limpiar" carpetas estructurales del workspace (`empresa/`, `empresa/reglas/`, `datos/`, `datos/ventas/`, `datos/documentos/`, `memoria/`, `memoria/diario/`, `habilidades/`, `agente/`, `agente/adjuntos/`, `agente/proyectos/`, `agente/borradores/`, `agente/reportes/`, `agente/revisiones/`, `agente/ordenes/`, `agente/logs/`), aunque estén vacías: son ranuras base de XOOK.
+- PROTECCIÓN DE ESTRUCTURA Y LIMPIEZA SEGURA DEL WORKSPACE (`scan_workspace_cleanup`, `propose_workspace_cleanup` y `propose_delete_path`):
+  * Cuando el usuario pida limpiar, depurar o liberar espacio en el workspace ("limpia el workspace", "limpia tu espacio de trabajo", "borra temporales o basura"):
+    1. Llama PRIMERO a `scan_workspace_cleanup` para inspeccionar candidatos seguros sin tocar `.xook/`, `empresa/`, `datos/`, `memoria/`, `habilidades/`, `agente/ordenes/` ni borradores vinculados a tarjetas pendientes o historial en `decision_history`.
+    2. Llama a `propose_workspace_cleanup` para preparar UNA sola tarjeta HITL unificada (en lugar de múltiples tarjetas) que purga temporales seguros (`agente/.tmp_exports/*`, `.DS_Store`, `__pycache__`, `*.tmp.*`) y archiva en `agente/.papelera/` los entregables/borradores huérfanos elegidos, dejando intactas todas las carpetas estructurales y archivos núcleo. Si el usuario está trabajando en un repo de software con `scripts/clean-workspace.sh`, puedes sugerir o ejecutar `bash scripts/clean-workspace.sh --auto` vía `run_workspace_command` con su aprobación.
+  * JAMÁS propongas eliminar, mover ni "limpiar" carpetas estructurales del workspace (`empresa/`, `empresa/reglas/`, `datos/`, `datos/ventas/`, `datos/documentos/`, `memoria/`, `memoria/diario/`, `habilidades/`, `agente/`, `agente/adjuntos/`, `agente/proyectos/`, `agente/borradores/`, `agente/reportes/`, `agente/revisiones/`, `agente/ordenes/`, `agente/logs/`, `agente/.papelera/`, `agente/.tmp_exports/`), aunque estén vacías: son ranuras base de XOOK.
   * JAMÁS propongas eliminar archivos núcleo (`empresa/perfil.json`, `empresa/proveedores.json`, `empresa/reglas/operacion.md`, `memoria/hechos.md`, `memoria/decisiones.jsonl`, `memoria/patrones.json`, `habilidades/perfil-usuario.md`, `agente/notas-xox.md`), incluso si `proveedores.json` aún tiene lista vacía `[]`.
-  * Tampoco propongas borrar archivos ocultos del sistema (`.DS_Store`), borradores `.draft` de propuestas pendientes ni órdenes o recibos en `agente/ordenes/` vinculados al historial de auditoría. Usa `propose_delete_path` únicamente para archivos de usuario realmente obsoletos o redundantes fuera de esas categorías protegidas.
+  * Tampoco uses `propose_delete_path` sobre archivos ocultos del sistema (`.DS_Store`), borradores `.draft` de propuestas pendientes ni órdenes o recibos en `agente/ordenes/` vinculados al historial de auditoría; para temporales y limpieza en lote usa `scan_workspace_cleanup` + `propose_workspace_cleanup`.
 - LECTURA DE PANTALLA EN TIEMPO REAL (`read_screen_now` y `query_screen_memory`):
   * Cuando el usuario pida leer, ver, describir o analizar su pantalla o ventana actual (ej. "lee la pantalla", "qué ves", "mira esto", "qué dice aquí", "ayúdame con lo que tengo abierto"), invoca DE INMEDIATO `read_screen_now` (y usa `query_screen_memory` si pregunta por algo visto hace unos minutos).
   * PROHIBIDO usar `run_workspace_command` (`identify`, `screencapture`, `open`, etc.) para intentar leer la pantalla.
@@ -3092,6 +3475,10 @@ def _is_canvas_tool_name(fn_name: str) -> bool:
             or "create_plan" in low
             or "create_dashboard" in low
             or "create_form" in low
+            or "create_composite_canvas" in low
+            or "create_interactive_ui" in low
+            or "create_custom_ui" in low
+            or "update_canvas" in low
             or low == "canvas"
         )
     )
@@ -3100,7 +3487,16 @@ def _is_canvas_tool_name(fn_name: str) -> bool:
 def _format_canvas_summary_reply(canvas_obj: Dict[str, Any]) -> str:
     title = str(canvas_obj.get("title") or "Canvas")
     summary = str(canvas_obj.get("summary") or "").strip()
-    if isinstance(canvas_obj.get("plan"), dict):
+    if isinstance(canvas_obj.get("customApp"), dict):
+        msg = f'Listo, diseñé la interfaz personalizada "{title}" en Canvas.'
+    elif isinstance(canvas_obj.get("interactive"), dict):
+        inter = canvas_obj["interactive"]
+        ctrl_cnt = len(inter.get("controls") or [])
+        comp_cnt = len(inter.get("computed") or [])
+        msg = f'Listo, preparé la interfaz interactiva "{title}" en Canvas ({ctrl_cnt} controles · {comp_cnt} cálculos en vivo).'
+    elif isinstance(canvas_obj.get("blocks"), list) and canvas_obj["blocks"]:
+        msg = f'Listo, preparé el Canvas compuesto "{title}" ({len(canvas_obj["blocks"])} bloques interactivos).'
+    elif isinstance(canvas_obj.get("plan"), dict):
         phases = canvas_obj["plan"].get("phases") or []
         steps_cnt = sum(len(p.get("steps") or []) for p in phases if isinstance(p, dict))
         msg = f'Listo, preparé el plan "{title}" en Canvas ({len(phases)} fases · {steps_cnt} pasos) para tu revisión.'
@@ -3155,7 +3551,13 @@ def _extract_canvas_tool_metadata(tool_calls: List[Dict[str, Any]]) -> Dict[str,
     return {}
 
 
-def _extract_canvas_from_tool_calls(tool_calls: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _extract_canvases_from_tool_calls(
+    tool_calls: List[Dict[str, Any]],
+    active_canvas: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    collected: List[Dict[str, Any]] = []
+    by_id: Dict[str, int] = {}
+
     for tc in tool_calls:
         fn = tc.get("function") or {}
         fn_name = str(fn.get("name") or "").strip().lower()
@@ -3170,28 +3572,121 @@ def _extract_canvas_from_tool_calls(tool_calls: List[Dict[str, Any]]) -> Optiona
             if parsed_args is None and _has_structured_table_markup(raw_args):
                 tbl = sanitize_canvas_artifact({"title": "Tabla comparativa", "markdown": raw_args})
                 if tbl and canvas_has_cell_data(tbl):
-                    return tbl
-        if isinstance(parsed_args, dict):
-            inner_raw = (
-                parsed_args.get("canvas")
-                if isinstance(parsed_args.get("canvas"), dict)
-                else parsed_args.get("arguments")
-                if isinstance(parsed_args.get("arguments"), dict)
-                else parsed_args
-            )
-            inner = dict(inner_raw)
-            if "create_diagram" in fn_name and not inner.get("kind"):
-                inner["kind"] = "diagram"
-            elif "create_plan" in fn_name and not inner.get("kind"):
-                inner["kind"] = "plan"
-            elif "create_dashboard" in fn_name and not inner.get("kind"):
-                inner["kind"] = "dashboard"
-            elif "create_form" in fn_name and not inner.get("kind"):
-                inner["kind"] = "form"
-            canvas = sanitize_canvas_artifact(inner)
-            if canvas and canvas_has_cell_data(canvas):
-                return canvas
-    return None
+                    cid = str(tbl["id"])
+                    by_id[cid] = len(collected)
+                    collected.append(tbl)
+                    continue
+        if not isinstance(parsed_args, dict):
+            continue
+
+        inner_raw = (
+            parsed_args.get("canvas")
+            if isinstance(parsed_args.get("canvas"), dict)
+            else parsed_args.get("arguments")
+            if isinstance(parsed_args.get("arguments"), dict)
+            else parsed_args
+        )
+        inner = dict(inner_raw)
+
+        if "update_canvas" in fn_name:
+            target_id = str(inner.get("id") or "").strip()
+            base_target: Optional[Dict[str, Any]] = None
+            if target_id and target_id in by_id:
+                base_target = collected[by_id[target_id]]
+            elif collected and (not target_id or len(collected) == 1):
+                base_target = collected[-1]
+            elif isinstance(active_canvas, dict) and (
+                not target_id or str(active_canvas.get("id") or "") == target_id
+            ):
+                base_target = active_canvas
+            if base_target is not None:
+                patched = apply_canvas_patch(base_target, inner)
+                if patched and canvas_has_cell_data(patched):
+                    pid = str(patched["id"])
+                    if pid in by_id:
+                        collected[by_id[pid]] = patched
+                    else:
+                        by_id[pid] = len(collected)
+                        collected.append(patched)
+                    continue
+
+        if "create_diagram" in fn_name and not inner.get("kind"):
+            inner["kind"] = "diagram"
+        elif "create_plan" in fn_name and not inner.get("kind"):
+            inner["kind"] = "plan"
+        elif "create_dashboard" in fn_name and not inner.get("kind"):
+            inner["kind"] = "dashboard"
+        elif "create_form" in fn_name and not inner.get("kind"):
+            inner["kind"] = "form"
+        elif "create_composite_canvas" in fn_name and not inner.get("kind"):
+            inner["kind"] = "composite"
+        elif "create_interactive_ui" in fn_name and not inner.get("kind"):
+            inner["kind"] = "interactive"
+        elif "create_custom_ui" in fn_name and not inner.get("kind"):
+            inner["kind"] = "custom_app"
+
+        canvas = sanitize_canvas_artifact(inner)
+        if canvas and canvas_has_cell_data(canvas):
+            cid = str(canvas["id"])
+            if cid in by_id:
+                collected[by_id[cid]] = canvas
+            else:
+                by_id[cid] = len(collected)
+                collected.append(canvas)
+
+    return collected
+
+
+def _extract_canvas_from_tool_calls(
+    tool_calls: List[Dict[str, Any]],
+    active_canvas: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    items = _extract_canvases_from_tool_calls(tool_calls, active_canvas=active_canvas)
+    return items[-1] if items else None
+
+
+def _maybe_save_custom_app_html(
+    ws_path: Optional[Path],
+    canvas_obj: Optional[Dict[str, Any]],
+    tool_calls: List[Dict[str, Any]],
+) -> Optional[str]:
+    if ws_path is None or canvas_obj is None or not isinstance(canvas_obj.get("customApp"), dict):
+        return None
+    wants_save = False
+    app_slug = ""
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        fn_name = str(fn.get("name") or "").strip().lower()
+        if "create_custom_ui" not in fn_name and "update_canvas" not in fn_name:
+            continue
+        parsed_args = _parse_tool_args(fn.get("arguments"))
+        if parsed_args.get("save_to_workspace") is True:
+            wants_save = True
+            app_slug = str(parsed_args.get("app_slug") or parsed_args.get("filename_slug") or app_slug or "").strip()
+    if not wants_save:
+        return None
+    title = str(canvas_obj.get("title") or "interfaz").strip()
+    slug = re.sub(r"[^a-z0-9]+", "-", (app_slug or title).lower()).strip("-")[:48] or "app"
+    apps_dir = ws_path / "agente" / "apps"
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    target = apps_dir / f"{slug}.html"
+    capp = canvas_obj["customApp"]
+    css_txt = re.sub(r"</(style)", r"<\\/\1", str(capp.get("css") or ""), flags=re.I)
+    js_txt = re.sub(r"</(script)", r"<\\/\1", str(capp.get("js") or ""), flags=re.I)
+    html_txt = str(capp.get("html") or "")
+    doc = (
+        "<!doctype html>\n<html lang=\"es\">\n<head>\n<meta charset=\"utf-8\" />\n"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />\n"
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; font-src data:;\" />\n"
+        f"<title>{html.escape(title)}</title>\n"
+        f"<style>{css_txt}</style>\n</head>\n<body>\n{html_txt}\n"
+        + (f"<script>{js_txt}</script>\n" if js_txt else "")
+        + "</body>\n</html>\n"
+    )
+    target.write_text(doc, encoding="utf-8")
+    rel_saved = f"agente/apps/{target.name}"
+    capp["savedAppPath"] = rel_saved
+    return rel_saved
 
 
 def _canvas_wants_saved_report(tool_calls: List[Dict[str, Any]]) -> bool:
@@ -3298,9 +3793,45 @@ def _maybe_save_canvas_report(
             lines.append("| " + " | ".join(vals) + " |")
     if canvas_obj.get("markdown"):
         lines.extend(["", str(canvas_obj["markdown"])])
+    if isinstance(canvas_obj.get("interactive"), dict):
+        inter = canvas_obj["interactive"]
+        if inter.get("description"):
+            lines.extend(["", str(inter["description"])])
+        if inter.get("controls"):
+            lines.extend(["", "## Controles interactivos"])
+            for ctrl in inter["controls"]:
+                if isinstance(ctrl, dict):
+                    val = (inter.get("state") or {}).get(ctrl.get("stateKey", ""))
+                    lines.append(f"- **{ctrl.get('label', '')}:** {val}")
+    if isinstance(canvas_obj.get("customApp"), dict):
+        capp = canvas_obj["customApp"]
+        if capp.get("description"):
+            lines.extend(["", str(capp["description"])])
 
     target.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     return f"agente/reportes/{target.name}"
+
+
+def _resolve_canvases_artifacts(
+    tool_calls: List[Dict[str, Any]],
+    canvas_buf: str,
+    actions_canvas: Any,
+    full_reply: str,
+    user_message: str,
+    active_canvas: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    from_tools = _extract_canvases_from_tool_calls(tool_calls, active_canvas=active_canvas)
+    if from_tools:
+        return from_tools
+    single = _resolve_canvas_artifact(
+        tool_calls=[],
+        canvas_buf=canvas_buf,
+        actions_canvas=actions_canvas,
+        full_reply=full_reply,
+        user_message=user_message,
+        active_canvas=active_canvas,
+    )
+    return [single] if single is not None else []
 
 
 def _resolve_canvas_artifact(
@@ -3309,8 +3840,9 @@ def _resolve_canvas_artifact(
     actions_canvas: Any,
     full_reply: str,
     user_message: str,
+    active_canvas: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    from_tool = _extract_canvas_from_tool_calls(tool_calls)
+    from_tool = _extract_canvas_from_tool_calls(tool_calls, active_canvas=active_canvas)
     if from_tool and canvas_has_cell_data(from_tool):
         return from_tool
     from_tag = _parse_canvas_payload(canvas_buf)
@@ -3892,7 +4424,19 @@ def run_agent_completion(
         if ws_path is not None
         else None
     )
-    active_tools = [CANVAS_TOOL_DEF, CREATE_DIAGRAM_TOOL_DEF, CREATE_PLAN_TOOL_DEF, CREATE_DASHBOARD_TOOL_DEF, CREATE_FORM_TOOL_DEF, ASK_CLARIFICATION_TOOL_DEF, VAULT_CONFIG_TOOL_DEF]
+    active_tools = [
+        CANVAS_TOOL_DEF,
+        CREATE_DIAGRAM_TOOL_DEF,
+        CREATE_PLAN_TOOL_DEF,
+        CREATE_DASHBOARD_TOOL_DEF,
+        CREATE_FORM_TOOL_DEF,
+        CREATE_COMPOSITE_CANVAS_TOOL_DEF,
+        CREATE_INTERACTIVE_UI_TOOL_DEF,
+        CREATE_CUSTOM_UI_TOOL_DEF,
+        UPDATE_CANVAS_TOOL_DEF,
+        ASK_CLARIFICATION_TOOL_DEF,
+        VAULT_CONFIG_TOOL_DEF,
+    ]
     if executor is not None:
         active_tools = [*AGENT_TOOL_DEFS, *active_tools]
 
@@ -4138,7 +4682,19 @@ def run_agent_completion(
                         break
 
                     local_ui_tool_calls.extend(tool_calls)
-                    ui_names = {"create_canvas", "create_diagram", "create_plan", "create_dashboard", "create_form", "ask_clarification", "configure_ai_vault"}
+                    ui_names = {
+        "create_canvas",
+        "create_diagram",
+        "create_plan",
+        "create_dashboard",
+        "create_form",
+        "create_composite_canvas",
+        "create_interactive_ui",
+        "create_custom_ui",
+        "update_canvas",
+        "ask_clarification",
+        "configure_ai_vault",
+    }
                     exec_calls = [
                         tc for tc in tool_calls
                         if isinstance(tc, dict)
@@ -4297,7 +4853,8 @@ def run_agent_completion(
                 "kind": pf_err.kind,
             })
 
-    canvas_obj = _extract_canvas_from_tool_calls(all_ui_tool_calls) if all_ui_tool_calls else None
+    canvas_list = _extract_canvases_from_tool_calls(all_ui_tool_calls, active_canvas=active_canvas) if all_ui_tool_calls else []
+    canvas_obj = canvas_list[-1] if canvas_list else None
     clarify_tool_obj = _extract_clarification_from_tool_calls(all_ui_tool_calls) if all_ui_tool_calls else None
     vault_action_obj = _extract_vault_action_from_tool_calls(all_ui_tool_calls) if all_ui_tool_calls else None
 
@@ -4356,15 +4913,18 @@ def run_agent_completion(
 
     full_reply = str(parsed.get("reply") or "Listo.")
     if canvas_obj is None:
-        canvas_obj = _resolve_canvas_artifact(
+        canvas_list = _resolve_canvases_artifacts(
             tool_calls=all_ui_tool_calls,
             canvas_buf="",
             actions_canvas=parsed.get("canvas"),
             full_reply=full_reply,
             user_message=user_message,
+            active_canvas=active_canvas,
         )
+        canvas_obj = canvas_list[-1] if canvas_list else None
     saved_report_path = _maybe_save_canvas_report(ws_path, canvas_obj, all_ui_tool_calls)
-    if saved_report_path and executor is not None:
+    saved_app_path = _maybe_save_custom_app_html(ws_path, canvas_obj, all_ui_tool_calls)
+    if (saved_report_path or saved_app_path) and executor is not None:
         executor.workspace_mutated = True
 
     full_reply = clean_visible_reply(full_reply, strip_tables=False)
@@ -4413,6 +4973,8 @@ def run_agent_completion(
         out["failover_notice"] = failover_notice
     if canvas_obj is not None:
         out["canvas"] = canvas_obj
+    if len(canvas_list) > 1:
+        out["canvases"] = canvas_list
     if clarification_obj is not None:
         out["clarification"] = clarification_obj
     if vault_action_obj is not None:
@@ -4545,6 +5107,10 @@ def stream_agent_completion(
         CREATE_PLAN_TOOL_DEF,
         CREATE_DASHBOARD_TOOL_DEF,
         CREATE_FORM_TOOL_DEF,
+        CREATE_COMPOSITE_CANVAS_TOOL_DEF,
+        CREATE_INTERACTIVE_UI_TOOL_DEF,
+        CREATE_CUSTOM_UI_TOOL_DEF,
+        UPDATE_CANVAS_TOOL_DEF,
         ASK_CLARIFICATION_TOOL_DEF,
         VAULT_CONFIG_TOOL_DEF,
         CHECKLIST_TOOL_DEF,
@@ -4730,7 +5296,12 @@ def stream_agent_completion(
             or routing_plan.task_profile.needs_canvas
             or include_tools
         ):
-            target_max_tokens = 8192
+            low_m = (active_model or "").lower()
+            is_extended_output = (
+                active_provider in ("openrouter", "gemini", "anthropic")
+                or (active_provider == "deepseek" and any(k in low_m for k in ("reasoner", "flash", "pro", "v4")))
+            )
+            target_max_tokens = 16384 if is_extended_output else 8192
         else:
             target_max_tokens = 6144
         payload: Dict[str, Any] = {
@@ -4858,7 +5429,10 @@ def stream_agent_completion(
                         if executor is not None and (executor.generated_pdfs or executor.staged_tasks):
                             include_tools = False
                         continue
-                    if cur_max_tokens is None or cur_max_tokens > 4096:
+                    if cur_max_tokens is None or cur_max_tokens > 8192:
+                        cur_max_tokens = 8192
+                        continue
+                    if cur_max_tokens > 4096:
                         cur_max_tokens = 4096
                         continue
                 if fail_fast_on_candidate and (
@@ -5017,7 +5591,19 @@ def stream_agent_completion(
     all_ui_tool_calls: List[Dict[str, Any]] = []
     combined_canvas_buf = ""
     combined_actions_buf = ""
-    ui_tool_names = {"create_canvas", "create_diagram", "create_plan", "create_dashboard", "create_form", "ask_clarification", "configure_ai_vault"}
+    ui_tool_names = {
+        "create_canvas",
+        "create_diagram",
+        "create_plan",
+        "create_dashboard",
+        "create_form",
+        "create_composite_canvas",
+        "create_interactive_ui",
+        "create_custom_ui",
+        "update_canvas",
+        "ask_clarification",
+        "configure_ai_vault",
+    }
     mode_tool_names = {"agent_checklist_update", "spawn_subagent", "study_create_deck"}
     read_only_subagent_tool_names = {
         "workspace_list",
@@ -5026,6 +5612,7 @@ def stream_agent_completion(
         "pdf_read",
         "memory_search",
         "query_screen_memory",
+        "scan_workspace_cleanup",
     }
     subagent_readonly_defs = (
         [td for td in AGENT_TOOL_DEFS if str((td.get("function") or {}).get("name") or "") in read_only_subagent_tool_names]
@@ -5482,12 +6069,60 @@ def stream_agent_completion(
                     pass_meta=pass_meta,
                     timeout_sec=45 if (has_next_candidate or has_next_provider) else 75,
                 )
+                round_reasoning_text = "".join(round_reasoning_chunks).strip()
+                round_raw_reply = "".join(round_reply_chunks)
+
+                if not pass_tool_calls:
+                    if round_raw_reply and "DSML" in round_raw_reply.upper():
+                        stripped_dsml_rep, parsed_dsml = _parse_and_strip_dsml_calls(
+                            round_raw_reply,
+                            prefix=f"dsml_{round_idx}",
+                        )
+                        if parsed_dsml:
+                            pass_tool_calls = parsed_dsml
+                            round_reply_chunks.clear()
+                            if stripped_dsml_rep:
+                                round_reply_chunks.append(stripped_dsml_rep)
+                            if reply_chunks:
+                                full_cur = _strip_dsml_markup("".join(reply_chunks))
+                                reply_chunks.clear()
+                                if full_cur:
+                                    reply_chunks.append(full_cur)
+                    elif round_reasoning_text and "DSML" in round_reasoning_text.upper():
+                        _, parsed_dsml = _parse_and_strip_dsml_calls(
+                            round_reasoning_text,
+                            prefix=f"dsml_r_{round_idx}",
+                        )
+                        if parsed_dsml:
+                            pass_tool_calls = parsed_dsml
+
                 combined_canvas_buf += round_router.canvas_buf
                 combined_actions_buf += round_router.actions_buf
                 tool_calls_list = pass_tool_calls
 
-                if pass_tool_calls:
-                    all_ui_tool_calls.extend(pass_tool_calls)
+                valid_ui_calls_this_round: List[Dict[str, Any]] = []
+                broken_ui_calls_this_round = 0
+                for tc in pass_tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                    fn_name = str(fn.get("name") or "")
+                    if fn_name in ui_tool_names:
+                        raw_a = fn.get("arguments")
+                        p_a = raw_a if isinstance(raw_a, dict) else _parse_json_candidates(str(raw_a or ""))
+                        if isinstance(p_a, dict) and p_a:
+                            valid_ui_calls_this_round.append(tc)
+                        else:
+                            broken_ui_calls_this_round += 1
+
+                if valid_ui_calls_this_round:
+                    all_ui_tool_calls.extend(valid_ui_calls_this_round)
+
+                resolved_canvases_so_far = _extract_canvases_from_tool_calls(
+                    all_ui_tool_calls,
+                    active_canvas=active_canvas,
+                )
+                has_valid_canvas_so_far = bool(resolved_canvases_so_far or _parse_canvas_payload(combined_canvas_buf))
 
                 exec_calls = [
                     tc for tc in pass_tool_calls
@@ -5500,21 +6135,52 @@ def stream_agent_completion(
                         )
                     )
                 ]
+                is_deepseek_reasoning_msg = (
+                    active_provider == "deepseek" or "deepseek" in active_model.lower()
+                )
                 if not exec_calls:
                     round_reply_text = "".join(round_reply_chunks)
-                    round_reas_text = "".join(round_reasoning_chunks)
+                    round_reas_text = round_reasoning_text
                     round_actions_parsed = (
                         _parse_actions_payload(round_router.actions_buf)
                         if round_router.actions_buf.strip()
                         else {}
                     )
+                    if (
+                        broken_ui_calls_this_round > 0
+                        and not has_valid_canvas_so_far
+                        and continuations_used < 2
+                        and round_idx < MAX_AGENT_STEPS - 1
+                    ):
+                        continuations_used += 1
+                        _set_think_step(status="done")
+                        _upsert_step(f"repair_canvas_{round_idx}", "Corrigiendo estructura de Canvas", "running")
+                        emit_event({"type": "phase", "xox_state": "thinking", "label": "Reintentando estructura de Canvas..."})
+                        emit_event({"type": "steps", "steps": steps})
+                        assist_repair: Dict[str, Any] = {
+                            "role": "assistant",
+                            "content": round_reply_text or "La llamada anterior al Canvas quedó incompleta.",
+                        }
+                        if is_deepseek_reasoning_msg:
+                            assist_repair["reasoning_content"] = round_reas_text
+                        loop_messages.append(assist_repair)
+                        loop_messages.append({
+                            "role": "user",
+                            "content": (
+                                "Tu llamada anterior a la herramienta de Canvas quedó truncada o con argumentos JSON inválidos. "
+                                "Vuelve a invocar la herramienta de Canvas ahora con JSON válido, completo y textos concisos."
+                            ),
+                        })
+                        _upsert_step(f"repair_canvas_{round_idx}", "Corrigiendo estructura de Canvas", "done")
+                        continue
+
                     cont = (
                         _needs_agent_continuation(
                             round_reply_text,
                             round_reas_text,
                             pass_meta.get("finish_reason", ""),
                             tools_available=allow_tools_now and (executor is not None or bool(mode_tool_names)),
-                            has_canvas=bool(all_ui_tool_calls or round_router.canvas_buf.strip()),
+                            has_canvas=bool(has_valid_canvas_so_far or _extract_vault_action_from_tool_calls(all_ui_tool_calls)),
                             has_actions=bool(round_actions_parsed.get("tasks") or round_actions_parsed.get("clarification")),
                             has_staged_tasks=bool(executor is not None and executor.staged_tasks),
                         )
@@ -5528,10 +6194,13 @@ def stream_agent_completion(
                         _upsert_step(f"continue_{round_idx}", cont_label, "running")
                         emit_event({"type": "phase", "xox_state": "thinking", "label": f"{cont_label}..."})
                         emit_event({"type": "steps", "steps": steps})
-                        loop_messages.append({
+                        assist_cont: Dict[str, Any] = {
                             "role": "assistant",
-                            "content": round_reply_text or round_reas_text or "...",
-                        })
+                            "content": round_reply_text or "Analicé los detalles.",
+                        }
+                        if is_deepseek_reasoning_msg:
+                            assist_cont["reasoning_content"] = round_reas_text
+                        loop_messages.append(assist_cont)
                         loop_messages.append({
                             "role": "user",
                             "content": cont_nudge,
@@ -5620,8 +6289,11 @@ def stream_agent_completion(
                                 tool_res = _execute_mode_tool_non_subagent(fn_name, tc_id, args)
                             elif executor is not None:
                                 _upsert_step(step_id, label, "running", detail=detail or None)
+                                is_code_tool = fn_name in _XOX_CODE_TOOLS
                                 phase_state = (
-                                    "reading"
+                                    "coding"
+                                    if is_code_tool
+                                    else "reading"
                                     if fn_name
                                     in (
                                         "workspace_list",
@@ -5638,8 +6310,12 @@ def stream_agent_completion(
                                     else "syncing"
                                 )
                                 emit_event({"type": "phase", "xox_state": phase_state, "label": f"{label}..."})
+                                if is_code_tool:
+                                    emit_event(_xox_terminal_event(fn_name, args, None))
                                 emit_event({"type": "steps", "steps": steps})
                                 tool_res = executor.execute(fn_name, args)
+                                if is_code_tool:
+                                    emit_event(_xox_terminal_event(fn_name, args, tool_res))
                             else:
                                 tool_res = {"ok": False, "error": f"Herramienta no disponible sin workspace: {fn_name}"}
                             _upsert_step(
@@ -5654,23 +6330,29 @@ def stream_agent_completion(
                 hist_tcs, all_failed_parse = _sanitize_tool_calls_for_history(pass_tool_calls, parsed_pass_args)
                 if all_failed_parse:
                     # Evitar mandar JSON roto dentro de `assistant.tool_calls` (causaría HTTP 400 en OpenRouter)
-                    loop_messages.append({
+                    assist_bad: Dict[str, Any] = {
                         "role": "assistant",
                         "content": "".join(round_reply_chunks).strip() or "Intenté preparar la llamada a herramienta, pero se truncó el JSON.",
-                    })
+                    }
+                    if is_deepseek_reasoning_msg:
+                        assist_bad["reasoning_content"] = round_reasoning_text
+                    loop_messages.append(assist_bad)
                     loop_messages.append({
                         "role": "user",
                         "content": (
                             "Tu llamada anterior quedó truncada o con JSON inválido. Vuelve a enviarla completa y válida; "
-                            "si es un PDF extenso, utiliza el campo `markdown` estructurado (mucho más compacto) o `blocks` como arreglo JSON real."
+                            "si es un PDF extenso o un Canvas complejo, haz los textos más concisos para que el JSON no se corte."
                         ),
                     })
                 else:
-                    loop_messages.append({
+                    assist_tcs: Dict[str, Any] = {
                         "role": "assistant",
                         "content": "".join(round_reply_chunks).strip() or "",
                         "tool_calls": hist_tcs,
-                    })
+                    }
+                    if is_deepseek_reasoning_msg:
+                        assist_tcs["reasoning_content"] = round_reasoning_text
+                    loop_messages.append(assist_tcs)
                     for tc_id, tool_res in pass_tool_results:
                         loop_messages.append({
                             "role": "tool",
@@ -5812,17 +6494,25 @@ def stream_agent_completion(
         if not parsed_actions.get("tasks") and isinstance(fallback_json.get("tasks"), list):
             parsed_actions = fallback_json
 
-    canvas_obj = _resolve_canvas_artifact(
+    canvas_list = _resolve_canvases_artifacts(
         tool_calls=all_ui_tool_calls,
         canvas_buf=combined_canvas_buf,
         actions_canvas=parsed_actions.get("canvas"),
         full_reply=full_reply,
         user_message=user_message,
+        active_canvas=active_canvas,
     )
+    canvas_obj = canvas_list[-1] if canvas_list else None
 
     if canvas_obj is not None:
         step_canvas_label = (
-            f'Plan listo en Canvas: "{canvas_obj["title"]}"'
+            f'Interfaz personalizada lista en Canvas: "{canvas_obj["title"]}"'
+            if isinstance(canvas_obj.get("customApp"), dict)
+            else f'Interfaz interactiva lista en Canvas: "{canvas_obj["title"]}"'
+            if isinstance(canvas_obj.get("interactive"), dict)
+            else f'Canvas compuesto listo: "{canvas_obj["title"]}"'
+            if isinstance(canvas_obj.get("blocks"), list) and canvas_obj["blocks"]
+            else f'Plan listo en Canvas: "{canvas_obj["title"]}"'
             if isinstance(canvas_obj.get("plan"), dict)
             else f'Dashboard listo en Canvas: "{canvas_obj["title"]}"'
             if isinstance(canvas_obj.get("dashboard"), dict)
@@ -5833,16 +6523,27 @@ def stream_agent_completion(
             else f'Tabla lista en Canvas: "{canvas_obj["title"]}"'
         )
         _upsert_step("build_canvas", step_canvas_label, "done")
-        saved_report_path = _maybe_save_canvas_report(ws_path, canvas_obj, all_ui_tool_calls)
-        if saved_report_path and executor is not None:
-            executor.workspace_mutated = True
-            _upsert_step("save_report", "Reporte guardado en espacio", "done", detail=saved_report_path)
-        emit_event({"type": "canvas", "canvas": canvas_obj})
+        for c_item in canvas_list:
+            saved_report_path = _maybe_save_canvas_report(ws_path, c_item, all_ui_tool_calls)
+            saved_app_path = _maybe_save_custom_app_html(ws_path, c_item, all_ui_tool_calls)
+            if saved_report_path and executor is not None:
+                executor.workspace_mutated = True
+                _upsert_step("save_report", "Reporte guardado en espacio", "done", detail=saved_report_path)
+            if saved_app_path and executor is not None:
+                executor.workspace_mutated = True
+                _upsert_step("save_custom_app", "Mini-app guardada en espacio", "done", detail=saved_app_path)
+            emit_event({"type": "canvas", "canvas": c_item})
         emit_event({"type": "steps", "steps": steps})
 
         if all_ui_tool_calls and not full_reply:
             followup_instruction = (
-                "El plan maestro ya está abierto en Canvas para revisión y aprobación del usuario. Responde únicamente con 1 a 3 oraciones breves en español explicando que puede revisar, comentar pasos o aprobar para ejecutar."
+                "La interfaz personalizada ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves en español explicando cómo usarla o qué puede ajustar."
+                if isinstance(canvas_obj.get("customApp"), dict)
+                else "La interfaz interactiva ya está abierta en Canvas. Responde únicamente con 1 a 3 oraciones breves en español invitando al usuario a ajustar los controles y ver el resultado en tiempo real."
+                if isinstance(canvas_obj.get("interactive"), dict)
+                else "El Canvas compuesto ya está abierto con sus bloques interactivos. Responde únicamente con 1 a 3 oraciones breves en español resumiendo lo esencial."
+                if isinstance(canvas_obj.get("blocks"), list) and canvas_obj["blocks"]
+                else "El plan maestro ya está abierto en Canvas para revisión y aprobación del usuario. Responde únicamente con 1 a 3 oraciones breves en español explicando que puede revisar, comentar pasos o aprobar para ejecutar."
                 if isinstance(canvas_obj.get("plan"), dict)
                 else "El dashboard ya está abierto en Canvas con KPIs y gráficas interactivas. Responde únicamente con 1 a 3 oraciones breves en español destacando la conclusión principal y recomendación."
                 if isinstance(canvas_obj.get("dashboard"), dict)
@@ -5863,16 +6564,27 @@ def stream_agent_completion(
                 },
                 ensure_ascii=False,
             )
+            valid_followup_tcs = [
+                tc for tc in tool_calls_list
+                if isinstance(tc, dict) and str((tc.get("function") or {}).get("name") or "") in ui_tool_names
+            ] or tool_calls_list
+            assist_followup: Dict[str, Any] = {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": valid_followup_tcs,
+            }
+            if active_provider == "deepseek" or "deepseek" in active_model.lower():
+                assist_followup["reasoning_content"] = full_reasoning
             followup_messages = [
                 *loop_messages,
-                {"role": "assistant", "content": "", "tool_calls": tool_calls_list},
+                assist_followup,
                 *[
                     {
                         "role": "tool",
                         "tool_call_id": tc.get("id") or f"call_{i}",
                         "content": tool_result_content,
                     }
-                    for i, tc in enumerate(tool_calls_list)
+                    for i, tc in enumerate(valid_followup_tcs)
                 ],
             ]
             followup_router = _StreamTagRouter(
@@ -6033,6 +6745,8 @@ def stream_agent_completion(
         result["failover_notice"] = failover_notice
     if canvas_obj is not None:
         result["canvas"] = canvas_obj
+    if len(canvas_list) > 1:
+        result["canvases"] = canvas_list
     if clarification_obj is not None:
         result["clarification"] = clarification_obj
     if vault_action_obj is not None:

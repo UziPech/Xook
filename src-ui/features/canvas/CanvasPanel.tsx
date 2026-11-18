@@ -12,22 +12,29 @@ import {
   useTable,
 } from "@tanstack/react-table";
 import {
+  AlertOctagon,
   AlertTriangle,
+  AppWindow,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
   BarChart3,
+  Blocks,
   Check,
+  CheckCircle2,
   ClipboardCheck,
   Code2,
   Copy,
   Download,
   FileText,
+  History,
+  Info,
   ListChecks,
   Maximize2,
   Minimize2,
   Plus,
   Search,
+  SlidersHorizontal,
   Sparkles,
   Star,
   Table2,
@@ -38,15 +45,18 @@ import {
 import {
   CanvasActionPayload,
   CanvasArtifact,
+  CanvasBlock,
   CanvasColumn,
   CanvasRow,
   CanvasRowHighlight,
   canvasArtifactToCsv,
   canvasArtifactToMarkdown,
 } from "./canvasSchema";
+import { CustomAppCanvasView } from "./views/CustomAppCanvasView";
 import { DashboardCanvasView } from "./views/DashboardCanvasView";
 import { DiagramCanvasView } from "./views/DiagramCanvasView";
 import { FormCanvasView } from "./views/FormCanvasView";
+import { InteractiveCanvasView } from "./views/InteractiveCanvasView";
 import { PlanCanvasView } from "./views/PlanCanvasView";
 import {
   MarkdownContent,
@@ -68,6 +78,8 @@ const canvasColumnHelper = createColumnHelper<typeof canvasTableFeatures, Canvas
 
 interface CanvasPanelProps {
   canvas: CanvasArtifact;
+  siblingCanvases?: CanvasArtifact[];
+  onSelectSiblingCanvas?: (selected: CanvasArtifact) => void;
   visible?: boolean;
   expanded?: boolean;
   onToggleExpand?: () => void;
@@ -159,7 +171,9 @@ function nextHighlightState(current?: CanvasRowHighlight): CanvasRowHighlight {
 }
 
 export const CanvasPanel: React.FC<CanvasPanelProps> = ({
-  canvas,
+  canvas: liveCanvas,
+  siblingCanvases,
+  onSelectSiblingCanvas,
   visible = true,
   expanded = false,
   onToggleExpand,
@@ -170,12 +184,25 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
   onClose,
 }) => {
   const tableSectionRef = useRef<HTMLDivElement>(null);
+  const [selectedVersion, setSelectedVersion] = useState<number | "latest">("latest");
+
+  const versionHistory = liveCanvas.versions ?? [];
+  const activeSnapshot =
+    selectedVersion === "latest"
+      ? null
+      : versionHistory.find((v) => v.version === selectedVersion) ?? null;
+  const canvas = activeSnapshot ? activeSnapshot.artifact : liveCanvas;
+  const isViewingHistoricalVersion = Boolean(activeSnapshot);
+
   const hasRichInteractive =
     canvas.columns.length > 0 ||
     Boolean(canvas.diagram) ||
     Boolean(canvas.plan) ||
     Boolean(canvas.dashboard) ||
-    Boolean(canvas.form);
+    Boolean(canvas.form) ||
+    Boolean(canvas.interactive) ||
+    Boolean(canvas.customApp) ||
+    Boolean(canvas.blocks && canvas.blocks.length > 0);
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [viewMode, setViewMode] = useState<"interactive" | "markdown">(
@@ -188,6 +215,10 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
   const [copiedMd, setCopiedMd] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [showRawMarkdown, setShowRawMarkdown] = useState(false);
+
+  useEffect(() => {
+    setSelectedVersion("latest");
+  }, [liveCanvas.id, liveCanvas.versions?.length]);
 
   // Al cambiar de artefacto Canvas, reinicia filtros, edición y modo de vista
   useEffect(() => {
@@ -202,7 +233,10 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
         Boolean(canvas.diagram) ||
         Boolean(canvas.plan) ||
         Boolean(canvas.dashboard) ||
-        Boolean(canvas.form)
+        Boolean(canvas.form) ||
+        Boolean(canvas.interactive) ||
+        Boolean(canvas.customApp) ||
+        Boolean(canvas.blocks && canvas.blocks.length > 0)
         ? "interactive"
         : "markdown"
     );
@@ -213,6 +247,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
     Boolean(canvas.plan),
     Boolean(canvas.dashboard),
     Boolean(canvas.form),
+    Boolean(canvas.interactive),
+    Boolean(canvas.customApp),
+    canvas.blocks?.length ?? 0,
   ]);
 
   useEffect(() => {
@@ -506,6 +543,18 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
     return nonTableLines;
   }, [canvas.markdown, canvas.columns.length]);
 
+  const isCompositeView =
+    viewMode === "interactive" &&
+    canvas.kind === "composite" &&
+    Boolean(canvas.blocks && canvas.blocks.length > 0);
+  const isInteractiveView =
+    viewMode === "interactive" &&
+    canvas.kind === "interactive" &&
+    Boolean(canvas.interactive);
+  const isCustomAppView =
+    viewMode === "interactive" &&
+    canvas.kind === "custom_app" &&
+    Boolean(canvas.customApp);
   const isPlanView = viewMode === "interactive" && canvas.kind === "plan" && Boolean(canvas.plan);
   const isDiagramView = viewMode === "interactive" && canvas.kind === "diagram" && Boolean(canvas.diagram);
   const isDashboardView =
@@ -514,6 +563,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
     viewMode === "interactive" && canvas.kind === "form" && Boolean(canvas.form);
   const isTableView =
     viewMode === "interactive" &&
+    !isCompositeView &&
+    !isInteractiveView &&
+    !isCustomAppView &&
     !isPlanView &&
     !isDiagramView &&
     !isDashboardView &&
@@ -523,45 +575,311 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
   const isStudyQuizForm = canvas.form?.purpose === "study_quiz";
 
   const kindLabel =
-    canvas.kind === "plan"
-      ? "Plan de acción"
-      : canvas.kind === "diagram"
-        ? "Diagrama"
-        : canvas.kind === "dashboard"
-          ? "Dashboard"
-          : canvas.kind === "form"
-            ? isStudyQuizForm
-              ? "Cuestionario"
-              : "Formulario"
-            : canvas.kind === "comparison"
-              ? "Comparativa"
-              : canvas.kind === "document"
-                ? "Documento"
+    canvas.kind === "composite"
+      ? "Vista compuesta"
+      : canvas.kind === "interactive"
+        ? "Interactivo"
+        : canvas.kind === "custom_app"
+          ? "Mini-app"
+          : canvas.kind === "plan"
+            ? "Plan de acción"
+            : canvas.kind === "diagram"
+              ? "Diagrama"
+              : canvas.kind === "dashboard"
+                ? "Dashboard"
+                : canvas.kind === "form"
+                  ? isStudyQuizForm
+                    ? "Cuestionario"
+                    : "Formulario"
+                  : canvas.kind === "comparison"
+                    ? "Comparativa"
+                    : canvas.kind === "document"
+                      ? "Documento"
+                      : "Tabla";
+
+  const interactiveTabLabel = isCompositeView
+    ? "Bloques"
+    : isInteractiveView
+      ? "Interfaz"
+      : isCustomAppView
+        ? "App"
+        : isPlanView
+          ? "Plan"
+          : isDiagramView
+            ? "Diagrama"
+            : isDashboardView
+              ? "Dashboard"
+              : isFormView
+                ? isStudyQuizForm
+                  ? "Práctica"
+                  : "Formulario"
                 : "Tabla";
 
-  const interactiveTabLabel = isPlanView
-    ? "Plan"
-    : isDiagramView
-      ? "Diagrama"
-      : isDashboardView
-        ? "Dashboard"
-        : isFormView
-          ? isStudyQuizForm
-            ? "Práctica"
-            : "Formulario"
-          : "Tabla";
+  const HeaderKindIcon = isCompositeView
+    ? Blocks
+    : isInteractiveView
+      ? SlidersHorizontal
+      : isCustomAppView
+        ? AppWindow
+        : isPlanView
+          ? ListChecks
+          : isDiagramView
+            ? Workflow
+            : isDashboardView
+              ? BarChart3
+              : isFormView
+                ? ClipboardCheck
+                : canvas.kind === "document"
+                  ? FileText
+                  : Table2;
 
-  const HeaderKindIcon = isPlanView
-    ? ListChecks
-    : isDiagramView
-      ? Workflow
-      : isDashboardView
-        ? BarChart3
-        : isFormView
-          ? ClipboardCheck
-          : canvas.kind === "document"
-            ? FileText
-            : Table2;
+  const updateCompositeBlock = (blockIndex: number, updater: (blk: CanvasBlock) => CanvasBlock) => {
+    if (!liveCanvas.blocks || isViewingHistoricalVersion) return;
+    const nextBlocks = liveCanvas.blocks.map((blk, idx) =>
+      idx === blockIndex ? updater(blk) : blk
+    );
+    onUpdateCanvas({
+      ...liveCanvas,
+      blocks: nextBlocks,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const renderCompositeBlock = (block: CanvasBlock, idx: number) => {
+    const header = block.title ? (
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="text-[12.5px] font-semibold tracking-[-0.01em] text-zinc-100">
+          {block.title}
+        </h3>
+      </div>
+    ) : null;
+
+    if (block.type === "callout") {
+      const toneCls =
+        block.tone === "success"
+          ? "border-emerald-500/30 bg-emerald-500/[0.07] text-emerald-100"
+          : block.tone === "warning"
+            ? "border-amber-500/30 bg-amber-500/[0.07] text-amber-100"
+            : block.tone === "critical"
+              ? "border-rose-500/35 bg-rose-500/[0.08] text-rose-100"
+              : "border-indigo-400/30 bg-indigo-500/[0.07] text-zinc-100";
+      const ToneIcon =
+        block.tone === "success"
+          ? CheckCircle2
+          : block.tone === "warning"
+            ? AlertTriangle
+            : block.tone === "critical"
+              ? AlertOctagon
+              : Info;
+      return (
+        <div key={`blk-${idx}`} className={`rounded-xl border p-3.5 ${toneCls}`}>
+          <div className="flex items-start gap-2.5">
+            <ToneIcon className="mt-0.5 h-4 w-4 shrink-0 opacity-90" />
+            <div className="min-w-0 flex-1 space-y-1 text-xs leading-relaxed">
+              {block.title && <div className="font-semibold">{block.title}</div>}
+              <MarkdownContent text={block.text} variant="default" />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (block.type === "markdown") {
+      return (
+        <div
+          key={`blk-${idx}`}
+          className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3.5"
+        >
+          {header}
+          <MarkdownContent
+            text={block.content}
+            variant="default"
+            className="space-y-2 text-[12.5px] leading-relaxed text-zinc-200 select-text"
+          />
+        </div>
+      );
+    }
+
+    if (block.type === "table") {
+      return (
+        <div
+          key={`blk-${idx}`}
+          className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3.5"
+        >
+          {header}
+          <div className="overflow-x-auto rounded-lg border border-white/[0.07]">
+            <table className="w-full border-collapse text-left text-[12px]">
+              <thead>
+                <tr className="border-b border-white/[0.08] bg-white/[0.03] text-zinc-300">
+                  {block.columns.map((col) => (
+                    <th
+                      key={col.id}
+                      className={`px-3 py-2 font-semibold ${
+                        col.align === "right"
+                          ? "text-right"
+                          : col.align === "center"
+                            ? "text-center"
+                            : "text-left"
+                      }`}
+                    >
+                      {col.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {block.rows.map((row) => (
+                  <tr
+                    key={row.id}
+                    className="border-b border-white/[0.05] last:border-b-0 hover:bg-white/[0.025]"
+                  >
+                    {block.columns.map((col, cIdx) => (
+                      <td
+                        key={col.id}
+                        className={`px-3 py-2 text-zinc-200 ${
+                          col.align === "right"
+                            ? "text-right tabular-nums"
+                            : col.align === "center"
+                              ? "text-center"
+                              : "text-left"
+                        }`}
+                      >
+                        {renderFormattedCellText(row.cells[col.id] ?? "", cIdx === 0)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      );
+    }
+
+    if (block.type === "diagram") {
+      return (
+        <div
+          key={`blk-${idx}`}
+          className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3.5 space-y-2"
+        >
+          {header}
+          <div className="h-[360px] flex flex-col overflow-hidden rounded-lg border border-white/[0.06]">
+            <DiagramCanvasView
+              title={block.title || canvas.title}
+              diagram={block.diagram}
+              onChangeDirection={(nextDir) =>
+                updateCompositeBlock(idx, (b) =>
+                  b.type === "diagram" ? { ...b, diagram: { ...b.diagram, direction: nextDir } } : b
+                )
+              }
+              onAskNode={(node) =>
+                onCanvasAction?.({ type: "diagram_ask_node", canvas, node })
+              }
+            />
+          </div>
+        </div>
+      );
+    }
+
+    if (block.type === "plan") {
+      return (
+        <div
+          key={`blk-${idx}`}
+          className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3.5"
+        >
+          {header}
+          <PlanCanvasView
+            canvas={canvas}
+            plan={block.plan}
+            onUpdatePlan={(nextPlan) =>
+              updateCompositeBlock(idx, (b) => (b.type === "plan" ? { ...b, plan: nextPlan } : b))
+            }
+            onApprovePlan={(updated) => onCanvasAction?.({ type: "plan_approve", canvas: updated })}
+            onRequestChanges={(updated) =>
+              onCanvasAction?.({ type: "plan_request_changes", canvas: updated })
+            }
+            onAskNode={(stepTitle, detail) =>
+              onCanvasAction?.({
+                type: "diagram_ask_node",
+                canvas,
+                node: { id: stepTitle, label: stepTitle, detail },
+              })
+            }
+          />
+        </div>
+      );
+    }
+
+    if (block.type === "dashboard") {
+      return (
+        <div
+          key={`blk-${idx}`}
+          className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3.5"
+        >
+          {header}
+          <DashboardCanvasView
+            dashboard={block.dashboard}
+            expanded={expanded}
+            hasBackingTable={false}
+            onAskItem={(label, detail) =>
+              onCanvasAction?.({ type: "dashboard_ask_item", canvas, label, detail })
+            }
+          />
+        </div>
+      );
+    }
+
+    if (block.type === "form") {
+      return (
+        <div
+          key={`blk-${idx}`}
+          className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3.5"
+        >
+          {header}
+          <FormCanvasView
+            canvas={canvas}
+            form={block.form}
+            onUpdateForm={(nextForm) =>
+              updateCompositeBlock(idx, (b) => (b.type === "form" ? { ...b, form: nextForm } : b))
+            }
+            onSubmitForm={(updated) =>
+              onCanvasAction?.({ type: "form_submit", canvas: updated })
+            }
+          />
+        </div>
+      );
+    }
+
+    if (block.type === "interactive") {
+      return (
+        <div
+          key={`blk-${idx}`}
+          className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3.5"
+        >
+          {header}
+          <InteractiveCanvasView
+            spec={block.interactive}
+            isDark
+            onUpdateSpec={(nextSpec) =>
+              updateCompositeBlock(idx, (b) =>
+                b.type === "interactive" ? { ...b, interactive: nextSpec } : b
+              )
+            }
+            onAction={({ prompt, actionLabel }) =>
+              onCanvasAction?.({
+                type: "interactive_submit",
+                canvas,
+                prompt,
+                actionLabel,
+              })
+            }
+          />
+        </div>
+      );
+    }
+
+    return null;
+  };
 
   const filteredRowCount = table.getFilteredRowModel().rows.length;
   const showDeleteCol = canvas.rows.length > 1;
@@ -724,10 +1042,11 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
   return (
     <section
       style={{
+        containerType: "inline-size",
         boxShadow:
           "inset 0 1px 0 rgba(255,255,255,0.08), 0 24px 60px -28px rgba(0,0,0,0.88)",
       }}
-      className={`relative h-full flex flex-col rounded-2xl border border-white/[0.08] bg-[#090a0e] overflow-hidden ${
+      className={`@container relative h-full flex flex-col rounded-2xl border border-white/[0.08] bg-[#090a0e] overflow-hidden ${
         visible ? "panel-fade-in" : "panel-fade-out"
       }`}
     >
@@ -744,10 +1063,43 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             <span className="px-2 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.09] text-[10px] font-medium text-zinc-300 shrink-0">
               {kindLabel}
             </span>
+            {versionHistory.length > 0 && (
+              <div className="inline-flex items-center gap-1 rounded-full bg-white/[0.04] border border-white/[0.08] px-1.5 py-0.5 shrink-0">
+                <History className="w-3 h-3 text-zinc-400" />
+                <select
+                  aria-label="Historial de versiones de Canvas"
+                  value={selectedVersion === "latest" ? "latest" : String(selectedVersion)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSelectedVersion(val === "latest" ? "latest" : Number(val));
+                  }}
+                  className="bg-transparent text-[10px] font-medium text-zinc-200 outline-none cursor-pointer"
+                >
+                  <option value="latest" className="bg-zinc-900 text-zinc-100">
+                    Actual (v{versionHistory.length + 1})
+                  </option>
+                  {[...versionHistory].reverse().map((snap) => (
+                    <option
+                      key={snap.version}
+                      value={String(snap.version)}
+                      className="bg-zinc-900 text-zinc-100"
+                    >
+                      v{snap.version}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
-            {hasRichInteractive && (
+            {canvas.columns.length > 0 &&
+              !canvas.interactive &&
+              !canvas.customApp &&
+              !canvas.dashboard &&
+              !canvas.form &&
+              !canvas.plan &&
+              !canvas.diagram && (
               <JellyPillTrack
                 activeKey={viewMode}
                 role="group"
@@ -886,49 +1238,23 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
                 })}
               </h2>
             )}
-            <p className="text-[11px] text-zinc-400 mt-0.5 leading-snug">
-              {canvas.plan
-                ? `${canvas.plan.phases.length} ${
-                    canvas.plan.phases.length === 1 ? "fase" : "fases"
-                  } · ${canvas.plan.phases.reduce((acc, ph) => acc + ph.steps.length, 0)} pasos`
-                : canvas.diagram
-                  ? `${canvas.diagram.nodes.length} nodos · ${canvas.diagram.edges.length} conexiones`
-                  : canvas.dashboard
-                    ? `${canvas.dashboard.kpis.length} KPIs · ${canvas.dashboard.charts.length} ${
-                        canvas.dashboard.charts.length === 1 ? "gráfica" : "gráficas"
-                      }${canvas.columns.length > 0 ? ` · ${canvas.rows.length} filas` : ""}`
-                    : canvas.form
-                      ? `${canvas.form.fields.length} ${
-                          canvas.form.fields.length === 1
-                            ? canvas.form.purpose === "study_quiz"
-                              ? "pregunta"
-                              : "campo"
-                            : canvas.form.purpose === "study_quiz"
-                              ? "preguntas"
-                              : "campos"
-                        }${
-                          canvas.form.score && canvas.form.score.gradableCount > 0
-                            ? ` · ${canvas.form.score.percent}% aciertos`
-                            : ""
-                        }`
-                      : canvas.columns.length > 0
-                      ? filteredRowCount === canvas.rows.length
-                        ? `${canvas.rows.length} ${
-                            canvas.rows.length === 1 ? "fila" : "filas"
-                          } · ${canvas.columns.length} columnas`
-                        : `${filteredRowCount} de ${canvas.rows.length} filas · ${canvas.columns.length} columnas`
-                      : "Vista de documento"}
-              {canvas.subtitle ? (
-                <>
-                  {" · "}
-                  {renderInlineMarkdown(canvas.subtitle, {
+            {(canvas.subtitle || canvas.columns.length > 0 || canvas.form?.score) && (
+              <p className="text-[11px] text-zinc-400 mt-0.5 leading-snug">
+                {canvas.subtitle ? (
+                  renderInlineMarkdown(canvas.subtitle, {
                     variant: "default",
                     preserveLineBreaks: false,
                     keyPrefix: "cvsub",
-                  })}
-                </>
-              ) : null}
-            </p>
+                  })
+                ) : canvas.form?.score && canvas.form.score.gradableCount > 0 ? (
+                  `${canvas.form.score.percent}% aciertos`
+                ) : canvas.columns.length > 0 ? (
+                  filteredRowCount === canvas.rows.length
+                    ? `${canvas.rows.length} ${canvas.rows.length === 1 ? "fila" : "filas"} · ${canvas.columns.length} columnas`
+                    : `${filteredRowCount} de ${canvas.rows.length} filas · ${canvas.columns.length} columnas`
+                ) : null}
+              </p>
+            )}
           </div>
 
           {onAskXoxEdit && !isTableView && (
@@ -942,10 +1268,55 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
             </button>
           )}
         </div>
+        {siblingCanvases && siblingCanvases.length > 1 && onSelectSiblingCanvas && (
+          <div
+            role="tablist"
+            aria-label="Canvases generados en este turno"
+            className="flex flex-nowrap items-center gap-1.5 overflow-x-auto pt-1"
+          >
+            {siblingCanvases.map((sib, sIdx) => {
+              const isCurrent = sib.id === liveCanvas.id;
+              return (
+                <button
+                  key={sib.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={isCurrent}
+                  onClick={() => onSelectSiblingCanvas(sib)}
+                  className={`shrink-0 cursor-pointer whitespace-nowrap rounded-lg border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                    isCurrent
+                      ? "border-indigo-400/55 bg-indigo-500/20 text-white shadow-[inset_0_-2px_0_0_rgba(129,140,248,0.95)]"
+                      : "border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200"
+                  }`}
+                >
+                  {sIdx + 1}. {sib.title}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {isViewingHistoricalVersion && (
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-200">
+            <span>Viendo versión histórica v{selectedVersion} (solo lectura)</span>
+            <button
+              type="button"
+              onClick={() => setSelectedVersion("latest")}
+              className="cursor-pointer font-semibold underline hover:text-white"
+            >
+              Volver a actual
+            </button>
+          </div>
+        )}
       </header>
 
-      {/* Resumen / Conclusión destacada */}
-      {canvas.summary && !isPlanView && (!isFormView || canvas.summary !== canvas.form?.description) && (
+      {/* Resumen / Conclusión destacada (sin duplicar descripciones internas de vistas) */}
+      {canvas.summary &&
+        !isPlanView &&
+        canvas.summary !== canvas.subtitle &&
+        (!isFormView || canvas.summary !== canvas.form?.description) &&
+        (!isInteractiveView || canvas.summary !== canvas.interactive?.description) &&
+        (!isCustomAppView || canvas.summary !== canvas.customApp?.description) && (
         <div className="relative mx-4 mt-3 px-3.5 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.08] flex items-stretch gap-2.5 text-[12px] text-zinc-200 shrink-0">
           <div className="w-[2px] rounded-full bg-zinc-400 shrink-0" />
           <p className="leading-relaxed select-text">
@@ -1005,15 +1376,66 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
         </div>
       )}
 
-      {/* Contenido principal: Plan, Diagrama, Dashboard, Formulario, Tabla interactiva o Markdown */}
+      {/* Contenido principal */}
       <div
         className={`relative flex-1 min-h-0 px-4 ${
-          isPlanView || isDiagramView || isFormView
+          isPlanView || isDiagramView || isFormView || isCustomAppView
             ? "flex flex-col overflow-hidden pb-3"
             : "overflow-auto xook-scroll pb-4"
         }`}
       >
-        {isPlanView && canvas.plan ? (
+        {isCompositeView && canvas.blocks ? (
+          <div className="mt-3 space-y-3.5">
+            {canvas.blocks.map((blk, bIdx) => renderCompositeBlock(blk, bIdx))}
+          </div>
+        ) : isInteractiveView && canvas.interactive ? (
+          <div className="mt-3">
+            <InteractiveCanvasView
+              spec={canvas.interactive}
+              isDark
+              onUpdateSpec={(nextInteractive) => {
+                if (isViewingHistoricalVersion) return;
+                onUpdateCanvas({
+                  ...liveCanvas,
+                  interactive: nextInteractive,
+                  updatedAt: new Date().toISOString(),
+                });
+              }}
+              onAction={({ prompt, actionLabel }) =>
+                onCanvasAction?.({
+                  type: "interactive_submit",
+                  canvas,
+                  prompt,
+                  actionLabel,
+                })
+              }
+            />
+          </div>
+        ) : isCustomAppView && canvas.customApp ? (
+          <div className="mt-2.5 flex flex-1 min-h-0 flex-col">
+            <CustomAppCanvasView
+              title={canvas.title}
+              spec={canvas.customApp}
+              isDark
+              onUpdateSpec={(nextApp) => {
+                if (isViewingHistoricalVersion) return;
+                onUpdateCanvas({
+                  ...liveCanvas,
+                  customApp: nextApp,
+                  updatedAt: new Date().toISOString(),
+                });
+              }}
+              onAction={({ prompt, payload }) =>
+                onCanvasAction?.({
+                  type: "custom_app_message",
+                  canvas,
+                  prompt,
+                  payload,
+                })
+              }
+            />
+          </div>
+        ) : isPlanView && canvas.plan ? (
           <PlanCanvasView
             canvas={canvas}
             plan={canvas.plan}
@@ -1148,25 +1570,11 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({
         )}
       </div>
 
-      {/* Pie discreto */}
-      <footer className="relative px-4 py-2 border-t border-white/[0.06] bg-[#0c0d12] flex items-center justify-between text-[10.5px] text-zinc-400 shrink-0">
-        <span>
-          {isPlanView
-            ? "Marca o comenta pasos antes de aprobar · Vista de flujo incluida"
-            : isDiagramView
-              ? "Arrastra para mover · Haz clic en un nodo para inspeccionar"
-              : isDashboardView
-                ? "Haz clic en una barra o segmento para filtrar o consultar a Xox"
-                : isFormView
-                  ? isStudyQuizForm
-                    ? "Responde cada pregunta · Verifica localmente o envía a Xox"
-                    : "Completa los campos y envía el formulario a Xox"
-                  : "Haz clic en título o celda para editar · Ordena por columna"}
-        </span>
-        {copiedMd && (
-          <span className="text-zinc-200 font-medium">Copiado en formato Markdown</span>
-        )}
-      </footer>
+      {copiedMd && (
+        <div className="pointer-events-none absolute right-4 bottom-3 rounded-lg border border-white/15 bg-black/80 px-2.5 py-1 text-[11px] font-medium text-zinc-100 shadow-lg">
+          Copiado en formato Markdown
+        </div>
+      )}
     </section>
   );
 };

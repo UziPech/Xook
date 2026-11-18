@@ -135,7 +135,7 @@ def _classify_task_intent_base(
 
     explicit_action_re = re.compile(
         r"\b(carpeta|directorio|archivo|borrador|crea|crear|creame|edita|escribe|guardar?|guarda|"
-        r"elimina|borra|mueve|archiva|ejecuta|corre|lista|lee|busca|revision|revisi[oó]n|"
+        r"elimina|borra|mueve|archiva|limpia|limpiar|limpieza|depura|depurar|papelera|temporales|workspace|espacio\s+de\s+trabajo|ejecuta|corre|lista|lee|busca|revision|revisi[oó]n|"
         r"abre|abrir|abreme|[áa]breme|inicia|iniciar|lanza|lanzar|arranca|"
         r"app|apps|aplicaci[oó]n|aplicaciones|nota|notas|apunta|apuntar|apuntame|ap[úu]ntame|"
         r"calendario|evento|eventos|reuni[oó]n|cita|junta|disponibilidad|hueco|"
@@ -151,11 +151,34 @@ def _classify_task_intent_base(
         r"\b(revisa|inventario|stock|orden|compra|memoria|recuerda|regla|empresa|proveedores?|proyecto|misi[oó]n|objetivo|equipo|proceso|gustos)\b"
     )
     canvas_re = re.compile(
-        r"\b(tabla|comparativa|comparaci[oó]n|cuadro|canvas|matriz|cronograma|"
+        r"\b(tabla|comparativa|comparaci[oó]n|cuadro|canvas|lienzo|matriz|cronograma|"
         r"diagrama|flujograma|mapa\s+conceptual|organigrama|flowchart|secuencia|"
         r"dashboard|gr[aá]ficas?|gr[aá]ficos?|kpis?|m[eé]tricas|tendencia|panel\s+visual|"
         r"cuestionario|examen|quiz|formulario|encuesta|pr[aá]ctica|ejercicios|autoevaluaci[oó]n|"
+        r"interfaz|interactiva|interactivo|simulador|cotizador|calculadora|kanban|tablero|widget|mini[-\s]?app|prototipo|herramienta\s+visual|"
         r"plan\s+maestro|plan\s+de\s+acci[oó]n|reporte\s+visual|exporta\w*|resumen\s+en\s+tabla)\b"
+    )
+    # Señales situacionales implícitas (cuando el usuario NO sabe qué es Canvas pero plantea
+    # un problema interactivo: números/precios/descuentos, "¿me conviene?", escenarios, opciones o práctica)
+    implicit_canvas_cue_re = re.compile(
+        r"\b(me\s+conviene|cu[aá]nto\s+(?:gano|ganar[ií]a|pierdo|necesito|queda|saldr[ií]a|cobran|debo\s+vender)|"
+        r"qu[eé]\s+pasa\s+si|si\s+le\s+(?:subo|bajo|meto|pongo|aplic\w*)|punto\s+de\s+equilibrio|"
+        r"descuento|comisi[oó]n|costo\s+unitario|precio\s+de\s+venta|meta\s+de\s+utilidad|"
+        r"c[oó]mo\s+(?:reparto|distribuyo)|escenarios?|proyecci[oó]n|cotizar|cotizaci[oó]n|"
+        r"ponme\s+a\s+prueba|hazme\s+preguntas|quiero\s+practicar|\bvs\.?\b)\b"
+    )
+    canvas_followup_re = re.compile(
+        r"\b(s[uú]bele|b[aá]jale|cambia|agrega|añade|quita|ajusta|modifica|tope|l[ií]mite|canal|opci[oó]n|columna|fila|control|slider)\b"
+    )
+    quant_matches = re.findall(
+        r"(?:\$\s*\d[\d.,]*|\d+(?:[.,]\d+)?\s*%|\b\d[\d.,]*\s*(?:unidades|un\.|pzs|piezas|meses|d[ií]as|pesos|usd|mxn|clientes|ventas|mil)\b)",
+        text,
+    )
+    has_implicit_interactive_situation = bool(
+        (len(quant_matches) >= 2)
+        or (len(quant_matches) >= 1 and implicit_canvas_cue_re.search(text))
+        or (implicit_canvas_cue_re.search(text) and ("?" in text or len(text) >= 35))
+        or (has_active_canvas and bool(canvas_followup_re.search(text)))
     )
     deep_re = re.compile(
         r"\b(analiza|an[aá]lisis|estrategia|rentabilidad|margen|riesgos?\s+financieros?|"
@@ -179,7 +202,11 @@ def _classify_task_intent_base(
             reason_es="conversación rápida de baja latencia",
         )
 
-    is_canvas = bool(canvas_re.search(text) or (has_active_canvas and len(text) < 220))
+    is_canvas = bool(
+        canvas_re.search(text)
+        or has_implicit_interactive_situation
+        or (has_active_canvas and len(text) < 260)
+    )
     is_deep = bool(deep_re.search(text))
     is_explicit_action = bool(explicit_action_re.search(text))
     is_domain_ops = bool(domain_ops_re.search(text))
