@@ -748,6 +748,11 @@
   transition: color 0.18s ease, opacity 0.18s ease;
 }
 
+.xook-jelly-tab:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline-offset: -1px;
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .xook-jelly-tab {
     transition:
@@ -2207,21 +2212,32 @@ dialog.xook-liquid-dialog {
   height: min(43rem, 86vh);
   max-height: 88vh;
   border: none;
-  border-radius: 1.375rem;
+  border-radius: 1.5rem;
   color: #f4f4f5;
   overflow: hidden;
-  background: linear-gradient(168deg,
-      rgba(16, 25, 44, 0.56) 0%,
-      rgba(8, 12, 22, 0.68) 54%,
-      rgba(12, 19, 34, 0.60) 100%);
-  backdrop-filter: blur(32px) saturate(185%);
-  -webkit-backdrop-filter: blur(32px) saturate(185%);
+  isolation: isolate;
+  background:
+    radial-gradient(115% 80% at 14% 0% var(--in-oklab),
+      rgba(56, 56, 62, 0.24) 0%,
+      rgba(26, 26, 30, 0.11) 44%,
+      transparent 74%),
+    radial-gradient(95% 75% at 92% 100% var(--in-oklab),
+      rgba(40, 40, 46, 0.16) 0%,
+      transparent 66%),
+    linear-gradient(160deg var(--in-oklab),
+      rgba(24, 24, 27, 0.74) 0%,
+      rgba(11, 11, 13, 0.82) 48%,
+      rgba(3, 3, 4, 0.90) 100%);
+  backdrop-filter: blur(40px) saturate(130%);
+  -webkit-backdrop-filter: blur(40px) saturate(130%);
   box-shadow:
-    inset 0 1px 0.75px 0 rgba(255, 255, 255, 0.30),
-    inset 0 -1px 0.75px 0 rgba(125, 211, 252, 0.14),
-    inset 0 0 24px -14px rgba(125, 211, 252, 0.12),
-    0 32px 72px -18px rgba(0, 0, 0, 0.80),
-    0 4px 16px -4px rgba(0, 0, 0, 0.45);
+    inset 0 1px 0.75px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0.75px 0 rgba(255, 255, 255, 0.04),
+    inset 0 0 36px -18px rgba(255, 255, 255, 0.08),
+    0 0 48px -18px rgba(255, 255, 255, 0.06),
+    0 32px 76px -16px rgba(0, 0, 0, 0.92),
+    0 12px 28px -8px rgba(0, 0, 0, 0.70),
+    0 2px 8px -2px rgba(0, 0, 0, 0.50);
 }
 
 dialog.xook-liquid-dialog::before {
@@ -2230,12 +2246,11 @@ dialog.xook-liquid-dialog::before {
   inset: 0;
   border-radius: inherit;
   padding: 1px;
-  background: linear-gradient(135deg,
-      rgba(255, 255, 255, 0.34) 0%,
-      rgba(224, 242, 254, 0.15) 28%,
-      rgba(196, 181, 253, 0.09) 56%,
-      rgba(125, 211, 252, 0.11) 78%,
-      rgba(255, 255, 255, 0.20) 100%);
+  background: linear-gradient(142deg var(--in-oklab),
+      rgba(255, 255, 255, 0.20) 0%,
+      rgba(113, 113, 122, 0.10) 36%,
+      rgba(39, 39, 42, 0.05) 68%,
+      rgba(255, 255, 255, 0.10) 100%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
@@ -2276,9 +2291,9 @@ dialog.xook-liquid-dialog[data-closing] {
 dialog.xook-liquid-dialog::backdrop {
   overflow: hidden;
   overscroll-behavior: contain;
-  background-color: rgba(4, 6, 10, 0.54);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background-color: rgba(0, 0, 0, 0.56);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 dialog.xook-liquid-dialog[open]:where(:not([data-closing]))::backdrop {
@@ -2287,6 +2302,507 @@ dialog.xook-liquid-dialog[open]:where(:not([data-closing]))::backdrop {
 
 dialog.xook-liquid-dialog[data-closing]::backdrop {
   animation: xook-backdrop-out 0.18s ease-in both;
+}
+
+/* Tarjetas de adjuntos visuales (imágenes y bloques de texto pegado estilo Claude/Gemini) */
+.xook-att-card {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 8px 20px -12px rgba(0, 0, 0, 0.85);
+}
+
+.xook-att-text-fade {
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(12, 14, 20, 0.94) 100%
+  );
+}
+
+.xook-att-remove {
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.84);
+  transition:
+    opacity 0.16s ease,
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.xook-att-card:hover .xook-att-remove,
+.xook-att-card:focus-within .xook-att-remove,
+.xook-att-remove:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+@media (hover: none) {
+  .xook-att-remove {
+    opacity: 0.92;
+    pointer-events: auto;
+    transform: scale(1);
+  }
+}
+
+/* Botón de proceso activo / detener generación (cuadro ■ con aro orbital sutil estilo LLMs) */
+@keyframes xook-stop-orbit {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.xook-stop-btn {
+  position: relative;
+  isolation: isolate;
+}
+
+.xook-stop-ring {
+  position: absolute;
+  inset: -2px;
+  border-radius: 9999px;
+  padding: 1.5px;
+  pointer-events: none;
+  background: conic-gradient(
+    from 0deg,
+    rgba(255, 255, 255, 0.82) 0deg,
+    rgba(186, 230, 253, 0.55) 75deg,
+    rgba(255, 255, 255, 0.08) 170deg,
+    rgba(255, 255, 255, 0.06) 300deg,
+    rgba(255, 255, 255, 0.82) 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: xook-stop-orbit 1.4s linear infinite;
+}
+
+dialog.xook-att-preview-dialog.is-text-mode {
+  width: min(46rem, calc(100vw - 2.5rem));
+  height: min(42rem, 86vh);
+}
+
+dialog.xook-att-preview-dialog.is-image-mode {
+  width: fit-content;
+  max-width: min(76rem, calc(100vw - 3rem));
+  height: fit-content;
+  max-height: 90vh;
+  background: rgba(6, 7, 10, 0.94);
+}
+
+/* Superficies coherentes en obsidiana/grafito para modales (Configuraciones, Proveedores, Perfil) */
+.xook-obsidian-surface {
+  background: linear-gradient(168deg var(--in-oklab),
+      rgba(24, 24, 28, 0.64) 0%,
+      rgba(12, 12, 14, 0.74) 55%,
+      rgba(7, 7, 9, 0.82) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 10px 26px -14px rgba(0, 0, 0, 0.72);
+}
+
+.xook-obsidian-item {
+  position: relative;
+  background: linear-gradient(170deg var(--in-oklab),
+      rgba(22, 22, 26, 0.58) 0%,
+      rgba(10, 10, 12, 0.72) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.14s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.xook-obsidian-item:hover {
+  background: linear-gradient(170deg var(--in-oklab),
+      rgba(34, 34, 39, 0.68) 0%,
+      rgba(16, 16, 19, 0.78) 100%);
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09);
+}
+
+.xook-obsidian-item.is-selected {
+  background: linear-gradient(168deg var(--in-oklab),
+      rgba(48, 48, 54, 0.72) 0%,
+      rgba(22, 22, 26, 0.84) 100%);
+  border-color: rgba(255, 255, 255, 0.24);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.20),
+    0 8px 20px -10px rgba(0, 0, 0, 0.68);
+}
+
+.xook-obsidian-item:focus-visible,
+.xook-obsidian-btn:focus-visible,
+.xook-obsidian-switch:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 2px;
+}
+
+.xook-obsidian-row {
+  position: relative;
+  border: 1px solid transparent;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+.xook-obsidian-row:hover {
+  background: linear-gradient(180deg var(--in-oklab),
+      rgba(28, 28, 32, 0.56) 0%,
+      rgba(15, 15, 18, 0.68) 100%);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.xook-obsidian-row.is-selected {
+  background: linear-gradient(168deg var(--in-oklab),
+      rgba(44, 44, 50, 0.70) 0%,
+      rgba(20, 20, 24, 0.82) 100%);
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 6px 18px -10px rgba(0, 0, 0, 0.62);
+}
+
+.xook-obsidian-row:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: -1px;
+}
+
+.xook-obsidian-btn {
+  background: linear-gradient(180deg var(--in-oklab),
+      rgba(36, 36, 41, 0.64) 0%,
+      rgba(16, 16, 19, 0.78) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    0 2px 6px -2px rgba(0, 0, 0, 0.50);
+  color: #e4e4e7;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.13s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.xook-obsidian-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg var(--in-oklab),
+      rgba(50, 50, 56, 0.74) 0%,
+      rgba(24, 24, 28, 0.86) 100%);
+  border-color: rgba(255, 255, 255, 0.20);
+  color: #ffffff;
+}
+
+.xook-obsidian-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.xook-obsidian-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.xook-obsidian-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 2.5rem;
+  height: 1.375rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(180deg var(--in-oklab),
+      rgba(20, 20, 24, 0.90) 0%,
+      rgba(10, 10, 12, 0.96) 100%);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.65);
+  transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.xook-obsidian-switch[aria-checked="true"] {
+  background: linear-gradient(180deg var(--in-oklab),
+      rgba(244, 244, 245, 0.94) 0%,
+      rgba(206, 206, 212, 0.90) 100%);
+  border-color: rgba(255, 255, 255, 0.65);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 2px 8px -2px rgba(255, 255, 255, 0.18);
+}
+
+.xook-obsidian-switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.xook-obsidian-switch-thumb {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 9999px;
+  background: #a1a1aa;
+  transform: translateX(0.1875rem);
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.18s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.xook-obsidian-switch[aria-checked="true"] .xook-obsidian-switch-thumb {
+  background: #09090b;
+  transform: translateX(1.25rem);
+}
+
+.xook-obsidian-range {
+  accent-color: #e4e4e7;
+  cursor: pointer;
+}
+
+@supports not (accent-color: #e4e4e7) {
+  .xook-obsidian-range {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    height: 1rem;
+  }
+
+  .xook-obsidian-range::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.16);
+  }
+
+  .xook-obsidian-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 9999px;
+    background: #e4e4e7;
+    margin-top: -5px;
+  }
+
+  .xook-obsidian-range::-moz-range-track {
+    height: 4px;
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.16);
+  }
+
+  .xook-obsidian-range::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border: none;
+    border-radius: 9999px;
+    background: #e4e4e7;
+  }
+}
+
+/* Modal de Perfil Local: degradado obsidiana/grafito oscuro + difuminado glass */
+dialog.xook-profile-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  padding: 0;
+  width: min(30.5rem, calc(100vw - 2rem));
+  max-width: calc(100vw - 2rem);
+  height: fit-content;
+  max-height: min(90vh, 42rem);
+  border: none;
+  border-radius: 1.5rem;
+  color: #f4f4f5;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(115% 80% at 14% 0% var(--in-oklab),
+      rgba(56, 56, 62, 0.24) 0%,
+      rgba(26, 26, 30, 0.11) 44%,
+      transparent 74%),
+    radial-gradient(95% 75% at 92% 100% var(--in-oklab),
+      rgba(40, 40, 46, 0.16) 0%,
+      transparent 66%),
+    linear-gradient(160deg var(--in-oklab),
+      rgba(24, 24, 27, 0.74) 0%,
+      rgba(11, 11, 13, 0.82) 48%,
+      rgba(3, 3, 4, 0.90) 100%);
+  backdrop-filter: blur(40px) saturate(130%);
+  -webkit-backdrop-filter: blur(40px) saturate(130%);
+  box-shadow:
+    inset 0 1px 0.75px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0.75px 0 rgba(255, 255, 255, 0.04),
+    inset 0 0 36px -18px rgba(255, 255, 255, 0.08),
+    0 0 48px -18px rgba(255, 255, 255, 0.06),
+    0 32px 76px -16px rgba(0, 0, 0, 0.92),
+    0 12px 28px -8px rgba(0, 0, 0, 0.70),
+    0 2px 8px -2px rgba(0, 0, 0, 0.50);
+}
+
+dialog.xook-profile-dialog::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(142deg var(--in-oklab),
+      rgba(255, 255, 255, 0.20) 0%,
+      rgba(113, 113, 122, 0.10) 36%,
+      rgba(39, 39, 42, 0.05) 68%,
+      rgba(255, 255, 255, 0.10) 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 2;
+}
+
+dialog.xook-profile-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+dialog.xook-profile-dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog.xook-profile-dialog[open]:where(:not([data-closing])) {
+  animation:
+    xook-dialog-fade-in 0.22s ease-out both,
+    xook-dialog-rise-in 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@supports (animation-timing-function: linear(0, 1)) {
+  dialog.xook-profile-dialog[open]:where(:not([data-closing])) {
+    animation-timing-function:
+      ease-out,
+      linear(0, 0.015 1.2%, 0.06 2.5%, 0.21 5.5%, 0.64 12.5%,
+        0.90 21%, 0.992 31%, 1.01 44%, 1.003 62%, 1);
+  }
+}
+
+dialog.xook-profile-dialog[data-closing] {
+  animation: xook-dialog-out 0.18s cubic-bezier(0.4, 0, 1, 1) both;
+  pointer-events: none;
+}
+
+dialog.xook-profile-dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background-color: rgba(0, 0, 0, 0.56);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+dialog.xook-profile-dialog[open]:where(:not([data-closing]))::backdrop {
+  animation: xook-backdrop-in 0.24s ease-out both;
+}
+
+dialog.xook-profile-dialog[data-closing]::backdrop {
+  animation: xook-backdrop-out 0.18s ease-in both;
+}
+
+.xook-profile-avatar-glass {
+  position: relative;
+  border-radius: 9999px;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(85% 68% at 50% 10% var(--in-oklab),
+      rgba(255, 255, 255, 0.15) 0%,
+      rgba(96, 96, 104, 0.08) 42%,
+      rgba(8, 8, 10, 0.88) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    inset 0 1px 1.5px rgba(255, 255, 255, 0.28),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.78),
+    0 8px 18px -6px rgba(0, 0, 0, 0.84);
+}
+
+.xook-profile-avatar-glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    radial-gradient(64% 38% at 50% 4% var(--in-oklab),
+      rgba(255, 255, 255, 0.26) 0%,
+      rgba(255, 255, 255, 0.06) 52%,
+      transparent 82%),
+    radial-gradient(50% 24% at 50% 100% var(--in-oklab),
+      rgba(255, 255, 255, 0.08) 0%,
+      transparent 75%);
+  pointer-events: none;
+}
+
+.xook-profile-input {
+  background: linear-gradient(180deg var(--in-oklab),
+      rgba(19, 19, 22, 0.72) 0%,
+      rgba(7, 7, 9, 0.84) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    inset 0 2px 4px rgba(0, 0, 0, 0.55);
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.xook-profile-input:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.xook-profile-input:focus {
+  outline: none;
+  background: linear-gradient(180deg var(--in-oklab),
+      rgba(28, 28, 32, 0.78) 0%,
+      rgba(11, 11, 13, 0.88) 100%);
+  border-color: rgba(255, 255, 255, 0.30);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 2px 4px rgba(0, 0, 0, 0.42),
+    0 0 0 3px rgba(255, 255, 255, 0.06);
+}
+
+.xook-profile-role-track {
+  background: linear-gradient(180deg var(--in-oklab),
+      rgba(16, 16, 19, 0.74) 0%,
+      rgba(6, 6, 8, 0.86) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.60),
+    0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.xook-profile-save-btn {
+  background: linear-gradient(180deg var(--in-oklab),
+      rgba(250, 250, 252, 0.96) 0%,
+      rgba(212, 212, 218, 0.92) 100%);
+  color: #09090b;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 8px 20px -6px rgba(0, 0, 0, 0.65),
+    0 2px 8px -2px rgba(255, 255, 255, 0.14);
+  transition: filter 0.16s ease, transform 0.14s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.16s ease;
+}
+
+.xook-profile-save-btn:hover:not(:disabled) {
+  filter: brightness(1.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    0 10px 24px -6px rgba(0, 0, 0, 0.72),
+    0 3px 12px -2px rgba(255, 255, 255, 0.22);
+}
+
+.xook-profile-save-btn:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 @keyframes xook-tab-enter {
@@ -2393,8 +2909,14 @@ progress.xook-usage-progress::-moz-progress-bar {
   .quick-capsule-shell,
   .quick-liquid-menu,
   .xook-liquid-menu,
-  dialog.xook-liquid-dialog {
+  dialog.xook-liquid-dialog,
+  dialog.xook-profile-dialog {
     border: 1px solid CanvasText;
+  }
+
+  dialog.xook-liquid-dialog::before,
+  dialog.xook-profile-dialog::before {
+    display: none;
   }
 
   .quick-capsule-shell::before,
@@ -2885,7 +3407,8 @@ progress.xook-usage-progress::-moz-progress-bar {
   .xook-code-action-btn,
   .xook-jelly-pill-thumb,
   .xook-liquid-switch,
-  .xook-liquid-switch-thumb {
+  .xook-liquid-switch-thumb,
+  .xook-att-remove {
     transition: none;
   }
 
@@ -2910,7 +3433,11 @@ progress.xook-usage-progress::-moz-progress-bar {
   dialog.xook-liquid-dialog[open]:where(:not([data-closing])),
   dialog.xook-liquid-dialog[data-closing],
   dialog.xook-liquid-dialog[open]:where(:not([data-closing]))::backdrop,
-  dialog.xook-liquid-dialog[data-closing]::backdrop {
+  dialog.xook-liquid-dialog[data-closing]::backdrop,
+  dialog.xook-profile-dialog[open]:where(:not([data-closing])),
+  dialog.xook-profile-dialog[data-closing],
+  dialog.xook-profile-dialog[open]:where(:not([data-closing]))::backdrop,
+  dialog.xook-profile-dialog[data-closing]::backdrop {
     animation: none;
   }
 
@@ -2937,7 +3464,8 @@ progress.xook-usage-progress::-moz-progress-bar {
   .quick-settle-sweep,
   .quick-glint,
   .quick-capsule-in,
-  .quick-capsule-out {
+  .quick-capsule-out,
+  .xook-stop-ring {
     animation: none;
   }
 

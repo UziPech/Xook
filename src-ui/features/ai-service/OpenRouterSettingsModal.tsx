@@ -54,6 +54,37 @@ import {
 
 export type OpenRouterSettingsTab = "models" | "account";
 
+function buildCleanModelMeta(m: OpenRouterModelOption): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  const addUnique = (raw: string | null | undefined) => {
+    const clean = raw?.trim();
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    parts.push(clean);
+  };
+
+  if (m.hint && m.hint !== m.name) {
+    for (const seg of m.hint.split("·")) {
+      const s = seg.trim();
+      if (!s) continue;
+      if (m.is_free && /^(gratis|free)$/i.test(s)) continue;
+      if (m.context_length && /^\d+(?:\.\d+)?\s*[kKmM]?\s*ctx$/i.test(s)) continue;
+      addUnique(s);
+    }
+  } else if (m.provider_name) {
+    addUnique(m.provider_name);
+  }
+
+  if (m.context_length) {
+    addUnique(`${formatContextLength(m.context_length)} ctx`);
+  }
+
+  return parts.join(" · ");
+}
+
 interface OpenRouterSettingsModalProps {
   isOpen: boolean;
   initialTab?: OpenRouterSettingsTab;
@@ -394,11 +425,45 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
     return canUsePaid ? allModels : freeModels;
   }, [selectedProvider, allModels, freeModels, canUsePaid]);
 
+  const filterOptions = useMemo(() => {
+    const opts: { id: CatalogFilter; label: string }[] = [];
+    const availableIsOnlyFree =
+      freeModels.length > 0 && availableModels.length === freeModels.length;
+
+    if (availableModels.length < allModels.length) {
+      opts.push({
+        id: "available",
+        label: availableIsOnlyFree
+          ? `Gratis (${freeModels.length})`
+          : `Disponibles (${availableModels.length})`,
+      });
+    } else {
+      opts.push({
+        id: "available",
+        label: `Disponibles (${availableModels.length})`,
+      });
+    }
+
+    if (freeModels.length > 0 && !availableIsOnlyFree) {
+      opts.push({ id: "free", label: `Gratis (${freeModels.length})` });
+    }
+
+    if (allModels.length !== availableModels.length) {
+      opts.push({ id: "all", label: `Todos (${allModels.length})` });
+    }
+
+    return opts;
+  }, [availableModels.length, freeModels.length, allModels.length]);
+
+  const activeFilterKey: CatalogFilter = filterOptions.some((o) => o.id === catalogFilter)
+    ? catalogFilter
+    : filterOptions[0]?.id ?? "available";
+
   const visibleModels = useMemo(() => {
     const base =
-      catalogFilter === "available"
+      activeFilterKey === "available"
         ? availableModels
-        : catalogFilter === "free"
+        : activeFilterKey === "free"
           ? freeModels
           : allModels;
     const q = modelSearch.trim().toLowerCase();
@@ -409,7 +474,7 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
         m.id.toLowerCase().includes(q) ||
         (m.provider_name?.toLowerCase().includes(q) ?? false)
     );
-  }, [allModels, availableModels, freeModels, catalogFilter, modelSearch]);
+  }, [allModels, availableModels, freeModels, activeFilterKey, modelSearch]);
 
   const slicedModels = useMemo(
     () => visibleModels.slice(0, visibleLimit),
@@ -795,21 +860,30 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
     >
       {shouldRenderBody && (
         <>
-          <LiquidGlassBackdrop variant="modal" />
+          <LiquidGlassBackdrop variant="menu" />
 
-          {/* Cabecera limpia con selector de pestañas */}
-          <header className="relative z-[1] shrink-0 px-5 pt-4 pb-3 border-b border-white/[0.08] bg-white/[0.02] space-y-3">
+          {/* Capas difuminadas obsidiana-grafito coherentes con el perfil */}
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 pointer-events-none overflow-hidden rounded-[inherit]"
+          >
+            <div className="absolute -top-20 -left-16 w-80 h-52 rounded-full bg-zinc-400/[0.045] blur-3xl" />
+            <div className="absolute -bottom-20 -right-14 w-72 h-48 rounded-full bg-zinc-600/[0.04] blur-3xl" />
+          </div>
+
+          {/* Cabecera limpia con selector de pestañas y proveedores */}
+          <header className="relative z-[1] shrink-0 px-5 pt-4 pb-3.5 border-b border-white/[0.06] space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
-                <div className="quick-liquid-icon w-8 h-8 rounded-xl flex items-center justify-center shrink-0">
+                <div className="xook-profile-avatar-glass w-10 h-10 flex items-center justify-center shrink-0">
                   {activeTab === "models" ? (
                     <ProviderIcon
                       provider={selectedProvider}
-                      size={16}
-                      className="text-white/95"
+                      size={17}
+                      className="relative z-10 text-zinc-100"
                     />
                   ) : (
-                    <KeyRound className="w-4 h-4 text-white/90" />
+                    <KeyRound className="relative z-10 w-4 h-4 text-zinc-100" />
                   )}
                 </div>
                 <div className="min-w-0">
@@ -817,13 +891,15 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                     id="openrouter-modal-title"
                     className="text-sm font-semibold text-white tracking-tight"
                   >
-                    Proveedores de IA · Modelos y tarifas
+                    Proveedores de IA
                   </h2>
-                  <p className="text-[11px] text-zinc-300/80 truncate flex items-center gap-1.5">
+                  <p className="text-[11.5px] text-zinc-400 truncate mt-0.5 flex items-center gap-1.5">
                     <span>Activo:</span>
-                    <span className="text-zinc-100 font-medium inline-flex items-center gap-1">
-                      <ProviderIcon provider={activeConfigProvider} size={11} />
-                      {activeSpec.shortName} · {activeModelDisplay.name}
+                    <span className="text-zinc-200 font-medium inline-flex items-center gap-1 truncate">
+                      <ProviderIcon provider={activeConfigProvider} size={11} className="shrink-0" />
+                      <span className="truncate">
+                        {activeSpec.shortName} · {activeModelDisplay.name}
+                      </span>
                     </span>
                   </p>
                 </div>
@@ -836,17 +912,17 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                   aria-label="Secciones de configuración de IA"
                   pillRadius="9999px"
                   variant="quick"
-                  className="inline-flex items-center p-0.5 rounded-full gap-0.5"
+                  className="xook-profile-role-track inline-flex items-center p-1 rounded-full gap-0.5"
                 >
                   <button
                     type="button"
                     role="tab"
                     aria-selected={activeTab === "models"}
                     onClick={() => setActiveTab("models")}
-                    className={`xook-jelly-tab px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer ${
+                    className={`xook-jelly-tab px-3 py-1 rounded-full text-[11.5px] font-medium cursor-pointer ${
                       activeTab === "models"
                         ? "text-white"
-                        : "text-zinc-300/80 hover:text-white"
+                        : "text-zinc-400 hover:text-zinc-200"
                     }`}
                   >
                     Modelos ({allModels.length})
@@ -856,14 +932,14 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                     role="tab"
                     aria-selected={activeTab === "account"}
                     onClick={() => setActiveTab("account")}
-                    className={`xook-jelly-tab inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer ${
+                    className={`xook-jelly-tab inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11.5px] font-medium cursor-pointer ${
                       activeTab === "account"
                         ? "text-white"
-                        : "text-zinc-300/80 hover:text-white"
+                        : "text-zinc-400 hover:text-zinc-200"
                     }`}
                   >
                     {configuredCount === 0 && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-300/90 shrink-0" />
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
                     )}
                     <span>Claves y respaldo</span>
                   </button>
@@ -873,15 +949,15 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                   type="button"
                   onClick={onClose}
                   aria-label="Cerrar configuración"
-                  className="quick-liquid-btn w-8 h-8 rounded-full inline-flex items-center justify-center text-zinc-200 hover:text-white cursor-pointer shrink-0"
+                  className="p-1.5 rounded-xl text-zinc-400 hover:text-white hover:bg-white/[0.07] transition-colors cursor-pointer shrink-0"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
-            {/* Selector Liquid Glass de los 7 proveedores + tarifa rápida */}
-            <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-7 gap-1.5">
+            {/* Selector uniforme en una sola fila de los 7 proveedores */}
+            <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5">
               {AI_PROVIDER_LIST.map((spec) => {
                 const slot = config.configuredProviders?.[spec.id];
                 const isViewing = selectedProvider === spec.id;
@@ -891,18 +967,18 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                 const quotaState = slot?.quotaStatus ?? "ready";
                 const dotClass =
                   hasKey && quotaState === "ready"
-                    ? "bg-emerald-300/90"
+                    ? "bg-emerald-400"
                     : hasKey && (quotaState === "cooldown" || quotaState === "exhausted" || quotaState === "auth_error")
-                      ? "bg-amber-300/90"
-                      : "bg-zinc-500/70";
+                      ? "bg-amber-400"
+                      : "bg-zinc-600";
 
                 return (
                   <button
                     key={spec.id}
                     type="button"
                     onClick={() => setSelectedProvider(spec.id)}
-                    className={`quick-liquid-option px-2.5 py-2 rounded-xl text-left cursor-pointer transition-all ${
-                      isViewing ? "is-selected text-white" : "text-zinc-200/85 hover:text-white"
+                    className={`xook-obsidian-item px-2 py-2 rounded-xl text-left cursor-pointer ${
+                      isViewing ? "is-selected text-white" : "text-zinc-300 hover:text-white"
                     }`}
                   >
                     <div className="flex items-center justify-between gap-1">
@@ -921,12 +997,11 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                         }
                       />
                     </div>
-                    <div className="mt-0.5 flex items-center justify-between gap-1 text-[9.5px] text-zinc-400">
-                      <span className="truncate">{spec.tierBadge}</span>
-                      {isActiveMain && (
-                        <span className="text-[8.5px] font-mono uppercase text-zinc-200/90 shrink-0">
-                          En uso
-                        </span>
+                    <div className="mt-1 text-[9.5px] truncate">
+                      {isActiveMain ? (
+                        <span className="text-zinc-200 font-medium">En uso</span>
+                      ) : (
+                        <span className="text-zinc-500">{spec.tierBadge}</span>
                       )}
                     </div>
                   </button>
@@ -935,36 +1010,65 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
             </div>
           </header>
 
-          {/* Barra compacta de tarifas y estado del proveedor seleccionado */}
+          {/* Barra unificada de estado, tarifas y acción (sin triple apilamiento) */}
           <div className="relative z-[1] shrink-0 px-5 pt-3">
-            <div className="quick-liquid-subcard px-3 py-2 rounded-xl flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 text-[11px]">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
-                <span className="inline-flex items-center gap-1.5 font-medium text-white">
-                  <ProviderIcon provider={selectedProvider} size={13} />
-                  {selectedSpec.name}
-                </span>
-                <span className="text-zinc-300/85 font-mono text-[10.5px]">
-                  In: <strong className="text-zinc-100 font-medium">{selectedSpec.inputPriceHint}</strong>
-                  {" · "}Out: <strong className="text-zinc-100 font-medium">{selectedSpec.outputPriceHint}</strong>
-                  {selectedSpec.supportsPromptCache && (
-                    <>
-                      {" · "}Caché: <strong className="text-zinc-100 font-medium">{selectedSpec.cachePriceHint}</strong>
-                    </>
-                  )}
-                </span>
+            <div className="xook-obsidian-surface px-3.5 py-2.5 rounded-xl flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 text-[11px]">
+              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                    !selectedHasKey
+                      ? "bg-amber-400"
+                      : currentTestResult && !currentTestResult.ok
+                        ? "bg-rose-400"
+                        : canUsePaid || selectedProvider !== "openrouter"
+                          ? "bg-emerald-400"
+                          : "bg-zinc-300"
+                  }`}
+                />
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <span
+                      className={`font-medium truncate ${
+                        currentTestResult && !currentTestResult.ok
+                          ? "text-rose-200"
+                          : "text-zinc-100"
+                      }`}
+                    >
+                      {!selectedHasKey
+                        ? `Sin clave de ${selectedSpec.shortName}`
+                        : testing && !effectiveUsage
+                          ? `Verificando conexión con ${selectedSpec.shortName}…`
+                          : currentTestResult && !currentTestResult.ok
+                            ? currentTestResult.message
+                            : effectiveUsage
+                              ? selectedSummary.headline
+                              : `Clave lista (${selectedMaskedKey})`}
+                    </span>
+                    <span className="text-zinc-600 hidden sm:inline">·</span>
+                    <span className="font-mono text-[10.5px] text-zinc-400">
+                      In {selectedSpec.inputPriceHint} · Out {selectedSpec.outputPriceHint}
+                      {selectedSpec.supportsPromptCache
+                        ? ` · Caché ${selectedSpec.cachePriceHint}`
+                        : ""}
+                    </span>
+                  </div>
+                  <p className="text-[10.5px] text-zinc-500 truncate mt-0.5">
+                    {selectedSpec.rateLimitNote}
+                  </p>
+                </div>
               </div>
 
-              <div className="flex items-center gap-2 ml-auto shrink-0">
+              <div className="flex items-center gap-2 shrink-0">
                 {(selectedQuotaStatus === "exhausted" ||
                   selectedQuotaStatus === "cooldown" ||
                   selectedQuotaStatus === "auth_error") && (
                   <button
                     type="button"
                     onClick={() => void handleClearCooldown(selectedProvider)}
-                    className="quick-liquid-chip inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] text-amber-200 hover:text-white cursor-pointer"
+                    className="xook-obsidian-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10.5px] text-amber-200 cursor-pointer"
                   >
                     <RotateCcw className="w-2.5 h-2.5" />
-                    Restablecer cuota
+                    <span>Restablecer</span>
                   </button>
                 )}
 
@@ -973,28 +1077,25 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                     type="button"
                     onClick={() => void handleActivateProvider(selectedProvider)}
                     disabled={saving}
-                    className="quick-liquid-btn-ready px-2.5 py-0.5 rounded-full text-[10.5px] font-medium cursor-pointer"
+                    className="xook-profile-save-btn px-3 py-1 rounded-lg text-[11px] font-semibold cursor-pointer"
                   >
                     Usar {selectedSpec.shortName}
                   </button>
-                ) : !selectedHasKey ? (
+                ) : activeTab === "models" ? (
                   <button
                     type="button"
                     onClick={() => setActiveTab("account")}
-                    className="text-sky-200/90 hover:text-white font-medium cursor-pointer transition-colors"
+                    className="xook-obsidian-btn px-2.5 py-1 rounded-lg text-[11px] font-medium cursor-pointer"
                   >
-                    Conectar clave →
+                    {!selectedHasKey
+                      ? "Conectar clave →"
+                      : currentTestResult && !currentTestResult.ok
+                        ? "Revisar →"
+                        : "Cuenta →"}
                   </button>
-                ) : (
-                  <span className="text-[10.5px] text-zinc-400">
-                    {selectedSpec.supportsFreeTier ? "Tier gratis + pago" : "Pago por uso"}
-                  </span>
-                )}
+                ) : null}
               </div>
             </div>
-            <p className="text-[10.5px] text-zinc-400/90 mt-1.5 px-0.5 truncate">
-              {selectedSpec.rateLimitNote}
-            </p>
           </div>
 
           {/* Contenido principal */}
@@ -1005,143 +1106,53 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
               aria-label="Catálogo de modelos"
               className="xook-dialog-tab-panel relative z-[1] flex-1 min-h-0 flex flex-col px-5 pt-2.5 pb-3 gap-2.5"
             >
-              {/* Barra de estado fija */}
-              <div className="quick-liquid-subcard shrink-0 h-9 px-3 rounded-xl flex items-center justify-between gap-2 text-[11px]">
-                {!selectedHasKey ? (
-                  <>
-                    <div className="flex items-center gap-2 min-w-0 text-zinc-200/90">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-300/90 shrink-0" />
-                      <span className="truncate">
-                        Sin clave de {selectedSpec.shortName} · Vista previa de modelos y tarifas
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("account")}
-                      className="text-sky-200/90 hover:text-white font-medium shrink-0 cursor-pointer transition-colors"
-                    >
-                      Pegar clave →
-                    </button>
-                  </>
-                ) : testing && !effectiveUsage ? (
-                  <>
-                    <div className="flex items-center gap-2 min-w-0 text-zinc-300">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-zinc-200 shrink-0" />
-                      <span className="truncate">
-                        Verificando conexión con {selectedSpec.shortName}…
-                      </span>
-                    </div>
-                    <span className="font-mono text-[10.5px] text-zinc-400 shrink-0">
-                      {allModels.length} modelos
-                    </span>
-                  </>
-                ) : currentTestResult && !currentTestResult.ok ? (
-                  <>
-                    <div className="flex items-center gap-2 min-w-0 text-rose-200">
-                      <AlertCircle className="w-3.5 h-3.5 text-rose-300 shrink-0" />
-                      <span className="truncate">{currentTestResult.message}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("account")}
-                      className="text-rose-100 hover:text-white font-medium shrink-0 cursor-pointer"
-                    >
-                      Revisar →
-                    </button>
-                  </>
-                ) : effectiveUsage ? (
-                  <>
-                    <div className="flex items-center gap-2 min-w-0 text-zinc-200">
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                          canUsePaid ? "bg-emerald-300/90" : "bg-sky-200/85"
-                        }`}
-                      />
-                      <span className="truncate">{selectedSummary.headline}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("account")}
-                      className="text-zinc-300 hover:text-white font-medium shrink-0 cursor-pointer transition-colors"
-                    >
-                      Cuenta →
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-2 min-w-0 text-zinc-300">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-300/80 shrink-0" />
-                      <span className="truncate">
-                        Clave lista ({selectedMaskedKey}) · {sourceLabel}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("account")}
-                      className="text-zinc-300 hover:text-white font-medium shrink-0 cursor-pointer transition-colors"
-                    >
-                      Ver clave →
-                    </button>
-                  </>
-                )}
-              </div>
-
-              {/* Controles de filtrado y búsqueda */}
+              {/* Controles de filtrado (sin duplicados) y búsqueda */}
               <div className="shrink-0 flex flex-wrap items-center gap-2">
-                <div className="quick-liquid-subcard inline-flex p-0.5 rounded-xl gap-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setCatalogFilter("available")}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors cursor-pointer ${
-                      catalogFilter === "available"
-                        ? "quick-liquid-chip-active text-white"
-                        : "text-zinc-300/80 hover:text-white"
-                    }`}
+                {filterOptions.length > 1 && (
+                  <JellyPillTrack
+                    activeKey={activeFilterKey}
+                    role="tablist"
+                    aria-label="Filtrar modelos"
+                    pillRadius="0.5rem"
+                    variant="quick"
+                    className="xook-profile-role-track inline-flex items-center p-1 rounded-xl gap-0.5"
                   >
-                    Disponibles ({availableModels.length})
-                  </button>
-                  {freeModels.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setCatalogFilter("free")}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors cursor-pointer ${
-                        catalogFilter === "free"
-                          ? "quick-liquid-chip-active text-white"
-                          : "text-zinc-300/80 hover:text-white"
-                      }`}
-                    >
-                      Gratis ({freeModels.length})
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setCatalogFilter("all")}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors cursor-pointer ${
-                      catalogFilter === "all"
-                        ? "quick-liquid-chip-active text-white"
-                        : "text-zinc-300/80 hover:text-white"
-                    }`}
-                  >
-                    Todos ({allModels.length})
-                  </button>
-                </div>
+                    {filterOptions.map((opt) => {
+                      const active = activeFilterKey === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={active}
+                          onClick={() => setCatalogFilter(opt.id)}
+                          className={`xook-jelly-tab px-2.5 py-1 rounded-lg text-[11px] font-medium cursor-pointer whitespace-nowrap ${
+                            active ? "text-white" : "text-zinc-400 hover:text-zinc-200"
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </JellyPillTrack>
+                )}
 
-                <div className="relative flex-1 min-w-[180px]">
-                  <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <div className="relative flex-1 min-w-[180px] group">
+                  <Search className="w-3.5 h-3.5 text-zinc-500 group-focus-within:text-zinc-200 transition-colors absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     ref={searchInputRef}
                     type="text"
                     value={modelSearch}
                     onChange={(e) => setModelSearch(e.target.value)}
-                    placeholder={`Buscar modelo en ${selectedSpec.shortName}...`}
-                    className="quick-liquid-input w-full pl-8 pr-7 py-1.5 rounded-xl text-[11.5px] text-zinc-100 placeholder:text-zinc-400/80 focus:outline-none select-text"
+                    placeholder={`Buscar modelo en ${selectedSpec.shortName}…`}
+                    className="xook-profile-input w-full pl-8 pr-7 py-1.5 rounded-xl text-[12px] text-zinc-100 placeholder:text-zinc-500 select-text"
                   />
                   {modelSearch && (
                     <button
                       type="button"
                       onClick={() => setModelSearch("")}
                       aria-label="Limpiar búsqueda"
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white cursor-pointer"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white cursor-pointer"
                     >
                       <X className="w-3 h-3" />
                     </button>
@@ -1154,40 +1165,40 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                   disabled={loadingCatalog}
                   title={`Actualizar catálogo de ${selectedSpec.shortName}`}
                   aria-label={`Actualizar catálogo de ${selectedSpec.shortName}`}
-                  className="quick-liquid-btn w-8 h-8 rounded-xl inline-flex items-center justify-center text-zinc-200 hover:text-white cursor-pointer shrink-0"
+                  className="xook-obsidian-btn w-8 h-8 rounded-xl inline-flex items-center justify-center cursor-pointer shrink-0"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${loadingCatalog ? "animate-spin" : ""}`} />
                 </button>
               </div>
 
-              {/* Lista única scrolleable con tarifas por modelo */}
+              {/* Lista única limpia sin metadatos repetidos */}
               <div
                 ref={listScrollRef}
                 onScroll={handleModelListScroll}
                 className="flex-1 min-h-0 overflow-y-auto pr-1 -mr-1 space-y-1"
               >
                 {loadingCatalog && currentCatalogModels.length === 0 ? (
-                  <div className="h-full min-h-[160px] flex items-center justify-center gap-2 text-xs text-zinc-300">
-                    <Loader2 className="w-4 h-4 animate-spin text-zinc-200" />
+                  <div className="h-full min-h-[160px] flex items-center justify-center gap-2 text-xs text-zinc-400">
+                    <Loader2 className="w-4 h-4 animate-spin text-zinc-300" />
                     <span>Cargando modelos de {selectedSpec.shortName}…</span>
                   </div>
                 ) : visibleModels.length === 0 ? (
                   <div className="h-full min-h-[160px] flex flex-col items-center justify-center gap-2.5 text-center px-4">
                     <p className="text-xs text-zinc-400">
-                      No se encontraron modelos con "{modelSearch}".
+                      No se encontraron modelos con &ldquo;{modelSearch}&rdquo;.
                     </p>
                     {modelSearch.trim().length > 2 && (
                       <button
                         type="button"
                         onClick={() => void handleSelectModel(modelSearch.trim())}
-                        className="quick-liquid-btn px-3 py-1.5 rounded-full text-[11px] text-zinc-100 cursor-pointer"
+                        className="xook-obsidian-btn px-3 py-1.5 rounded-full text-[11px] cursor-pointer"
                       >
                         Usar «{modelSearch.trim()}»
                       </button>
                     )}
                   </div>
                 ) : (
-                  <div key={`${selectedProvider}-${catalogFilter}`} className="xook-catalog-swap space-y-1">
+                  <div key={`${selectedProvider}-${activeFilterKey}`} className="xook-catalog-swap space-y-1">
                     {slicedModels.map((m, idx) => {
                       const selected =
                         activeConfigProvider === selectedProvider && config.modelId === m.id;
@@ -1198,10 +1209,13 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                         typeof m.prompt_price_per_million === "number" &&
                         typeof m.completion_price_per_million === "number" &&
                         (m.prompt_price_per_million > 0 || m.completion_price_per_million > 0);
+                      const cleanMeta = buildCleanModelMeta(m);
+
                       return (
                         <button
                           key={m.id}
                           type="button"
+                          title={m.id}
                           onClick={() => void handleSelectModel(m.id)}
                           style={
                             isExpandedReveal
@@ -1210,67 +1224,62 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                                 }
                               : undefined
                           }
-                          className={`quick-liquid-option ${
+                          className={`xook-obsidian-row ${
                             isExpandedReveal ? "xook-model-reveal" : ""
-                          } w-full flex items-center justify-between gap-3 px-3 py-2 rounded-xl text-left cursor-pointer ${
+                          } w-full flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl text-left cursor-pointer ${
                             selected
                               ? "is-selected text-white"
                               : requiresCredits
-                                ? "text-zinc-300/75 opacity-80"
-                                : "text-zinc-100"
+                                ? "text-zinc-400 opacity-75"
+                                : "text-zinc-200"
                           }`}
                         >
                           <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-1.5 text-[12px] font-medium">
-                              <span className="truncate">{m.name}</span>
-                              {m.is_free ? (
-                                <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[9px] font-mono uppercase text-zinc-200/90 shrink-0">
-                                  Gratis
-                                </span>
-                              ) : requiresCredits ? (
-                                <span className="quick-liquid-chip inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-mono text-zinc-300/90 shrink-0">
-                                  <Lock className="w-2.5 h-2.5" />
-                                  Requiere saldo
-                                </span>
-                              ) : null}
-                              {hasPrices && (
-                                <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[9.5px] font-mono text-zinc-300 shrink-0 tabular-nums">
-                                  {formatPricePerMillion(m.prompt_price_per_million)} /{" "}
-                                  {formatPricePerMillion(m.completion_price_per_million)} 1M
-                                  {typeof m.cache_price_per_million === "number" &&
-                                  m.cache_price_per_million > 0
-                                    ? ` · caché ${formatPricePerMillion(m.cache_price_per_million)}`
-                                    : ""}
-                                </span>
-                              )}
+                            <div className="text-[12.5px] font-medium text-white truncate">
+                              {m.name}
                             </div>
-                            <div className="text-[10.5px] text-zinc-400 truncate mt-0.5">
-                              {[
-                                m.hint && m.hint !== m.name ? m.hint : null,
-                                m.context_length
-                                  ? `${formatContextLength(m.context_length)} ctx`
-                                  : null,
-                                m.id,
-                              ]
-                                .filter(Boolean)
-                                .join(" · ")}
-                            </div>
+                            {cleanMeta && (
+                              <div className="text-[11px] text-zinc-400 truncate mt-0.5">
+                                {cleanMeta}
+                              </div>
+                            )}
                           </div>
-                          {selected && (
-                            <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
-                              <Check className="w-2.5 h-2.5 text-white" />
-                            </span>
-                          )}
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            {m.is_free ? (
+                              <span className="px-2 py-0.5 rounded-md bg-white/[0.06] border border-white/[0.08] text-[10px] font-medium text-zinc-300">
+                                Gratis
+                              </span>
+                            ) : requiresCredits ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.07] text-[10px] text-zinc-400">
+                                <Lock className="w-2.5 h-2.5" />
+                                <span>Saldo</span>
+                              </span>
+                            ) : null}
+
+                            {hasPrices && (
+                              <span className="text-[10.5px] font-mono text-zinc-400 tabular-nums">
+                                {formatPricePerMillion(m.prompt_price_per_million)} /{" "}
+                                {formatPricePerMillion(m.completion_price_per_million)}
+                              </span>
+                            )}
+
+                            {selected && (
+                              <span className="w-5 h-5 rounded-full bg-white text-black inline-flex items-center justify-center shrink-0">
+                                <Check className="w-3 h-3 stroke-[2.5]" />
+                              </span>
+                            )}
+                          </div>
                         </button>
                       );
                     })}
 
                     {hasMoreModels && (
-                      <div className="pt-1.5 pb-1 flex items-center justify-center">
+                      <div className="pt-2 pb-1 flex items-center justify-center">
                         <button
                           type="button"
                           onClick={expandMoreModels}
-                          className="quick-liquid-btn px-3.5 py-1.5 rounded-full text-[11px] text-zinc-200 hover:text-white cursor-pointer"
+                          className="xook-obsidian-btn px-3.5 py-1.5 rounded-full text-[11px] font-medium cursor-pointer"
                         >
                           Mostrar más ({visibleModels.length - slicedModels.length} restantes)
                         </button>
@@ -1288,18 +1297,16 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
               className="xook-dialog-tab-panel relative z-[1] flex-1 min-h-0 overflow-y-auto px-5 py-3.5 space-y-4"
             >
               {/* Bloque 1: Clave API del proveedor seleccionado */}
-              <section className="space-y-2.5">
+              <section className="xook-obsidian-surface rounded-2xl p-4 space-y-3">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-200 flex items-center gap-2">
-                    <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
-                      <ShieldCheck className="w-3 h-3 text-white/85" />
-                    </span>
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+                    <ShieldCheck className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
                     Clave API de {selectedSpec.shortName}
                   </span>
-                  <span className="quick-liquid-chip inline-flex items-center gap-1.5 text-[10.5px] font-mono px-2.5 py-0.5 rounded-full text-zinc-200">
+                  <span className="inline-flex items-center gap-1.5 text-[10.5px] font-mono px-2.5 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-zinc-300">
                     <span
                       className={`w-1.5 h-1.5 rounded-full ${
-                        selectedHasKey ? "bg-emerald-300/90" : "bg-amber-300/90"
+                        selectedHasKey ? "bg-emerald-400" : "bg-amber-400"
                       }`}
                     />
                     {selectedHasKey
@@ -1321,83 +1328,82 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                           : `Pega tu clave de ${selectedSpec.shortName}: ${selectedSpec.keyPrefixHint}`
                       }
                       autoComplete="off"
-                      className="quick-liquid-input w-full pl-3 pr-9 py-2 rounded-xl text-xs font-mono text-zinc-100 placeholder:text-zinc-400/80 focus:outline-none select-text"
+                      className="xook-profile-input w-full pl-3.5 pr-9 py-2 rounded-xl text-xs font-mono text-zinc-100 placeholder:text-zinc-500 select-text"
                     />
                     <button
                       type="button"
                       onClick={() => setShowKey((v) => !v)}
                       aria-label={showKey ? "Ocultar clave" : "Mostrar clave"}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-100 cursor-pointer"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200 cursor-pointer"
                     >
                       {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                     </button>
                   </div>
 
-                    <button
-                      type="submit"
-                      disabled={!apiKeyInput.trim() || saving}
-                      className="quick-liquid-btn-ready px-3.5 py-2 rounded-xl text-xs font-semibold disabled:opacity-45 cursor-pointer disabled:cursor-not-allowed shrink-0"
+                  <button
+                    type="submit"
+                    disabled={!apiKeyInput.trim() || saving}
+                    className="xook-profile-save-btn px-4 py-2 rounded-xl text-xs font-semibold disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed shrink-0"
+                  >
+                    {saving ? "Guardando…" : "Guardar"}
+                  </button>
+                </form>
+
+                {selectedProvider === "kimi" && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <span className="text-[11px] text-zinc-400">
+                      Región API de Moonshot / Kimi:
+                    </span>
+                    <JellyPillTrack
+                      activeKey={selectedRegion === "cn" ? "cn" : "ai"}
+                      role="group"
+                      aria-label="Región API de Kimi"
+                      pillRadius="9999px"
+                      variant="quick"
+                      className="xook-profile-role-track inline-flex items-center p-0.5 rounded-full gap-0.5"
                     >
-                      {saving ? "Guardando..." : "Guardar"}
-                    </button>
-                  </form>
-
-                  {selectedProvider === "kimi" && (
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                      <span className="text-[11px] text-zinc-300/85">
-                        Región API de Moonshot / Kimi:
-                      </span>
-                      <JellyPillTrack
-                        activeKey={selectedRegion === "cn" ? "cn" : "ai"}
-                        role="group"
-                        aria-label="Región API de Kimi"
-                        pillRadius="9999px"
-                        variant="quick"
-                        className="inline-flex items-center p-0.5 rounded-full gap-0.5"
+                      <button
+                        type="button"
+                        aria-pressed={selectedRegion !== "cn"}
+                        onClick={() => void handleChangeKimiRegion("ai")}
+                        disabled={saving || testing}
+                        className={`xook-jelly-tab px-2.5 py-1 rounded-full text-[11px] cursor-pointer ${
+                          selectedRegion !== "cn"
+                            ? "text-white font-medium"
+                            : "text-zinc-400 hover:text-white"
+                        }`}
                       >
-                        <button
-                          type="button"
-                          aria-pressed={selectedRegion !== "cn"}
-                          onClick={() => void handleChangeKimiRegion("ai")}
-                          disabled={saving || testing}
-                          className={`xook-jelly-tab px-2.5 py-1 rounded-full text-[11px] cursor-pointer ${
-                            selectedRegion !== "cn"
-                              ? "text-white font-medium"
-                              : "text-zinc-300 hover:text-white"
-                          }`}
-                        >
-                          Global · api.moonshot.ai
-                        </button>
-                        <button
-                          type="button"
-                          aria-pressed={selectedRegion === "cn"}
-                          onClick={() => void handleChangeKimiRegion("cn")}
-                          disabled={saving || testing}
-                          className={`xook-jelly-tab px-2.5 py-1 rounded-full text-[11px] cursor-pointer ${
-                            selectedRegion === "cn"
-                              ? "text-white font-medium"
-                              : "text-zinc-300 hover:text-white"
-                          }`}
-                        >
-                          China · api.moonshot.cn
-                        </button>
-                      </JellyPillTrack>
-                    </div>
-                  )}
+                        Global · api.moonshot.ai
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={selectedRegion === "cn"}
+                        onClick={() => void handleChangeKimiRegion("cn")}
+                        disabled={saving || testing}
+                        className={`xook-jelly-tab px-2.5 py-1 rounded-full text-[11px] cursor-pointer ${
+                          selectedRegion === "cn"
+                            ? "text-white font-medium"
+                            : "text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        China · api.moonshot.cn
+                      </button>
+                    </JellyPillTrack>
+                  </div>
+                )}
 
-                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                  <span className="text-zinc-300/80 flex items-center gap-1.5">
-                    <Sparkles className="w-3 h-3 text-zinc-300/80 shrink-0" />
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-0.5">
+                  <span className="text-zinc-400 flex items-center gap-1.5">
+                    <Sparkles className="w-3 h-3 text-zinc-500 shrink-0" />
                     Consíguela en{" "}
                     <a
                       href={selectedSpec.docsUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-zinc-100 underline decoration-white/30 hover:decoration-white"
+                      className="text-zinc-200 underline decoration-white/25 hover:decoration-white"
                     >
                       {selectedSpec.docsUrl.replace(/^https?:\/\//, "")}
                     </a>
-                    {" "}o pégala directo en el chat.
                   </span>
 
                   <div className="flex items-center gap-1.5">
@@ -1406,7 +1412,7 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                         type="button"
                         onClick={() => void handleRefreshUsage()}
                         disabled={testing}
-                        className="quick-liquid-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-zinc-200 hover:text-white cursor-pointer"
+                        className="xook-obsidian-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] cursor-pointer"
                       >
                         {testing ? (
                           <Loader2 className="w-3 h-3 animate-spin" />
@@ -1421,7 +1427,7 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                         type="button"
                         onClick={() => void handleClearKey()}
                         title={`Eliminar clave de ${selectedSpec.shortName}`}
-                        className="quick-liquid-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-zinc-300 hover:text-rose-200 cursor-pointer"
+                        className="xook-obsidian-btn inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] hover:!text-rose-300 cursor-pointer"
                       >
                         <Trash2 className="w-3 h-3" />
                         <span>Quitar</span>
@@ -1434,16 +1440,14 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                   <div
                     className={`p-2.5 rounded-xl text-xs flex items-center gap-2 ${
                       currentTestResult.ok
-                        ? "quick-liquid-subcard text-zinc-100"
-                        : "bg-rose-500/10 border border-rose-400/25 text-rose-200"
+                        ? "bg-white/[0.04] border border-white/[0.08] text-zinc-200"
+                        : "bg-rose-500/10 border border-rose-500/25 text-rose-200"
                     }`}
                   >
                     {currentTestResult.ok ? (
-                      <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
-                        <CheckCircle2 className="w-3 h-3 text-white" />
-                      </span>
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                     ) : (
-                      <AlertCircle className="w-4 h-4 text-rose-300 shrink-0" />
+                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
                     )}
                     <span>{currentTestResult.message}</span>
                   </div>
@@ -1453,18 +1457,18 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                   (selectedQuotaStatus === "exhausted" ||
                     selectedQuotaStatus === "cooldown" ||
                     selectedQuotaStatus === "auth_error") && (
-                    <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-300/25 text-[11px] text-amber-100 flex items-center justify-between gap-2">
+                    <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-400/25 text-[11px] text-amber-100 flex items-center justify-between gap-2">
                       <span className="truncate">
-                        Cuota / límite detectado:{" "}
+                        Cuota detectada:{" "}
                         {selectedCooldownUntil && selectedCooldownUntil > Date.now()
-                          ? `en pausa temporal`
+                          ? "en pausa temporal"
                           : "limitado"}{" "}
                         · {selectedQuotaReason}
                       </span>
                       <button
                         type="button"
                         onClick={() => void handleClearCooldown(selectedProvider)}
-                        className="quick-liquid-btn px-2.5 py-1 rounded-full text-[10.5px] text-white shrink-0 cursor-pointer"
+                        className="xook-obsidian-btn px-2.5 py-1 rounded-lg text-[10.5px] shrink-0 cursor-pointer"
                       >
                         Reactivar
                       </button>
@@ -1472,421 +1476,404 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                   )}
               </section>
 
-              {/* Bloque 2: Uso real, saldo API, rate-limits HTTP y límites configurables por proveedor */}
+              {/* Bloque 2: Uso real y límites por proveedor */}
               {selectedHasKey && (
-                <section className="space-y-2.5 pt-3 border-t border-white/[0.08]">
+                <section className="xook-obsidian-surface rounded-2xl p-4 space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-200 flex items-center gap-2">
-                      <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
-                        <Activity className="w-3 h-3 text-white/85" />
-                      </span>
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+                      <Activity className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
                       Uso y límites · {selectedSpec.shortName}
                     </span>
-                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/[0.1] text-zinc-200/90">
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-zinc-300">
                       {selectedSummary.sourceBadge}
                     </span>
                   </div>
 
-                  <div className="quick-liquid-subcard p-3 rounded-xl space-y-3">
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.07]">
-                        <div className="text-[10px] uppercase tracking-wider text-zinc-400">
-                          {selectedSummary.balanceAmount !== null
-                            ? "Saldo real API"
-                            : selectedSummary.monthlyBudgetUsd !== null
-                              ? "Consumo mes vs tope"
-                              : selectedSummary.dailyLimit !== null
-                                ? "Solicitudes hoy"
-                                : "Consumo mes est."}
-                        </div>
-                        <div className="text-sm font-mono font-semibold text-white mt-0.5 tabular-nums">
-                          {selectedSummary.balanceAmount !== null
-                            ? selectedSummary.shortBadge
-                            : selectedSummary.monthlyBudgetUsd !== null
-                              ? `$${selectedSummary.monthCostUsd.toFixed(3)} / $${selectedSummary.monthlyBudgetUsd.toFixed(2)}`
-                              : selectedSummary.dailyLimit !== null
-                                ? `${selectedSummary.todayRequests} / ${selectedSummary.dailyLimit}`
-                                : `$${selectedSummary.monthCostUsd.toFixed(4)}`}
-                        </div>
-                        {(selectedSummary.balanceGranted !== null || selectedSummary.balanceToppedUp !== null) && (
-                          <div className="text-[10px] text-zinc-400 mt-0.5 font-mono tabular-nums">
-                            {selectedSummary.balanceToppedUp !== null
-                              ? `Recarga ${selectedSummary.balanceToppedUp.toFixed(2)}`
-                              : ""}
-                            {selectedSummary.balanceToppedUp !== null && selectedSummary.balanceGranted !== null
-                              ? " · "
-                              : ""}
-                            {selectedSummary.balanceGranted !== null
-                              ? `Bono ${selectedSummary.balanceGranted.toFixed(2)}`
-                              : ""}
-                          </div>
-                        )}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="p-2.5 rounded-xl bg-black/35 border border-white/[0.06]">
+                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+                        {selectedSummary.balanceAmount !== null
+                          ? "Saldo real API"
+                          : selectedSummary.monthlyBudgetUsd !== null
+                            ? "Consumo mes vs tope"
+                            : selectedSummary.dailyLimit !== null
+                              ? "Solicitudes hoy"
+                              : "Consumo mes est."}
                       </div>
-
-                      <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.07]">
-                        <div className="text-[10px] uppercase tracking-wider text-zinc-400">
-                          {selectedSummary.effectiveRpmLimit !== null
-                            ? "Ventana RPM"
-                            : selectedSummary.tpmLimit !== null
-                              ? "Ventana TPM"
-                              : "Actividad reciente"}
-                        </div>
-                        <div className="text-sm font-mono font-semibold text-zinc-100 mt-0.5 tabular-nums">
-                          {selectedSummary.effectiveRpmLimit !== null
-                            ? selectedSummary.effectiveRpmRemaining !== null
-                              ? `${selectedSummary.effectiveRpmRemaining} / ${selectedSummary.effectiveRpmLimit} disp.`
-                              : `${selectedSummary.currentRpm} / ${selectedSummary.effectiveRpmLimit} rpm`
-                            : `${selectedSummary.currentRpm} req/min`}
-                        </div>
-                        <div className="text-[10px] text-zinc-400 mt-0.5 font-mono tabular-nums truncate">
-                          {selectedSummary.tpmLimit !== null && selectedSummary.tpmRemaining !== null
-                            ? `TPM ${formatTokenCount(selectedSummary.tpmRemaining)}/${formatTokenCount(selectedSummary.tpmLimit)}`
-                            : selectedSummary.rpmResetText || "Medición últimos 60s"}
-                        </div>
+                      <div className="text-sm font-mono font-semibold text-white mt-0.5 tabular-nums">
+                        {selectedSummary.balanceAmount !== null
+                          ? selectedSummary.shortBadge
+                          : selectedSummary.monthlyBudgetUsd !== null
+                            ? `$${selectedSummary.monthCostUsd.toFixed(3)} / $${selectedSummary.monthlyBudgetUsd.toFixed(2)}`
+                            : selectedSummary.dailyLimit !== null
+                              ? `${selectedSummary.todayRequests} / ${selectedSummary.dailyLimit}`
+                              : `$${selectedSummary.monthCostUsd.toFixed(4)}`}
                       </div>
+                      {(selectedSummary.balanceGranted !== null || selectedSummary.balanceToppedUp !== null) && (
+                        <div className="text-[10px] text-zinc-500 mt-0.5 font-mono tabular-nums">
+                          {selectedSummary.balanceToppedUp !== null
+                            ? `Recarga ${selectedSummary.balanceToppedUp.toFixed(2)}`
+                            : ""}
+                          {selectedSummary.balanceToppedUp !== null && selectedSummary.balanceGranted !== null
+                            ? " · "
+                            : ""}
+                          {selectedSummary.balanceGranted !== null
+                            ? `Bono ${selectedSummary.balanceGranted.toFixed(2)}`
+                            : ""}
+                        </div>
+                      )}
+                    </div>
 
-                      <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.07]">
-                        <div className="text-[10px] uppercase tracking-wider text-zinc-400">
-                          Tokens y costo hoy
-                        </div>
-                        <div className="text-sm font-mono font-semibold text-zinc-100 mt-0.5 tabular-nums">
-                          {selectedSummary.todayRequests} req · {formatTokenCount(selectedSummary.todayTokens)}
-                        </div>
-                        <div className="text-[10px] text-zinc-400 mt-0.5 font-mono tabular-nums truncate">
-                          Est. ${selectedSummary.todayCostUsd.toFixed(4)}
-                          {selectedSummary.todayCachedTokens > 0
-                            ? ` · Caché ${formatTokenCount(selectedSummary.todayCachedTokens)}`
-                            : ` · Mes $${selectedSummary.monthCostUsd.toFixed(3)}`}
-                        </div>
+                    <div className="p-2.5 rounded-xl bg-black/35 border border-white/[0.06]">
+                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+                        {selectedSummary.effectiveRpmLimit !== null
+                          ? "Ventana RPM"
+                          : selectedSummary.tpmLimit !== null
+                            ? "Ventana TPM"
+                            : "Actividad reciente"}
+                      </div>
+                      <div className="text-sm font-mono font-semibold text-zinc-100 mt-0.5 tabular-nums">
+                        {selectedSummary.effectiveRpmLimit !== null
+                          ? selectedSummary.effectiveRpmRemaining !== null
+                            ? `${selectedSummary.effectiveRpmRemaining} / ${selectedSummary.effectiveRpmLimit} disp.`
+                            : `${selectedSummary.currentRpm} / ${selectedSummary.effectiveRpmLimit} rpm`
+                          : `${selectedSummary.currentRpm} req/min`}
+                      </div>
+                      <div className="text-[10px] text-zinc-500 mt-0.5 font-mono tabular-nums truncate">
+                        {selectedSummary.tpmLimit !== null && selectedSummary.tpmRemaining !== null
+                          ? `TPM ${formatTokenCount(selectedSummary.tpmRemaining)}/${formatTokenCount(selectedSummary.tpmLimit)}`
+                          : selectedSummary.rpmResetText || "Últimos 60s"}
                       </div>
                     </div>
 
-                    {selectedSummary.hasMeterBar ? (
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between gap-2 text-[10.5px] text-zinc-300">
-                          <span className="truncate">{selectedSummary.headline}</span>
-                          <span className="font-mono tabular-nums text-zinc-200 shrink-0">
-                            {selectedSummary.pct}%{" "}
-                            {selectedSummary.meterMode === "remaining" ? "disp." : "usado"}
-                          </span>
-                        </div>
-                        <progress
-                          className="xook-usage-progress"
-                          value={Math.max(0, Math.min(100, selectedSummary.pct))}
-                          max={100}
-                          aria-label={`${selectedSummary.headline} (${selectedSummary.pct}% ${
-                            selectedSummary.meterMode === "remaining" ? "disponible" : "usado"
-                          })`}
-                          style={{
-                            ["--xook-progress-fill" as string]: getUsageMeterFillColor({
-                              meterMode: selectedSummary.meterMode,
-                              pct: selectedSummary.pct,
-                            }),
-                          }}
-                        />
-                        <p className="text-[10.5px] text-zinc-400">{selectedSummary.subline}</p>
+                    <div className="p-2.5 rounded-xl bg-black/35 border border-white/[0.06]">
+                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">
+                        Tokens y costo hoy
                       </div>
-                    ) : (
-                      <p className="text-[11px] text-zinc-400">{selectedSummary.subline}</p>
-                    )}
-
-                    {/* Formulario explícito para límites propios por proveedor */}
-                    <form
-                      onSubmit={(e) => void handleSaveLimits(e)}
-                      aria-labelledby="xook-limits-form-title"
-                      noValidate
-                      className="space-y-2.5 pt-2.5 border-t border-white/[0.08]"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span
-                          id="xook-limits-form-title"
-                          className="text-[10.5px] font-semibold uppercase tracking-wider text-zinc-300"
-                        >
-                          Tus límites / presupuesto en {selectedSpec.shortName}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => void handleResetLocalCounters()}
-                          className="quick-liquid-btn inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] text-zinc-300 hover:text-white cursor-pointer"
-                        >
-                          <RotateCcw className="w-2.5 h-2.5" />
-                          <span>Reiniciar conteo</span>
-                        </button>
+                      <div className="text-sm font-mono font-semibold text-zinc-100 mt-0.5 tabular-nums">
+                        {selectedSummary.todayRequests} req · {formatTokenCount(selectedSummary.todayTokens)}
                       </div>
-
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        <div className="space-y-1">
-                          <label
-                            htmlFor="xook-limit-budget"
-                            className="block text-[10px] text-zinc-400"
-                          >
-                            Presupuesto mes (USD)
-                          </label>
-                          <input
-                            ref={budgetInputRef}
-                            id="xook-limit-budget"
-                            name="monthlyBudgetUsd"
-                            type="text"
-                            inputMode="decimal"
-                            value={budgetInput}
-                            onChange={(e) => {
-                              setBudgetInput(e.target.value);
-                              if (invalidLimitField === "budget") {
-                                setInvalidLimitField(null);
-                                setLimitsError(null);
-                              } else if (limitsSavedMsg) {
-                                setLimitsSavedMsg(null);
-                              }
-                            }}
-                            aria-invalid={invalidLimitField === "budget" ? true : undefined}
-                            aria-describedby="xook-limits-feedback"
-                            placeholder="Ej. 5.00"
-                            className={`quick-liquid-input w-full px-2.5 py-1.5 rounded-lg text-[11px] font-mono text-zinc-100 placeholder:text-zinc-500 focus:outline-none select-text ${
-                              invalidLimitField === "budget" ? "border-rose-400/70" : ""
-                            }`}
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <label
-                            htmlFor="xook-limit-daily"
-                            className="block text-[10px] text-zinc-400"
-                          >
-                            Tope diario (req)
-                          </label>
-                          <input
-                            ref={dailyCapInputRef}
-                            id="xook-limit-daily"
-                            name="dailyRequestLimit"
-                            type="text"
-                            inputMode="numeric"
-                            value={dailyCapInput}
-                            onChange={(e) => {
-                              setDailyCapInput(e.target.value);
-                              if (invalidLimitField === "daily") {
-                                setInvalidLimitField(null);
-                                setLimitsError(null);
-                              } else if (limitsSavedMsg) {
-                                setLimitsSavedMsg(null);
-                              }
-                            }}
-                            aria-invalid={invalidLimitField === "daily" ? true : undefined}
-                            aria-describedby="xook-limits-feedback"
-                            placeholder={selectedProvider === "gemini" ? "Ej. 1000" : "Opcional"}
-                            className={`quick-liquid-input w-full px-2.5 py-1.5 rounded-lg text-[11px] font-mono text-zinc-100 placeholder:text-zinc-500 focus:outline-none select-text ${
-                              invalidLimitField === "daily" ? "border-rose-400/70" : ""
-                            }`}
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <label
-                            htmlFor="xook-limit-rpm"
-                            className="block text-[10px] text-zinc-400"
-                          >
-                            Tope RPM
-                          </label>
-                          <input
-                            ref={rpmCapInputRef}
-                            id="xook-limit-rpm"
-                            name="rpmLimit"
-                            type="text"
-                            inputMode="numeric"
-                            value={rpmCapInput}
-                            onChange={(e) => {
-                              setRpmCapInput(e.target.value);
-                              if (invalidLimitField === "rpm") {
-                                setInvalidLimitField(null);
-                                setLimitsError(null);
-                              } else if (limitsSavedMsg) {
-                                setLimitsSavedMsg(null);
-                              }
-                            }}
-                            aria-invalid={invalidLimitField === "rpm" ? true : undefined}
-                            aria-describedby="xook-limits-feedback"
-                            placeholder={selectedProvider === "groq" ? "Ej. 30" : "Opcional"}
-                            className={`quick-liquid-input w-full px-2.5 py-1.5 rounded-lg text-[11px] font-mono text-zinc-100 placeholder:text-zinc-500 focus:outline-none select-text ${
-                              invalidLimitField === "rpm" ? "border-rose-400/70" : ""
-                            }`}
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <label
-                            htmlFor="xook-limit-tier"
-                            className="block text-[10px] text-zinc-400"
-                          >
-                            Plan de cuenta
-                          </label>
-                          <select
-                            id="xook-limit-tier"
-                            name="tierMode"
-                            value={tierModeInput}
-                            onChange={(e) => {
-                              setTierModeInput(
-                                e.target.value === "free" || e.target.value === "paid"
-                                  ? e.target.value
-                                  : "auto"
-                              );
-                              if (limitsSavedMsg) setLimitsSavedMsg(null);
-                            }}
-                            aria-describedby="xook-limits-feedback"
-                            className="quick-liquid-input w-full px-2 py-1.5 rounded-lg text-[11px] text-zinc-100 bg-transparent focus:outline-none"
-                          >
-                            <option value="auto" className="bg-zinc-900 text-zinc-100">
-                              Auto (API)
-                            </option>
-                            <option value="free" className="bg-zinc-900 text-zinc-100">
-                              Gratis (Free)
-                            </option>
-                            <option value="paid" className="bg-zinc-900 text-zinc-100">
-                              Pago (Paid)
-                            </option>
-                          </select>
-                        </div>
+                      <div className="text-[10px] text-zinc-500 mt-0.5 font-mono tabular-nums truncate">
+                        Est. ${selectedSummary.todayCostUsd.toFixed(4)}
+                        {selectedSummary.todayCachedTokens > 0
+                          ? ` · Caché ${formatTokenCount(selectedSummary.todayCachedTokens)}`
+                          : ` · Mes $${selectedSummary.monthCostUsd.toFixed(3)}`}
                       </div>
-
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div
-                          id="xook-limits-feedback"
-                          aria-live="polite"
-                          className="min-w-0 text-[10.5px]"
-                        >
-                          {limitsError ? (
-                            <span role="alert" className="text-rose-300">
-                              {limitsError}
-                            </span>
-                          ) : limitsSavedMsg ? (
-                            <span className="text-emerald-300">{limitsSavedMsg}</span>
-                          ) : (
-                            <span className="text-zinc-400">
-                              Se combina con los headers reales del proveedor cuando existan.
-                            </span>
-                          )}
-                        </div>
-                        <button
-                          type="submit"
-                          disabled={savingLimits}
-                          className="quick-liquid-btn-ready px-3 py-1.5 rounded-lg text-[11px] font-semibold cursor-pointer disabled:opacity-45 shrink-0"
-                        >
-                          {savingLimits ? "Guardando..." : "Guardar límites"}
-                        </button>
-                      </div>
-                    </form>
+                    </div>
                   </div>
+
+                  {selectedSummary.hasMeterBar ? (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-2 text-[10.5px] text-zinc-300">
+                        <span className="truncate">{selectedSummary.headline}</span>
+                        <span className="font-mono tabular-nums text-zinc-200 shrink-0">
+                          {selectedSummary.pct}%{" "}
+                          {selectedSummary.meterMode === "remaining" ? "disp." : "usado"}
+                        </span>
+                      </div>
+                      <progress
+                        className="xook-usage-progress"
+                        value={Math.max(0, Math.min(100, selectedSummary.pct))}
+                        max={100}
+                        aria-label={`${selectedSummary.headline} (${selectedSummary.pct}% ${
+                          selectedSummary.meterMode === "remaining" ? "disponible" : "usado"
+                        })`}
+                        style={{
+                          ["--xook-progress-fill" as string]: getUsageMeterFillColor({
+                            meterMode: selectedSummary.meterMode,
+                            pct: selectedSummary.pct,
+                          }),
+                        }}
+                      />
+                      <p className="text-[10.5px] text-zinc-500">{selectedSummary.subline}</p>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-zinc-500">{selectedSummary.subline}</p>
+                  )}
+
+                  {/* Límites configurables */}
+                  <form
+                    onSubmit={(e) => void handleSaveLimits(e)}
+                    aria-labelledby="xook-limits-form-title"
+                    noValidate
+                    className="space-y-2.5 pt-3 border-t border-white/[0.06]"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span
+                        id="xook-limits-form-title"
+                        className="text-[10.5px] font-semibold uppercase tracking-wider text-zinc-400"
+                      >
+                        Presupuesto y topes
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleResetLocalCounters()}
+                        className="xook-obsidian-btn inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] cursor-pointer"
+                      >
+                        <RotateCcw className="w-2.5 h-2.5" />
+                        <span>Reiniciar conteo</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <div className="space-y-1">
+                        <label
+                          htmlFor="xook-limit-budget"
+                          className="block text-[10px] text-zinc-400"
+                        >
+                          Presupuesto mes (USD)
+                        </label>
+                        <input
+                          ref={budgetInputRef}
+                          id="xook-limit-budget"
+                          name="monthlyBudgetUsd"
+                          type="text"
+                          inputMode="decimal"
+                          value={budgetInput}
+                          onChange={(e) => {
+                            setBudgetInput(e.target.value);
+                            if (invalidLimitField === "budget") {
+                              setInvalidLimitField(null);
+                              setLimitsError(null);
+                            } else if (limitsSavedMsg) {
+                              setLimitsSavedMsg(null);
+                            }
+                          }}
+                          aria-invalid={invalidLimitField === "budget" ? true : undefined}
+                          aria-describedby="xook-limits-feedback"
+                          placeholder="Ej. 5.00"
+                          className={`xook-profile-input w-full px-2.5 py-1.5 rounded-lg text-[11px] font-mono text-zinc-100 placeholder:text-zinc-600 select-text ${
+                            invalidLimitField === "budget" ? "!border-rose-400/70" : ""
+                          }`}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label
+                          htmlFor="xook-limit-daily"
+                          className="block text-[10px] text-zinc-400"
+                        >
+                          Tope diario (req)
+                        </label>
+                        <input
+                          ref={dailyCapInputRef}
+                          id="xook-limit-daily"
+                          name="dailyRequestLimit"
+                          type="text"
+                          inputMode="numeric"
+                          value={dailyCapInput}
+                          onChange={(e) => {
+                            setDailyCapInput(e.target.value);
+                            if (invalidLimitField === "daily") {
+                              setInvalidLimitField(null);
+                              setLimitsError(null);
+                            } else if (limitsSavedMsg) {
+                              setLimitsSavedMsg(null);
+                            }
+                          }}
+                          aria-invalid={invalidLimitField === "daily" ? true : undefined}
+                          aria-describedby="xook-limits-feedback"
+                          placeholder={selectedProvider === "gemini" ? "Ej. 1000" : "Opcional"}
+                          className={`xook-profile-input w-full px-2.5 py-1.5 rounded-lg text-[11px] font-mono text-zinc-100 placeholder:text-zinc-600 select-text ${
+                            invalidLimitField === "daily" ? "!border-rose-400/70" : ""
+                          }`}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label
+                          htmlFor="xook-limit-rpm"
+                          className="block text-[10px] text-zinc-400"
+                        >
+                          Tope RPM
+                        </label>
+                        <input
+                          ref={rpmCapInputRef}
+                          id="xook-limit-rpm"
+                          name="rpmLimit"
+                          type="text"
+                          inputMode="numeric"
+                          value={rpmCapInput}
+                          onChange={(e) => {
+                            setRpmCapInput(e.target.value);
+                            if (invalidLimitField === "rpm") {
+                              setInvalidLimitField(null);
+                              setLimitsError(null);
+                            } else if (limitsSavedMsg) {
+                              setLimitsSavedMsg(null);
+                            }
+                          }}
+                          aria-invalid={invalidLimitField === "rpm" ? true : undefined}
+                          aria-describedby="xook-limits-feedback"
+                          placeholder={selectedProvider === "groq" ? "Ej. 30" : "Opcional"}
+                          className={`xook-profile-input w-full px-2.5 py-1.5 rounded-lg text-[11px] font-mono text-zinc-100 placeholder:text-zinc-600 select-text ${
+                            invalidLimitField === "rpm" ? "!border-rose-400/70" : ""
+                          }`}
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label
+                          htmlFor="xook-limit-tier"
+                          className="block text-[10px] text-zinc-400"
+                        >
+                          Plan de cuenta
+                        </label>
+                        <select
+                          id="xook-limit-tier"
+                          name="tierMode"
+                          value={tierModeInput}
+                          onChange={(e) => {
+                            setTierModeInput(
+                              e.target.value === "free" || e.target.value === "paid"
+                                ? e.target.value
+                                : "auto"
+                            );
+                            if (limitsSavedMsg) setLimitsSavedMsg(null);
+                          }}
+                          aria-describedby="xook-limits-feedback"
+                          className="xook-profile-input w-full px-2 py-1.5 rounded-lg text-[11px] text-zinc-100"
+                        >
+                          <option value="auto" className="bg-zinc-950 text-zinc-100">
+                            Auto (API)
+                          </option>
+                          <option value="free" className="bg-zinc-950 text-zinc-100">
+                            Gratis (Free)
+                          </option>
+                          <option value="paid" className="bg-zinc-950 text-zinc-100">
+                            Pago (Paid)
+                          </option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div
+                        id="xook-limits-feedback"
+                        aria-live="polite"
+                        className="min-w-0 text-[10.5px]"
+                      >
+                        {limitsError ? (
+                          <span role="alert" className="text-rose-300">
+                            {limitsError}
+                          </span>
+                        ) : limitsSavedMsg ? (
+                          <span className="text-emerald-300">{limitsSavedMsg}</span>
+                        ) : (
+                          <span className="text-zinc-500">
+                            Se combina con los headers reales del proveedor.
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        type="submit"
+                        disabled={savingLimits}
+                        className="xook-profile-save-btn px-3 py-1.5 rounded-lg text-[11px] font-semibold cursor-pointer disabled:opacity-45 shrink-0"
+                      >
+                        {savingLimits ? "Guardando…" : "Guardar límites"}
+                      </button>
+                    </div>
+                  </form>
                 </section>
               )}
 
-              {/* Bloque 3: Respaldo automático por cuota y orden de failover */}
-              <section className="space-y-2.5 pt-3 border-t border-white/[0.08]">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-200 flex items-center gap-2">
-                      <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
-                        <Cpu className="w-3 h-3 text-white/85" />
-                      </span>
-                      Respaldo automático al agotar cuota
+              {/* Bloque 3: Respaldo automático y orden de failover */}
+              <section className="xook-obsidian-surface rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+                      <Cpu className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                      Respaldo automático ({configuredCount}/{AI_PROVIDER_LIST.length})
                     </span>
-                    <p className="text-[11px] text-zinc-400 mt-0.5">
-                      Cuando un proveedor llega a límite (429/402 o saldo agotado), XOOK cambia en automático al siguiente con clave activa.
+                    <p className="text-[11px] text-zinc-500 mt-0.5">
+                      Cambia al siguiente proveedor activo al alcanzar límites (429/402).
                     </p>
                   </div>
 
                   <button
                     type="button"
                     role="switch"
+                    aria-label="Respaldo automático al agotar cuota"
                     aria-checked={autoFailoverEnabled}
                     onClick={() => void handleToggleAutoFailover()}
-                    className={`quick-liquid-chip inline-flex items-center gap-2 px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer transition-colors ${
-                      autoFailoverEnabled ? "quick-liquid-chip-active text-white" : "text-zinc-400"
-                    }`}
+                    className="xook-obsidian-switch"
                   >
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        autoFailoverEnabled ? "bg-emerald-300/90" : "bg-zinc-500"
-                      }`}
-                    />
-                    {autoFailoverEnabled ? "Automático activado" : "Desactivado"}
+                    <span className="xook-obsidian-switch-thumb" />
                   </button>
                 </div>
 
-                <div className="quick-liquid-subcard p-2.5 rounded-xl space-y-1.5">
-                  <div className="text-[10px] uppercase tracking-wider text-zinc-400 px-1">
-                    Orden de prioridad ({configuredCount} de {AI_PROVIDER_LIST.length} conectados)
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                    {failoverOrderList.map((pid, idx) => {
-                      const spec = AI_PROVIDERS[pid];
-                      const slot = config.configuredProviders?.[pid];
-                      const hasKey = Boolean(slot?.hasApiKey);
-                      const status = slot?.quotaStatus ?? "ready";
-                      const statusLabel = !hasKey
-                        ? "Sin clave"
-                        : status === "exhausted"
-                          ? "Sin saldo/cuota"
-                          : status === "auth_error"
-                            ? "Clave inválida"
-                            : status === "cooldown"
-                              ? "En espera"
-                              : "Listo";
-                      const statusDot = !hasKey
-                        ? "bg-zinc-500/70"
-                        : status === "ready"
-                          ? "bg-emerald-300/90"
-                          : "bg-amber-300/90";
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                  {failoverOrderList.map((pid, idx) => {
+                    const spec = AI_PROVIDERS[pid];
+                    const slot = config.configuredProviders?.[pid];
+                    const hasKey = Boolean(slot?.hasApiKey);
+                    const status = slot?.quotaStatus ?? "ready";
+                    const statusLabel = !hasKey
+                      ? "Sin clave"
+                      : status === "exhausted"
+                        ? "Sin saldo"
+                        : status === "auth_error"
+                          ? "Inválida"
+                          : status === "cooldown"
+                            ? "En espera"
+                            : "Listo";
+                    const statusDot = !hasKey
+                      ? "bg-zinc-600"
+                      : status === "ready"
+                        ? "bg-emerald-400"
+                        : "bg-amber-400";
 
-                      return (
-                        <div
-                          key={pid}
-                          className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white/[0.03] border border-white/[0.07] text-[11px]"
+                    return (
+                      <div
+                        key={pid}
+                        className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-black/35 border border-white/[0.06] text-[11px]"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setSelectedProvider(pid)}
+                          className="flex items-center gap-2 min-w-0 text-left cursor-pointer hover:text-white"
                         >
+                          <span className="font-mono text-[10px] text-zinc-500 w-3.5 shrink-0">
+                            {idx + 1}.
+                          </span>
+                          <ProviderIcon provider={pid} size={13} className="shrink-0 text-zinc-200" />
+                          <span className="font-medium text-zinc-200 truncate">
+                            {spec.shortName}
+                          </span>
+                        </button>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="inline-flex items-center gap-1 text-[10px] text-zinc-400">
+                            <span className={`w-1.5 h-1.5 rounded-full ${statusDot}`} />
+                            {statusLabel}
+                          </span>
                           <button
                             type="button"
-                            onClick={() => setSelectedProvider(pid)}
-                            className="flex items-center gap-2 min-w-0 text-left cursor-pointer hover:text-white"
+                            disabled={idx === 0}
+                            onClick={() => void handleMoveFailoverPriority(pid, -1)}
+                            aria-label={`Subir prioridad de ${spec.shortName}`}
+                            className="xook-obsidian-btn w-5 h-5 rounded-md inline-flex items-center justify-center cursor-pointer"
                           >
-                            <span className="font-mono text-[10px] text-zinc-400 w-3.5 shrink-0">
-                              {idx + 1}.
-                            </span>
-                            <ProviderIcon provider={pid} size={13} className="shrink-0 text-zinc-200" />
-                            <span className="font-medium text-zinc-100 truncate">
-                              {spec.shortName}
-                            </span>
+                            <ArrowLeft className="w-2.5 h-2.5" />
                           </button>
-
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <span className="inline-flex items-center gap-1 text-[10px] text-zinc-300/85">
-                              <span className={`w-1.5 h-1.5 rounded-full ${statusDot}`} />
-                              {statusLabel}
-                            </span>
-                            <button
-                              type="button"
-                              disabled={idx === 0}
-                              onClick={() => void handleMoveFailoverPriority(pid, -1)}
-                              aria-label={`Subir prioridad de ${spec.shortName}`}
-                              className="quick-liquid-btn w-5 h-5 rounded-md inline-flex items-center justify-center text-zinc-300 hover:text-white disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
-                            >
-                              <ArrowLeft className="w-2.5 h-2.5" />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={idx === failoverOrderList.length - 1}
-                              onClick={() => void handleMoveFailoverPriority(pid, 1)}
-                              aria-label={`Bajar prioridad de ${spec.shortName}`}
-                              className="quick-liquid-btn w-5 h-5 rounded-md inline-flex items-center justify-center text-zinc-300 hover:text-white disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
-                            >
-                              <ArrowRight className="w-2.5 h-2.5" />
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            disabled={idx === failoverOrderList.length - 1}
+                            onClick={() => void handleMoveFailoverPriority(pid, 1)}
+                            aria-label={`Bajar prioridad de ${spec.shortName}`}
+                            className="xook-obsidian-btn w-5 h-5 rounded-md inline-flex items-center justify-center cursor-pointer"
+                          >
+                            <ArrowRight className="w-2.5 h-2.5" />
+                          </button>
                         </div>
-                      );
-                    })}
-                  </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
 
               {/* Bloque 4: Identificador manual */}
-              <section className="pt-3 border-t border-white/[0.08]">
+              <section className="pt-1">
                 <button
                   type="button"
                   onClick={() => setShowManualId((v) => !v)}
@@ -1896,7 +1883,7 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                     className={`w-3.5 h-3.5 transition-transform ${showManualId ? "rotate-180" : ""}`}
                   />
                   <span>
-                    Ingresar identificador manual de modelo en {selectedSpec.shortName} (avanzado)
+                    Identificador manual en {selectedSpec.shortName} (avanzado)
                   </span>
                 </button>
                 <div className={`xook-collapse-grid ${showManualId ? "is-open" : ""}`}>
@@ -1908,13 +1895,13 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                         onChange={(e) => setCustomModelInput(e.target.value)}
                         placeholder={`ej. ${selectedSpec.defaultModelId}`}
                         tabIndex={showManualId ? 0 : -1}
-                        className="quick-liquid-input flex-1 px-3 py-1.5 rounded-xl text-xs font-mono text-zinc-100 placeholder:text-zinc-400/80 focus:outline-none select-text"
+                        className="xook-profile-input flex-1 px-3 py-1.5 rounded-xl text-xs font-mono text-zinc-100 placeholder:text-zinc-600 select-text"
                       />
                       <button
                         type="button"
                         tabIndex={showManualId ? 0 : -1}
                         onClick={() => void handleSelectModel(customModelInput)}
-                        className="quick-liquid-btn px-3.5 py-1.5 rounded-xl text-xs text-zinc-100 cursor-pointer"
+                        className="xook-obsidian-btn px-3.5 py-1.5 rounded-xl text-xs font-medium cursor-pointer"
                       >
                         Aplicar
                       </button>
@@ -1926,12 +1913,12 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
           )}
 
           {/* Pie */}
-          <footer className="relative z-[1] shrink-0 px-5 py-3 border-t border-white/[0.08] bg-white/[0.02] flex items-center justify-between text-[11px] text-zinc-400">
+          <footer className="relative z-[1] shrink-0 px-5 py-3 border-t border-white/[0.06] flex items-center justify-between gap-3 text-[11px] text-zinc-500">
             <span>Las claves nunca se envían en prompts ni al historial.</span>
             <button
               type="button"
               onClick={onClose}
-              className="quick-liquid-btn px-4 py-1.5 rounded-full text-zinc-100 font-medium cursor-pointer"
+              className="xook-profile-save-btn px-4 py-1.5 rounded-xl text-xs font-semibold cursor-pointer shrink-0"
             >
               Listo
             </button>

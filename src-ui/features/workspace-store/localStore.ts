@@ -35,13 +35,29 @@ function isTauriRuntime(): boolean {
 }
 
 export function deriveConversationTitle(messages: UiChatMessage[]): string {
-  const firstUser = messages.find((m) => m.role === "user" && m.content.trim().length > 0);
+  const firstUser = messages.find(
+    (m) =>
+      m.role === "user" &&
+      (m.content.trim().length > 0 || (m.attachments && m.attachments.length > 0))
+  );
   if (!firstUser) return "Nueva conversación";
-  const cleaned = firstUser.content.replace(/\s+/g, " ").trim();
-  if (/^(hola|buenas|buenos d[ií]as|buenas tardes|hey|hi|que tal|qu[eé] pedo)/i.test(cleaned) && cleaned.length < 28) {
+  let source = firstUser.content.replace(/\s+/g, " ").trim();
+  if (!source && firstUser.attachments?.length) {
+    const pasted = firstUser.attachments.find((a) => a.kind === "pasted_text");
+    if (pasted?.pastedContent) {
+      source = pasted.pastedContent.replace(/\s+/g, " ").trim();
+    } else if (pasted?.name) {
+      source = pasted.name;
+    } else {
+      const firstAtt = firstUser.attachments[0];
+      source = firstAtt.kind === "image" ? `Imagen · ${firstAtt.name}` : firstAtt.name;
+    }
+  }
+  if (!source) return "Nueva conversación";
+  if (/^(hola|buenas|buenos d[ií]as|buenas tardes|hey|hi|que tal|qu[eé] pedo)/i.test(source) && source.length < 28) {
     return "Saludo Inicial";
   }
-  return cleaned.length > 42 ? `${cleaned.slice(0, 40).trim()}…` : cleaned;
+  return source.length > 42 ? `${source.slice(0, 40).trim()}…` : source;
 }
 
 export async function getLocalUserProfile(): Promise<LocalUserProfile | null> {
@@ -132,13 +148,33 @@ export async function listLocalConversations(): Promise<ConversationThread[]> {
 }
 
 export async function saveLocalConversation(thread: ConversationThread): Promise<ConversationThread[]> {
-  // Nunca persistimos banderas transitorias de streaming
+  // Nunca persistimos banderas transitorias de streaming ni blob/full-res URLs pesados
   const sanitizedThread: ConversationThread = {
     ...thread,
     messages: thread.messages.map((m) => ({
       ...m,
       isStreaming: false,
       isReasoningStreaming: false,
+      ...(m.attachments && m.attachments.length > 0
+        ? {
+            attachments: m.attachments.map((att) => {
+              const { fullPreviewUrl: _discardFull, ...rest } = att;
+              const safePreview =
+                rest.previewUrl && !rest.previewUrl.startsWith("blob:")
+                  ? rest.previewUrl
+                  : undefined;
+              const safePasted =
+                typeof rest.pastedContent === "string" && rest.pastedContent.length > 50_000
+                  ? `${rest.pastedContent.slice(0, 50_000)}\n...[recortado al guardar]`
+                  : rest.pastedContent;
+              return {
+                ...rest,
+                ...(safePreview ? { previewUrl: safePreview } : { previewUrl: undefined }),
+                ...(safePasted !== undefined ? { pastedContent: safePasted } : {}),
+              };
+            }),
+          }
+        : {}),
     })),
   };
 

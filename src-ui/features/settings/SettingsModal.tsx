@@ -80,6 +80,14 @@ interface SettingsModalProps {
 
 const PREVIEW_MSG_ID = "__xook_voice_preview__";
 
+function getProfileInitials(name: string): string {
+  const clean = name.trim().replace(/[^\p{L}\s]/gu, "");
+  const parts = clean.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "XO";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   initialTab = "voice",
@@ -449,107 +457,120 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     >
       {shouldRenderBody && (
         <>
-          <LiquidGlassBackdrop variant="modal" />
+          <LiquidGlassBackdrop variant="menu" />
+
+          {/* Capas difuminadas obsidiana-grafito coherentes con el perfil */}
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 pointer-events-none overflow-hidden rounded-[inherit]"
+          >
+            <div className="absolute -top-20 -left-16 w-80 h-52 rounded-full bg-zinc-400/[0.045] blur-3xl" />
+            <div className="absolute -bottom-20 -right-14 w-72 h-48 rounded-full bg-zinc-600/[0.04] blur-3xl" />
+          </div>
 
           {/* Cabecera */}
-          <header className="relative z-[1] shrink-0 px-5 pt-4 pb-3 border-b border-white/[0.08] bg-white/[0.02] space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="quick-liquid-icon w-8 h-8 rounded-xl flex items-center justify-center shrink-0">
-                  <SlidersHorizontal className="w-4 h-4 text-white/90" />
-                </div>
-                <div className="min-w-0">
-                  <h2
-                    id="xook-settings-modal-title"
-                    className="text-sm font-semibold text-white tracking-tight"
-                  >
-                    Configuraciones
-                  </h2>
-                  <p className="text-[11px] text-zinc-300/80 truncate">
-                    Voz de {displayAgentName}, lectura de pantalla, modelos e identidad local
-                  </p>
-                </div>
+          <header className="relative z-[1] shrink-0 px-5 pt-4 pb-3.5 border-b border-white/[0.06] flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="xook-profile-avatar-glass w-10 h-10 flex items-center justify-center shrink-0">
+                <SlidersHorizontal className="relative z-10 w-4 h-4 text-zinc-100" />
               </div>
-
-              <div className="flex items-center gap-2 ml-auto flex-wrap">
-                <JellyPillTrack
-                  activeKey={activeTab}
-                  role="tablist"
-                  aria-label="Secciones de configuración"
-                  pillRadius="9999px"
-                  variant="quick"
-                  className="inline-flex items-center p-0.5 rounded-full gap-0.5"
+              <div className="min-w-0">
+                <h2
+                  id="xook-settings-modal-title"
+                  className="text-sm font-semibold text-white tracking-tight"
                 >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === "voice"}
-                    onClick={() => setActiveTab("voice")}
-                    className={`xook-jelly-tab inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer ${
-                      activeTab === "voice"
-                        ? "text-white"
-                        : "text-zinc-300/80 hover:text-white"
-                    }`}
-                  >
-                    <Volume2 className="w-3 h-3" />
-                    <span>Voz</span>
-                    {currentConfig.enabled && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 shrink-0" />
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === "screen"}
-                    onClick={() => setActiveTab("screen")}
-                    className={`xook-jelly-tab inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer ${
-                      activeTab === "screen"
-                        ? "text-white"
-                        : "text-zinc-300/80 hover:text-white"
-                    }`}
-                  >
-                    <Eye className="w-3 h-3" />
-                    <span>Pantalla</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === "ai"}
-                    onClick={() => setActiveTab("ai")}
-                    className={`xook-jelly-tab inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer ${
-                      activeTab === "ai"
-                        ? "text-white"
-                        : "text-zinc-300/80 hover:text-white"
-                    }`}
-                  >
-                    <Sparkles className="w-3 h-3" />
-                    <span>IA</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === "account"}
-                    onClick={() => setActiveTab("account")}
-                    className={`xook-jelly-tab inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer ${
-                      activeTab === "account"
-                        ? "text-white"
-                        : "text-zinc-300/80 hover:text-white"
-                    }`}
-                  >
-                    <ShieldCheck className="w-3 h-3" />
-                    <span>Perfil</span>
-                  </button>
-                </JellyPillTrack>
+                  Configuraciones
+                </h2>
+                <p className="text-[11.5px] text-zinc-400 truncate mt-0.5">
+                  {activeTab === "voice"
+                    ? `Voz local de ${displayAgentName}`
+                    : activeTab === "screen"
+                      ? "Contexto visual en memoria local"
+                      : activeTab === "ai"
+                        ? `${activeSpec.shortName} · ${activeModelDisplay.name}`
+                        : "Identidad local y permisos"}
+                </p>
+              </div>
+            </div>
 
+            <div className="flex items-center gap-2 ml-auto">
+              <JellyPillTrack
+                activeKey={activeTab}
+                role="tablist"
+                aria-label="Secciones de configuración"
+                pillRadius="9999px"
+                variant="quick"
+                className="xook-profile-role-track inline-flex items-center p-1 rounded-full gap-0.5"
+              >
                 <button
                   type="button"
-                  onClick={onClose}
-                  aria-label="Cerrar configuraciones"
-                  className="quick-liquid-btn w-8 h-8 rounded-full inline-flex items-center justify-center text-zinc-200 hover:text-white cursor-pointer shrink-0"
+                  role="tab"
+                  aria-selected={activeTab === "voice"}
+                  onClick={() => setActiveTab("voice")}
+                  className={`xook-jelly-tab inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11.5px] font-medium cursor-pointer ${
+                    activeTab === "voice"
+                      ? "text-white"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
                 >
-                  <X className="w-4 h-4" />
+                  <Volume2 className="w-3 h-3" />
+                  <span>Voz</span>
+                  {currentConfig.enabled && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                  )}
                 </button>
-              </div>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "screen"}
+                  onClick={() => setActiveTab("screen")}
+                  className={`xook-jelly-tab inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11.5px] font-medium cursor-pointer ${
+                    activeTab === "screen"
+                      ? "text-white"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  <Eye className="w-3 h-3" />
+                  <span>Pantalla</span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "ai"}
+                  onClick={() => setActiveTab("ai")}
+                  className={`xook-jelly-tab inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11.5px] font-medium cursor-pointer ${
+                    activeTab === "ai"
+                      ? "text-white"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span>IA</span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === "account"}
+                  onClick={() => setActiveTab("account")}
+                  className={`xook-jelly-tab inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11.5px] font-medium cursor-pointer ${
+                    activeTab === "account"
+                      ? "text-white"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  <ShieldCheck className="w-3 h-3" />
+                  <span>Perfil</span>
+                </button>
+              </JellyPillTrack>
+
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Cerrar configuraciones"
+                className="p-1.5 rounded-xl text-zinc-400 hover:text-white hover:bg-white/[0.07] transition-colors cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           </header>
 
@@ -557,121 +578,92 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="relative z-[1] flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-4">
             {activeTab === "voice" && (
               <div className="space-y-4">
-                {/* Tarjeta maestra de encendido + impacto en memoria */}
-                <section className="rounded-2xl border border-white/[0.09] bg-white/[0.03] p-4 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-start gap-3 min-w-0">
-                      <div className="quick-liquid-icon w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5">
+                {/* Tarjeta maestra dividida en filas limpias */}
+                <section className="xook-obsidian-surface rounded-2xl overflow-hidden">
+                  {/* Fila 1: Activación general + memoria */}
+                  <div className="px-4 py-3.5 flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="xook-profile-avatar-glass w-9 h-9 flex items-center justify-center shrink-0">
                         {currentConfig.enabled ? (
-                          <Volume2 className="w-4 h-4 text-emerald-200" />
+                          <Volume2 className="relative z-10 w-4 h-4 text-zinc-100" />
                         ) : (
-                          <VolumeX className="w-4 h-4 text-zinc-400" />
+                          <VolumeX className="relative z-10 w-4 h-4 text-zinc-500" />
                         )}
                       </div>
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <h3 className="text-[13px] font-semibold text-white">
-                            Voz de {displayAgentName} en este equipo
+                            Voz de {displayAgentName}
                           </h3>
-                          <span
-                            className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10.5px] font-medium border ${
-                              !currentConfig.enabled
-                                ? "bg-white/[0.04] text-zinc-300 border-white/[0.08]"
-                                : workerRunning
-                                  ? "bg-sky-500/15 text-sky-200 border-sky-400/25"
-                                  : "bg-emerald-500/15 text-emerald-200 border-emerald-400/25"
-                            }`}
-                          >
+                          <span className="inline-flex items-center gap-1.5 text-[11px] text-zinc-400">
                             <span
                               className={`w-1.5 h-1.5 rounded-full ${
                                 !currentConfig.enabled
-                                  ? "bg-zinc-400"
+                                  ? "bg-zinc-600"
                                   : workerRunning
-                                    ? "bg-sky-300 animate-pulse"
-                                    : "bg-emerald-300"
+                                    ? "bg-white animate-pulse"
+                                    : "bg-emerald-400"
                               }`}
                             />
                             {!currentConfig.enabled
-                              ? "Desactivada · 0 MB en RAM"
+                              ? "Apagada · 0 MB"
                               : workerRunning
-                                ? `Activa · ~${Math.round(workerRssMb)} MB en RAM`
-                                : "Lista en reposo · 0 MB en RAM"}
+                                ? `Activa · ~${Math.round(workerRssMb)} MB`
+                                : "En reposo · 0 MB"}
                           </span>
                         </div>
-                        <p className="text-[11.5px] text-zinc-300/80 mt-0.5">
-                          Voz natural en español generada localmente sin enviar nada a internet.
-                          Cuando está apagada no consume memoria.
+                        <p className="text-[11.5px] text-zinc-400 mt-0.5 truncate">
+                          Síntesis en español 100% local, sin conexión a internet.
                         </p>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex items-center gap-2.5 shrink-0">
                       {workerRunning && (
                         <button
                           type="button"
                           onClick={() => void handleUnloadRam()}
-                          className="quick-liquid-btn px-2.5 py-1.5 rounded-xl text-[11px] text-zinc-200 hover:text-white cursor-pointer"
+                          className="xook-obsidian-btn px-2.5 py-1 rounded-lg text-[11px] cursor-pointer"
                           title="Cerrar motor de voz para liberar memoria inmediatamente"
                         >
-                          Liberar memoria
+                          Liberar RAM
                         </button>
                       )}
                       <button
                         type="button"
                         role="switch"
+                        aria-label={`Activar voz de ${displayAgentName}`}
                         aria-checked={currentConfig.enabled}
                         disabled={savingVoice || downloadingVoice}
                         onClick={() => void handleToggleEnabled(!currentConfig.enabled)}
-                        className={`relative inline-flex h-7 w-12 items-center rounded-full border transition-colors cursor-pointer disabled:opacity-50 ${
-                          currentConfig.enabled
-                            ? "bg-emerald-500/35 border-emerald-300/40"
-                            : "bg-white/[0.08] border-white/[0.14]"
-                        }`}
+                        className="xook-obsidian-switch"
                         title={
                           currentConfig.enabled
                             ? "Desactivar voz y liberar RAM"
                             : "Activar voz local"
                         }
                       >
-                        <span
-                          className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                            currentConfig.enabled ? "translate-x-6" : "translate-x-1"
-                          }`}
-                        />
+                        <span className="xook-obsidian-switch-thumb" />
                       </button>
                     </div>
                   </div>
 
-                  {/* Alerta de error clara */}
+                  {/* Alerta de error */}
                   {(voiceError || playback.error) && (
-                    <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 flex items-start gap-2 text-[11.5px] text-rose-100">
-                      <AlertCircle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" />
+                    <div className="mx-4 mb-3 rounded-xl border border-rose-500/25 bg-rose-500/10 px-3 py-2 flex items-start gap-2 text-[11.5px] text-rose-200">
+                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
                       <span>{voiceError || playback.error}</span>
                     </div>
                   )}
 
-                  {/* Interruptor principal: hablar automáticamente cuando el agente genere texto */}
-                  <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3 flex items-center justify-between gap-3">
+                  {/* Fila 2: Hablar al generar texto */}
+                  <div className="px-4 py-3 border-t border-white/[0.06] flex items-center justify-between gap-4">
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <p className="text-[12.5px] font-medium text-white">
-                          Hablar al generar texto
-                        </p>
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${
-                            currentConfig.enabled && currentConfig.autoPlay
-                              ? "bg-indigo-500/20 text-indigo-200 border-indigo-400/30"
-                              : "bg-white/[0.04] text-zinc-400 border-white/[0.08]"
-                          }`}
-                        >
-                          {currentConfig.enabled && currentConfig.autoPlay
-                            ? "Habla en tiempo real"
-                            : "Solo al pulsar Escuchar"}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-zinc-300/80 mt-0.5 leading-relaxed">
-                        Cuando el agente genere una respuesta, empezará a hablar automáticamente
-                        frase por frase sin esperar a que termine de escribir.
+                      <p className="text-[12.5px] font-medium text-zinc-100">
+                        Hablar al generar texto
+                      </p>
+                      <p className="text-[11px] text-zinc-400 mt-0.5">
+                        Lee cada respuesta frase por frase en tiempo real.
                       </p>
                     </div>
                     <button
@@ -685,122 +677,97 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           !(currentConfig.enabled && currentConfig.autoPlay)
                         )
                       }
-                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
-                        currentConfig.enabled && currentConfig.autoPlay
-                          ? "bg-indigo-400/50 border-indigo-300/50"
-                          : "bg-white/[0.07] border-white/[0.12]"
-                      }`}
-                      title={
-                        currentConfig.enabled && currentConfig.autoPlay
-                          ? "Desactivar lectura automática al generar texto"
-                          : "Activar para que el agente hable automáticamente al generar texto"
-                      }
+                      className="xook-obsidian-switch"
                     >
-                      <span
-                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                          currentConfig.enabled && currentConfig.autoPlay
-                            ? "translate-x-6"
-                            : "translate-x-1"
-                        }`}
-                      />
+                      <span className="xook-obsidian-switch-thumb" />
                     </button>
                   </div>
 
-                  {/* Descarga o gestión del paquete local */}
-                  {!inTauri ? (
-                    <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-[11px] text-zinc-300/85">
-                      Vista previa en navegador: en la aplicación de escritorio descarga el paquete local (~131 MB) para hablar sin conexión.
-                    </div>
-                  ) : downloadingVoice ? (
-                    <div className="rounded-xl border border-indigo-400/25 bg-indigo-500/[0.08] p-3 space-y-2">
-                      <div className="flex items-center justify-between text-[11.5px] text-indigo-100">
-                        <span className="inline-flex items-center gap-2 font-medium">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-300" />
-                          <span>{downloadProgress?.label || "Descargando voces en español..."}</span>
-                        </span>
-                        <span className="tabular-nums font-medium">
-                          {Math.round(downloadProgress?.progress ?? 0)}%
-                        </span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-sky-300 transition-all duration-200"
-                          style={{
-                            width: `${Math.min(100, Math.max(2, downloadProgress?.progress ?? 2))}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ) : !modelsInstalled ? (
-                    <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 flex flex-wrap items-center justify-between gap-3">
-                      <div className="space-y-0.5 min-w-0">
-                        <p className="text-[12px] font-medium text-white">
-                          Falta descargar el paquete de voz (~131 MB)
-                        </p>
-                        <p className="text-[11px] text-zinc-300/75">
-                          Se guarda solo en este equipo (incluye Lola y Rafael). No afecta el peso del proyecto.
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleDownloadAndEnable()}
-                        className="quick-liquid-chip-active px-3.5 py-1.5 rounded-xl text-[11.5px] font-medium text-white inline-flex items-center gap-1.5 cursor-pointer shrink-0"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>Descargar e iniciar voz</span>
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-white/[0.06] text-[11px] text-zinc-300/80">
-                      <span className="inline-flex items-center gap-1.5">
-                        <Check className="w-3.5 h-3.5 text-emerald-300" />
-                        <span>
-                          Paquete de voz instalado en disco ({modelSizeMb} MB)
-                        </span>
-                      </span>
-
-                      {confirmDeleteModels ? (
-                        <div className="inline-flex items-center gap-1.5">
-                          <span className="text-rose-200">¿Eliminar archivos?</span>
-                          <button
-                            type="button"
-                            onClick={() => void handleDeleteModels()}
-                            className="px-2.5 py-1 rounded-lg bg-rose-500/20 border border-rose-400/35 text-rose-100 hover:bg-rose-500/30 cursor-pointer"
-                          >
-                            Sí, eliminar
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDeleteModels(false)}
-                            className="quick-liquid-btn px-2 py-1 rounded-lg text-zinc-200 cursor-pointer"
-                          >
-                            Cancelar
-                          </button>
+                  {/* Fila 3: Paquete local */}
+                  <div className="px-4 py-2.5 border-t border-white/[0.06]">
+                    {!inTauri ? (
+                      <p className="text-[11px] text-zinc-400">
+                        Vista previa web: descarga el paquete local (~131 MB) en la app de escritorio.
+                      </p>
+                    ) : downloadingVoice ? (
+                      <div className="space-y-1.5 py-0.5">
+                        <div className="flex items-center justify-between text-[11.5px] text-zinc-200">
+                          <span className="inline-flex items-center gap-2 font-medium">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-zinc-300" />
+                            <span>{downloadProgress?.label || "Descargando voces en español…"}</span>
+                          </span>
+                          <span className="tabular-nums font-mono text-zinc-300">
+                            {Math.round(downloadProgress?.progress ?? 0)}%
+                          </span>
                         </div>
-                      ) : (
+                        <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-zinc-400 to-white transition-all duration-200"
+                            style={{
+                              width: `${Math.min(100, Math.max(2, downloadProgress?.progress ?? 2))}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ) : !modelsInstalled ? (
+                      <div className="flex flex-wrap items-center justify-between gap-3 py-0.5">
+                        <p className="text-[11.5px] text-zinc-300">
+                          Paquete de voz requerido en este equipo (~131 MB)
+                        </p>
                         <button
                           type="button"
-                          onClick={() => setConfirmDeleteModels(true)}
-                          className="inline-flex items-center gap-1 text-zinc-400 hover:text-rose-200 transition-colors cursor-pointer"
+                          onClick={() => void handleDownloadAndEnable()}
+                          className="xook-profile-save-btn px-3.5 py-1.5 rounded-xl text-[11.5px] font-semibold inline-flex items-center gap-1.5 cursor-pointer shrink-0"
                         >
-                          <Trash2 className="w-3 h-3" />
-                          <span>Eliminar archivos locales</span>
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Descargar voz</span>
                         </button>
-                      )}
-                    </div>
-                  )}
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400">
+                        <span className="inline-flex items-center gap-1.5">
+                          <Check className="w-3.5 h-3.5 text-zinc-300" />
+                          <span>Paquete instalado · {modelSizeMb} MB</span>
+                        </span>
+
+                        {confirmDeleteModels ? (
+                          <div className="inline-flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteModels(false)}
+                              autoFocus
+                              className="xook-obsidian-btn px-2.5 py-1 rounded-lg text-[11px] cursor-pointer"
+                            >
+                              Cancelar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteModels()}
+                              className="px-2.5 py-1 rounded-lg bg-rose-500/20 border border-rose-500/30 text-rose-200 hover:bg-rose-500/30 cursor-pointer transition-colors"
+                            >
+                              Sí, eliminar
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteModels(true)}
+                            className="inline-flex items-center gap-1 text-zinc-500 hover:text-rose-300 transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Eliminar archivos</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </section>
 
-                {/* Selector de voces */}
+                {/* Selector de voces uniforme */}
                 <section className="space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-[12px] font-semibold text-zinc-100">
-                      Voz del asistente
-                    </h3>
-                    <span className="text-[11px] text-zinc-400">
-                      Español natural · Haz clic en Probar para escucharla
-                    </span>
-                  </div>
+                  <h3 className="text-[11px] font-medium uppercase tracking-wider text-zinc-400 px-0.5">
+                    Voz del asistente
+                  </h3>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {voices.map((voice) => {
@@ -816,35 +783,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               void handleUpdateConfig({ voiceId: voice.id });
                             }
                           }}
-                          className={`quick-liquid-option rounded-xl p-3 flex items-center justify-between gap-2.5 cursor-pointer transition-all ${
-                            selected ? "is-selected text-white" : "text-zinc-200/90"
+                          className={`xook-obsidian-item rounded-xl px-3.5 py-3 flex items-center justify-between gap-3 cursor-pointer ${
+                            selected ? "is-selected" : ""
                           }`}
                         >
                           <div className="min-w-0 space-y-0.5">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-[12.5px] font-medium text-white">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[12.5px] font-semibold text-white">
                                 {voice.name}
                               </span>
-                              <span className="px-1.5 py-0.5 rounded-md bg-white/[0.06] border border-white/[0.08] text-[10px] text-zinc-300">
-                                {voice.gender}
+                              <span className="text-[11px] text-zinc-500">
+                                · {voice.gender}
                               </span>
-                              {voice.installed ? (
-                                <span className="text-[10px] text-emerald-300/90">
-                                  Lista
-                                </span>
-                              ) : (
-                                <span className="text-[10px] text-zinc-400">
+                              {!voice.installed && (
+                                <span className="text-[10px] font-mono text-zinc-500 ml-0.5">
                                   +{voice.sizeMb} MB
                                 </span>
                               )}
+                              {selected && (
+                                <Check className="w-3 h-3 text-white ml-0.5 shrink-0" />
+                              )}
                             </div>
-                            <p className="text-[11px] text-zinc-300/75 truncate">
+                            <p className="text-[11px] text-zinc-400 truncate">
                               {voice.description}
                             </p>
                           </div>
 
                           <div
-                            className="flex items-center gap-1.5 shrink-0"
+                            className="shrink-0"
                             onClick={(e) => e.stopPropagation()}
                           >
                             <button
@@ -856,8 +822,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                   ? "Detener muestra"
                                   : `Escuchar muestra de ${voice.name}`
                               }
-                              className={`quick-liquid-btn px-2.5 py-1.5 rounded-lg text-[11px] inline-flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
-                                isThisPlaying ? "text-emerald-200" : "text-zinc-100"
+                              className={`xook-obsidian-btn px-2.5 py-1.5 rounded-lg text-[11px] font-medium inline-flex items-center gap-1.5 cursor-pointer ${
+                                isThisPlaying ? "!border-white/30 !text-white" : ""
                               }`}
                             >
                               {isThisLoading ? (
@@ -876,18 +842,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 </section>
 
-                {/* Velocidad y limpieza de memoria */}
-                <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4 space-y-3.5">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
+                {/* Velocidad y reposo */}
+                <section className="xook-obsidian-surface rounded-2xl p-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                    <div className="space-y-2">
                       <div className="flex items-center justify-between text-[11.5px]">
-                        <span className="font-medium text-zinc-200">Velocidad de habla</span>
-                        <span className="tabular-nums text-zinc-300">
+                        <span className="font-medium text-zinc-200">Velocidad</span>
+                        <span className="font-mono tabular-nums text-zinc-300">
                           {currentConfig.speed.toFixed(2)}x
                         </span>
                       </div>
                       <input
                         type="range"
+                        aria-label="Velocidad de habla"
                         min={0.85}
                         max={1.25}
                         step={0.05}
@@ -897,58 +864,58 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           ttsPlayer.setSpeed(v);
                           void handleUpdateConfig({ speed: v });
                         }}
-                        className="w-full accent-indigo-300 cursor-pointer"
+                        className="xook-obsidian-range w-full"
                       />
-                      <div className="flex justify-between text-[10px] text-zinc-400">
-                        <button
-                          type="button"
-                          onClick={() => void handleUpdateConfig({ speed: 0.9 })}
-                          className="hover:text-zinc-200 cursor-pointer"
-                        >
-                          Pausada (0.9x)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleUpdateConfig({ speed: 1.0 })}
-                          className="hover:text-zinc-200 cursor-pointer"
-                        >
-                          Natural (1.0x)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleUpdateConfig({ speed: 1.15 })}
-                          className="hover:text-zinc-200 cursor-pointer"
-                        >
-                          Ágil (1.15x)
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between text-[11.5px]">
-                        <span className="font-medium text-zinc-200 inline-flex items-center gap-1.5">
-                          <PauseCircle className="w-3.5 h-3.5 text-zinc-400" />
-                          <span>Dormir motor si no se usa</span>
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        {[2, 5, 15, 60].map((mins) => (
+                      <div className="flex justify-between text-[10.5px]">
+                        {[
+                          { v: 0.9, label: "Pausada · 0.9x" },
+                          { v: 1.0, label: "Natural · 1.0x" },
+                          { v: 1.15, label: "Ágil · 1.15x" },
+                        ].map((preset) => (
                           <button
-                            key={mins}
+                            key={preset.v}
                             type="button"
-                            onClick={() => void handleUpdateConfig({ idleUnloadMinutes: mins })}
-                            className={`flex-1 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer border transition-colors ${
-                              currentConfig.idleUnloadMinutes === mins
-                                ? "bg-white/[0.12] text-white border-white/[0.2]"
-                                : "bg-white/[0.03] text-zinc-300 border-white/[0.07] hover:bg-white/[0.07]"
+                            onClick={() => void handleUpdateConfig({ speed: preset.v })}
+                            className={`transition-colors cursor-pointer ${
+                              Math.abs(currentConfig.speed - preset.v) < 0.01
+                                ? "text-white font-medium"
+                                : "text-zinc-500 hover:text-zinc-300"
                             }`}
                           >
-                            {mins === 60 ? "1 h" : `${mins} min`}
+                            {preset.label}
                           </button>
                         ))}
                       </div>
-                      <p className="text-[10.5px] text-zinc-400">
-                        Libera la RAM automáticamente al quedar inactiva.
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-[11.5px]">
+                        <span className="font-medium text-zinc-200 inline-flex items-center gap-1.5">
+                          <PauseCircle className="w-3.5 h-3.5 text-zinc-400" />
+                          <span>Reposo automático</span>
+                        </span>
+                      </div>
+                      <div className="xook-profile-role-track flex items-center gap-1 p-1 rounded-xl">
+                        {[2, 5, 15, 60].map((mins) => {
+                          const active = currentConfig.idleUnloadMinutes === mins;
+                          return (
+                            <button
+                              key={mins}
+                              type="button"
+                              onClick={() => void handleUpdateConfig({ idleUnloadMinutes: mins })}
+                              className={`flex-1 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer transition-all ${
+                                active
+                                  ? "bg-white/[0.13] text-white border border-white/[0.18] shadow-[inset_0_1px_0_rgba(255,255,255,0.2)]"
+                                  : "text-zinc-400 border border-transparent hover:text-zinc-200"
+                              }`}
+                            >
+                              {mins === 60 ? "1 h" : `${mins} min`}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[10.5px] text-zinc-500">
+                        Libera la RAM al quedar inactiva.
                       </p>
                     </div>
                   </div>
@@ -958,61 +925,52 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             {activeTab === "screen" && (
               <div className="space-y-3">
-                <section className="rounded-2xl border border-white/[0.09] bg-white/[0.03] p-4 space-y-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3">
-                      <div className="quick-liquid-icon w-9 h-9 rounded-xl flex items-center justify-center shrink-0">
-                        <Monitor className="w-4 h-4 text-zinc-100" />
+                <section className="xook-obsidian-surface rounded-2xl overflow-hidden">
+                  <div className="px-4 py-3.5 flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="xook-profile-avatar-glass w-9 h-9 flex items-center justify-center shrink-0">
+                        <Monitor className="relative z-10 w-4 h-4 text-zinc-100" />
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <h3 className="text-[13px] font-semibold text-white">
                           Lectura continua de pantalla
                         </h3>
-                        <p className="text-[11.5px] text-zinc-300/80">
-                          Solo extrae contexto de texto en memoria local y se pausa en apps sensibles o contraseñas.
+                        <p className="text-[11.5px] text-zinc-400 mt-0.5">
+                          Extrae texto en memoria local y se pausa en apps sensibles o contraseñas.
                         </p>
                       </div>
                     </div>
 
-                    {loadingScreen && <Loader2 className="w-4 h-4 animate-spin text-zinc-400" />}
+                    {loadingScreen ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-zinc-400 shrink-0" />
+                    ) : inTauri && screenStatus ? (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-label="Lectura continua de pantalla"
+                        aria-checked={screenStatus.rollingEnabled}
+                        onClick={() => {
+                          void setScreenReaderConfig({
+                            rollingEnabled: !screenStatus.rollingEnabled,
+                          }).then((next) => {
+                            if (next) setScreenStatus(next);
+                          });
+                        }}
+                        className="xook-obsidian-switch"
+                      >
+                        <span className="xook-obsidian-switch-thumb" />
+                      </button>
+                    ) : null}
                   </div>
 
                   {!inTauri ? (
-                    <p className="text-[11.5px] text-zinc-400">
-                      La lectura de pantalla solo está disponible en la aplicación de escritorio macOS.
-                    </p>
+                    <div className="px-4 py-3 border-t border-white/[0.06] text-[11.5px] text-zinc-400">
+                      Disponible únicamente en la aplicación de escritorio macOS.
+                    </div>
                   ) : screenStatus ? (
-                    <div className="space-y-3 pt-1">
-                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
-                        <div className="space-y-0.5">
-                          <p className="text-[12px] font-medium text-white">
-                            {screenStatus.rollingEnabled ? "Memoria visual activa" : "Lectura bajo demanda"}
-                          </p>
-                          <p className="text-[11px] text-zinc-400">
-                            {screenStatus.observationCount} observaciones recientes · Retención de {screenStatus.retentionMinutes} min
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void setScreenReaderConfig({
-                              rollingEnabled: !screenStatus.rollingEnabled,
-                            }).then((next) => {
-                              if (next) setScreenStatus(next);
-                            });
-                          }}
-                          className={`px-3 py-1.5 rounded-xl text-[11.5px] font-medium cursor-pointer ${
-                            screenStatus.rollingEnabled
-                              ? "quick-liquid-chip-active text-white"
-                              : "quick-liquid-btn text-zinc-200"
-                          }`}
-                        >
-                          {screenStatus.rollingEnabled ? "Pausar lectura continua" : "Activar lectura continua"}
-                        </button>
-                      </div>
-
+                    <>
                       {!screenStatus.permissionGranted && (
-                        <div className="rounded-xl border border-amber-400/25 bg-amber-500/10 p-3 flex flex-wrap items-center justify-between gap-2">
+                        <div className="mx-4 mb-3 rounded-xl border border-amber-400/25 bg-amber-500/10 p-3 flex flex-wrap items-center justify-between gap-2">
                           <span className="text-[11.5px] text-amber-100">
                             macOS requiere autorización para leer la ventana activa.
                           </span>
@@ -1024,14 +982,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                   if (st) setScreenStatus(st);
                                 });
                               }}
-                              className="quick-liquid-chip-active px-2.5 py-1 rounded-lg text-[11px] text-white cursor-pointer"
+                              className="xook-profile-save-btn px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer"
                             >
                               Autorizar
                             </button>
                             <button
                               type="button"
                               onClick={() => void openScreenPermissionSettings()}
-                              className="quick-liquid-btn px-2.5 py-1 rounded-lg text-[11px] text-zinc-100 cursor-pointer"
+                              className="xook-obsidian-btn px-2.5 py-1 rounded-lg text-[11px] cursor-pointer"
                             >
                               Ajustes de macOS
                             </button>
@@ -1039,57 +997,66 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         </div>
                       )}
 
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3 space-y-2">
-                          <p className="text-[11px] font-medium text-zinc-300">Alcance de lectura</p>
-                          <div className="flex gap-1.5">
-                            {(["window", "display"] as const).map((mode) => (
-                              <button
-                                key={mode}
-                                type="button"
-                                onClick={() => {
-                                  void setScreenReaderConfig({ captureMode: mode }).then((next) => {
-                                    if (next) setScreenStatus(next);
-                                  });
-                                }}
-                                className={`flex-1 py-1.5 rounded-lg text-[11px] cursor-pointer ${
-                                  screenStatus.captureMode === mode
-                                    ? "quick-liquid-chip-active text-white font-medium"
-                                    : "quick-liquid-btn text-zinc-300"
-                                }`}
-                              >
-                                {mode === "window" ? "Solo ventana activa" : "Pantalla completa"}
-                              </button>
-                            ))}
+                      <div className="px-4 py-3.5 border-t border-white/[0.06] grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="space-y-1.5">
+                          <p className="text-[11px] font-medium text-zinc-300">Alcance</p>
+                          <div className="xook-profile-role-track flex gap-1 p-1 rounded-xl">
+                            {(["window", "display"] as const).map((mode) => {
+                              const active = screenStatus.captureMode === mode;
+                              return (
+                                <button
+                                  key={mode}
+                                  type="button"
+                                  onClick={() => {
+                                    void setScreenReaderConfig({ captureMode: mode }).then((next) => {
+                                      if (next) setScreenStatus(next);
+                                    });
+                                  }}
+                                  className={`flex-1 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer transition-all ${
+                                    active
+                                      ? "bg-white/[0.13] text-white border border-white/[0.18]"
+                                      : "text-zinc-400 border border-transparent hover:text-zinc-200"
+                                  }`}
+                                >
+                                  {mode === "window" ? "Ventana activa" : "Pantalla completa"}
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
 
-                        <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3 space-y-2">
-                          <p className="text-[11px] font-medium text-zinc-300">Tiempo en historial visual</p>
-                          <div className="flex gap-1.5">
-                            {[15, 30, 60].map((mins) => (
-                              <button
-                                key={mins}
-                                type="button"
-                                onClick={() => {
-                                  void setScreenReaderConfig({ retentionMinutes: mins }).then((next) => {
-                                    if (next) setScreenStatus(next);
-                                  });
-                                }}
-                                className={`flex-1 py-1.5 rounded-lg text-[11px] cursor-pointer ${
-                                  screenStatus.retentionMinutes === mins
-                                    ? "quick-liquid-chip-active text-white font-medium"
-                                    : "quick-liquid-btn text-zinc-300"
-                                }`}
-                              >
-                                {mins} min
-                              </button>
-                            ))}
+                        <div className="space-y-1.5">
+                          <p className="text-[11px] font-medium text-zinc-300">Retención en memoria</p>
+                          <div className="xook-profile-role-track flex gap-1 p-1 rounded-xl">
+                            {[15, 30, 60].map((mins) => {
+                              const active = screenStatus.retentionMinutes === mins;
+                              return (
+                                <button
+                                  key={mins}
+                                  type="button"
+                                  onClick={() => {
+                                    void setScreenReaderConfig({ retentionMinutes: mins }).then((next) => {
+                                      if (next) setScreenStatus(next);
+                                    });
+                                  }}
+                                  className={`flex-1 py-1.5 rounded-lg text-[11px] font-medium cursor-pointer transition-all ${
+                                    active
+                                      ? "bg-white/[0.13] text-white border border-white/[0.18]"
+                                      : "text-zinc-400 border border-transparent hover:text-zinc-200"
+                                  }`}
+                                >
+                                  {mins} min
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
                       </div>
 
-                      <div className="flex justify-end">
+                      <div className="px-4 py-2.5 border-t border-white/[0.06] flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                        <span>
+                          {screenStatus.observationCount} observaciones recientes en memoria
+                        </span>
                         <button
                           type="button"
                           onClick={() => {
@@ -1098,13 +1065,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               onStatusNotice?.("Historial visual limpiado.");
                             });
                           }}
-                          className="quick-liquid-btn px-3 py-1.5 rounded-xl text-[11px] text-zinc-200 hover:text-white inline-flex items-center gap-1.5 cursor-pointer"
+                          className="inline-flex items-center gap-1.5 text-zinc-400 hover:text-white transition-colors cursor-pointer"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>Limpiar memoria de pantalla</span>
+                          <Trash2 className="w-3 h-3" />
+                          <span>Limpiar historial</span>
                         </button>
                       </div>
-                    </div>
+                    </>
                   ) : null}
                 </section>
               </div>
@@ -1112,47 +1079,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             {activeTab === "ai" && (
               <div className="space-y-3">
-                <section className="rounded-2xl border border-white/[0.09] bg-white/[0.03] p-4 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="quick-liquid-icon w-9 h-9 rounded-xl flex items-center justify-center shrink-0">
-                        <ProviderIcon provider={activeProvider} size={18} />
-                      </div>
-                      <div className="min-w-0">
-                        <h3 className="text-[13px] font-semibold text-white">
-                          {activeSpec.shortName} · {activeModelDisplay.name}
-                        </h3>
-                        <p className="text-[11.5px] text-zinc-300/80">
-                          {configuredProvidersCount > 0
-                            ? `${configuredProvidersCount} ${configuredProvidersCount === 1 ? "proveedor conectado" : "proveedores conectados"} en la bóveda local`
-                            : "Aún no has guardado claves de API"}
-                        </p>
-                      </div>
+                <section className="xook-obsidian-surface rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="xook-profile-avatar-glass w-10 h-10 flex items-center justify-center shrink-0">
+                      <ProviderIcon provider={activeProvider} size={18} className="relative z-10 text-zinc-100" />
                     </div>
+                    <div className="min-w-0">
+                      <h3 className="text-[13px] font-semibold text-white truncate">
+                        {activeSpec.shortName} · {activeModelDisplay.name}
+                      </h3>
+                      <p className="text-[11.5px] text-zinc-400 mt-0.5">
+                        {configuredProvidersCount > 0
+                          ? `${configuredProvidersCount} ${configuredProvidersCount === 1 ? "proveedor conectado" : "proveedores conectados"} en bóveda local`
+                          : "Sin claves API configuradas"}
+                      </p>
+                    </div>
+                  </div>
 
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onClose();
-                          onOpenAiSettings("models");
-                        }}
-                        className="quick-liquid-btn px-3 py-1.5 rounded-xl text-[11.5px] text-zinc-100 cursor-pointer"
-                      >
-                        Elegir modelo
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onClose();
-                          onOpenAiSettings("account");
-                        }}
-                        className="quick-liquid-chip-active px-3 py-1.5 rounded-xl text-[11.5px] font-medium text-white inline-flex items-center gap-1.5 cursor-pointer"
-                      >
-                        <KeyRound className="w-3.5 h-3.5" />
-                        <span>Claves y respaldo</span>
-                      </button>
-                    </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenAiSettings("account");
+                      }}
+                      className="xook-obsidian-btn px-3 py-1.5 rounded-xl text-[11.5px] font-medium inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <KeyRound className="w-3.5 h-3.5" />
+                      <span>Claves y respaldo</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onOpenAiSettings("models");
+                      }}
+                      className="xook-profile-save-btn px-3.5 py-1.5 rounded-xl text-[11.5px] font-semibold cursor-pointer"
+                    >
+                      Elegir modelo
+                    </button>
                   </div>
                 </section>
               </div>
@@ -1160,19 +1125,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             {activeTab === "account" && (
               <div className="space-y-3">
-                <section className="rounded-2xl border border-white/[0.09] bg-white/[0.03] p-4 flex flex-wrap items-center justify-between gap-3">
+                <section className="xook-obsidian-surface rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="quick-liquid-icon w-9 h-9 rounded-xl flex items-center justify-center shrink-0">
-                      <UserCheck className="w-4 h-4 text-zinc-100" />
+                    <div className="xook-profile-avatar-glass w-10 h-10 flex items-center justify-center shrink-0">
+                      {localUser ? (
+                        <span className="relative z-10 text-xs font-semibold text-white tracking-wider">
+                          {getProfileInitials(localUser.name)}
+                        </span>
+                      ) : (
+                        <UserCheck className="relative z-10 w-4 h-4 text-zinc-200" />
+                      )}
                     </div>
                     <div className="min-w-0">
-                      <h3 className="text-[13px] font-semibold text-white">
+                      <h3 className="text-[13px] font-semibold text-white truncate">
                         {localUser ? localUser.name : "Perfil local sin configurar"}
                       </h3>
-                      <p className="text-[11.5px] text-zinc-300/80 truncate">
+                      <p className="text-[11.5px] text-zinc-400 truncate mt-0.5">
                         {localUser
-                          ? `${localUser.storeName} · Guardado únicamente en este equipo`
-                          : "Personaliza tu nombre y espacio de trabajo"}
+                          ? `${localUser.storeName} · ${localUser.role}`
+                          : "Personaliza tu nombre, negocio y rol"}
                       </p>
                     </div>
                   </div>
@@ -1183,7 +1154,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       onClose();
                       onOpenLocalAuth();
                     }}
-                    className="quick-liquid-btn px-3 py-1.5 rounded-xl text-[11.5px] text-zinc-100 cursor-pointer"
+                    className="xook-obsidian-btn px-3.5 py-1.5 rounded-xl text-[11.5px] font-medium cursor-pointer"
                   >
                     {localUser ? "Editar perfil" : "Configurar perfil"}
                   </button>
@@ -1195,14 +1166,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 />
 
                 {onOpenXoxStudio && (
-                  <section className="rounded-2xl border border-white/[0.09] bg-white/[0.03] p-4 flex flex-wrap items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <h3 className="text-[13px] font-semibold text-white">
-                        Espacio de {displayAgentName}
-                      </h3>
-                      <p className="text-[11.5px] text-zinc-300/80">
-                        Personaliza nombre global, prompt inicial, skills por bloques y reglas.
-                      </p>
+                  <section className="xook-obsidian-surface rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="xook-profile-avatar-glass w-10 h-10 flex items-center justify-center shrink-0">
+                        <XoxSilhouetteIcon className="relative z-10 w-4 h-4 text-white" />
+                      </div>
+                      <div className="min-w-0">
+                        <h3 className="text-[13px] font-semibold text-white">
+                          Espacio de {displayAgentName}
+                        </h3>
+                        <p className="text-[11.5px] text-zinc-400 mt-0.5">
+                          Nombre, instrucciones iniciales, skills y reglas.
+                        </p>
+                      </div>
                     </div>
                     <button
                       type="button"
@@ -1210,10 +1186,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         onClose();
                         onOpenXoxStudio("identity");
                       }}
-                      className="quick-liquid-chip-active px-3 py-1.5 rounded-xl text-[11.5px] font-medium text-white inline-flex items-center gap-1.5 cursor-pointer"
+                      className="xook-obsidian-btn px-3.5 py-1.5 rounded-xl text-[11.5px] font-medium cursor-pointer shrink-0"
                     >
-                      <XoxSilhouetteIcon className="w-3.5 h-3.5 text-white" />
-                      <span>Abrir editor</span>
+                      Abrir editor
                     </button>
                   </section>
                 )}
@@ -1222,14 +1197,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </div>
 
           {/* Pie */}
-          <footer className="relative z-[1] shrink-0 px-5 py-3 border-t border-white/[0.08] bg-white/[0.02] flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400">
-            <span>
-              Voz neuronal local basada en Pocket TTS (Kyutai, CC BY 4.0) · Sin conexión tras la descarga.
+          <footer className="relative z-[1] shrink-0 px-5 py-3 border-t border-white/[0.06] flex items-center justify-between gap-3 text-[11px] text-zinc-500">
+            <span className="truncate">
+              {activeTab === "voice"
+                ? "Pocket TTS (Kyutai, CC BY 4.0) · Procesamiento local"
+                : "Configuración guardada localmente en este equipo"}
             </span>
             <button
               type="button"
               onClick={onClose}
-              className="quick-liquid-btn px-4 py-1.5 rounded-full text-zinc-100 font-medium cursor-pointer"
+              className="xook-profile-save-btn px-4 py-1.5 rounded-xl text-xs font-semibold cursor-pointer shrink-0"
             >
               Listo
             </button>

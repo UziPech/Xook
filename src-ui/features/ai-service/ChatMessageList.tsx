@@ -82,12 +82,24 @@ import {
 import { SubagentGlyph } from "../../components/SubagentRosterPopover";
 import { StudyDeckCard } from "../../components/StudyDeckCard";
 import { OpenCircleCheckSvg } from "../../components/ChecklistCornerCard";
+import {
+  type AttachmentPreviewTarget,
+  derivePastedSnippetPreview,
+  formatCompactCount,
+} from "./composerAttachments";
 
 export interface UiChatAttachment {
   name: string;
-  kind?: "text" | "pdf" | "image" | "binary";
+  kind?: "text" | "pdf" | "image" | "binary" | "pasted_text";
   previewUrl?: string;
+  /** Solo en memoria de sesión (no se persiste): alta resolución para lightbox */
+  fullPreviewUrl?: string;
   workspacePath?: string;
+  pastedContent?: string;
+  charCount?: number;
+  lineCount?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface UiCompactionNotice {
@@ -147,6 +159,7 @@ interface ChatMessageListProps {
   greetingLeaving?: boolean;
   activeCanvasId?: string | null;
   onOpenCanvas?: (canvas: CanvasArtifact) => void;
+  onPreviewAttachment?: (target: AttachmentPreviewTarget) => void;
   onPreviewPdf?: (pdf: GeneratedPdfArtifact) => void;
   onEditPdf?: (pdf: GeneratedPdfArtifact) => void;
   onDownloadPdf?: (pdf: GeneratedPdfArtifact) => void;
@@ -559,6 +572,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   greetingLeaving = false,
   activeCanvasId = null,
   onOpenCanvas,
+  onPreviewAttachment,
   onPreviewPdf,
   onEditPdf,
   onDownloadPdf,
@@ -690,9 +704,19 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
 
         if (msg.role === "user") {
           const attList = msg.attachments ?? [];
+          const visualImages = attList.filter(
+            (att) => att.kind === "image" && Boolean(att.fullPreviewUrl || att.previewUrl)
+          );
+          const pastedBlocks = attList.filter((att) => att.kind === "pasted_text");
+          const fileChips = attList.filter(
+            (att) =>
+              att.kind !== "pasted_text" &&
+              !(att.kind === "image" && Boolean(att.fullPreviewUrl || att.previewUrl))
+          );
+
           return (
             <div key={msg.id} className="flex justify-end">
-              <div className="max-w-[86%] @lg:max-w-[70%] @6xl:max-w-[62%] rounded-2xl rounded-tr-sm px-4 py-2.5 bg-white/[0.075] border border-white/[0.1] text-[13.5px] text-zinc-100 leading-relaxed select-text space-y-2">
+              <div className="max-w-[86%] @lg:max-w-[70%] @6xl:max-w-[62%] rounded-2xl rounded-tr-sm px-4 py-2.5 bg-white/[0.075] border border-white/[0.1] text-[13.5px] text-zinc-100 leading-relaxed select-text space-y-2.5">
                 {msg.documentScopeTag && (
                   <div className="flex items-center gap-1.5">
                     <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/[0.12] text-zinc-300 max-w-full">
@@ -701,20 +725,112 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     </span>
                   </div>
                 )}
-                {attList.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {attList.map((att, aIdx) => (
-                      <div
-                        key={`${att.name}-${aIdx}`}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-black/35 border border-white/[0.09] px-2 py-1 text-[11px] text-zinc-200 max-w-[230px]"
-                      >
-                        {att.kind === "image" && att.previewUrl ? (
+
+                {visualImages.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {visualImages.map((att, aIdx) => {
+                      const thumbSrc = att.previewUrl || att.fullPreviewUrl || "";
+                      const fullSrc = att.fullPreviewUrl || att.previewUrl || "";
+                      const singleImg = visualImages.length === 1;
+                      return (
+                        <button
+                          key={`uimg-${att.name}-${aIdx}`}
+                          type="button"
+                          onClick={() =>
+                            onPreviewAttachment?.({
+                              kind: "image",
+                              name: att.name,
+                              src: fullSrc,
+                              width: att.width,
+                              height: att.height,
+                              removable: false,
+                            })
+                          }
+                          title={`${att.name} · Clic para ampliar`}
+                          aria-label={`Ampliar imagen ${att.name}`}
+                          className={`group/uimg relative overflow-hidden rounded-xl border border-white/[0.14] hover:border-white/[0.3] bg-black/40 transition-[border-color,transform] duration-150 cursor-pointer focus-visible:outline-2 focus-visible:outline-white/80 ${
+                            singleImg
+                              ? "max-w-[280px] max-h-[210px]"
+                              : "w-[116px] h-[116px]"
+                          }`}
+                        >
                           <img
-                            src={att.previewUrl}
+                            src={thumbSrc}
                             alt={att.name}
-                            className="w-5 h-5 rounded object-cover shrink-0 border border-white/10"
+                            decoding="async"
+                            className={
+                              singleImg
+                                ? "block max-w-[280px] max-h-[210px] w-auto h-auto object-cover transition-transform duration-200 group-hover/uimg:scale-[1.02]"
+                                : "block w-full h-full object-cover transition-transform duration-200 group-hover/uimg:scale-[1.03]"
+                            }
                           />
-                        ) : att.kind === "pdf" ? (
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {pastedBlocks.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {pastedBlocks.map((att, aIdx) => {
+                      const rawPasted = att.pastedContent ?? "";
+                      const snippet = derivePastedSnippetPreview(rawPasted);
+                      const chars = att.charCount ?? rawPasted.length;
+                      const lines =
+                        att.lineCount ?? (rawPasted ? rawPasted.split("\n").length : 0);
+                      const statText =
+                        lines > 1
+                          ? `${lines} lín. · ${formatCompactCount(chars)}`
+                          : `${formatCompactCount(chars)} car.`;
+                      return (
+                        <button
+                          key={`upaste-${att.name}-${aIdx}`}
+                          type="button"
+                          onClick={() =>
+                            onPreviewAttachment?.({
+                              kind: "pasted_text",
+                              name: att.name,
+                              content: rawPasted,
+                              charCount: chars,
+                              lineCount: lines,
+                              editable: false,
+                            })
+                          }
+                          title={`${att.name} (${lines} líneas · ${chars.toLocaleString()} caracteres) · Clic para ver completo`}
+                          aria-label={`Ver texto pegado: ${att.name}`}
+                          className="w-[152px] sm:w-[168px] h-[108px] rounded-2xl border border-white/[0.12] hover:border-white/[0.26] bg-[#0c0e14]/88 hover:bg-[#11141d]/95 p-2.5 text-left flex flex-col justify-between overflow-hidden transition-[border-color,background-color] duration-150 cursor-pointer focus-visible:outline-2 focus-visible:outline-white/80"
+                        >
+                          <div className="relative flex-1 min-h-0 overflow-hidden">
+                            <p className="text-[10.5px] leading-[1.36] text-zinc-300/90 whitespace-pre-wrap break-words line-clamp-4">
+                              {snippet || att.name}
+                            </p>
+                            <div
+                              aria-hidden="true"
+                              className="xook-att-text-fade pointer-events-none absolute inset-x-0 bottom-0 h-3.5"
+                            />
+                          </div>
+                          <div className="flex items-center justify-between gap-1.5 pt-1.5 shrink-0">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-white/[0.08] border border-white/[0.09] text-[8.5px] font-semibold uppercase tracking-[0.06em] text-zinc-300 shrink-0">
+                              PEGADO
+                            </span>
+                            <span className="text-[9.5px] font-mono text-zinc-400 tabular-nums truncate">
+                              {statText}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {fileChips.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {fileChips.map((att, aIdx) => (
+                      <div
+                        key={`ufile-${att.name}-${aIdx}`}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-black/35 border border-white/[0.09] px-2.5 py-1 text-[11px] text-zinc-200 max-w-[230px]"
+                      >
+                        {att.kind === "pdf" ? (
                           <FileText className="w-3.5 h-3.5 text-rose-300 shrink-0" />
                         ) : att.kind === "image" ? (
                           <ImageIcon className="w-3.5 h-3.5 text-sky-300 shrink-0" />
@@ -726,6 +842,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     ))}
                   </div>
                 )}
+
                 {msg.mode && XOX_COMMAND_SPECS[msg.mode] && (
                   <div className="flex items-center gap-1.5 pb-0.5">
                     <span className="text-[10px] font-medium px-2 py-0.5 rounded-full inline-flex items-center gap-1.5 bg-white/[0.06] border border-white/[0.1] text-zinc-300">
@@ -734,7 +851,9 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     </span>
                   </div>
                 )}
-                {msg.content && <div>{msg.content}</div>}
+                {msg.content && (
+                  <div className="whitespace-pre-wrap break-words">{msg.content}</div>
+                )}
               </div>
             </div>
           );

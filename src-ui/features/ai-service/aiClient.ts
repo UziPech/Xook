@@ -1824,6 +1824,7 @@ export interface XoxTerminalEvent {
 }
 
 export interface XoxStreamCallbacks {
+  signal?: AbortSignal;
   onStreamStart?: (streamId: string) => void;
   onPhase?: (
     state: "reading" | "thinking" | "talking" | "syncing" | "coding",
@@ -5558,16 +5559,46 @@ Responde SIEMPRE con un objeto JSON válido:
 Tipos permitidos en blocks: metrics_strip, coverage_bar, schedule, checklist, note, comparison, kv_list, param_control, insight.`;
 }
 
+export const XOOK_STREAM_CANCELLED_CODE = "__XOOK_STREAM_CANCELLED__";
+
+export function isStreamCancelledError(err: unknown): boolean {
+  if (!err) return false;
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (err instanceof Error) {
+    if (err.name === "AbortError") return true;
+    if (err.message.includes(XOOK_STREAM_CANCELLED_CODE)) return true;
+  }
+  return String(err).includes(XOOK_STREAM_CANCELLED_CODE);
+}
+
+export async function cancelXoxAiChatStream(streamId: string | null | undefined): Promise<boolean> {
+  if (!streamId) return false;
+  if (!isTauriRuntime()) return false;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<boolean>("cancel_xox_chat_stream", { streamId });
+  } catch {
+    return false;
+  }
+}
+
 export async function runXoxAiChatStream(
   req: XoxAiChatRequest,
   callbacks?: XoxStreamCallbacks
 ): Promise<XoxAiChatResponse> {
+  if (callbacks?.signal?.aborted) {
+    throw new Error(XOOK_STREAM_CANCELLED_CODE);
+  }
   if (isTauriRuntime()) {
     const { invoke } = await import("@tauri-apps/api/core");
     const { listen } = await import("@tauri-apps/api/event");
 
     const streamId = `str_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     callbacks?.onStreamStart?.(streamId);
+    const onSignalAbort = () => {
+      void cancelXoxAiChatStream(streamId);
+    };
+    callbacks?.signal?.addEventListener("abort", onSignalAbort, { once: true });
     const unlisten = await listen<{
       stream_id?: string;
       event?: {
@@ -5587,6 +5618,7 @@ export async function runXoxAiChatStream(
         [key: string]: unknown;
       };
     }>("xox-chat-stream", (ev) => {
+      if (callbacks?.signal?.aborted) return;
       const payload = ev.payload;
       if (!payload || payload.stream_id !== streamId || !payload.event) return;
       const evt = payload.event;
@@ -5906,6 +5938,7 @@ export async function runXoxAiChatStream(
         documentContext: sanitizeDocumentContextSnapshot(res.document_context) ?? undefined,
       };
     } finally {
+      callbacks?.signal?.removeEventListener("abort", onSignalAbort);
       unlisten();
     }
   }
@@ -5936,10 +5969,30 @@ export async function runXoxAiChatStream(
 
   const systemPrompt = buildBrowserSystemPrompt(req, true);
 
-  const messages = [
+  const browserImageParts = req.attachedContext
+    .map((item) => (typeof item.imageDataUrl === "string" ? item.imageDataUrl.trim() : ""))
+    .filter((url) => url.startsWith("data:image/") && url.includes(";base64,"))
+    .slice(0, 4)
+    .map((url) => ({
+      type: "image_url",
+      image_url: { url },
+    }));
+
+  const userMessageContent: unknown =
+    browserImageParts.length > 0
+      ? [
+          {
+            type: "text",
+            text: req.message.trim() || "Analiza las imágenes adjuntas.",
+          },
+          ...browserImageParts,
+        ]
+      : req.message;
+
+  const messages: Array<Record<string, unknown>> = [
     { role: "system", content: systemPrompt },
     ...req.history.slice(-10),
-    { role: "user", content: req.message },
+    { role: "user", content: userMessageContent },
   ];
 
   steps[0] = { ...steps[0], status: "done" };
@@ -6008,12 +6061,14 @@ export async function runXoxAiChatStream(
     tagRouter: BrowserStreamTagRouter
   ): Promise<AccumulatedToolCall[]> => {
     let includeTools = allowTools;
+    let activeMessages = reqMessages;
+    let strippedImages = false;
     let resp: Response | null = null;
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       const reqBody: Record<string, unknown> = {
         model: chosenModel,
-        messages: reqMessages,
+        messages: activeMessages,
         temperature: 0.3,
         max_tokens: 4096,
         stream: true,
@@ -6053,6 +6108,7 @@ export async function runXoxAiChatStream(
         method: "POST",
         headers,
         body: JSON.stringify(reqBody),
+        signal: callbacks?.signal,
       });
       const parsedRl = parseBrowserRateLimitHeaders(attemptResp.headers, activeBrowserPid);
       if (parsedRl) browserRateLimits = parsedRl;
@@ -6079,6 +6135,27 @@ export async function runXoxAiChatStream(
       if (errRl) {
         browserRateLimits = errRl;
         recordObservedRateLimit(activeBrowserPid, errRl, true);
+      }
+      if (
+        !strippedImages &&
+        (attemptResp.status === 400 || attemptResp.status === 404 || attemptResp.status === 422) &&
+        /(image|vision|multimodal|content.*array|media)/i.test(errText) &&
+        activeMessages.some((m) => Array.isArray(m.content))
+      ) {
+        strippedImages = true;
+        activeMessages = activeMessages.map((m) => {
+          if (!Array.isArray(m.content)) return m;
+          const textOnly = m.content
+            .filter(
+              (p): p is { type?: string; text?: string } =>
+                typeof p === "object" && p !== null && (p as { type?: string }).type === "text"
+            )
+            .map((p) => p.text ?? "")
+            .join("\n")
+            .trim();
+          return { ...m, content: textOnly || "Analiza los archivos adjuntos." };
+        });
+        continue;
       }
       if (
         includeTools &&

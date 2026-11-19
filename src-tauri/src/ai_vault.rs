@@ -4,7 +4,71 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+
+struct ActiveChatStream {
+    pid: u32,
+    cancelled: Arc<AtomicBool>,
+}
+
+static ACTIVE_CHAT_STREAMS: OnceLock<Mutex<HashMap<String, ActiveChatStream>>> = OnceLock::new();
+
+fn active_chat_streams() -> &'static Mutex<HashMap<String, ActiveChatStream>> {
+    ACTIVE_CHAT_STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+struct ActiveStreamGuard {
+    stream_id: String,
+}
+
+impl Drop for ActiveStreamGuard {
+    fn drop(&mut self) {
+        if let Ok(mut map) = active_chat_streams().lock() {
+            map.remove(&self.stream_id);
+        }
+    }
+}
+
+fn terminate_process_by_pid(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+#[tauri::command]
+pub fn cancel_xox_chat_stream(stream_id: String) -> Result<bool, String> {
+    let clean_id = stream_id.trim();
+    if clean_id.is_empty() {
+        return Ok(false);
+    }
+    let entry = {
+        let map = active_chat_streams()
+            .lock()
+            .map_err(|_| "No se pudo acceder al registro de streams.".to_string())?;
+        map.get(clean_id).map(|s| (s.pid, Arc::clone(&s.cancelled)))
+    };
+    if let Some((pid, cancelled)) = entry {
+        cancelled.store(true, Ordering::SeqCst);
+        terminate_process_by_pid(pid);
+        return Ok(true);
+    }
+    Ok(false)
+}
 
 const VAULT_FILENAME: &str = "ai-vault.json";
 const USAGE_LEDGER_FILENAME: &str = "ai-usage-ledger.json";
@@ -3855,6 +3919,11 @@ fn call_python_sidecar_streaming<R: Runtime>(
     script_path: &PathBuf,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    let stream_id_param = params
+        .get("stream_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_default();
     let ws_root_param = params
         .get("workspace_root")
         .and_then(|v| v.as_str())
@@ -3874,6 +3943,24 @@ fn call_python_sidecar_streaming<R: Runtime>(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("No se pudo iniciar python sidecar ({}): {e}", py_bin.display()))?;
+
+    let cancelled_flag = Arc::new(AtomicBool::new(false));
+    let _stream_guard = if !stream_id_param.is_empty() {
+        if let Ok(mut map) = active_chat_streams().lock() {
+            map.insert(
+                stream_id_param.clone(),
+                ActiveChatStream {
+                    pid: child.id(),
+                    cancelled: Arc::clone(&cancelled_flag),
+                },
+            );
+        }
+        Some(ActiveStreamGuard {
+            stream_id: stream_id_param,
+        })
+    } else {
+        None
+    };
 
     let mut child_stdin = child
         .stdin
@@ -3984,6 +4071,9 @@ fn call_python_sidecar_streaming<R: Runtime>(
     }
 
     let Some(parsed) = final_envelope else {
+        if cancelled_flag.load(Ordering::SeqCst) {
+            return Err("__XOOK_STREAM_CANCELLED__".to_string());
+        }
         let trimmed_err = stderr_str.trim();
         return Err(if trimmed_err.is_empty() {
             format!("El sidecar terminó sin respuesta (estado {status}).")

@@ -13,7 +13,6 @@ import {
   ListTodo,
   PanelLeft,
   ChevronDown,
-  Paperclip,
   AtSign,
   KeyRound,
   RefreshCw,
@@ -22,7 +21,6 @@ import {
   SquarePen,
   Table2,
   UserCircle2,
-  Image as ImageIcon,
   Settings,
   Slash,
   Users,
@@ -39,6 +37,22 @@ import {
 } from "./components/SlashCommandMenu";
 import { ChecklistCornerCard } from "./components/ChecklistCornerCard";
 import { SubagentRosterPopover } from "./components/SubagentRosterPopover";
+import { ComposerAttachmentTray } from "./components/ComposerAttachmentTray";
+import { AttachmentPreviewDialog } from "./components/AttachmentPreviewDialog";
+import {
+  type AttachmentPreviewTarget,
+  type ComposerAttachmentItem,
+  type ComposerPastedTextAttachment,
+  composeLlmMessageWithPastedText,
+  createComposerFileItems,
+  createPastedTextItem,
+  derivePastedCardTitle,
+  extractClipboardPayload,
+  normalizePastedText,
+  prepareImagePayload,
+  revokeComposerAttachments,
+  shouldGroupPastedText,
+} from "./features/ai-service/composerAttachments";
 import {
   DEFAULT_SUBAGENT_ROSTER,
   type ChecklistState,
@@ -233,6 +247,9 @@ import {
   getProviderSpec,
   getUsageMeterFillColor,
   incrementLocalDailyRequestCount,
+  isStreamCancelledError,
+  cancelXoxAiChatStream,
+  XOOK_STREAM_CANCELLED_CODE,
   manageDocumentContext,
   normalizeApiKey,
   normalizeProviderIdClient,
@@ -255,7 +272,6 @@ import {
   type TtsStatus,
 } from "./features/tts-voice/ttsClient";
 
-const BINARY_IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|tiff?|heic)$/i;
 const OFFICE_DOC_EXT_SET = new Set([
   "doc",
   "docx",
@@ -293,22 +309,6 @@ const BINARY_PREVIEW_EXT_SET = new Set([
   "zip",
 ]);
 
-function classifyAttachmentFile(
-  file: Pick<File, "name" | "type">
-): "pdf" | "image" | "text" | "binary" {
-  const name = file.name.trim();
-  const mime = (file.type || "").toLowerCase();
-  if (/\.pdf$/i.test(name) || mime === "application/pdf") return "pdf";
-  if (BINARY_IMAGE_EXT_RE.test(name) || mime.startsWith("image/")) return "image";
-  if (
-    /^(text\/|application\/(json|csv|xml|javascript))/.test(mime) ||
-    /\.(txt|md|json|csv|tsv|log|yaml|yml|xml)$/i.test(name)
-  ) {
-    return "text";
-  }
-  return "binary";
-}
-
 async function fileToBase64Payload(file: File): Promise<string> {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
@@ -319,54 +319,6 @@ async function fileToBase64Payload(file: File): Promise<string> {
     parts.push(String.fromCharCode(...slice));
   }
   return btoa(parts.join(""));
-}
-
-async function prepareImagePayload(file: File): Promise<{
-  imageDataUrl?: string;
-  thumbUrl?: string;
-  width?: number;
-  height?: number;
-}> {
-  if (typeof window === "undefined") return {};
-  const objUrl = URL.createObjectURL(file);
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const el = new Image();
-      el.onload = () => resolve(el);
-      el.onerror = () => reject(new Error("image_decode_failed"));
-      el.src = objUrl;
-    });
-    const naturalW = img.naturalWidth || img.width;
-    const naturalH = img.naturalHeight || img.height;
-    if (!naturalW || !naturalH) return {};
-
-    const renderScaled = (maxDim: number, forceJpeg: boolean): string | undefined => {
-      const scale = Math.min(1, maxDim / Math.max(naturalW, naturalH));
-      const w = Math.max(1, Math.round(naturalW * scale));
-      const h = Math.max(1, Math.round(naturalH * scale));
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return undefined;
-      ctx.drawImage(img, 0, 0, w, h);
-      const keepPng =
-        !forceJpeg &&
-        (/\.(png|webp|gif)$/i.test(file.name) ||
-          /image\/(png|webp|gif)/i.test(file.type || ""));
-      return keepPng
-        ? canvas.toDataURL("image/png")
-        : canvas.toDataURL("image/jpeg", 0.85);
-    };
-
-    const imageDataUrl = renderScaled(1408, false);
-    const thumbUrl = renderScaled(144, true);
-    return { imageDataUrl, thumbUrl, width: naturalW, height: naturalH };
-  } catch {
-    return {};
-  } finally {
-    URL.revokeObjectURL(objUrl);
-  }
 }
 
 function mergeCanvasWithVersionHistory(
@@ -865,6 +817,7 @@ export default function App() {
   const [isReviewRunning, setIsReviewRunning] = useState<boolean>(false);
   const [permissionItems, setPermissionItems] = useState<CommandPermissionUiItem[]>([]);
   const activeStreamIdRef = useRef<string | null>(null);
+  const chatAbortControllerRef = useRef<AbortController | null>(null);
   const [workspaceOverview, setWorkspaceOverview] = useState<WorkspaceOverview | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState<boolean>(false);
   const [selectedWorkspaceFile, setSelectedWorkspaceFile] = useState<SelectedWorkspaceFile | null>(null);
@@ -1330,15 +1283,128 @@ export default function App() {
   );
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const chatInputId = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const contextTriggerRef = useRef<HTMLButtonElement>(null);
 
-  // Archivos adjuntos, modelo activo, bóveda IA y chat real
-  const [attachments, setAttachments] = useState<File[]>([]);
+  // Archivos adjuntos (imágenes con miniatura real, textos pegados agrupados y archivos), modelo activo, bóveda IA y chat real
+  const [attachments, setAttachments] = useState<ComposerAttachmentItem[]>([]);
+  const attachmentsRef = useRef<ComposerAttachmentItem[]>(attachments);
+  attachmentsRef.current = attachments;
+  const [attachmentPreviewTarget, setAttachmentPreviewTarget] =
+    useState<AttachmentPreviewTarget | null>(null);
   const [isDraggingOverChat, setIsDraggingOverChat] = useState<boolean>(false);
+
+  useEffect(() => {
+    return () => {
+      revokeComposerAttachments(attachmentsRef.current);
+    };
+  }, []);
+
+  const appendFilesToComposer = (files: File[]) => {
+    if (!files.length) return;
+    const existingImgCount = attachmentsRef.current.filter((a) => a.kind === "image").length;
+    const created = createComposerFileItems(files, existingImgCount);
+    setAttachments((prev) => [...prev, ...created]);
+    for (const item of created) {
+      if (item.kind === "image") {
+        void prepareImagePayload(item.file).then((prep) => {
+          if (!prep.thumbUrl && !prep.imageDataUrl) return;
+          setAttachments((prev) =>
+            prev.map((curr) =>
+              curr.id === item.id && curr.kind === "image"
+                ? {
+                    ...curr,
+                    thumbUrl: prep.thumbUrl ?? curr.thumbUrl,
+                    imageDataUrl: prep.imageDataUrl ?? curr.imageDataUrl,
+                    width: prep.width ?? curr.width,
+                    height: prep.height ?? curr.height,
+                  }
+                : curr
+            )
+          );
+        });
+      }
+    }
+  };
+
+  const appendPastedTextToComposer = (rawText: string) => {
+    const existingPastedCount = attachmentsRef.current.filter(
+      (a) => a.kind === "pasted_text"
+    ).length;
+    const item = createPastedTextItem(rawText, existingPastedCount);
+    setAttachments((prev) => [...prev, item]);
+    triggerReadingPulse(
+      `Texto pegado agrupado (${item.lineCount} ${item.lineCount === 1 ? "línea" : "líneas"})...`
+    );
+  };
+
+  const removeComposerAttachment = (id: string) => {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.id === id);
+      if (target) revokeComposerAttachments([target]);
+      return prev.filter((a) => a.id !== id);
+    });
+  };
+
+  const updateComposerPastedText = (id: string, nextContent: string) => {
+    const { content, charCount, lineCount } = normalizePastedText(nextContent);
+    setAttachments((prev) =>
+      prev.map((item, idx) =>
+        item.id === id && item.kind === "pasted_text"
+          ? {
+              ...item,
+              content,
+              charCount,
+              lineCount,
+              name: derivePastedCardTitle(content, idx + 1),
+            }
+          : item
+      )
+    );
+  };
+
+  const unwrapComposerPastedText = (id: string, content: string) => {
+    removeComposerAttachment(id);
+    setInputPrompt((prev) => {
+      const trimmedPrev = prev.trimEnd();
+      if (!trimmedPrev) return content;
+      return `${trimmedPrev}\n\n${content}`;
+    });
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const inspectComposerAttachment = (item: ComposerAttachmentItem) => {
+    if (item.kind === "image") {
+      const src = item.objectUrl || item.imageDataUrl || item.thumbUrl;
+      if (!src) return;
+      setAttachmentPreviewTarget({
+        kind: "image",
+        id: item.id,
+        name: item.name,
+        src,
+        width: item.width,
+        height: item.height,
+        sizeBytes: item.sizeBytes,
+        removable: true,
+      });
+      return;
+    }
+    if (item.kind === "pasted_text") {
+      setAttachmentPreviewTarget({
+        kind: "pasted_text",
+        id: item.id,
+        name: item.name,
+        content: item.content,
+        charCount: item.charCount,
+        lineCount: item.lineCount,
+        editable: true,
+      });
+    }
+  };
   const [modelId, setModelId] = useState<string>(OPENROUTER_PRESET_MODELS[0].id);
   const [aiConfig, setAiConfig] = useState<AiConfigStatus>({
     provider: "openrouter",
@@ -3795,6 +3861,7 @@ export default function App() {
     overrideMessages?: UiChatMessage[],
     options?: {
       overrideMode?: XoxModeId | null;
+      overrideAttachments?: ComposerAttachmentItem[];
       forceScope?: "chat" | "document";
       forceDocument?: {
         path: string;
@@ -3823,18 +3890,28 @@ export default function App() {
       return;
     }
 
-    if ((!rawTrimmed && attachments.length === 0) || isChatStreaming) return;
+    const currentAttachments: ComposerAttachmentItem[] =
+      options?.overrideAttachments ?? attachments;
+    if ((!rawTrimmed && currentAttachments.length === 0) || isChatStreaming) return;
 
     const effectiveModeSpec = effectiveMode ? XOX_COMMAND_SPECS[effectiveMode] : null;
     const baseMessages = overrideMessages ?? chatMessagesRef.current;
-    const currentAttachments = attachments;
-    const query =
-      rawTrimmed ||
-      (currentAttachments.length === 1
-        ? `Analiza el archivo adjunto (${currentAttachments[0].name}).`
-        : `Analiza los ${currentAttachments.length} archivos adjuntos.`);
+    const pastedItems = currentAttachments.filter(
+      (att): att is ComposerPastedTextAttachment => att.kind === "pasted_text"
+    );
+    const fileItems = currentAttachments.filter(
+      (att): att is Exclude<ComposerAttachmentItem, ComposerPastedTextAttachment> =>
+        att.kind !== "pasted_text"
+    );
+    const query = composeLlmMessageWithPastedText(
+      rawTrimmed,
+      pastedItems,
+      fileItems.map((f) => ({ name: f.name, kind: f.kind }))
+    );
     setInputPrompt("");
-    setAttachments([]);
+    if (!options?.overrideAttachments) {
+      setAttachments([]);
+    }
 
     // 1) Zero-Trust: desambiguación rápida sk- (DeepSeek vs OpenAI) si hay una clave pendiente
     if (
@@ -3962,10 +4039,31 @@ export default function App() {
       return;
     }
 
-    const initialAttachmentsMeta: UiChatAttachment[] = currentAttachments.map((file) => ({
-      name: file.name,
-      kind: classifyAttachmentFile(file),
-    }));
+    const initialAttachmentsMeta: UiChatAttachment[] = currentAttachments.map((item) => {
+      if (item.kind === "pasted_text") {
+        return {
+          name: item.name,
+          kind: "pasted_text",
+          pastedContent: item.content,
+          charCount: item.charCount,
+          lineCount: item.lineCount,
+        };
+      }
+      if (item.kind === "image") {
+        return {
+          name: item.name,
+          kind: "image",
+          previewUrl: item.thumbUrl || item.objectUrl || undefined,
+          fullPreviewUrl: item.imageDataUrl || item.objectUrl || undefined,
+          width: item.width,
+          height: item.height,
+        };
+      }
+      return {
+        name: item.name,
+        kind: item.kind,
+      };
+    });
 
     const resolvedDocTarget =
       options?.forceDocument ??
@@ -3990,7 +4088,7 @@ export default function App() {
     const userMsg: UiChatMessage = {
       id: `msg_u_${Date.now()}`,
       role: "user",
-      content: query,
+      content: rawTrimmed,
       mode: effectiveMode ?? undefined,
       ...(effectiveScope === "document" && resolvedDocTarget
         ? {
@@ -4003,10 +4101,12 @@ export default function App() {
       ...(initialAttachmentsMeta.length > 0 ? { attachments: initialAttachmentsMeta } : {}),
     };
 
-    const setupIntent = detectKeySetupIntentWithProvider(query);
-    const vaultReq = effectiveMode
-      ? { isVaultRequest: false, intentKind: "open_vault" as const, providerHint: null }
-      : detectVaultConfigRequest(query);
+    const intentTargetText = pastedItems.length === 0 ? rawTrimmed : "";
+    const setupIntent = detectKeySetupIntentWithProvider(intentTargetText);
+    const vaultReq =
+      effectiveMode || !intentTargetText
+        ? { isVaultRequest: false, intentKind: "open_vault" as const, providerHint: null }
+        : detectVaultConfigRequest(intentTargetText);
 
     if (vaultReq.isVaultRequest) {
       const targetPid: AiProviderId = vaultReq.providerHint ?? activeProvider;
@@ -4140,10 +4240,21 @@ export default function App() {
             .map((m) => {
               const notes: string[] = [];
               if (m.attachments && m.attachments.length > 0) {
-                const attDesc = m.attachments
-                  .map((a) => (a.workspacePath ? `${a.name} (${a.workspacePath})` : a.name))
-                  .join(", ");
-                notes.push(`[Archivos adjuntos en este turno: ${attDesc}]`);
+                const pastedInTurn = m.attachments.filter(
+                  (a) => a.kind === "pasted_text" && a.pastedContent
+                );
+                for (const pAtt of pastedInTurn) {
+                  const safeLabel = (pAtt.name || "Texto pegado").replace(/"/g, "'");
+                  const clipped = (pAtt.pastedContent ?? "").slice(0, 4000);
+                  notes.push(`<texto_pegado titulo="${safeLabel}">\n${clipped}\n</texto_pegado>`);
+                }
+                const otherAtts = m.attachments.filter((a) => a.kind !== "pasted_text");
+                if (otherAtts.length > 0) {
+                  const attDesc = otherAtts
+                    .map((a) => (a.workspacePath ? `${a.name} (${a.workspacePath})` : a.name))
+                    .join(", ");
+                  notes.push(`[Archivos adjuntos en este turno: ${attDesc}]`);
+                }
               }
               if (m.generatedPdfs && m.generatedPdfs.length > 0) {
                 const pdfDesc = m.generatedPdfs
@@ -4211,6 +4322,8 @@ export default function App() {
     setGreeting(null);
     setGreetingLeaving(false);
 
+    const turnAbortController = new AbortController();
+    chatAbortControllerRef.current = turnAbortController;
     setChatMessages(startedMessages);
     setIsChatStreaming(true);
     setXoxState("reading");
@@ -4222,19 +4335,36 @@ export default function App() {
 
     try {
       let stagedAnyBinary = false;
-      const thumbByIdx = new Map<number, { previewUrl?: string; workspacePath?: string }>();
+      const thumbByIdx = new Map<
+        number,
+        {
+          previewUrl?: string;
+          fullPreviewUrl?: string;
+          workspacePath?: string;
+          width?: number;
+          height?: number;
+        }
+      >();
+      const objectUrlsToRevoke: string[] = [];
 
-      const fileSnippets: AttachedContextItem[] = await Promise.all(
-        currentAttachments.map(async (file, fIdx): Promise<AttachedContextItem> => {
-          const kind = classifyAttachmentFile(file);
+      const fileSnippetList = await Promise.all(
+        currentAttachments.map(async (item, fIdx): Promise<AttachedContextItem | null> => {
+          if (item.kind === "pasted_text") {
+            // Ya incluido íntegramente en el mensaje del usuario (<texto_pegado>)
+            return null;
+          }
+
+          const file = item.file;
+          const kind = item.kind;
 
           if (kind === "pdf" || kind === "image" || kind === "binary") {
             let stagedPath: string | undefined;
-            let stagedMime = file.type || (kind === "pdf" ? "application/pdf" : "application/octet-stream");
+            let stagedMime =
+              file.type || (kind === "pdf" ? "application/pdf" : "application/octet-stream");
             if (isTauriEnv && file.size > 0 && file.size <= 25 * 1024 * 1024) {
               try {
                 const b64 = await fileToBase64Payload(file);
-                const staged = await stageWorkspaceAttachment(file.name, b64);
+                const staged = await stageWorkspaceAttachment(item.name, b64);
                 stagedPath = staged.relativePath;
                 stagedMime = staged.mimeType || stagedMime;
                 stagedAnyBinary = true;
@@ -4244,17 +4374,31 @@ export default function App() {
             }
 
             if (kind === "image") {
-              const imgPrep = await prepareImagePayload(file);
-              if (imgPrep.thumbUrl || stagedPath) {
+              const imgPrep =
+                item.imageDataUrl && item.thumbUrl
+                  ? {
+                      imageDataUrl: item.imageDataUrl,
+                      thumbUrl: item.thumbUrl,
+                      width: item.width,
+                      height: item.height,
+                    }
+                  : await prepareImagePayload(file);
+              if (imgPrep.thumbUrl || imgPrep.imageDataUrl || stagedPath) {
                 thumbByIdx.set(fIdx, {
-                  previewUrl: imgPrep.thumbUrl,
+                  previewUrl: imgPrep.thumbUrl || imgPrep.imageDataUrl,
+                  fullPreviewUrl: imgPrep.imageDataUrl || imgPrep.thumbUrl,
                   workspacePath: stagedPath,
+                  width: imgPrep.width,
+                  height: imgPrep.height,
                 });
+                if (item.objectUrl && (imgPrep.thumbUrl || imgPrep.imageDataUrl)) {
+                  objectUrlsToRevoke.push(item.objectUrl);
+                }
               }
               const dimText =
                 imgPrep.width && imgPrep.height ? ` (${imgPrep.width}×${imgPrep.height}px)` : "";
               return {
-                name: file.name,
+                name: item.name,
                 type: stagedMime,
                 kind: "image",
                 workspacePath: stagedPath,
@@ -4265,7 +4409,7 @@ export default function App() {
                 imageDataUrl: imgPrep.imageDataUrl,
                 content: stagedPath
                   ? `Imagen adjunta guardada en '${stagedPath}'${dimText}. Puedes usarla en 'pdf_generate' (como portada en 'cover.image_path' o bloque {type:'image', path:'${stagedPath}'}) o inspeccionarla con 'workspace_read'.`
-                  : `Imagen adjunta '${file.name}'${dimText}.`,
+                  : `Imagen adjunta '${item.name}'${dimText}.`,
               };
             }
 
@@ -4274,7 +4418,7 @@ export default function App() {
                 thumbByIdx.set(fIdx, { workspacePath: stagedPath });
               }
               return {
-                name: file.name,
+                name: item.name,
                 type: "application/pdf",
                 kind: "pdf",
                 workspacePath: stagedPath,
@@ -4282,21 +4426,21 @@ export default function App() {
                 sizeBytes: file.size,
                 content: stagedPath
                   ? `PDF adjunto guardado en '${stagedPath}' (${Math.max(1, Math.round(file.size / 1024))} KB). Usa SIEMPRE la herramienta 'pdf_read' con path='${stagedPath}' para extraer su texto, tablas y OCR.`
-                  : `Archivo PDF adjunto '${file.name}' (${Math.max(1, Math.round(file.size / 1024))} KB).`,
+                  : `Archivo PDF adjunto '${item.name}' (${Math.max(1, Math.round(file.size / 1024))} KB).`,
               };
             }
 
-            const ext = file.name.split(".").pop()?.toLowerCase() || "";
+            const ext = item.name.split(".").pop()?.toLowerCase() || "";
             if (OFFICE_DOC_EXT_SET.has(ext) && stagedPath) {
               thumbByIdx.set(fIdx, { workspacePath: stagedPath });
               void openUniversalDocInRightPanel({
                 path: stagedPath,
-                filename: file.name,
+                filename: item.name,
                 sizeBytes: file.size,
                 ext,
               });
               return {
-                name: file.name,
+                name: item.name,
                 type: stagedMime,
                 kind: "binary",
                 workspacePath: stagedPath,
@@ -4307,7 +4451,7 @@ export default function App() {
             }
 
             return {
-              name: file.name,
+              name: item.name,
               type: stagedMime,
               kind: "binary",
               workspacePath: stagedPath,
@@ -4323,7 +4467,7 @@ export default function App() {
             try {
               const raw = await file.text();
               return {
-                name: file.name,
+                name: item.name,
                 type: file.type || "text/plain",
                 kind: "text",
                 sizeBytes: file.size,
@@ -4331,7 +4475,7 @@ export default function App() {
               };
             } catch {
               return {
-                name: file.name,
+                name: item.name,
                 type: file.type || "archivo",
                 kind: "text",
                 content: "(No se pudo leer el contenido del archivo)",
@@ -4340,13 +4484,16 @@ export default function App() {
           }
 
           return {
-            name: file.name,
+            name: item.name,
             type: file.type || "archivo",
             kind: "text",
             sizeBytes: file.size,
             content: `(Archivo de texto grande de ${Math.round(file.size / 1024)} KB)`,
           };
         })
+      );
+      const fileSnippets: AttachedContextItem[] = fileSnippetList.filter(
+        (s): s is AttachedContextItem => s !== null
       );
 
       if (thumbByIdx.size > 0) {
@@ -4363,6 +4510,17 @@ export default function App() {
               : m
           )
         );
+        if (objectUrlsToRevoke.length > 0) {
+          window.setTimeout(() => {
+            for (const url of objectUrlsToRevoke) {
+              try {
+                URL.revokeObjectURL(url);
+              } catch {
+                // Ignorar
+              }
+            }
+          }, 1000);
+        }
       }
       if (stagedAnyBinary && isTauriEnv) {
         void handleRefreshWorkspace();
@@ -4435,6 +4593,9 @@ export default function App() {
 
       setPermissionItems([]);
       let turnCompactedEvt: ContextCompactedEvent | null = null;
+      if (turnAbortController.signal.aborted) {
+        throw new Error(XOOK_STREAM_CANCELLED_CODE);
+      }
       const res = await runXoxAiChatStream(
         {
           message: query,
@@ -4461,6 +4622,7 @@ export default function App() {
           modelContextWindow,
         },
         {
+          signal: turnAbortController.signal,
           onStreamStart: (sid) => {
             activeStreamIdRef.current = sid;
           },
@@ -4703,6 +4865,10 @@ export default function App() {
       );
 
       clearXoxPhaseTimers();
+      if (chatAbortControllerRef.current === turnAbortController) {
+        chatAbortControllerRef.current = null;
+      }
+      activeStreamIdRef.current = null;
       setPdfDraftProgress(null);
       const generatedCount = res.tasks.length;
       const rawResCanvases =
@@ -4975,6 +5141,10 @@ export default function App() {
       }
     } catch (err) {
       clearXoxPhaseTimers();
+      const wasCancelled =
+        isStreamCancelledError(err) || Boolean(chatAbortControllerRef.current?.signal.aborted);
+      chatAbortControllerRef.current = null;
+      activeStreamIdRef.current = null;
       if (startedStreamSpeech) {
         ttsPlayer.stop();
       }
@@ -4984,6 +5154,31 @@ export default function App() {
         void openPdfInRightPanel(recoveredTurnPdf);
       } else {
         setPdfDraftProgress(null);
+      }
+      if (wasCancelled) {
+        const stoppedMessages = chatMessagesRef.current.map((m) =>
+          m.id === assistantMsgId
+            ? {
+                ...m,
+                content: m.content.trim() ? m.content : "*Respuesta detenida.*",
+                thinkingSteps: m.thinkingSteps?.map((s) =>
+                  s.status === "running" ? { ...s, status: "done" as const } : s
+                ),
+                isStreaming: false,
+                isReasoningStreaming: false,
+              }
+            : m
+        );
+        setChatMessages(stoppedMessages);
+        void persistConversation(stoppedMessages, convId);
+        setIsChatStreaming(false);
+        setXoxState("idle");
+        setXoxMessage("Proceso detenido.");
+        setTimeout(() => {
+          setXoxMessage((curr) => (curr === "Proceso detenido." ? "¿En qué puedo ayudarte?" : curr));
+        }, 2400);
+        requestAnimationFrame(() => inputRef.current?.focus());
+        return;
       }
       const message = extractErrorMessage(
         err,
@@ -5059,9 +5254,29 @@ export default function App() {
       }
     }
     if (userIdx === -1) return;
-    const userPrompt = msgs[userIdx].content;
+    const targetUserMsg = msgs[userIdx];
+    const userPrompt = targetUserMsg.content;
+    const pastedOverrides: ComposerAttachmentItem[] = (targetUserMsg.attachments ?? [])
+      .filter((att) => att.kind === "pasted_text" && Boolean(att.pastedContent))
+      .map((att, idx) => createPastedTextItem(att.pastedContent ?? "", idx));
     const trimmedHistory = msgs.slice(0, userIdx);
-    void runPromptQuery(userPrompt, trimmedHistory);
+    void runPromptQuery(
+      userPrompt,
+      trimmedHistory,
+      pastedOverrides.length > 0 ? { overrideAttachments: pastedOverrides } : undefined
+    );
+  };
+
+  const handleStopGeneration = () => {
+    const controller = chatAbortControllerRef.current;
+    const streamId = activeStreamIdRef.current;
+    if (controller && !controller.signal.aborted) {
+      controller.abort();
+    }
+    if (streamId) {
+      void cancelXoxAiChatStream(streamId);
+    }
+    ttsPlayer.stop();
   };
 
   const handlePromptSubmit = (e?: React.FormEvent) => {
@@ -6783,6 +6998,7 @@ export default function App() {
                     greetingLeaving={greetingLeaving}
                     activeCanvasId={showCanvas ? activeCanvas?.id ?? null : null}
                     onOpenCanvas={handleOpenCanvas}
+                    onPreviewAttachment={(target) => setAttachmentPreviewTarget(target)}
                     onPreviewPdf={(pdf) => void openPdfInRightPanel(pdf, "view")}
                     onEditPdf={(pdf) => void openPdfInRightPanel(pdf, "edit_page")}
                     onDownloadPdf={(pdf) => void handleDownloadPdfFromChat(pdf)}
@@ -6917,7 +7133,7 @@ export default function App() {
                     e.preventDefault();
                     setIsDraggingOverChat(false);
                     const dropped = Array.from(e.dataTransfer.files);
-                    setAttachments((prev) => [...prev, ...dropped]);
+                    appendFilesToComposer(dropped);
                     triggerReadingPulse(
                       dropped.length === 1
                         ? `Leyendo ${dropped[0].name}...`
@@ -6928,7 +7144,7 @@ export default function App() {
                   }
                 }}
                 className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-3.5 relative group shadow-2xl ${
-                  inputExpanded ? "is-expanded" : ""
+                  inputExpanded || attachments.length > 0 ? "is-expanded" : ""
                 } ${isDraggingOverChat ? "ring-1 ring-white/30 border-white/25" : ""}`}
               >
                 {/* Capa de recorte para los efectos de luz (los menús desplegables pueden sobresalir) */}
@@ -7045,37 +7261,13 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Archivos adjuntos */}
-                  {attachments.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 px-1">
-                      {attachments.map((f, i) => {
-                        const attKind = classifyAttachmentFile(f);
-                        return (
-                          <span
-                            key={`${f.name}-${i}`}
-                            className="toast-in inline-flex items-center gap-1.5 text-[11px] pl-2 pr-1 py-1 rounded-lg bg-white/[0.06] border border-white/[0.1] text-zinc-200 max-w-[220px]"
-                          >
-                            {attKind === "pdf" ? (
-                              <FileText className="w-3 h-3 text-rose-300 shrink-0" />
-                            ) : attKind === "image" ? (
-                              <ImageIcon className="w-3 h-3 text-sky-300 shrink-0" />
-                            ) : (
-                              <Paperclip className="w-3 h-3 text-zinc-400 shrink-0" />
-                            )}
-                            <span className="truncate">{f.name}</span>
-                            <button
-                              type="button"
-                              onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
-                              aria-label={`Quitar ${f.name}`}
-                              className="text-zinc-500 hover:text-zinc-200 p-0.5 cursor-pointer"
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
+                  {/* Bandeja visual de adjuntos (imágenes con miniatura real + tarjetas PEGADO estilo Claude/Gemini + archivos) */}
+                  <ComposerAttachmentTray
+                    items={attachments}
+                    onRemove={removeComposerAttachment}
+                    onInspect={inspectComposerAttachment}
+                    disabled={isChatStreaming}
+                  />
 
                   {/* Badge de Modo Activo (/agent, /study, etc.) */}
                   {activeModeSpec && (
@@ -7122,8 +7314,11 @@ export default function App() {
                     </div>
                   )}
 
-                  <div className="relative flex items-end gap-2">
-                    {/* Botón + para subir archivos */}
+                  {/* Campo de escritura principal a ancho completo (estilo Claude / Gemini) */}
+                  <div className="relative px-1">
+                    <label htmlFor={chatInputId} className="sr-only">
+                      Escribe un mensaje para {effectiveAgentName}
+                    </label>
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -7132,7 +7327,7 @@ export default function App() {
                       onChange={(e) => {
                         const files = Array.from(e.target.files ?? []);
                         if (files.length) {
-                          setAttachments((prev) => [...prev, ...files]);
+                          appendFilesToComposer(files);
                           triggerReadingPulse(
                             files.length === 1
                               ? `Leyendo ${files[0].name}...`
@@ -7142,17 +7337,9 @@ export default function App() {
                         e.target.value = "";
                       }}
                     />
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      title="Adjuntar archivos (PDF, imágenes, CSV, texto...)"
-                      aria-label="Adjuntar archivos"
-                      className="quick-liquid-btn shrink-0 mb-0.5 w-8 h-8 rounded-full flex items-center justify-center text-zinc-200 hover:text-white active:scale-95 cursor-pointer"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
 
                     <textarea
+                      id={chatInputId}
                       ref={inputRef}
                       rows={1}
                       value={inputPrompt}
@@ -7185,15 +7372,22 @@ export default function App() {
                         }
                       }}
                       onPaste={(e) => {
-                        const pastedFiles = Array.from(e.clipboardData?.files ?? []);
+                        const { files: pastedFiles, text: pastedText } = extractClipboardPayload(
+                          e.clipboardData
+                        );
                         if (pastedFiles.length > 0) {
                           e.preventDefault();
-                          setAttachments((prev) => [...prev, ...pastedFiles]);
+                          appendFilesToComposer(pastedFiles);
                           triggerReadingPulse(
                             pastedFiles.length === 1
                               ? `Imagen o archivo adjuntado (${pastedFiles[0].name || "portapapeles"})...`
                               : `${pastedFiles.length} archivos pegados...`
                           );
+                          return;
+                        }
+                        if (pastedText && shouldGroupPastedText(pastedText)) {
+                          e.preventDefault();
+                          appendPastedTextToComposer(pastedText);
                         }
                       }}
                       onKeyDown={(e) => {
@@ -7244,212 +7438,34 @@ export default function App() {
                           return;
                         }
 
-                        if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                        if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
+                          if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
+                            return;
+                          }
                           handlePromptSubmit();
                         }
                       }}
                       disabled={isChatStreaming}
                       placeholder={chatInputPlaceholder}
-                      className="input-bubble flex-1 min-w-0 resize-none overflow-hidden bg-transparent text-sm sm:text-base text-zinc-100 placeholder:text-zinc-500 focus:outline-none py-1.5 px-1 font-normal leading-relaxed disabled:opacity-50 select-text"
+                      className="input-bubble w-full min-w-0 resize-none overflow-hidden bg-transparent text-sm sm:text-[15.5px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none py-1 font-normal leading-relaxed disabled:opacity-50 select-text"
                     />
-
-                    {/* Desplegable de modelos */}
-                    <div ref={modelMenuRef} className="relative shrink-0 mb-0.5">
-                      <button
-                        ref={modelTriggerRef}
-                        type="button"
-                        onClick={() => {
-                          setShowContextMenu(false);
-                          setShowModelMenu((v) => !v);
-                        }}
-                        aria-haspopup="listbox"
-                        aria-expanded={showModelMenu}
-                        className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] text-zinc-200 hover:text-white cursor-pointer"
-                      >
-                        <ProviderIcon provider={activeProvider} size={13} className="text-white/85 shrink-0" />
-                        <span className="truncate max-w-[84px] @xs:max-w-[118px] @sm:max-w-[160px]">{activeModel.name}</span>
-                        <ChevronDown className={`w-3 h-3 text-white/65 transition-transform shrink-0 ${showModelMenu ? "rotate-180" : ""}`} />
-                      </button>
-                      {modelMenuPresence.mounted && (
-                        <div
-                          role="listbox"
-                          aria-label="Modelos disponibles"
-                          onKeyDown={(e) =>
-                            handleListboxKeyDown(
-                              e,
-                              () => setShowModelMenu(false),
-                              modelTriggerRef.current
-                            )
-                          }
-                          className={`xook-liquid-menu ${
-                            showModelMenu ? "menu-in" : "menu-out pointer-events-none"
-                          } absolute right-0 bottom-full mb-2 w-80 overflow-hidden p-1.5 rounded-2xl z-30`}
-                        >
-                          <LiquidGlassBackdrop variant="menu" />
-
-                          <div className="relative z-[1]">
-                            <div className="px-2.5 py-1.5 flex items-center justify-between gap-2 border-b border-white/[0.08] mb-1.5">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <ProviderIcon provider={activeProvider} size={12} className="text-zinc-200 shrink-0" />
-                                <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-300/85 truncate">
-                                  {activeSpec.shortName} ({availableQuickModels.length})
-                                </span>
-                                {activeProvider === "openrouter" && !canUsePaidModels && (
-                                  <span className="quick-liquid-chip px-1.5 py-0.5 rounded-full text-[9px] font-medium text-zinc-300/90 shrink-0">
-                                    {aiConfig.hasApiKey ? "Sin saldo · gratis" : "Gratis"}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-1 shrink-0">
-                                {availableQuickModels.length > 4 && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setExpandModelMenu((prev) => !prev);
-                                    }}
-                                    aria-expanded={expandModelMenu}
-                                    title={expandModelMenu ? "Contraer lista de modelos" : "Ver más modelos"}
-                                    className="inline-flex items-center gap-0.5 h-6 px-2 rounded-full text-[10px] font-medium text-sky-200/85 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
-                                  >
-                                    <span>{expandModelMenu ? "Menos" : "Más"}</span>
-                                    <ChevronDown
-                                      className={`w-3 h-3 transition-transform duration-200 ${
-                                        expandModelMenu ? "rotate-180" : ""
-                                      }`}
-                                    />
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    void refreshModelsAndUsage(true);
-                                  }}
-                                  aria-label={`Actualizar catálogo y estado de ${activeSpec.shortName}`}
-                                  title={`Actualizar catálogo y estado de ${activeSpec.shortName}`}
-                                  className="w-6 h-6 rounded-full flex items-center justify-center text-zinc-300/80 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0"
-                                >
-                                  <RefreshCw className={`w-3 h-3 ${loadingModels ? "animate-spin" : ""}`} />
-                                </button>
-                              </div>
-                            </div>
-
-                            {unavailableModelIds.size > 0 && (
-                              <div className="quick-liquid-subcard mx-1 mb-1.5 px-2.5 py-1.5 rounded-xl text-[10.5px] text-zinc-200/90 leading-snug">
-                                Se ocultaron {unavailableModelIds.size} modelo(s) que devolvieron error o límite.
-                              </div>
-                            )}
-
-                            <div
-                              className={`xook-expand-list ${
-                                expandModelMenu ? "max-h-80" : "max-h-56"
-                              } overflow-y-auto space-y-0.5 pr-0.5`}
-                            >
-                              {availableQuickModels.map((m) => (
-                                <button
-                                  key={m.id}
-                                  type="button"
-                                  role="option"
-                                  aria-selected={m.id === modelId}
-                                  onClick={() => void handleSelectModel(m.id)}
-                                  className={`quick-liquid-option w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-left cursor-pointer ${
-                                    m.id === modelId ? "is-selected" : ""
-                                  }`}
-                                >
-                                  <span className="min-w-0">
-                                    <span className="flex items-center gap-1.5 text-xs font-medium text-white truncate [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]">
-                                      <span className="truncate">{m.name}</span>
-                                      {m.is_free ? (
-                                        <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[9px] font-medium text-zinc-200/90 shrink-0">
-                                          gratis
-                                        </span>
-                                      ) : typeof m.prompt_price_per_million === "number" &&
-                                        m.prompt_price_per_million > 0 ? (
-                                        <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[9px] font-mono text-zinc-300/90 shrink-0 tabular-nums">
-                                          {formatPricePerMillion(m.prompt_price_per_million)}/1M
-                                        </span>
-                                      ) : null}
-                                    </span>
-                                    <span className="block text-[10.5px] text-zinc-300/75 truncate [text-shadow:0_1px_3px_rgba(4,8,18,0.6)]">
-                                      {m.hint}
-                                    </span>
-                                  </span>
-                                  {m.id === modelId && (
-                                    <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
-                                      <Check className="w-2.5 h-2.5 text-white" />
-                                    </span>
-                                  )}
-                                </button>
-                              ))}
-                            </div>
-
-                            <div className="mt-1.5 pt-1.5 border-t border-white/[0.08] space-y-1">
-                              {hasAnyConfiguredKey && (
-                                <div className="px-2.5 py-1 space-y-1">
-                                  <div className="flex items-center justify-between gap-2 text-[10.5px] text-zinc-300/85">
-                                    <span className="truncate">{usageSummary.tierLabel}</span>
-                                    <span className="font-mono text-zinc-100 shrink-0 tabular-nums">
-                                      {usageSummary.headline}
-                                    </span>
-                                  </div>
-                                  {usageSummary.hasMeterBar && (
-                                    <progress
-                                      className="xook-usage-progress"
-                                      value={Math.max(0, Math.min(100, usageSummary.pct))}
-                                      max={100}
-                                      aria-label={`${usageSummary.tierLabel}: ${usageSummary.headline}`}
-                                      style={{
-                                        ["--xook-progress-fill" as string]: getUsageMeterFillColor({
-                                          meterMode: usageSummary.meterMode,
-                                          pct: usageSummary.pct,
-                                        }),
-                                      }}
-                                    />
-                                  )}
-                                </div>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setShowModelMenu(false);
-                                  openAiSettings("models");
-                                }}
-                                className="quick-liquid-option w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-left text-[11px] font-medium text-zinc-100/90 hover:text-white cursor-pointer"
-                              >
-                                <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
-                                  <KeyRound className="w-2.5 h-2.5 text-white/85" />
-                                </span>
-                                <span>Proveedores, tarifas y respaldo…</span>
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={
-                        (!inputPrompt.trim() && attachments.length === 0 && activeMode !== "compact") ||
-                        isChatStreaming ||
-                        isCompactingContext
-                      }
-                      className={`shrink-0 mb-0.5 w-8 h-8 rounded-full flex items-center justify-center ${
-                        (!inputPrompt.trim() && attachments.length === 0) || isChatStreaming
-                          ? "quick-liquid-btn text-zinc-200/70 cursor-not-allowed"
-                          : "quick-liquid-btn-ready active:scale-95 cursor-pointer"
-                      }`}
-                      title="Enviar instrucción (Enter)"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                    </button>
                   </div>
 
-                  {/* Barra inferior compacta: selector de modos + selector de contexto + atajo ⌘K */}
-                  <div className="pt-2 flex items-center justify-between gap-2 border-t border-white/[0.05]">
-                    <div className="flex items-center gap-1.5">
+                  {/* Barra inferior unificada: adjuntar + modos + contexto a la izquierda · modelo + atajos + enviar a la derecha */}
+                  <div className="pt-1.5 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {/* Botón + para subir archivos o imágenes */}
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        title="Adjuntar archivos o imágenes (PDF, PNG, JPG, CSV, texto...)"
+                        aria-label="Adjuntar archivos o imágenes"
+                        className="quick-liquid-btn shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-zinc-200 hover:text-white active:scale-95 cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                      </button>
+
                       {/* Desplegable de Modos y Comandos Especiales (/agent, /study, etc.) */}
                       <div ref={commandMenuRef} className="relative">
                         <button
@@ -7464,7 +7480,7 @@ export default function App() {
                           aria-expanded={showCommandMenu}
                           aria-label="Comandos y modos de Xox"
                           title="Activar modos (/agent, /study, /plan, /audit, /compact)"
-                          className={`quick-liquid-btn h-7 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] cursor-pointer ${
+                          className={`quick-liquid-btn h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] cursor-pointer ${
                             activeMode || showCommandMenu
                               ? "text-white"
                               : "text-zinc-300 hover:text-white"
@@ -7506,110 +7522,333 @@ export default function App() {
 
                       {/* Selector de Contexto */}
                       <div ref={contextMenuRef} className="relative">
-                      <button
-                        ref={contextTriggerRef}
-                        type="button"
-                        onClick={() => {
-                          setShowModelMenu(false);
-                          setShowContextMenu((v) => !v);
-                        }}
-                        aria-haspopup="listbox"
-                        aria-expanded={showContextMenu}
-                        aria-label="Seleccionar contexto"
-                        title="Adjuntar contexto al mensaje"
-                        className={`quick-liquid-btn h-7 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] cursor-pointer ${
-                          activeContextCount > 0 || showContextMenu
-                            ? "text-white"
-                            : "text-zinc-300 hover:text-white"
-                        }`}
-                      >
-                        <AtSign className="w-3 h-3 text-white/75 shrink-0" />
-                        <span className="hidden @xs:inline">Contexto</span>
-                        {activeContextCount > 0 && (
-                          <span className="text-[10px] font-mono text-zinc-100 tabular-nums">
-                            {activeContextCount}
-                          </span>
-                        )}
-                        <ChevronDown className={`w-3 h-3 text-white/65 transition-transform ${showContextMenu ? "rotate-180" : ""}`} />
-                      </button>
-
-                      {contextMenuPresence.mounted && (
-                        <div
-                          role="listbox"
-                          aria-label="Contexto disponible"
-                          aria-multiselectable="true"
-                          onKeyDown={(e) =>
-                            handleListboxKeyDown(
-                              e,
-                              () => setShowContextMenu(false),
-                              contextTriggerRef.current
-                            )
-                          }
-                          className={`xook-liquid-menu menu-origin-left ${
-                            showContextMenu ? "menu-in" : "menu-out pointer-events-none"
-                          } absolute left-0 bottom-full mb-2 w-60 p-1.5 rounded-2xl z-30`}
+                        <button
+                          ref={contextTriggerRef}
+                          type="button"
+                          onClick={() => {
+                            setShowModelMenu(false);
+                            setShowContextMenu((v) => !v);
+                          }}
+                          aria-haspopup="listbox"
+                          aria-expanded={showContextMenu}
+                          aria-label="Seleccionar contexto"
+                          title="Adjuntar contexto al mensaje"
+                          className={`quick-liquid-btn h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] cursor-pointer ${
+                            activeContextCount > 0 || showContextMenu
+                              ? "text-white"
+                              : "text-zinc-300 hover:text-white"
+                          }`}
                         >
-                          <LiquidGlassBackdrop variant="menu" />
+                          <AtSign className="w-3 h-3 text-white/75 shrink-0" />
+                          <span className="hidden @xs:inline">Contexto</span>
+                          {activeContextCount > 0 && (
+                            <span className="text-[10px] font-mono text-zinc-100 tabular-nums">
+                              {activeContextCount}
+                            </span>
+                          )}
+                          <ChevronDown className={`w-3 h-3 text-white/65 transition-transform ${showContextMenu ? "rotate-180" : ""}`} />
+                        </button>
 
-                          <div className="relative z-[1] space-y-0.5">
-                            {contextItems.map((item) => {
-                              const friendlyLabel = CONTEXT_LABEL[item.type] || item.name;
-                              const isInPrompt = inputPrompt.includes(`@${item.name}`);
-                              return (
-                                <button
-                                  key={item.id}
-                                  type="button"
-                                  role="option"
-                                  aria-selected={isInPrompt}
-                                  onClick={() => toggleContextInPrompt(item.name)}
-                                  className={`quick-liquid-option w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl text-left cursor-pointer ${
-                                    isInPrompt ? "is-selected" : ""
-                                  }`}
-                                >
-                                  <span className="flex items-center gap-2 min-w-0">
-                                    <span className="quick-liquid-icon w-6 h-6 rounded-full inline-flex items-center justify-center shrink-0">
-                                      <ContextIcon type={item.type} className="w-3 h-3 text-white/85" />
+                        {contextMenuPresence.mounted && (
+                          <div
+                            role="listbox"
+                            aria-label="Contexto disponible"
+                            aria-multiselectable="true"
+                            onKeyDown={(e) =>
+                              handleListboxKeyDown(
+                                e,
+                                () => setShowContextMenu(false),
+                                contextTriggerRef.current
+                              )
+                            }
+                            className={`xook-liquid-menu menu-origin-left ${
+                              showContextMenu ? "menu-in" : "menu-out pointer-events-none"
+                            } absolute left-0 bottom-full mb-2 w-60 p-1.5 rounded-2xl z-30`}
+                          >
+                            <LiquidGlassBackdrop variant="menu" />
+
+                            <div className="relative z-[1] space-y-0.5">
+                              {contextItems.map((item) => {
+                                const friendlyLabel = CONTEXT_LABEL[item.type] || item.name;
+                                const isInPrompt = inputPrompt.includes(`@${item.name}`);
+                                return (
+                                  <button
+                                    key={item.id}
+                                    type="button"
+                                    role="option"
+                                    aria-selected={isInPrompt}
+                                    onClick={() => toggleContextInPrompt(item.name)}
+                                    className={`quick-liquid-option w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl text-left cursor-pointer ${
+                                      isInPrompt ? "is-selected" : ""
+                                    }`}
+                                  >
+                                    <span className="flex items-center gap-2 min-w-0">
+                                      <span className="quick-liquid-icon w-6 h-6 rounded-full inline-flex items-center justify-center shrink-0">
+                                        <ContextIcon type={item.type} className="w-3 h-3 text-white/85" />
+                                      </span>
+                                      <span className="min-w-0">
+                                        <span className="block text-xs font-medium text-white truncate">{friendlyLabel}</span>
+                                        <span className="block text-[10px] text-zinc-300/75 font-mono truncate">{item.name}</span>
+                                      </span>
                                     </span>
-                                    <span className="min-w-0">
-                                      <span className="block text-xs font-medium text-white truncate">{friendlyLabel}</span>
-                                      <span className="block text-[10px] text-zinc-300/75 font-mono truncate">{item.name}</span>
-                                    </span>
+                                    {isInPrompt && (
+                                      <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
+                                        <Check className="w-2.5 h-2.5 text-white" />
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <div className="hidden @md:flex items-center gap-1 mr-0.5">
+                        {isTauriEnv && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                const { invoke } = await import("@tauri-apps/api/core");
+                                await invoke("toggle_quick_bar_cmd");
+                              } catch {
+                                // Ignore
+                              }
+                            }}
+                            title="Abrir Xox Quick Bar flotante (⌘⇧X)"
+                            className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 hover:text-zinc-200 bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] rounded transition-colors cursor-pointer"
+                          >
+                            ⌘⇧X
+                          </button>
+                        )}
+                        <kbd className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-500 bg-white/[0.03] border border-white/[0.06] rounded">
+                          ⌘K
+                        </kbd>
+                      </div>
+
+                      {/* Desplegable de modelos */}
+                      <div ref={modelMenuRef} className="relative shrink-0">
+                        <button
+                          ref={modelTriggerRef}
+                          type="button"
+                          onClick={() => {
+                            setShowContextMenu(false);
+                            setShowModelMenu((v) => !v);
+                          }}
+                          aria-haspopup="listbox"
+                          aria-expanded={showModelMenu}
+                          className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] text-zinc-200 hover:text-white cursor-pointer"
+                        >
+                          <ProviderIcon provider={activeProvider} size={13} className="text-white/85 shrink-0" />
+                          <span className="truncate max-w-[84px] @xs:max-w-[118px] @sm:max-w-[160px]">{activeModel.name}</span>
+                          <ChevronDown className={`w-3 h-3 text-white/65 transition-transform shrink-0 ${showModelMenu ? "rotate-180" : ""}`} />
+                        </button>
+                        {modelMenuPresence.mounted && (
+                          <div
+                            role="listbox"
+                            aria-label="Modelos disponibles"
+                            onKeyDown={(e) =>
+                              handleListboxKeyDown(
+                                e,
+                                () => setShowModelMenu(false),
+                                modelTriggerRef.current
+                              )
+                            }
+                            className={`xook-liquid-menu ${
+                              showModelMenu ? "menu-in" : "menu-out pointer-events-none"
+                            } absolute right-0 bottom-full mb-2 w-80 overflow-hidden p-1.5 rounded-2xl z-30`}
+                          >
+                            <LiquidGlassBackdrop variant="menu" />
+
+                            <div className="relative z-[1]">
+                              <div className="px-2.5 py-1.5 flex items-center justify-between gap-2 border-b border-white/[0.08] mb-1.5">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <ProviderIcon provider={activeProvider} size={12} className="text-zinc-200 shrink-0" />
+                                  <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-300/85 truncate">
+                                    {activeSpec.shortName} ({availableQuickModels.length})
                                   </span>
-                                  {isInPrompt && (
-                                    <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
-                                      <Check className="w-2.5 h-2.5 text-white" />
+                                  {activeProvider === "openrouter" && !canUsePaidModels && (
+                                    <span className="quick-liquid-chip px-1.5 py-0.5 rounded-full text-[9px] font-medium text-zinc-300/90 shrink-0">
+                                      {aiConfig.hasApiKey ? "Sin saldo · gratis" : "Gratis"}
                                     </span>
                                   )}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {availableQuickModels.length > 4 && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setExpandModelMenu((prev) => !prev);
+                                      }}
+                                      aria-expanded={expandModelMenu}
+                                      title={expandModelMenu ? "Contraer lista de modelos" : "Ver más modelos"}
+                                      className="inline-flex items-center gap-0.5 h-6 px-2 rounded-full text-[10px] font-medium text-sky-200/85 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+                                    >
+                                      <span>{expandModelMenu ? "Menos" : "Más"}</span>
+                                      <ChevronDown
+                                        className={`w-3 h-3 transition-transform duration-200 ${
+                                          expandModelMenu ? "rotate-180" : ""
+                                        }`}
+                                      />
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void refreshModelsAndUsage(true);
+                                    }}
+                                    aria-label={`Actualizar catálogo y estado de ${activeSpec.shortName}`}
+                                    title={`Actualizar catálogo y estado de ${activeSpec.shortName}`}
+                                    className="w-6 h-6 rounded-full flex items-center justify-center text-zinc-300/80 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0"
+                                  >
+                                    <RefreshCw className={`w-3 h-3 ${loadingModels ? "animate-spin" : ""}`} />
+                                  </button>
+                                </div>
+                              </div>
 
-                  <div className="hidden @sm:flex items-center gap-1.5">
-                      {isTauriEnv && (
+                              {unavailableModelIds.size > 0 && (
+                                <div className="quick-liquid-subcard mx-1 mb-1.5 px-2.5 py-1.5 rounded-xl text-[10.5px] text-zinc-200/90 leading-snug">
+                                  Se ocultaron {unavailableModelIds.size} modelo(s) que devolvieron error o límite.
+                                </div>
+                              )}
+
+                              <div
+                                className={`xook-expand-list ${
+                                  expandModelMenu ? "max-h-80" : "max-h-56"
+                                } overflow-y-auto space-y-0.5 pr-0.5`}
+                              >
+                                {availableQuickModels.map((m) => (
+                                  <button
+                                    key={m.id}
+                                    type="button"
+                                    role="option"
+                                    aria-selected={m.id === modelId}
+                                    onClick={() => void handleSelectModel(m.id)}
+                                    className={`quick-liquid-option w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-left cursor-pointer ${
+                                      m.id === modelId ? "is-selected" : ""
+                                    }`}
+                                  >
+                                    <span className="min-w-0">
+                                      <span className="flex items-center gap-1.5 text-xs font-medium text-white truncate [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]">
+                                        <span className="truncate">{m.name}</span>
+                                        {m.is_free ? (
+                                          <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[9px] font-medium text-zinc-200/90 shrink-0">
+                                            gratis
+                                          </span>
+                                        ) : typeof m.prompt_price_per_million === "number" &&
+                                          m.prompt_price_per_million > 0 ? (
+                                          <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[9px] font-mono text-zinc-300/90 shrink-0 tabular-nums">
+                                            {formatPricePerMillion(m.prompt_price_per_million)}/1M
+                                          </span>
+                                        ) : null}
+                                      </span>
+                                      <span className="block text-[10.5px] text-zinc-300/75 truncate [text-shadow:0_1px_3px_rgba(4,8,18,0.6)]">
+                                        {m.hint}
+                                      </span>
+                                    </span>
+                                    {m.id === modelId && (
+                                      <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
+                                        <Check className="w-2.5 h-2.5 text-white" />
+                                      </span>
+                                    )}
+                                  </button>
+                                ))}
+                              </div>
+
+                              <div className="mt-1.5 pt-1.5 border-t border-white/[0.08] space-y-1">
+                                {hasAnyConfiguredKey && (
+                                  <div className="px-2.5 py-1 space-y-1">
+                                    <div className="flex items-center justify-between gap-2 text-[10.5px] text-zinc-300/85">
+                                      <span className="truncate">{usageSummary.tierLabel}</span>
+                                      <span className="font-mono text-zinc-100 shrink-0 tabular-nums">
+                                        {usageSummary.headline}
+                                      </span>
+                                    </div>
+                                    {usageSummary.hasMeterBar && (
+                                      <progress
+                                        className="xook-usage-progress"
+                                        value={Math.max(0, Math.min(100, usageSummary.pct))}
+                                        max={100}
+                                        aria-label={`${usageSummary.tierLabel}: ${usageSummary.headline}`}
+                                        style={{
+                                          ["--xook-progress-fill" as string]: getUsageMeterFillColor({
+                                            meterMode: usageSummary.meterMode,
+                                            pct: usageSummary.pct,
+                                          }),
+                                        }}
+                                      />
+                                    )}
+                                  </div>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowModelMenu(false);
+                                    openAiSettings("models");
+                                  }}
+                                  className="quick-liquid-option w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-left text-[11px] font-medium text-zinc-100/90 hover:text-white cursor-pointer"
+                                >
+                                  <span className="quick-liquid-icon w-5 h-5 rounded-full inline-flex items-center justify-center shrink-0">
+                                    <KeyRound className="w-2.5 h-2.5 text-white/85" />
+                                  </span>
+                                  <span>Proveedores, tarifas y respaldo…</span>
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {isChatStreaming ? (
                         <button
                           type="button"
-                          onClick={async () => {
-                            try {
-                              const { invoke } = await import("@tauri-apps/api/core");
-                              await invoke("toggle_quick_bar_cmd");
-                            } catch {
-                              // Ignore
-                            }
-                          }}
-                          title="Abrir Xox Quick Bar flotante (⌘⇧X)"
-                          className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 hover:text-zinc-200 bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] rounded transition-colors cursor-pointer"
+                          onClick={handleStopGeneration}
+                          aria-label="Detener respuesta en curso"
+                          title="Detener generación"
+                          className="xook-stop-btn quick-liquid-btn-ready shrink-0 w-8 h-8 rounded-full flex items-center justify-center active:scale-95 cursor-pointer focus-visible:outline-2 focus-visible:outline-white/80"
                         >
-                          ⌘⇧X
+                          <span aria-hidden="true" className="xook-stop-ring" />
+                          <span
+                            aria-hidden="true"
+                            className="relative z-[1] w-2.5 h-2.5 rounded-[2.5px] bg-white shadow-[0_0_8px_rgba(255,255,255,0.45)]"
+                          />
+                        </button>
+                      ) : isCompactingContext ? (
+                        <button
+                          type="button"
+                          disabled
+                          aria-label="Compactando contexto..."
+                          title="Compactando contexto..."
+                          className="xook-stop-btn quick-liquid-btn-ready shrink-0 w-8 h-8 rounded-full flex items-center justify-center cursor-wait opacity-90"
+                        >
+                          <span aria-hidden="true" className="xook-stop-ring" />
+                          <span
+                            aria-hidden="true"
+                            className="relative z-[1] w-2.5 h-2.5 rounded-[2.5px] bg-white/90"
+                          />
+                        </button>
+                      ) : (
+                        <button
+                          type="submit"
+                          disabled={
+                            !inputPrompt.trim() && attachments.length === 0 && activeMode !== "compact"
+                          }
+                          aria-label="Enviar mensaje"
+                          className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
+                            !inputPrompt.trim() && attachments.length === 0 && activeMode !== "compact"
+                              ? "quick-liquid-btn text-zinc-200/70 cursor-not-allowed"
+                              : "quick-liquid-btn-ready active:scale-95 cursor-pointer"
+                          }`}
+                          title="Enviar instrucción (Enter)"
+                        >
+                          <Send className="w-3.5 h-3.5" />
                         </button>
                       )}
-                      <kbd className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-500 bg-white/[0.03] border border-white/[0.06] rounded">
-                        ⌘K
-                      </kbd>
                     </div>
                   </div>
                 </form>
@@ -7979,6 +8218,14 @@ export default function App() {
           setStatusMessage(msg);
           setTimeout(() => setStatusMessage(null), 3800);
         }}
+      />
+
+      <AttachmentPreviewDialog
+        target={attachmentPreviewTarget}
+        onClose={() => setAttachmentPreviewTarget(null)}
+        onSavePastedText={updateComposerPastedText}
+        onUnwrapPastedText={unwrapComposerPastedText}
+        onRemoveAttachment={removeComposerAttachment}
       />
 
       {xoxFlight && (

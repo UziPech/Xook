@@ -23,6 +23,22 @@ import {
 } from "../features/xox-studio/xoxStudioApi";
 import { QuickLiquidLayer } from "./QuickLiquidLayer";
 import { JellyPillTrack } from "./JellyPillTrack";
+import { ComposerAttachmentTray } from "./ComposerAttachmentTray";
+import { AttachmentPreviewDialog } from "./AttachmentPreviewDialog";
+import {
+  type AttachmentPreviewTarget,
+  type ComposerAttachmentItem,
+  type ComposerPastedTextAttachment,
+  composeLlmMessageWithPastedText,
+  createComposerFileItems,
+  createPastedTextItem,
+  derivePastedCardTitle,
+  extractClipboardPayload,
+  normalizePastedText,
+  prepareImagePayload,
+  revokeComposerAttachments,
+  shouldGroupPastedText,
+} from "../features/ai-service/composerAttachments";
 import { MarkdownContent, renderInlineMarkdown } from "../utils/markdownRenderer";
 import { getQuickBarPlaceholder } from "../utils/xoxGreetings";
 import { useAnimatedPresence } from "../hooks/useAnimatedPresence";
@@ -60,6 +76,8 @@ import {
   getProviderSpec,
   getUsageMeterFillColor,
   incrementLocalDailyRequestCount,
+  isStreamCancelledError,
+  cancelXoxAiChatStream,
   loadWorkspaceContext,
   normalizeProviderIdClient,
   onAiUsageUpdated,
@@ -154,6 +172,11 @@ export const QuickBar: React.FC = () => {
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [settleSeq, setSettleSeq] = useState<number>(0);
   const [inputPrompt, setInputPrompt] = useState<string>("");
+  const [quickAttachments, setQuickAttachments] = useState<ComposerAttachmentItem[]>([]);
+  const quickAttachmentsRef = useRef<ComposerAttachmentItem[]>(quickAttachments);
+  quickAttachmentsRef.current = quickAttachments;
+  const [quickPreviewTarget, setQuickPreviewTarget] =
+    useState<AttachmentPreviewTarget | null>(null);
   const [xoxState, setXoxState] = useState<XoxState>("idle");
   const [xoxTerminalFeed, setXoxTerminalFeed] = useState<XoxTerminalFeed | null>(null);
   const [statusNote, setStatusNote] = useState<string>("");
@@ -212,6 +235,7 @@ export const QuickBar: React.FC = () => {
   const isStreamingRef = useRef<boolean>(false);
   isStreamingRef.current = isStreaming;
   const activeStreamIdRef = useRef<string | null>(null);
+  const quickAbortControllerRef = useRef<AbortController | null>(null);
   const accountUsageRef = useRef<AiConnectionTestResult | null>(null);
   accountUsageRef.current = accountUsage;
   const catalogLoadingRef = useRef<boolean>(false);
@@ -270,6 +294,113 @@ export const QuickBar: React.FC = () => {
   }, []);
 
   useEffect(() => () => clearActionTimers(), [clearActionTimers]);
+
+  useEffect(() => {
+    return () => {
+      revokeComposerAttachments(quickAttachmentsRef.current);
+    };
+  }, []);
+
+  const appendQuickFiles = useCallback((files: File[]) => {
+    if (!files.length) return;
+    const existingImgCount = quickAttachmentsRef.current.filter((a) => a.kind === "image").length;
+    const created = createComposerFileItems(files, existingImgCount);
+    setQuickAttachments((prev) => [...prev, ...created]);
+    for (const item of created) {
+      if (item.kind === "image") {
+        void prepareImagePayload(item.file).then((prep) => {
+          if (!prep.thumbUrl && !prep.imageDataUrl) return;
+          setQuickAttachments((prev) =>
+            prev.map((curr) =>
+              curr.id === item.id && curr.kind === "image"
+                ? {
+                    ...curr,
+                    thumbUrl: prep.thumbUrl ?? curr.thumbUrl,
+                    imageDataUrl: prep.imageDataUrl ?? curr.imageDataUrl,
+                    width: prep.width ?? curr.width,
+                    height: prep.height ?? curr.height,
+                  }
+                : curr
+            )
+          );
+        });
+      }
+    }
+  }, []);
+
+  const appendQuickPastedText = useCallback((rawText: string) => {
+    const existingPasted = quickAttachmentsRef.current.filter(
+      (a) => a.kind === "pasted_text"
+    ).length;
+    const item = createPastedTextItem(rawText, existingPasted);
+    setQuickAttachments((prev) => [...prev, item]);
+  }, []);
+
+  const removeQuickAttachment = useCallback((id: string) => {
+    setQuickAttachments((prev) => {
+      const target = prev.find((a) => a.id === id);
+      if (target) revokeComposerAttachments([target]);
+      return prev.filter((a) => a.id !== id);
+    });
+  }, []);
+
+  const updateQuickPastedText = useCallback((id: string, nextContent: string) => {
+    const { content, charCount, lineCount } = normalizePastedText(nextContent);
+    setQuickAttachments((prev) =>
+      prev.map((item, idx) =>
+        item.id === id && item.kind === "pasted_text"
+          ? {
+              ...item,
+              content,
+              charCount,
+              lineCount,
+              name: derivePastedCardTitle(content, idx + 1),
+            }
+          : item
+      )
+    );
+  }, []);
+
+  const unwrapQuickPastedText = useCallback(
+    (id: string, content: string) => {
+      removeQuickAttachment(id);
+      setInputPrompt((prev) => {
+        const trimmedPrev = prev.trimEnd();
+        return trimmedPrev ? `${trimmedPrev}\n\n${content}` : content;
+      });
+      requestAnimationFrame(() => inputRef.current?.focus());
+    },
+    [removeQuickAttachment]
+  );
+
+  const inspectQuickAttachment = useCallback((item: ComposerAttachmentItem) => {
+    if (item.kind === "image") {
+      const src = item.objectUrl || item.imageDataUrl || item.thumbUrl;
+      if (!src) return;
+      setQuickPreviewTarget({
+        kind: "image",
+        id: item.id,
+        name: item.name,
+        src,
+        width: item.width,
+        height: item.height,
+        sizeBytes: item.sizeBytes,
+        removable: true,
+      });
+      return;
+    }
+    if (item.kind === "pasted_text") {
+      setQuickPreviewTarget({
+        kind: "pasted_text",
+        id: item.id,
+        name: item.name,
+        content: item.content,
+        charCount: item.charCount,
+        lineCount: item.lineCount,
+        editable: true,
+      });
+    }
+  }, []);
 
   const focusInput = useCallback(() => {
     requestAnimationFrame(() => {
@@ -875,10 +1006,25 @@ export const QuickBar: React.FC = () => {
   }, [showModels, showScreenMenu]);
 
   const runQuickPrompt = async (overridePrompt?: string) => {
-    const text = (
+    const rawTyped = (
       typeof overridePrompt === "string" ? overridePrompt : inputPrompt
     ).trim();
-    if (!text || isStreamingRef.current) return;
+    const currentQuickAttachments =
+      typeof overridePrompt === "string" ? [] : quickAttachmentsRef.current;
+    if ((!rawTyped && currentQuickAttachments.length === 0) || isStreamingRef.current) return;
+
+    const pastedItems = currentQuickAttachments.filter(
+      (a): a is ComposerPastedTextAttachment => a.kind === "pasted_text"
+    );
+    const fileItems = currentQuickAttachments.filter(
+      (a): a is Exclude<ComposerAttachmentItem, ComposerPastedTextAttachment> =>
+        a.kind !== "pasted_text"
+    );
+    const text = composeLlmMessageWithPastedText(
+      rawTyped,
+      pastedItems,
+      fileItems.map((f) => ({ name: f.name, kind: f.kind }))
+    );
 
     clearActionTimers();
     setShowModels(false);
@@ -887,11 +1033,12 @@ export const QuickBar: React.FC = () => {
     setScreenPermissionNeeded(false);
     if (typeof overridePrompt !== "string") {
       setInputPrompt("");
+      setQuickAttachments([]);
     }
     setReply(null);
     setQuickCanvas(null);
     setPendingClarification(null);
-    lastPromptRef.current = text;
+    lastPromptRef.current = rawTyped || text;
     lastCanvasRef.current = null;
     lastReplyRef.current = null;
     lastCanvasDisplayRef.current = null;
@@ -900,6 +1047,7 @@ export const QuickBar: React.FC = () => {
     // Zero-Trust: bloquear envío de claves API pegadas desde Quick Bar
     const { detectedKey, maskedKey, detectedProvider } = detectApiKeyInText(text);
     if (detectedKey && maskedKey) {
+      revokeComposerAttachments(currentQuickAttachments);
       const targetSpec = detectedProvider ? getProviderSpec(detectedProvider) : null;
       setXoxState("alert");
       setStatusNote("");
@@ -911,7 +1059,10 @@ export const QuickBar: React.FC = () => {
       return;
     }
 
-    const vaultReq = detectVaultConfigRequest(text);
+    const vaultReq =
+      pastedItems.length === 0 && rawTyped
+        ? detectVaultConfigRequest(rawTyped)
+        : { isVaultRequest: false, intentKind: "open_vault" as const, providerHint: null };
     if (vaultReq.isVaultRequest) {
       const targetPid = vaultReq.providerHint ?? activeProvider;
       const targetSpec = getProviderSpec(targetPid);
@@ -986,6 +1137,61 @@ export const QuickBar: React.FC = () => {
         content: src.content.slice(0, 1500),
       }));
 
+      if (fileItems.length > 0) {
+        const quickFileSnippets = await Promise.all(
+          fileItems.map(async (item): Promise<AttachedContextItem | null> => {
+            if (item.kind === "image") {
+              const imgPrep =
+                item.imageDataUrl
+                  ? {
+                      imageDataUrl: item.imageDataUrl,
+                      width: item.width,
+                      height: item.height,
+                    }
+                  : await prepareImagePayload(item.file);
+              const dimText =
+                imgPrep.width && imgPrep.height ? ` (${imgPrep.width}×${imgPrep.height}px)` : "";
+              return {
+                name: item.name,
+                type: item.mimeType || "image/png",
+                kind: "image",
+                mimeType: item.mimeType || "image/png",
+                sizeBytes: item.sizeBytes,
+                width: imgPrep.width,
+                height: imgPrep.height,
+                imageDataUrl: imgPrep.imageDataUrl,
+                content: `Imagen adjunta '${item.name}'${dimText}.`,
+              };
+            }
+            if (item.kind === "text" && item.file.size <= 131072) {
+              try {
+                const raw = await item.file.text();
+                return {
+                  name: item.name,
+                  type: item.mimeType || "text/plain",
+                  kind: "text",
+                  sizeBytes: item.sizeBytes,
+                  content: raw.slice(0, 4000),
+                };
+              } catch {
+                return null;
+              }
+            }
+            return {
+              name: item.name,
+              type: item.mimeType || "application/octet-stream",
+              kind: item.kind,
+              sizeBytes: item.sizeBytes,
+              content: `Archivo adjunto '${item.name}'.`,
+            };
+          })
+        );
+        for (const snippet of quickFileSnippets) {
+          if (snippet) extraAttached.unshift(snippet);
+        }
+        revokeComposerAttachments(currentQuickAttachments);
+      }
+
       if (wantsLiveScreen) {
         setXoxState("reading");
         setStatusNote("Capturando pantalla...");
@@ -1044,6 +1250,8 @@ export const QuickBar: React.FC = () => {
         .join("\n")
         .slice(0, 3500);
 
+      const quickAbortController = new AbortController();
+      quickAbortControllerRef.current = quickAbortController;
       const res = await runXoxAiChatStream(
         {
           message: text,
@@ -1064,6 +1272,7 @@ export const QuickBar: React.FC = () => {
           activeCanvas: lastCanvasRef.current,
         },
         {
+          signal: quickAbortController.signal,
           onStreamStart: (streamId) => {
             activeStreamIdRef.current = streamId;
           },
@@ -1156,6 +1365,10 @@ export const QuickBar: React.FC = () => {
       );
 
       clearActionTimers();
+      if (quickAbortControllerRef.current === quickAbortController) {
+        quickAbortControllerRef.current = null;
+      }
+      activeStreamIdRef.current = null;
       if (res.tasks.length > 0) {
         void upsertTasksBatch(res.tasks, res.operation === "replace_tasks").catch(() => {});
       }
@@ -1224,7 +1437,19 @@ export const QuickBar: React.FC = () => {
       }
     } catch (err) {
       clearActionTimers();
+      const wasCancelled =
+        isStreamCancelledError(err) || Boolean(quickAbortControllerRef.current?.signal.aborted);
+      quickAbortControllerRef.current = null;
+      activeStreamIdRef.current = null;
       setIsStreaming(false);
+      if (wasCancelled) {
+        setXoxState("idle");
+        setStatusNote("Proceso detenido");
+        const t = setTimeout(() => setStatusNote(""), 1800);
+        timersRef.current.push(t);
+        requestAnimationFrame(() => inputRef.current?.focus());
+        return;
+      }
       const errMsg = extractErrorMessage(err, "No se pudo obtener respuesta.");
       if (/saldo suficiente|402|cuota|no longer available/i.test(errMsg)) {
         setUnavailableModelIds((prev) => new Set(prev).add(modelId));
@@ -1236,6 +1461,17 @@ export const QuickBar: React.FC = () => {
       timersRef.current.push(t);
     }
   };
+
+  const handleStopQuickGeneration = useCallback(() => {
+    const controller = quickAbortControllerRef.current;
+    const streamId = activeStreamIdRef.current;
+    if (controller && !controller.signal.aborted) {
+      controller.abort();
+    }
+    if (streamId) {
+      void cancelXoxAiChatStream(streamId);
+    }
+  }, []);
 
   const handleCapsulePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -1382,7 +1618,8 @@ export const QuickBar: React.FC = () => {
     xoxState === "reading" ||
     xoxState === "coding" ||
     xoxState === "syncing";
-  const canSubmit = Boolean(inputPrompt.trim()) && !isStreaming;
+  const canSubmit =
+    (Boolean(inputPrompt.trim()) || quickAttachments.length > 0) && !isStreaming;
 
   const modelsPresence = useAnimatedPresence(showModels, 150);
   const screenMenuPresence = useAnimatedPresence(showScreenMenu, 150);
@@ -1414,6 +1651,8 @@ export const QuickBar: React.FC = () => {
     [displayReply, previewTableCanvas]
   );
 
+  const hasQuickContent = hasQuickResult || quickAttachments.length > 0;
+
   useEffect(() => {
     if (!(typeof window !== "undefined" && "__TAURI_INTERNALS__" in window)) return;
     let cancelled = false;
@@ -1423,7 +1662,7 @@ export const QuickBar: React.FC = () => {
         if (!cancelled) {
           await invoke("set_quick_state", {
             busy: isStreaming,
-            hasContent: hasQuickResult,
+            hasContent: hasQuickContent,
           });
         }
       } catch {
@@ -1433,7 +1672,7 @@ export const QuickBar: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isStreaming, hasQuickResult]);
+  }, [isStreaming, hasQuickContent]);
 
   return (
     <div
@@ -1460,7 +1699,7 @@ export const QuickBar: React.FC = () => {
           onPointerCancel={handleCapsulePointerUp}
           onLostPointerCapture={handleCapsulePointerUp}
           className={`quick-capsule-shell relative w-full rounded-[26px] px-4 py-2.5 ${
-            inputExpanded || hasQuickResult ? "is-expanded" : ""
+            inputExpanded || hasQuickResult || quickAttachments.length > 0 ? "is-expanded" : ""
           } ${isDragging ? "is-dragging cursor-grabbing" : "cursor-grab"} ${
             !isQuickVisible ? "is-paused" : ""
           }`}
@@ -1581,18 +1820,48 @@ export const QuickBar: React.FC = () => {
                   </div>
                 )}
 
+                {quickAttachments.length > 0 && (
+                  <div className="mb-1" data-no-drag="true">
+                    <ComposerAttachmentTray
+                      items={quickAttachments}
+                      onRemove={removeQuickAttachment}
+                      onInspect={inspectQuickAttachment}
+                      compact
+                      disabled={isStreaming}
+                    />
+                  </div>
+                )}
+
                 <textarea
                   ref={inputRef}
                   rows={1}
                   value={inputPrompt}
                   onChange={(e) => setInputPrompt(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing) {
+                  onPaste={(e) => {
+                    const { files: pastedFiles, text: pastedText } = extractClipboardPayload(
+                      e.clipboardData
+                    );
+                    if (pastedFiles.length > 0) {
                       e.preventDefault();
+                      appendQuickFiles(pastedFiles);
+                      return;
+                    }
+                    if (pastedText && shouldGroupPastedText(pastedText)) {
+                      e.preventDefault();
+                      appendQuickPastedText(pastedText);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+                      e.preventDefault();
+                      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
+                        return;
+                      }
                       runQuickPrompt();
                     }
                   }}
                   disabled={isStreaming}
+                  aria-label="Pregunta rápida a Xox"
                   placeholder={quickPlaceholder}
                   className="input-bubble w-full resize-none overflow-y-auto bg-transparent text-[15px] leading-relaxed text-white placeholder:text-zinc-200/65 [text-shadow:0_1px_5px_rgba(4,8,18,0.68)] focus:outline-none py-1 cursor-text select-text disabled:opacity-50"
                 />
@@ -2016,19 +2285,35 @@ export const QuickBar: React.FC = () => {
                   )}
                 </div>
 
-                <button
-                  type="submit"
-                  disabled={!canSubmit}
-                  title="Enviar"
-                  aria-label="Enviar"
-                  className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                    canSubmit
-                      ? "quick-liquid-btn-ready cursor-pointer"
-                      : "quick-liquid-btn text-zinc-100/60 cursor-not-allowed"
-                  }`}
-                >
-                  <Send className="w-3.5 h-3.5" />
-                </button>
+                {isStreaming ? (
+                  <button
+                    type="button"
+                    onClick={handleStopQuickGeneration}
+                    title="Detener respuesta en curso"
+                    aria-label="Detener respuesta en curso"
+                    className="xook-stop-btn quick-liquid-btn-ready w-8 h-8 rounded-full flex items-center justify-center active:scale-95 cursor-pointer focus-visible:outline-2 focus-visible:outline-white/80"
+                  >
+                    <span aria-hidden="true" className="xook-stop-ring" />
+                    <span
+                      aria-hidden="true"
+                      className="relative z-[1] w-2.5 h-2.5 rounded-[2.5px] bg-white shadow-[0_0_8px_rgba(255,255,255,0.45)]"
+                    />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={!canSubmit}
+                    title="Enviar"
+                    aria-label="Enviar"
+                    className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                      canSubmit
+                        ? "quick-liquid-btn-ready cursor-pointer"
+                        : "quick-liquid-btn text-zinc-100/60 cursor-not-allowed"
+                    }`}
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
 
@@ -2332,6 +2617,14 @@ export const QuickBar: React.FC = () => {
           </form>
         </div>
       </div>
+
+      <AttachmentPreviewDialog
+        target={quickPreviewTarget}
+        onClose={() => setQuickPreviewTarget(null)}
+        onSavePastedText={updateQuickPastedText}
+        onUnwrapPastedText={unwrapQuickPastedText}
+        onRemoveAttachment={removeQuickAttachment}
+      />
     </div>
   );
 };

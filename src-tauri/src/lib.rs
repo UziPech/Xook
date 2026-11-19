@@ -83,6 +83,7 @@ pub fn run() {
             ai_vault::reset_provider_usage_ledger,
             ai_vault::run_xox_chat,
             ai_vault::run_xox_chat_stream,
+            ai_vault::cancel_xox_chat_stream,
             ai_vault::compact_xox_context,
             ai_vault::manage_document_context,
             workspace_store::get_local_user,
