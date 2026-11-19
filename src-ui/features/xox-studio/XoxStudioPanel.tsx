@@ -1,15 +1,17 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Check,
   ChevronDown,
   ChevronLeft,
+  ChevronRight,
   Download,
   Globe,
   ListChecks,
   Loader2,
   Play,
   Plus,
+  RotateCcw,
   Save,
   Search,
   Sparkles,
@@ -98,10 +100,97 @@ const TONE_SUGGESTIONS = [
   "Detallado",
 ] as const;
 
+const ACCENT_KEYS = Object.keys(XOX_ACCENT_PRESETS) as XoxAccentPreset[];
+
+interface DisclosureGroupProps {
+  title: string;
+  meta?: React.ReactNode;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+  className?: string;
+}
+
+/** Sección plegable nativa (<details>) con marcador antes de la etiqueta y animación progresiva. */
+const DisclosureGroup: React.FC<DisclosureGroupProps> = ({
+  title,
+  meta,
+  defaultOpen = false,
+  children,
+  className = "",
+}) => {
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+
+  useEffect(() => {
+    if (defaultOpen && detailsRef.current) {
+      detailsRef.current.open = true;
+    }
+    // Solo establece el estado inicial al montar para no interferir con la interacción del usuario.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <details
+      ref={detailsRef}
+      className={`xook-accordion rounded-xl border border-white/[0.06] bg-white/[0.018] ${className}`}
+    >
+      <summary className="xook-accordion-summary min-h-[40px] px-3.5 py-2.5 flex items-center justify-between gap-2.5 text-left hover:bg-white/[0.028] rounded-xl transition-colors cursor-pointer select-none focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:-outline-offset-2">
+        <span className="inline-flex items-center gap-2 min-w-0">
+          <ChevronRight
+            className="xook-accordion-chevron w-3.5 h-3.5 text-zinc-400 shrink-0"
+            aria-hidden="true"
+          />
+          <span className="text-[12px] font-medium text-zinc-200 truncate">
+            {title}
+          </span>
+        </span>
+        {meta !== undefined && meta !== null && (
+          <span className="text-[10.5px] text-zinc-400 truncate max-w-[180px] shrink-0">
+            {meta}
+          </span>
+        )}
+      </summary>
+      <div className="px-3.5 pb-3.5 pt-2.5 border-t border-white/[0.05] space-y-3">
+        {children}
+      </div>
+    </details>
+  );
+};
+
+interface LiquidSwitchProps {
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  title?: string;
+  onToggle: () => void;
+}
+
+/** Switch unificado Liquid Glass armonizado con el aura activa de Xox. */
+const LiquidSwitch: React.FC<LiquidSwitchProps> = ({
+  checked,
+  disabled = false,
+  label,
+  title,
+  onToggle,
+}) => (
+  <button
+    type="button"
+    role="switch"
+    aria-label={label}
+    aria-checked={checked}
+    title={title}
+    disabled={disabled}
+    onClick={onToggle}
+    className="xook-liquid-switch"
+  >
+    <span className="xook-liquid-switch-thumb" aria-hidden="true" />
+  </button>
+);
+
 interface EditableTextBlockListProps {
   idPrefix: string;
   label: string;
   helperText?: string;
+  hideHeader?: boolean;
   items: string[];
   placeholder: string;
   addButtonLabel?: string;
@@ -114,6 +203,7 @@ const EditableTextBlockList: React.FC<EditableTextBlockListProps> = ({
   idPrefix,
   label,
   helperText,
+  hideHeader = false,
   items,
   placeholder,
   addButtonLabel = "Agregar",
@@ -142,15 +232,20 @@ const EditableTextBlockList: React.FC<EditableTextBlockListProps> = ({
   };
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <label htmlFor={`${idPrefix}-add`} className="block text-[11.5px] font-medium text-zinc-200">
-          {label}
-        </label>
-        <span className="text-[10px] font-mono tabular-nums text-zinc-500">
-          {items.length}
-        </span>
-      </div>
+    <div className="space-y-2">
+      {!hideHeader && (
+        <div className="flex items-baseline justify-between gap-2">
+          <label
+            htmlFor={`${idPrefix}-add`}
+            className="block text-[11.5px] font-medium text-zinc-200"
+          >
+            {label}
+          </label>
+          <span className="text-[10px] font-mono tabular-nums text-zinc-500">
+            {items.length}
+          </span>
+        </div>
+      )}
       {helperText && (
         <p className="text-[11px] text-zinc-400 leading-snug">{helperText}</p>
       )}
@@ -160,9 +255,12 @@ const EditableTextBlockList: React.FC<EditableTextBlockListProps> = ({
           {items.map((item, idx) => (
             <li
               key={`${idPrefix}-${idx}`}
-              className="group flex items-center gap-1.5 rounded-xl bg-[#07080b] border border-white/[0.08] px-2.5 py-1.5 focus-within:border-white/[0.22]"
+              className="group flex items-center gap-1.5 rounded-xl bg-black/35 border border-white/[0.07] px-2.5 py-1.5 focus-within:border-white/[0.2]"
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 shrink-0" aria-hidden="true" />
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-zinc-500 shrink-0"
+                aria-hidden="true"
+              />
               <input
                 type="text"
                 value={item}
@@ -192,6 +290,7 @@ const EditableTextBlockList: React.FC<EditableTextBlockListProps> = ({
           type="text"
           value={draft}
           disabled={disabled}
+          aria-label={hideHeader ? label : undefined}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.nativeEvent.isComposing) {
@@ -201,13 +300,13 @@ const EditableTextBlockList: React.FC<EditableTextBlockListProps> = ({
           }}
           placeholder={placeholder}
           enterKeyHint="done"
-          className="flex-1 min-h-[34px] px-3 py-1.5 rounded-xl bg-[#07080b] border border-white/[0.09] text-[11.5px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
+          className="flex-1 min-h-[34px] px-3 py-1.5 rounded-xl bg-black/35 border border-white/[0.08] text-[11.5px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.22] select-text"
         />
         <button
           type="button"
           disabled={disabled || !draft.trim()}
           onClick={commitDraft}
-          className="min-h-[34px] px-3 py-1.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] border border-white/[0.1] text-[11px] font-medium text-white disabled:opacity-40 cursor-pointer shrink-0 inline-flex items-center gap-1 transition-colors"
+          className="min-h-[34px] px-3 py-1.5 rounded-xl bg-white/[0.07] hover:bg-white/[0.13] border border-white/[0.09] text-[11px] font-medium text-white disabled:opacity-40 cursor-pointer shrink-0 inline-flex items-center gap-1 transition-colors"
         >
           <Plus aria-hidden="true" className="w-3.5 h-3.5" />
           <span>{addButtonLabel}</span>
@@ -224,15 +323,15 @@ const XOX_ANIMATION_CATALOG: Array<{
   label: string;
   detail: string;
 }> = [
-  { id: "auto", label: "En vivo", detail: "Sigue automáticamente la actividad actual o toca a Xox" },
-  { id: "idle", label: "Reposo", detail: "Respiración gelatina, parpadeo natural y mirada al cursor" },
-  { id: "success", label: "Feliz", detail: "Pirueta, ojos ^^, sonrisa cálida y sonrojo suave" },
-  { id: "thinking", label: "Pensando", detail: "Anillo orbital de datos, burbuja '...' y núcleo profundo" },
-  { id: "reading", label: "Leyendo", detail: "Lupa escaneando el entorno con cabeceo curioso" },
-  { id: "coding", label: "Programando", detail: "Mini-laptop flotante: edita código y revisa la salida de terminal" },
-  { id: "talking", label: "Hablando", detail: "Boca orgánica articulada con sílabas y ondas armónicas de voz" },
+  { id: "auto", label: "En vivo", detail: "Sigue la actividad actual o toca a Xox" },
+  { id: "idle", label: "Reposo", detail: "Respiración orgánica y mirada al cursor" },
+  { id: "success", label: "Feliz", detail: "Pirueta, ojos ^^ y sonrisa cálida" },
+  { id: "thinking", label: "Pensando", detail: "Anillo orbital de datos y núcleo profundo" },
+  { id: "reading", label: "Leyendo", detail: "Lupa escaneando el entorno con curiosidad" },
+  { id: "coding", label: "Programando", detail: "Mini-laptop editando código y terminal" },
+  { id: "talking", label: "Hablando", detail: "Boca articulada con ondas armónicas de voz" },
   { id: "syncing", label: "Sincronizando", detail: "Doble aro giratorio y piruetas periódicas" },
-  { id: "alert", label: "Alerta", detail: "Aviso en rojo semántico con vibración y señal '!'" },
+  { id: "alert", label: "Alerta", detail: "Aviso en rojo semántico y señal '!'" },
 ];
 
 export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
@@ -255,6 +354,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   onClose,
 }) => {
   const uid = useId();
+  const animPopoverId = `${uid}-anim-popover`;
   const [activeTab, setActiveTab] = useState<XoxStudioTabId>(initialTab);
   const [draft, setDraft] = useState<GlobalXoxProfile>(() => ({
     ...DEFAULT_GLOBAL_XOX_PROFILE,
@@ -269,6 +369,18 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   const [catalogAnim, setCatalogAnim] = useState<XoxAnimCatalogOption>("auto");
   const [stageReplaySeq, setStageReplaySeq] = useState(0);
   const [colorRippleSeq, setColorRippleSeq] = useState(0);
+
+  // Estado del popover compacto de animaciones en el dock
+  const supportsNativePopover = useMemo(
+    () =>
+      typeof HTMLElement !== "undefined" &&
+      Object.prototype.hasOwnProperty.call(HTMLElement.prototype, "popover"),
+    []
+  );
+  const [animPopoverOpen, setAnimPopoverOpen] = useState(false);
+  const animTriggerRef = useRef<HTMLButtonElement>(null);
+  const animPopoverRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(
     () => () => {
@@ -292,10 +404,8 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   const [isNewSkill, setIsNewSkill] = useState(false);
   const [savingSkill, setSavingSkill] = useState(false);
   const [confirmDeleteSlug, setConfirmDeleteSlug] = useState<string | null>(null);
-  const [showRawPreview, setShowRawPreview] = useState(false);
 
   // Buscador de skills oficiales verificadas
-  const [showOfficialHub, setShowOfficialHub] = useState(false);
   const [officialQuery, setOfficialQuery] = useState("");
   const [searchingOfficial, setSearchingOfficial] = useState(false);
   const [officialResults, setOfficialResults] = useState<OfficialSkillCandidate[]>([]);
@@ -319,6 +429,13 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     syncing: null,
     alert: null,
   });
+  const accentBtnRefs = useRef<Record<XoxAccentPreset, HTMLButtonElement | null>>({
+    classic: null,
+    violet: null,
+    emerald: null,
+    amber: null,
+    rose: null,
+  });
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -341,14 +458,125 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
 
   useEffect(() => ttsPlayer.subscribe(setPlayback), []);
 
+  // Posicionamiento fallback del popover cuando CSS Anchor Positioning (position-area) no existe
+  const positionFallbackPopover = useCallback(() => {
+    const pop = animPopoverRef.current;
+    const trigger = animTriggerRef.current;
+    if (!pop || !trigger) return;
+    const supportsAnchor =
+      typeof CSS !== "undefined" &&
+      typeof CSS.supports === "function" &&
+      CSS.supports("position-area: block-end");
+    if (supportsAnchor) {
+      pop.style.removeProperty("inset");
+      pop.style.removeProperty("margin");
+      pop.style.removeProperty("left");
+      pop.style.removeProperty("top");
+      return;
+    }
+    const rect = trigger.getBoundingClientRect();
+    const popWidth = Math.min(316, window.innerWidth - 24);
+    const estHeight = pop.offsetHeight || 210;
+    const left = Math.max(
+      12,
+      Math.min(rect.left + rect.width / 2 - popWidth / 2, window.innerWidth - popWidth - 12)
+    );
+    const spaceBelow = window.innerHeight - rect.bottom - 12;
+    const top =
+      spaceBelow >= estHeight || rect.top < estHeight + 16
+        ? Math.min(rect.bottom + 8, window.innerHeight - estHeight - 12)
+        : Math.max(12, rect.top - estHeight - 8);
+    pop.style.inset = "auto";
+    pop.style.margin = "0";
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.round(top)}px`;
+  }, []);
+
+  useEffect(() => {
+    const pop = animPopoverRef.current;
+    if (!pop || !supportsNativePopover) return;
+
+    const onBeforeToggle = (event: Event) => {
+      const te = event as ToggleEvent;
+      if (te.newState === "open") {
+        positionFallbackPopover();
+      }
+    };
+    const onToggle = (event: Event) => {
+      const te = event as ToggleEvent;
+      const isOpen = te.newState === "open";
+      setAnimPopoverOpen(isOpen);
+      if (isOpen) {
+        requestAnimationFrame(() => positionFallbackPopover());
+      }
+    };
+
+    pop.addEventListener("beforetoggle", onBeforeToggle);
+    pop.addEventListener("toggle", onToggle);
+    return () => {
+      pop.removeEventListener("beforetoggle", onBeforeToggle);
+      pop.removeEventListener("toggle", onToggle);
+    };
+  }, [supportsNativePopover, positionFallbackPopover]);
+
+  // Cierra el popover al desplazarse para evitar desanclaje en motores sin CSS Anchor Positioning
+  useEffect(() => {
+    if (!animPopoverOpen) return;
+    const scroller = scrollContainerRef.current;
+    const closePopover = () => {
+      const pop = animPopoverRef.current;
+      if (supportsNativePopover && pop && typeof pop.hidePopover === "function") {
+        try {
+          pop.hidePopover();
+        } catch {
+          // Ignorar si ya está cerrado
+        }
+      } else {
+        setAnimPopoverOpen(false);
+      }
+    };
+    scroller?.addEventListener("scroll", closePopover, { passive: true });
+    window.addEventListener("resize", positionFallbackPopover, { passive: true });
+    return () => {
+      scroller?.removeEventListener("scroll", closePopover);
+      window.removeEventListener("resize", positionFallbackPopover);
+    };
+  }, [animPopoverOpen, supportsNativePopover, positionFallbackPopover]);
+
+  // Cierra el popover si el panel se oculta
+  useEffect(() => {
+    if (!visible && animPopoverOpen) {
+      const pop = animPopoverRef.current;
+      if (supportsNativePopover && pop && typeof pop.hidePopover === "function") {
+        try {
+          pop.hidePopover();
+        } catch {
+          // noop
+        }
+      }
+      setAnimPopoverOpen(false);
+    }
+  }, [visible, animPopoverOpen, supportsNativePopover]);
+
+  const normalizedSavedProfile = useMemo(
+    () => ({ ...DEFAULT_GLOBAL_XOX_PROFILE, ...profile }),
+    [profile]
+  );
+
   const profileDirty = useMemo(() => {
-    return JSON.stringify(draft) !== JSON.stringify({ ...DEFAULT_GLOBAL_XOX_PROFILE, ...profile });
-  }, [draft, profile]);
+    return JSON.stringify(draft) !== JSON.stringify(normalizedSavedProfile);
+  }, [draft, normalizedSavedProfile]);
 
   const showSaved = (msg: string) => {
     setSaveMessage(msg);
     onStatusNotice?.(msg);
     setTimeout(() => setSaveMessage((curr) => (curr === msg ? null : curr)), 2600);
+  };
+
+  const handleDiscardProfile = () => {
+    setDraft(normalizedSavedProfile);
+    setErrorMsg(null);
+    onPreviewAccentChange?.(resolveXoxAccentPreset(normalizedSavedProfile.accentPreset));
   };
 
   const handleSaveGlobalProfile = async (overrideDraft?: GlobalXoxProfile) => {
@@ -405,6 +633,15 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     speed: 1.0,
     idleUnloadMinutes: 5,
   };
+  const [speedDraft, setSpeedDraft] = useState<number>(voiceConfig.speed);
+  useEffect(() => {
+    setSpeedDraft(voiceConfig.speed);
+  }, [voiceConfig.speed]);
+
+  const speedProgressPct = Math.max(
+    0,
+    Math.min(100, ((speedDraft - 0.85) / (1.25 - 0.85)) * 100)
+  );
   const modelsInstalled = Boolean(ttsStatus?.modelsInstalled);
   const voices = ttsStatus?.voices ?? [];
   const workerRunning = Boolean(ttsStatus?.workerRunning);
@@ -503,7 +740,6 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   // --- Handlers de Skills por Bloques ---
   const handleStartNewSkill = (templateIdx?: number) => {
     setErrorMsg(null);
-    setShowRawPreview(false);
     setConfirmDeleteSlug(null);
     setIsNewSkill(true);
     if (typeof templateIdx === "number" && SKILL_STARTER_TEMPLATES[templateIdx]) {
@@ -627,7 +863,9 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
         }
       }
     } catch (err) {
-      setOfficialMessage(err instanceof Error ? err.message : "Error consultando catálogo oficial.");
+      setOfficialMessage(
+        err instanceof Error ? err.message : "Error consultando catálogo oficial."
+      );
     } finally {
       setSearchingOfficial(false);
     }
@@ -657,7 +895,8 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     if (idx < 0) return;
     let next: XoxStudioTabId | null = null;
     if (e.key === "ArrowRight") next = tabOrder[(idx + 1) % tabOrder.length];
-    else if (e.key === "ArrowLeft") next = tabOrder[(idx - 1 + tabOrder.length) % tabOrder.length];
+    else if (e.key === "ArrowLeft")
+      next = tabOrder[(idx - 1 + tabOrder.length) % tabOrder.length];
     else if (e.key === "Home") next = tabOrder[0];
     else if (e.key === "End") next = tabOrder[tabOrder.length - 1];
     if (next) {
@@ -672,13 +911,50 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   const activeAccentSpec = XOX_ACCENT_PRESETS[activeAccent];
   const activeVoiceName =
     voices.find((v) => v.id === voiceConfig.voiceId)?.name ?? voiceConfig.voiceId;
-  const stageXoxState: XoxState =
-    playback.playingMessageId === STUDIO_PREVIEW_MSG_ID
-      ? "talking"
-      : stageCheerState ?? (catalogAnim !== "auto" ? catalogAnim : xoxState);
+  const isStageVoicePlaying = playback.playingMessageId === STUDIO_PREVIEW_MSG_ID;
+  const isStageVoiceLoading = playback.loadingMessageId === STUDIO_PREVIEW_MSG_ID;
+  const stageXoxState: XoxState = isStageVoicePlaying
+    ? "talking"
+    : stageCheerState ?? (catalogAnim !== "auto" ? catalogAnim : xoxState);
   const activeCatalogMeta =
     XOX_ANIMATION_CATALOG.find((item) => item.id === catalogAnim) ??
     XOX_ANIMATION_CATALOG[0];
+
+  const totalRulesCount =
+    draft.globalRules.length +
+    draft.likes.length +
+    draft.workflows.length +
+    draft.donts.length;
+
+  const toneSummary =
+    draft.toneTags.length === 0
+      ? "Opcional"
+      : draft.toneTags.length <= 2
+        ? draft.toneTags.join(", ")
+        : `${draft.toneTags.slice(0, 2).join(", ")} +${draft.toneTags.length - 2}`;
+
+  const selectAccent = (key: XoxAccentPreset) => {
+    setDraft((p) => ({ ...p, accentPreset: key }));
+    setColorRippleSeq((n) => n + 1);
+    onPreviewAccentChange?.(key);
+  };
+
+  const handleAccentKeyDown = (e: React.KeyboardEvent) => {
+    const idx = ACCENT_KEYS.indexOf(activeAccent);
+    if (idx < 0) return;
+    let nextIdx: number | null = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+      nextIdx = (idx + 1) % ACCENT_KEYS.length;
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      nextIdx = (idx - 1 + ACCENT_KEYS.length) % ACCENT_KEYS.length;
+    }
+    if (nextIdx !== null) {
+      e.preventDefault();
+      const nextKey = ACCENT_KEYS[nextIdx];
+      selectAccent(nextKey);
+      accentBtnRefs.current[nextKey]?.focus();
+    }
+  };
 
   const handleAnimCatalogKeyDown = (e: React.KeyboardEvent) => {
     const idx = XOX_ANIMATION_CATALOG.findIndex((item) => item.id === catalogAnim);
@@ -711,123 +987,79 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     }, 1800);
   };
 
+  const chatCustomizeHint =
+    activeTab === "rules"
+      ? "Quiero actualizar mis reglas globales y preferencias: "
+      : `Ayúdame a personalizar tu nombre, carácter e instrucciones iniciales según cómo trabajo.`;
+
   return (
     <aside
       aria-label={`Espacio de ${displayAgentName}`}
-      className={`h-full flex flex-col rounded-2xl border border-white/[0.08] bg-[#090b10]/95 backdrop-blur-xl overflow-hidden transition-opacity duration-200 ${
+      style={
+        { "--xox-control-accent": activeAccentSpec.glow } as React.CSSProperties
+      }
+      className={`relative h-full flex flex-col rounded-2xl border border-white/[0.08] bg-[#080a0f]/95 backdrop-blur-xl overflow-hidden transition-opacity duration-200 ${
         visible ? "opacity-100" : "opacity-0 pointer-events-none"
       }`}
     >
-      {/* Barra superior compacta del Espacio de Xox */}
-      <header className="px-3.5 py-2.5 border-b border-white/[0.07] bg-white/[0.02] shrink-0">
-        <div className="flex items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2 min-w-0">
-            <h2 className="text-[13.5px] font-semibold text-white truncate">
-              Espacio de {displayAgentName}
-            </h2>
-            <span className="px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/[0.1] text-[10px] text-zinc-300 inline-flex items-center gap-1 shrink-0">
-              <Globe className="w-2.5 h-2.5 text-zinc-400" aria-hidden="true" />
-              <span>Global</span>
+      {/* Controles flotantes en esquina superior derecha: siempre accesibles sin apilar doble barra fija */}
+      <div className="absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
+        {onAskXoxCustomize && (
+          <button
+            type="button"
+            onClick={() => onAskXoxCustomize(chatCustomizeHint)}
+            aria-label={`Personalizar por chat con ${displayAgentName}`}
+            title={`Pedirle ayuda a ${displayAgentName} por chat`}
+            className="quick-liquid-btn w-7 h-7 rounded-full inline-flex items-center justify-center text-zinc-300 hover:text-white cursor-pointer"
+          >
+            <Wand2 className="w-3.5 h-3.5" aria-hidden="true" />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label={`Cerrar Espacio de ${displayAgentName}`}
+          title="Cerrar espacio"
+          className="quick-liquid-btn w-7 h-7 rounded-full inline-flex items-center justify-center text-zinc-300 hover:text-white cursor-pointer"
+        >
+          <X className="w-3.5 h-3.5" aria-hidden="true" />
+        </button>
+      </div>
+
+      {/* Lienzo continuo: Santuario cósmico full-bleed -> pestañas -> contenido agrupado */}
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 min-h-0 overflow-y-auto scroll-smooth"
+      >
+        {/* =================================================================== */}
+        {/* SANTUARIO VIVO DE XOX (FULL-BLEED, SIN CAJA ENCERRADA)              */}
+        {/* =================================================================== */}
+        <section
+          id={`${uid}-xox-stage`}
+          aria-label={`Escenario de ${displayAgentName}`}
+          className="xook-xox-sanctuary relative px-4 pt-3 pb-4 flex flex-col items-center text-center transition-[background] duration-500"
+          style={getXoxCosmosVars(activeAccent)}
+        >
+          {/* Etiqueta discreta de alcance arriba a la izquierda */}
+          <div className="relative z-10 w-full flex items-center justify-start pr-20 min-h-[28px]">
+            <span className="inline-flex items-center gap-1.5 text-[10.5px] font-medium text-zinc-300/75">
+              <Globe className="w-3 h-3 text-zinc-400/75" aria-hidden="true" />
+              <span>Espacio global</span>
             </span>
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
-            <div role="status" aria-live="polite" className="text-[11px]">
-              {saveMessage && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/25 text-emerald-200">
-                  <Check className="w-3 h-3" aria-hidden="true" />
-                  <span className="hidden sm:inline">{saveMessage}</span>
-                </span>
-              )}
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label={`Cerrar Espacio de ${displayAgentName}`}
-              title="Cerrar editor"
-              className="quick-liquid-btn w-7 h-7 rounded-full inline-flex items-center justify-center text-zinc-300 hover:text-white cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Banner de error global del panel */}
-      {errorMsg && (
-        <div
-          role="alert"
-          className="mx-3.5 mt-2.5 rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 flex items-start justify-between gap-2 text-[11.5px] text-rose-100 shrink-0"
-        >
-          <span className="inline-flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" aria-hidden="true" />
-            <span>{errorMsg}</span>
-          </span>
-          <button
-            type="button"
-            onClick={() => setErrorMsg(null)}
-            aria-label="Cerrar aviso"
-            className="text-rose-200/80 hover:text-white cursor-pointer"
-          >
-            <X className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
-        </div>
-      )}
-
-      {/* Escenario amplio de Xox, catálogo de animaciones y contenido scrollable */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-3.5 py-3.5 space-y-3.5">
-        {/* Ventana amplia, alta y centrada de Xox con tamaño protagonista */}
-        <div
-          id={`${uid}-xox-stage`}
-          className="xook-gemini-stage relative rounded-2xl border overflow-hidden min-h-[296px] sm:min-h-[344px] px-4 py-3.5 flex flex-col items-center justify-between transition-[border-color,background] duration-500"
-          style={getXoxCosmosVars(activeAccent)}
-        >
-          {/* Barra superior flotante dentro de la ventana */}
-          <div className="relative z-10 w-full flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-black/45 backdrop-blur-md border border-white/[0.1] text-[10.5px] text-zinc-100">
-                <span
-                  className="w-2 h-2 rounded-full transition-colors duration-500"
-                  style={{ backgroundColor: activeAccentSpec.glow }}
-                  aria-hidden="true"
-                />
-                <span>{activeAccentSpec.label}</span>
-              </span>
-              <span className="px-2.5 py-0.5 rounded-full bg-black/35 border border-white/[0.08] text-[10.5px] text-zinc-300 truncate max-w-[200px]">
-                {draft.activeRole || "Asistente Co-Constructor"}
-              </span>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                if (voiceConfig.enabled && (!inTauriVoice || modelsInstalled)) {
-                  void handlePreviewVoice(voiceConfig.voiceId || "lola");
-                } else {
-                  setActiveTab("voice");
-                }
-              }}
-              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-black/45 hover:bg-white/[0.12] border border-white/[0.1] text-[10.5px] text-zinc-200 cursor-pointer transition-colors shrink-0"
-            >
-              <Volume2 className="w-3 h-3 text-zinc-300" aria-hidden="true" />
-              <span>
-                {voiceConfig.enabled ? `Voz: ${activeVoiceName}` : "Configurar voz"}
-              </span>
-            </button>
-          </div>
-
-          {/* Onda expansiva centrada al cambiar el color de Xox */}
+          {/* Onda expansiva centrada al cambiar el aura de Xox */}
           {colorRippleSeq > 0 && (
             <span
               key={`ripple-${colorRippleSeq}`}
               aria-hidden="true"
-              className="xox-window-color-ripple pointer-events-none absolute left-1/2 top-1/2 -ml-[112px] -mt-[112px] w-[224px] h-[224px] rounded-full border"
+              className="xox-window-color-ripple pointer-events-none absolute left-1/2 top-[43%] -ml-[108px] -mt-[108px] w-[216px] h-[216px] rounded-full border"
               style={{ borderColor: `${activeAccentSpec.glow}85` }}
             />
           )}
 
-          {/* Xox grande y protagonista en el centro de su espacio */}
-          <div className="xox-window-star-arrive relative z-[1] flex items-center justify-center -my-5 sm:-my-6">
+          {/* Estrella Xox protagonista en su propio espacio */}
+          <div className="xox-window-star-arrive relative z-[1] flex items-center justify-center -my-7 sm:-my-8">
             <XoxStar
               state={stageXoxState}
               responsive
@@ -837,101 +1069,258 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
               glideDir="right"
               summonTrigger={stageReplaySeq}
               active={visible}
-              className="w-[274px] h-[274px] sm:w-[324px] sm:h-[324px]"
+              className="w-[228px] h-[228px] sm:w-[258px] sm:h-[258px]"
               onClick={handleStageXoxClick}
             />
           </div>
 
-          {/* Pie sutil dentro de la ventana */}
-          <div className="relative z-10 w-full flex items-center justify-between gap-2 text-[10.5px]">
-            <span className="text-zinc-300/85 truncate">
-              <strong className="font-medium text-white">{displayAgentName}</strong>
-              {draft.personality ? ` · ${draft.personality}` : ""}
-            </span>
-            <span className="text-zinc-400 shrink-0">
-              Pasa el cursor o toca a {displayAgentName}
-            </span>
+          {/* Firma centrada de Xox */}
+          <div className="relative z-10 mt-1 flex flex-col items-center max-w-full px-2">
+            <h2 className="text-[19px] font-semibold tracking-tight text-white leading-tight truncate max-w-full">
+              {displayAgentName}
+            </h2>
+            <p className="text-[11.5px] text-zinc-300/80 mt-0.5 truncate max-w-[340px]">
+              {draft.activeRole.trim() || "Asistente Co-Constructor"}
+            </p>
           </div>
-        </div>
 
-        {/* Catálogo interactivo de animaciones y estados de Xox */}
-        <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] px-3 py-2.5 space-y-2">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <span className="text-[11px] font-medium text-zinc-200">
-              Catálogo de animaciones
-            </span>
-            <span className="text-[10.5px] text-zinc-400 truncate max-w-full">
-              {activeCatalogMeta.detail}
-            </span>
-          </div>
-          <div
-            role="toolbar"
-            aria-label={`Catálogo de animaciones de ${displayAgentName}`}
-            aria-controls={`${uid}-xox-stage`}
-            onKeyDown={handleAnimCatalogKeyDown}
-            className="flex flex-wrap items-center gap-1.5"
-          >
-            {XOX_ANIMATION_CATALOG.map((item) => {
-              const selected = catalogAnim === item.id;
-              const isAlertOpt = item.id === "alert";
-              const isLiveActive = item.id === "auto" && stageXoxState !== "idle";
-              return (
-                <button
-                  key={item.id}
-                  ref={(el) => {
-                    animBtnRefs.current[item.id] = el;
-                  }}
-                  type="button"
-                  aria-pressed={selected}
-                  tabIndex={selected ? 0 : -1}
-                  title={item.detail}
-                  onClick={() => {
-                    setStageCheerState(null);
-                    if (catalogAnim === item.id && item.id !== "auto") {
-                      setStageReplaySeq((n) => n + 1);
-                    } else {
-                      setCatalogAnim(item.id);
-                    }
-                  }}
-                  className="min-h-[26px] px-2.5 py-1 rounded-full border text-[11px] inline-flex items-center gap-1.5 cursor-pointer transition-colors bg-white/[0.03] border-white/[0.09] text-zinc-300 hover:bg-white/[0.08] hover:text-white aria-[pressed=true]:bg-white/[0.15] aria-[pressed=true]:border-white/[0.35] aria-[pressed=true]:text-white aria-[pressed=true]:font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
-                >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                      isLiveActive ? "animate-pulse" : ""
-                    }`}
-                    style={{
-                      backgroundColor: isAlertOpt
-                        ? "#EF4444"
-                        : selected
-                          ? activeAccentSpec.glow
-                          : "rgba(255,255,255,0.35)",
+          {/* Dock discreto en el escenario: Aura + Selector de gestos (popover) + Voz */}
+          <div className="relative z-10 mt-3.5 inline-flex items-center gap-1 p-1 rounded-full bg-black/45 backdrop-blur-xl border border-white/[0.1] shadow-[0_12px_32px_-12px_rgba(0,0,0,0.85)] max-w-full">
+            {/* 1. Puntos de color del Aura en vivo */}
+            <div
+              role="radiogroup"
+              aria-label={`Aura y color de ${displayAgentName}`}
+              onKeyDown={handleAccentKeyDown}
+              className="inline-flex items-center gap-0.5 px-1"
+            >
+              {ACCENT_KEYS.map((key) => {
+                const preset = XOX_ACCENT_PRESETS[key];
+                const selected = activeAccent === key;
+                return (
+                  <button
+                    key={key}
+                    ref={(el) => {
+                      accentBtnRefs.current[key] = el;
                     }}
-                    aria-hidden="true"
-                  />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    aria-label={`Aura ${preset.label}`}
+                    title={`Aura ${preset.label}`}
+                    tabIndex={selected ? 0 : -1}
+                    onClick={() => selectAccent(key)}
+                    className={`w-5 h-5 rounded-full inline-flex items-center justify-center transition-transform cursor-pointer focus-visible:outline-2 focus-visible:outline-white/75 ${
+                      selected ? "scale-110" : "opacity-75 hover:opacity-100 hover:scale-105"
+                    }`}
+                  >
+                    <span
+                      className={`w-2.5 h-2.5 rounded-full transition-shadow ${
+                        selected ? "ring-[1.5px] ring-white/90 ring-offset-1 ring-offset-[#0a0e1a]" : ""
+                      }`}
+                      style={{
+                        backgroundColor: preset.glow,
+                        boxShadow: selected ? `0 0 10px ${preset.glow}` : undefined,
+                      }}
+                      aria-hidden="true"
+                    />
+                  </button>
+                );
+              })}
+            </div>
 
-        {/* Barra de pestañas fija al hacer scroll con navegación por teclado */}
-        <div className="sticky top-0 z-20 -mx-3.5 px-3.5 py-2 bg-[#090b10]/95 backdrop-blur-md border-y border-white/[0.07] overflow-x-auto no-scrollbar">
-          <JellyPillTrack
-            activeKey={activeTab}
-            role="tablist"
-            aria-label="Secciones de personalización del asistente"
-            pillRadius="9999px"
-            variant="quick"
-            onKeyDown={handleTabKeyDown}
-            className="inline-flex items-center p-0.5 rounded-full gap-0.5 min-w-max"
+            <span className="w-px h-3.5 bg-white/[0.1] shrink-0" aria-hidden="true" />
+
+            {/* 2. Discreto selector de animaciones en popover */}
+            <button
+              ref={animTriggerRef}
+              type="button"
+              {...(supportsNativePopover ? { popoverTarget: animPopoverId } : {})}
+              aria-expanded={animPopoverOpen}
+              aria-controls={animPopoverId}
+              title={`Probar animaciones (${activeCatalogMeta.label})`}
+              onClick={
+                supportsNativePopover
+                  ? undefined
+                  : () => setAnimPopoverOpen((prev) => !prev)
+              }
+              className="h-6 px-2 rounded-full inline-flex items-center gap-1.5 text-[11px] font-medium text-zinc-200 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-white/70"
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                  catalogAnim === "auto" && stageXoxState !== "idle" ? "animate-pulse" : ""
+                }`}
+                style={{
+                  backgroundColor:
+                    catalogAnim === "alert" ? "#EF4444" : activeAccentSpec.glow,
+                }}
+                aria-hidden="true"
+              />
+              <span>{activeCatalogMeta.label}</span>
+              <ChevronDown
+                className={`w-3 h-3 text-zinc-400 transition-transform ${
+                  animPopoverOpen ? "rotate-180" : ""
+                }`}
+                aria-hidden="true"
+              />
+            </button>
+
+            <span className="w-px h-3.5 bg-white/[0.1] shrink-0" aria-hidden="true" />
+
+            {/* 3. Botón sutil de prueba/acceso a voz */}
+            <button
+              type="button"
+              onClick={() => {
+                if (voiceConfig.enabled && (!inTauriVoice || modelsInstalled)) {
+                  void handlePreviewVoice(voiceConfig.voiceId || "lola");
+                } else {
+                  setActiveTab("voice");
+                }
+              }}
+              title={
+                voiceConfig.enabled
+                  ? isStageVoicePlaying
+                    ? "Detener muestra de voz"
+                    : `Escuchar voz ${activeVoiceName}`
+                  : "Configurar voz local"
+              }
+              className={`h-6 px-2 rounded-full inline-flex items-center gap-1 text-[11px] transition-colors cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-white/70 ${
+                isStageVoicePlaying
+                  ? "bg-emerald-500/20 text-emerald-200"
+                  : "text-zinc-200 hover:text-white hover:bg-white/[0.08]"
+              }`}
+            >
+              {isStageVoiceLoading ? (
+                <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+              ) : isStageVoicePlaying ? (
+                <Square className="w-2.5 h-2.5 fill-current" aria-hidden="true" />
+              ) : (
+                <Volume2 className="w-3 h-3 text-zinc-300" aria-hidden="true" />
+              )}
+              <span className="truncate max-w-[78px]">
+                {voiceConfig.enabled ? activeVoiceName : "Voz"}
+              </span>
+            </button>
+          </div>
+
+          {/* Popover compacto bajo demanda para las 9 animaciones de Xox */}
+          <div
+            ref={animPopoverRef}
+            id={animPopoverId}
+            {...(supportsNativePopover ? { popover: "auto" } : {})}
+            hidden={!supportsNativePopover && !animPopoverOpen}
+            className={`xook-stage-popover w-[292px] sm:w-[316px] text-left ${
+              !supportsNativePopover && animPopoverOpen
+                ? "absolute left-1/2 -translate-x-1/2 top-full mt-2 z-40"
+                : ""
+            }`}
           >
+            <div className="p-3 space-y-2.5">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium text-white">
+                    Gestos y estados
+                  </div>
+                  <p className="text-[10.5px] text-zinc-400 truncate mt-0.5">
+                    {activeCatalogMeta.detail}
+                  </p>
+                </div>
+                {catalogAnim !== "auto" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCatalogAnim("auto");
+                      setStageCheerState(null);
+                    }}
+                    className="text-[10px] text-zinc-400 hover:text-white px-1.5 py-0.5 rounded-md hover:bg-white/[0.07] cursor-pointer shrink-0"
+                  >
+                    Volver a vivo
+                  </button>
+                )}
+              </div>
+
+              <div
+                role="toolbar"
+                aria-label={`Gestos y animaciones de ${displayAgentName}`}
+                aria-controls={`${uid}-xox-stage`}
+                onKeyDown={handleAnimCatalogKeyDown}
+                className="grid grid-cols-3 gap-1.5"
+              >
+                {XOX_ANIMATION_CATALOG.map((item) => {
+                  const selected = catalogAnim === item.id;
+                  const isAlertOpt = item.id === "alert";
+                  const isLiveActive = item.id === "auto" && stageXoxState !== "idle";
+                  return (
+                    <button
+                      key={item.id}
+                      ref={(el) => {
+                        animBtnRefs.current[item.id] = el;
+                      }}
+                      type="button"
+                      aria-pressed={selected}
+                      tabIndex={selected ? 0 : -1}
+                      title={item.detail}
+                      onClick={() => {
+                        setStageCheerState(null);
+                        if (catalogAnim === item.id && item.id !== "auto") {
+                          setStageReplaySeq((n) => n + 1);
+                        } else {
+                          setCatalogAnim(item.id);
+                        }
+                      }}
+                      className="min-h-[28px] px-2 py-1 rounded-xl border text-[10.5px] inline-flex items-center gap-1.5 cursor-pointer transition-colors bg-white/[0.03] border-white/[0.07] text-zinc-300 hover:bg-white/[0.08] hover:text-white aria-[pressed=true]:bg-white/[0.14] aria-[pressed=true]:border-white/[0.3] aria-[pressed=true]:text-white aria-[pressed=true]:font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 truncate"
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                          isLiveActive ? "animate-pulse" : ""
+                        }`}
+                        style={{
+                          backgroundColor: isAlertOpt
+                            ? "#EF4444"
+                            : selected
+                              ? activeAccentSpec.glow
+                              : "rgba(255,255,255,0.32)",
+                        }}
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* =================================================================== */}
+        {/* NAVEGACIÓN PRINCIPAL CENTRADA EN UNA SOLA FILA STICKY               */}
+        {/* =================================================================== */}
+        <div className="sticky top-0 z-20 px-4 py-2 bg-[#080a0f]/92 backdrop-blur-md border-b border-white/[0.06] overflow-x-auto no-scrollbar">
+          <div className="w-max mx-auto">
+            <JellyPillTrack
+              activeKey={activeTab}
+              role="tablist"
+              aria-label="Secciones de personalización del asistente"
+              pillRadius="9999px"
+              variant="quick"
+              onKeyDown={handleTabKeyDown}
+              className="inline-flex items-center p-0.5 rounded-full gap-0.5 min-w-max"
+            >
             {(
               [
-                { id: "identity", label: "Identidad", icon: UserCog },
-                { id: "voice", label: "Voz", icon: Volume2 },
-                { id: "skills", label: `Skills (${skills.length})`, icon: Zap },
-                { id: "rules", label: "Reglas y Gustos", icon: ListChecks },
+                { id: "identity", label: "Identidad", icon: UserCog, badge: null },
+                { id: "voice", label: "Voz", icon: Volume2, badge: null },
+                {
+                  id: "skills",
+                  label: "Skills",
+                  icon: Zap,
+                  badge: skills.length > 0 ? skills.length : null,
+                },
+                {
+                  id: "rules",
+                  label: "Reglas",
+                  icon: ListChecks,
+                  badge: totalRulesCount > 0 ? totalRulesCount : null,
+                },
               ] as const
             ).map((tab) => {
               const Icon = tab.icon;
@@ -948,174 +1337,164 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                   aria-selected={isSelected}
                   tabIndex={isSelected ? 0 : -1}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`xook-jelly-tab relative inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-medium cursor-pointer shrink-0 whitespace-nowrap focus-visible:outline-2 focus-visible:outline-white/60 ${
+                  className={`xook-jelly-tab relative inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer shrink-0 whitespace-nowrap focus-visible:outline-2 focus-visible:outline-white/60 ${
                     isSelected
-                      ? "text-white border-b-2 border-white/70"
-                      : "text-zinc-300/80 hover:text-white border-b-2 border-transparent"
+                      ? "text-white"
+                      : "text-zinc-400 hover:text-zinc-100"
                   }`}
                 >
                   <Icon className="w-3 h-3 shrink-0" aria-hidden="true" />
                   <span>{tab.label}</span>
+                  {tab.badge !== null && (
+                    <span className="text-[9.5px] font-mono tabular-nums text-zinc-400">
+                      {tab.badge}
+                    </span>
+                  )}
                 </button>
               );
             })}
-          </JellyPillTrack>
+            </JellyPillTrack>
+          </div>
         </div>
-        {/* =================================================================== */}
-        {/* TAB 1: IDENTIDAD Y PROMPT INICIAL GLOBAL                            */}
-        {/* =================================================================== */}
-        {activeTab === "identity" && (
+
+        {/* Banner de error global del panel */}
+        {errorMsg && (
           <div
-            role="tabpanel"
-            aria-labelledby={`${uid}-tab-identity`}
-            className="space-y-4"
+            role="alert"
+            className="mx-4 mt-3 rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 flex items-start justify-between gap-2 text-[11.5px] text-rose-100"
           >
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                void handleSaveGlobalProfile();
-              }}
-              className="space-y-4"
+            <span className="inline-flex items-start gap-2">
+              <AlertCircle
+                className="w-4 h-4 text-rose-300 shrink-0 mt-0.5"
+                aria-hidden="true"
+              />
+              <span>{errorMsg}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setErrorMsg(null)}
+              aria-label="Cerrar aviso"
+              className="text-rose-200/80 hover:text-white cursor-pointer"
             >
-              <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-3.5 space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <div className="space-y-1">
-                    <label
-                      htmlFor={`${uid}-agent-name`}
-                      className="block text-[11.5px] font-medium text-zinc-200"
-                    >
-                      Nombre del asistente
-                    </label>
-                    <input
-                      id={`${uid}-agent-name`}
-                      name="agentName"
-                      type="text"
-                      maxLength={40}
-                      required
-                      value={draft.agentName}
-                      onChange={(e) =>
-                        setDraft((p) => ({ ...p, agentName: e.target.value }))
-                      }
-                      placeholder="Ej. Xox, Maya, Atlas..."
-                      className="w-full min-h-[34px] px-3 py-1.5 rounded-xl bg-[#07080b] border border-white/[0.09] text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
-                    />
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        )}
+
+        {/* Contenido de la pestaña activa */}
+        <div className="px-4 pt-4 pb-10 space-y-3.5">
+          {/* ================================================================= */}
+          {/* TAB 1: IDENTIDAD (ESENCIAL VISIBLE + DETALLE PLEGABLE)            */}
+          {/* ================================================================= */}
+          {activeTab === "identity" && (
+            <div
+              role="tabpanel"
+              aria-labelledby={`${uid}-tab-identity`}
+              className="space-y-3"
+            >
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void handleSaveGlobalProfile();
+                }}
+                className="space-y-3"
+              >
+                {/* Bloque esencial: Nombre, Rol y Carácter */}
+                <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3.5 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label
+                        htmlFor={`${uid}-agent-name`}
+                        className="block text-[11px] font-medium text-zinc-300"
+                      >
+                        Nombre
+                      </label>
+                      <input
+                        id={`${uid}-agent-name`}
+                        name="agentName"
+                        type="text"
+                        maxLength={40}
+                        required
+                        value={draft.agentName}
+                        onChange={(e) =>
+                          setDraft((p) => ({ ...p, agentName: e.target.value }))
+                        }
+                        placeholder="Ej. Xox, Maya, Atlas..."
+                        className="w-full min-h-[34px] px-3 py-1.5 rounded-xl bg-black/35 border border-white/[0.08] text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label
+                        htmlFor={`${uid}-active-role`}
+                        className="block text-[11px] font-medium text-zinc-300"
+                      >
+                        Rol principal
+                      </label>
+                      <input
+                        id={`${uid}-active-role`}
+                        name="activeRole"
+                        type="text"
+                        maxLength={80}
+                        value={draft.activeRole}
+                        onChange={(e) =>
+                          setDraft((p) => ({ ...p, activeRole: e.target.value }))
+                        }
+                        placeholder="Ej. Asistente Co-Constructor"
+                        className="w-full min-h-[34px] px-3 py-1.5 rounded-xl bg-black/35 border border-white/[0.08] text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
+                      />
+                    </div>
                   </div>
 
                   <div className="space-y-1">
                     <label
-                      htmlFor={`${uid}-active-role`}
-                      className="block text-[11.5px] font-medium text-zinc-200"
+                      htmlFor={`${uid}-personality`}
+                      className="block text-[11px] font-medium text-zinc-300"
                     >
-                      Rol principal
+                      Carácter
                     </label>
                     <input
-                      id={`${uid}-active-role`}
-                      name="activeRole"
+                      id={`${uid}-personality`}
+                      name="personality"
                       type="text"
-                      maxLength={80}
-                      value={draft.activeRole}
+                      maxLength={240}
+                      value={draft.personality}
                       onChange={(e) =>
-                        setDraft((p) => ({ ...p, activeRole: e.target.value }))
+                        setDraft((p) => ({ ...p, personality: e.target.value }))
                       }
-                      placeholder="Ej. Asistente Co-Constructor"
-                      className="w-full min-h-[34px] px-3 py-1.5 rounded-xl bg-[#07080b] border border-white/[0.09] text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
+                      placeholder="Ej. Cercano, claro, práctico y directo."
+                      className="w-full min-h-[34px] px-3 py-1.5 rounded-xl bg-black/35 border border-white/[0.08] text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
                     />
                   </div>
-                </div>
+                </section>
 
-                {/* Color visual de la estrella */}
-                <fieldset className="space-y-1.5">
-                  <legend className="text-[11.5px] font-medium text-zinc-200">
-                    Aura y color de {displayAgentName}
-                  </legend>
+                {/* Agrupación progresiva: Estilo de respuesta */}
+                <DisclosureGroup title="Estilo de respuesta" meta={toneSummary}>
                   <div className="flex flex-wrap gap-1.5">
-                    {(Object.keys(XOX_ACCENT_PRESETS) as XoxAccentPreset[]).map((key) => {
-                      const preset = XOX_ACCENT_PRESETS[key];
-                      const selected = activeAccent === key;
-                      return (
-                        <label
-                          key={key}
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-[11px] cursor-pointer transition-all ${
-                            selected
-                              ? "bg-white/[0.12] border-white/[0.28] text-white font-medium"
-                              : "bg-[#07080b] border-white/[0.08] text-zinc-300 hover:bg-white/[0.05]"
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="accentPreset"
-                            value={key}
-                            checked={selected}
-                            onChange={() => {
-                              setDraft((p) => ({ ...p, accentPreset: key }));
-                              setColorRippleSeq((n) => n + 1);
-                              onPreviewAccentChange?.(key);
-                            }}
-                            className="sr-only"
-                          />
-                          <span
-                            className="w-2.5 h-2.5 rounded-full shrink-0"
-                            style={{ backgroundColor: preset.glow }}
-                            aria-hidden="true"
-                          />
-                          <span>{preset.label}</span>
-                        </label>
-                      );
-                    })}
+                    {Array.from(new Set([...TONE_SUGGESTIONS, ...draft.toneTags])).map(
+                      (tag) => {
+                        const active = draft.toneTags.some(
+                          (t) => t.toLowerCase() === tag.toLowerCase()
+                        );
+                        return (
+                          <button
+                            key={tag}
+                            type="button"
+                            aria-pressed={active}
+                            onClick={() => toggleToneTag(tag)}
+                            className={`px-2.5 py-1 rounded-full text-[11px] border transition-colors cursor-pointer ${
+                              active
+                                ? "bg-white text-zinc-950 border-white font-medium"
+                                : "bg-black/35 text-zinc-300 border-white/[0.08] hover:bg-white/[0.06]"
+                            }`}
+                          >
+                            {tag}
+                          </button>
+                        );
+                      }
+                    )}
                   </div>
-                </fieldset>
-              </section>
-
-              {/* Personalidad y Prompt Inicial */}
-              <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-3.5 space-y-3">
-                <div className="space-y-1">
-                  <label
-                    htmlFor={`${uid}-personality`}
-                    className="block text-[11.5px] font-medium text-zinc-200"
-                  >
-                    Cómo quieres que sea su carácter
-                  </label>
-                  <input
-                    id={`${uid}-personality`}
-                    name="personality"
-                    type="text"
-                    maxLength={240}
-                    value={draft.personality}
-                    onChange={(e) =>
-                      setDraft((p) => ({ ...p, personality: e.target.value }))
-                    }
-                    placeholder="Ej. Cercano, claro, práctico y con ejemplos simples"
-                    className="w-full min-h-[34px] px-3 py-1.5 rounded-xl bg-[#07080b] border border-white/[0.09] text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <span className="block text-[11px] font-medium text-zinc-300">
-                    Estilo de respuesta (toca para activar o quitar)
-                  </span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {Array.from(new Set([...TONE_SUGGESTIONS, ...draft.toneTags])).map((tag) => {
-                      const active = draft.toneTags.some(
-                        (t) => t.toLowerCase() === tag.toLowerCase()
-                      );
-                      return (
-                        <button
-                          key={tag}
-                          type="button"
-                          aria-pressed={active}
-                          onClick={() => toggleToneTag(tag)}
-                          className={`px-2.5 py-1 rounded-full text-[11px] border transition-colors cursor-pointer ${
-                            active
-                              ? "bg-white text-zinc-950 border-white font-medium"
-                              : "bg-[#07080b] text-zinc-300 border-white/[0.09] hover:bg-white/[0.06]"
-                          }`}
-                        >
-                          {tag}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div className="flex gap-1.5 pt-0.5">
+                  <div className="flex gap-1.5">
                     <input
                       type="text"
                       value={customToneInput}
@@ -1126,967 +1505,1023 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                           addCustomToneTag();
                         }
                       }}
-                      placeholder="Agregar otro estilo (ej. Formal, Divertido)"
+                      placeholder="Otro estilo (ej. Formal, Divertido)"
                       aria-label="Agregar estilo personalizado"
-                      className="flex-1 min-h-[30px] px-2.5 py-1 rounded-lg bg-[#07080b] border border-white/[0.08] text-[11px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.22] select-text"
+                      className="flex-1 min-h-[32px] px-2.5 py-1 rounded-xl bg-black/35 border border-white/[0.08] text-[11px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.22] select-text"
                     />
                     <button
                       type="button"
                       onClick={addCustomToneTag}
                       disabled={!customToneInput.trim()}
-                      className="min-h-[30px] px-2.5 py-1 rounded-lg bg-white/[0.07] hover:bg-white/[0.12] border border-white/[0.1] text-[11px] text-white disabled:opacity-40 cursor-pointer"
+                      className="min-h-[32px] px-3 py-1 rounded-xl bg-white/[0.07] hover:bg-white/[0.12] border border-white/[0.09] text-[11px] text-white disabled:opacity-40 cursor-pointer"
                     >
                       Agregar
                     </button>
                   </div>
-                </div>
+                </DisclosureGroup>
 
-                <div className="space-y-1">
-                  <label
-                    htmlFor={`${uid}-initial-instructions`}
-                    className="block text-[11.5px] font-medium text-zinc-200"
-                  >
-                    Instrucciones iniciales globales (cómo quieres que piense siempre)
-                  </label>
+                {/* Agrupación progresiva: Instrucciones iniciales globales */}
+                <DisclosureGroup
+                  title="Instrucciones iniciales globales"
+                  meta={draft.initialInstructions.trim() ? "Configuradas" : "Opcional"}
+                >
                   <p className="text-[11px] text-zinc-400 leading-snug">
-                    Este bloque funciona como tu indicación inicial en cualquier espacio de trabajo.
+                    Funciona como tu indicación base para {displayAgentName} en cualquier espacio.
                   </p>
                   <textarea
                     id={`${uid}-initial-instructions`}
                     name="initialInstructions"
+                    aria-label="Instrucciones iniciales globales"
                     rows={4}
                     maxLength={3000}
                     value={draft.initialInstructions}
                     onChange={(e) =>
                       setDraft((p) => ({ ...p, initialInstructions: e.target.value }))
                     }
-                    placeholder={`Ej. Cuando te pregunte algo complejo, explícamelo primero con palabras sencillas como para alguien que no es programador, y luego dame 3 pasos concretos.`}
-                    className="w-full px-3 py-2 rounded-xl bg-[#07080b] border border-white/[0.09] text-[11.5px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] leading-relaxed select-text"
+                    placeholder="Ej. Cuando te pregunte algo complejo, explícamelo primero con palabras sencillas y luego dame 3 pasos concretos."
+                    className="w-full px-3 py-2 rounded-xl bg-black/35 border border-white/[0.08] text-[11.5px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] leading-relaxed select-text"
                   />
+                </DisclosureGroup>
+              </form>
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* TAB 2: VOZ LOCAL (ACTIVAR + ELEGIR VOZ / AJUSTES PLEGABLES)       */}
+          {/* ================================================================= */}
+          {activeTab === "voice" && (
+            <div
+              role="tabpanel"
+              aria-labelledby={`${uid}-tab-voice`}
+              className="space-y-3.5"
+            >
+              <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3.5 space-y-3">
+                {/* Fila principal: activar voz */}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="quick-liquid-icon w-8 h-8 rounded-xl flex items-center justify-center shrink-0">
+                      {voiceConfig.enabled ? (
+                        <Volume2
+                          className="w-4 h-4 transition-colors"
+                          style={{ color: activeAccentSpec.mid }}
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <VolumeX className="w-4 h-4 text-zinc-400" aria-hidden="true" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="text-[12.5px] font-semibold text-white">
+                          Voz local
+                        </h3>
+                        <span className="inline-flex items-center gap-1 text-[10.5px] text-zinc-400">
+                          {voiceConfig.enabled && (
+                            <span
+                              className="w-1.5 h-1.5 rounded-full"
+                              style={{ backgroundColor: activeAccentSpec.glow }}
+                              aria-hidden="true"
+                            />
+                          )}
+                          <span>
+                            {!voiceConfig.enabled
+                              ? "Apagada"
+                              : workerRunning
+                                ? "Activa"
+                                : "Lista"}
+                          </span>
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-zinc-400 truncate">
+                        Generada en tu equipo, sin enviar audio a internet.
+                      </p>
+                    </div>
+                  </div>
+
+                  <LiquidSwitch
+                    checked={voiceConfig.enabled}
+                    disabled={savingVoice || downloadingVoice}
+                    label={`Activar voz de ${displayAgentName}`}
+                    onToggle={() => void handleToggleVoiceEnabled(!voiceConfig.enabled)}
+                  />
+                </div>
+
+                {(voiceError || playback.error) && (
+                  <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 flex items-start gap-2 text-[11px] text-rose-100">
+                    <AlertCircle
+                      className="w-3.5 h-3.5 text-rose-300 shrink-0 mt-0.5"
+                      aria-hidden="true"
+                    />
+                    <span>{voiceError || playback.error}</span>
+                  </div>
+                )}
+
+                {inTauriVoice && downloadingVoice ? (
+                  <div className="rounded-xl border border-indigo-400/25 bg-indigo-500/[0.08] p-2.5 space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px] text-indigo-100">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+                        <span>{downloadProgress?.label || "Descargando voces..."}</span>
+                      </span>
+                      <span className="tabular-nums">
+                        {Math.round(downloadProgress?.progress ?? 0)}%
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-indigo-400 transition-all"
+                        style={{
+                          width: `${Math.min(100, Math.max(3, downloadProgress?.progress ?? 3))}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                ) : inTauriVoice && !modelsInstalled ? (
+                  <div className="pt-2.5 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] text-zinc-300">
+                      Descarga el paquete local (~131 MB) para escuchar voces.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleDownloadVoices()}
+                      className="quick-liquid-chip-active px-3 py-1 rounded-lg text-[11px] font-medium text-white inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Download className="w-3 h-3" aria-hidden="true" />
+                      <span>Descargar voces</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="pt-2.5 border-t border-white/[0.06] flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[11.5px] font-medium text-zinc-100">
+                        Hablar automáticamente al responder
+                      </div>
+                      <p className="text-[10.5px] text-zinc-400">
+                        Lee sus respuestas frase por frase en cuanto escribe.
+                      </p>
+                    </div>
+                    <LiquidSwitch
+                      checked={voiceConfig.enabled && voiceConfig.autoPlay}
+                      disabled={savingVoice || downloadingVoice}
+                      label="Hablar automáticamente al responder"
+                      onToggle={() =>
+                        void handleUpdateVoice({
+                          enabled: true,
+                          autoPlay: !(voiceConfig.enabled && voiceConfig.autoPlay),
+                        })
+                      }
+                    />
+                  </div>
+                )}
+              </section>
+
+              {/* Catálogo de voces */}
+              <section className="space-y-2">
+                <h3 className="text-[11.5px] font-medium text-zinc-300 px-0.5">
+                  Elige una voz
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {voices.map((voice) => {
+                    const selected = voiceConfig.voiceId === voice.id;
+                    const isLoading =
+                      playback.loadingMessageId === STUDIO_PREVIEW_MSG_ID &&
+                      previewVoiceId === voice.id;
+                    const isPlaying =
+                      playback.playingMessageId === STUDIO_PREVIEW_MSG_ID &&
+                      previewVoiceId === voice.id;
+                    return (
+                      <div
+                        key={voice.id}
+                        onClick={() => {
+                          if (!savingVoice && !downloadingVoice) {
+                            void handleUpdateVoice({ voiceId: voice.id });
+                          }
+                        }}
+                        className={`quick-liquid-option rounded-xl p-2.5 flex items-center justify-between gap-2 cursor-pointer transition-all ${
+                          selected ? "is-selected text-white" : "text-zinc-200/90"
+                        }`}
+                      >
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[12px] font-medium text-white">
+                              {voice.name}
+                            </span>
+                            <span className="text-[10px] text-zinc-400">
+                              · {voice.gender}
+                            </span>
+                          </div>
+                          <p className="text-[10.5px] text-zinc-400 truncate">
+                            {voice.description}
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={downloadingVoice || (!modelsInstalled && inTauriVoice)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handlePreviewVoice(voice.id);
+                          }}
+                          className={`quick-liquid-btn px-2 py-1 rounded-lg text-[10.5px] inline-flex items-center gap-1 cursor-pointer shrink-0 disabled:opacity-40 ${
+                            isPlaying ? "text-emerald-200" : "text-zinc-100"
+                          }`}
+                        >
+                          {isLoading ? (
+                            <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+                          ) : isPlaying ? (
+                            <Square className="w-2.5 h-2.5 fill-current" aria-hidden="true" />
+                          ) : (
+                            <Play className="w-2.5 h-2.5 fill-current" aria-hidden="true" />
+                          )}
+                          <span>{isPlaying ? "Parar" : "Probar"}</span>
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
 
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
-                {onAskXoxCustomize && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onAskXoxCustomize(
-                        `Ayúdame a personalizar tu nombre, personalidad e instrucciones iniciales según cómo trabajo.`
-                      )
+              {/* Agrupación progresiva: Velocidad, memoria y archivos locales */}
+              <DisclosureGroup
+                title="Velocidad y ajustes locales"
+                meta={
+                  workerRunning
+                    ? `${speedDraft.toFixed(2)}x · ~${Math.round(workerRssMb)} MB`
+                    : `${speedDraft.toFixed(2)}x`
+                }
+              >
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between text-[11.5px]">
+                    <label htmlFor={`${uid}-voice-speed`} className="font-medium text-zinc-200">
+                      Velocidad al hablar
+                    </label>
+                    <span className="tabular-nums font-mono text-[11px] px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.07] text-zinc-200">
+                      {speedDraft.toFixed(2)}x
+                    </span>
+                  </div>
+
+                  <input
+                    id={`${uid}-voice-speed`}
+                    type="range"
+                    min={0.85}
+                    max={1.25}
+                    step={0.05}
+                    value={speedDraft}
+                    style={
+                      {
+                        "--range-progress": `${speedProgressPct}%`,
+                      } as React.CSSProperties
                     }
-                    className="px-3 py-1.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.09] text-[11px] text-zinc-200 inline-flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Wand2 className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Pedirle ayuda a {displayAgentName}</span>
-                  </button>
-                )}
-
-                <button
-                  type="submit"
-                  disabled={savingProfile || !profileDirty}
-                  className={`min-h-[34px] px-4 py-1.5 rounded-xl text-[11.5px] font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ml-auto ${
-                    profileDirty
-                      ? "bg-white text-zinc-950 hover:bg-zinc-200"
-                      : "bg-white/[0.07] text-zinc-300 border border-white/[0.09]"
-                  }`}
-                >
-                  {savingProfile ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Save className="w-3.5 h-3.5" aria-hidden="true" />
-                  )}
-                  <span>{savingProfile ? "Guardando..." : "Guardar identidad"}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        )}
-
-        {/* =================================================================== */}
-        {/* TAB 2: VOZ LOCAL DE XOX                                             */}
-        {/* =================================================================== */}
-        {activeTab === "voice" && (
-          <div
-            role="tabpanel"
-            aria-labelledby={`${uid}-tab-voice`}
-            className="space-y-3.5"
-          >
-            <section className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3.5 space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-start gap-2.5 min-w-0">
-                  <div className="quick-liquid-icon w-8 h-8 rounded-xl flex items-center justify-center shrink-0">
-                    {voiceConfig.enabled ? (
-                      <Volume2 className="w-4 h-4 text-emerald-200" aria-hidden="true" />
-                    ) : (
-                      <VolumeX className="w-4 h-4 text-zinc-400" aria-hidden="true" />
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h3 className="text-[12.5px] font-semibold text-white">
-                        Voz de {displayAgentName}
-                      </h3>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.08] text-zinc-300">
-                        {!voiceConfig.enabled
-                          ? "Apagada · 0 MB RAM"
-                          : workerRunning
-                            ? `Activa · ~${Math.round(workerRssMb)} MB`
-                            : "Lista en reposo"}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-zinc-400 mt-0.5">
-                      Se genera localmente en tu equipo sin enviar audio a internet.
-                    </p>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  role="switch"
-                  aria-label={`Activar voz de ${displayAgentName}`}
-                  aria-checked={voiceConfig.enabled}
-                  disabled={savingVoice || downloadingVoice}
-                  onClick={() => void handleToggleVoiceEnabled(!voiceConfig.enabled)}
-                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors cursor-pointer disabled:opacity-50 ${
-                    voiceConfig.enabled
-                      ? "bg-emerald-500/35 border-emerald-300/40"
-                      : "bg-white/[0.08] border-white/[0.14]"
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                      voiceConfig.enabled ? "translate-x-6" : "translate-x-1"
-                    }`}
-                  />
-                </button>
-              </div>
-
-              {(voiceError || playback.error) && (
-                <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 flex items-start gap-2 text-[11px] text-rose-100">
-                  <AlertCircle className="w-3.5 h-3.5 text-rose-300 shrink-0 mt-0.5" aria-hidden="true" />
-                  <span>{voiceError || playback.error}</span>
-                </div>
-              )}
-
-              <div className="rounded-xl border border-white/[0.07] bg-black/25 px-3 py-2.5 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-[12px] font-medium text-white">
-                    Hablar automáticamente al responder
-                  </div>
-                  <p className="text-[10.5px] text-zinc-400">
-                    Lee sus respuestas frase por frase en cuanto escribe.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-label="Hablar automáticamente al responder"
-                  aria-checked={voiceConfig.enabled && voiceConfig.autoPlay}
-                  disabled={savingVoice || downloadingVoice}
-                  onClick={() =>
-                    void handleUpdateVoice({
-                      enabled: true,
-                      autoPlay: !(voiceConfig.enabled && voiceConfig.autoPlay),
-                    })
-                  }
-                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors cursor-pointer disabled:opacity-50 ${
-                    voiceConfig.enabled && voiceConfig.autoPlay
-                      ? "bg-indigo-400/50 border-indigo-300/50"
-                      : "bg-white/[0.07] border-white/[0.12]"
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                      voiceConfig.enabled && voiceConfig.autoPlay ? "translate-x-6" : "translate-x-1"
-                    }`}
-                  />
-                </button>
-              </div>
-
-              {inTauriVoice && downloadingVoice ? (
-                <div className="rounded-xl border border-indigo-400/25 bg-indigo-500/[0.08] p-2.5 space-y-1.5">
-                  <div className="flex items-center justify-between text-[11px] text-indigo-100">
-                    <span className="inline-flex items-center gap-1.5">
-                      <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
-                      <span>{downloadProgress?.label || "Descargando voces..."}</span>
-                    </span>
-                    <span className="tabular-nums">{Math.round(downloadProgress?.progress ?? 0)}%</span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-indigo-400 transition-all"
-                      style={{ width: `${Math.min(100, Math.max(3, downloadProgress?.progress ?? 3))}%` }}
-                    />
-                  </div>
-                </div>
-              ) : inTauriVoice && !modelsInstalled ? (
-                <div className="rounded-xl border border-white/[0.08] bg-black/25 p-2.5 flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-[11px] text-zinc-300">
-                    Falta descargar el paquete local (~131 MB) para escuchar voces.
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void handleDownloadVoices()}
-                    className="quick-liquid-chip-active px-3 py-1 rounded-lg text-[11px] font-medium text-white inline-flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Download className="w-3 h-3" aria-hidden="true" />
-                    <span>Descargar voces</span>
-                  </button>
-                </div>
-              ) : null}
-            </section>
-
-            {/* Catálogo de voces */}
-            <section className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h3 className="text-[12px] font-semibold text-zinc-100">
-                  Elige qué voz tiene {displayAgentName}
-                </h3>
-                {workerRunning && (
-                  <button
-                    type="button"
-                    onClick={() => void unloadTtsWorker().then(onTtsStatusChanged).catch(() => {})}
-                    className="text-[10.5px] text-zinc-400 hover:text-white cursor-pointer"
-                  >
-                    Liberar RAM
-                  </button>
-                )}
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {voices.map((voice) => {
-                  const selected = voiceConfig.voiceId === voice.id;
-                  const isLoading =
-                    playback.loadingMessageId === STUDIO_PREVIEW_MSG_ID &&
-                    previewVoiceId === voice.id;
-                  const isPlaying =
-                    playback.playingMessageId === STUDIO_PREVIEW_MSG_ID &&
-                    previewVoiceId === voice.id;
-                  return (
-                    <div
-                      key={voice.id}
-                      onClick={() => {
-                        if (!savingVoice && !downloadingVoice) {
-                          void handleUpdateVoice({ voiceId: voice.id });
-                        }
-                      }}
-                      className={`quick-liquid-option rounded-xl p-2.5 flex items-center justify-between gap-2 cursor-pointer transition-all ${
-                        selected ? "is-selected text-white" : "text-zinc-200/90"
-                      }`}
-                    >
-                      <div className="min-w-0 space-y-0.5">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[12px] font-medium text-white">{voice.name}</span>
-                          <span className="px-1.5 py-0.2 rounded bg-white/[0.06] border border-white/[0.08] text-[9.5px] text-zinc-300">
-                            {voice.gender}
-                          </span>
-                        </div>
-                        <p className="text-[10.5px] text-zinc-400 truncate">{voice.description}</p>
-                      </div>
-
-                      <button
-                        type="button"
-                        disabled={downloadingVoice || (!modelsInstalled && inTauriVoice)}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void handlePreviewVoice(voice.id);
-                        }}
-                        className={`quick-liquid-btn px-2 py-1 rounded-lg text-[10.5px] inline-flex items-center gap-1 cursor-pointer shrink-0 disabled:opacity-40 ${
-                          isPlaying ? "text-emerald-200" : "text-zinc-100"
-                        }`}
-                      >
-                        {isLoading ? (
-                          <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
-                        ) : isPlaying ? (
-                          <Square className="w-2.5 h-2.5 fill-current" aria-hidden="true" />
-                        ) : (
-                          <Play className="w-2.5 h-2.5 fill-current" aria-hidden="true" />
-                        )}
-                        <span>{isPlaying ? "Parar" : "Probar"}</span>
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            {/* Velocidad */}
-            <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-3.5 space-y-2">
-              <div className="flex items-center justify-between text-[11.5px]">
-                <label htmlFor={`${uid}-voice-speed`} className="font-medium text-zinc-200">
-                  Velocidad al hablar
-                </label>
-                <span className="tabular-nums font-mono text-zinc-300">
-                  {voiceConfig.speed.toFixed(2)}x
-                </span>
-              </div>
-              <input
-                id={`${uid}-voice-speed`}
-                type="range"
-                min={0.85}
-                max={1.25}
-                step={0.05}
-                value={voiceConfig.speed}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  ttsPlayer.setSpeed(v);
-                  void handleUpdateVoice({ speed: v });
-                }}
-                className="w-full accent-indigo-300 cursor-pointer"
-              />
-              <div className="flex justify-between text-[10px] text-zinc-400">
-                <button type="button" onClick={() => void handleUpdateVoice({ speed: 0.9 })} className="hover:text-white cursor-pointer">
-                  Pausada (0.9x)
-                </button>
-                <button type="button" onClick={() => void handleUpdateVoice({ speed: 1.0 })} className="hover:text-white cursor-pointer">
-                  Natural (1.0x)
-                </button>
-                <button type="button" onClick={() => void handleUpdateVoice({ speed: 1.15 })} className="hover:text-white cursor-pointer">
-                  Ágil (1.15x)
-                </button>
-              </div>
-
-              {inTauriVoice && modelsInstalled && (
-                <div className="pt-2 border-t border-white/[0.06] flex justify-end text-[10.5px]">
-                  {confirmDeleteModels ? (
-                    <span className="inline-flex items-center gap-2 text-rose-200">
-                      <span>¿Borrar paquete de voz local?</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void deleteTtsModels()
-                            .then((st) => {
-                              onTtsStatusChanged(st);
-                              setConfirmDeleteModels(false);
-                            })
-                            .catch((err) => setVoiceError(cleanTtsErrorMessage(err)))
-                        }
-                        className="px-2 py-0.5 rounded bg-rose-500/20 border border-rose-400/30 text-rose-100 cursor-pointer"
-                      >
-                        Sí, borrar
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDeleteModels(false)}
-                        className="text-zinc-300 hover:text-white cursor-pointer"
-                      >
-                        Cancelar
-                      </button>
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeleteModels(true)}
-                      className="text-zinc-500 hover:text-rose-200 cursor-pointer"
-                    >
-                      Eliminar archivos de voz locales
-                    </button>
-                  )}
-                </div>
-              )}
-            </section>
-          </div>
-        )}
-
-        {/* =================================================================== */}
-        {/* TAB 3: SKILLS / HABILIDADES POR BLOQUES DE TEXTO                    */}
-        {/* =================================================================== */}
-        {activeTab === "skills" && (
-          <div
-            role="tabpanel"
-            aria-labelledby={`${uid}-tab-skills`}
-            className="space-y-3.5"
-          >
-            {editingSkill ? (
-              /* --- Vista Editor de Bloques para una Skill --- */
-              <form onSubmit={handleSaveSkillBlocks} className="space-y-3.5">
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingSkill(null);
-                      setIsNewSkill(false);
-                      setConfirmDeleteSlug(null);
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      setSpeedDraft(v);
+                      ttsPlayer.setSpeed(v);
+                      void handleUpdateVoice({ speed: v });
                     }}
-                    className="inline-flex items-center gap-1 text-[11.5px] text-zinc-300 hover:text-white cursor-pointer"
-                  >
-                    <ChevronLeft className="w-4 h-4" aria-hidden="true" />
-                    <span>Volver a habilidades</span>
-                  </button>
+                    className="xook-liquid-range"
+                  />
 
-                  {editingSkill.scope !== "builtin" && !isNewSkill && (
-                    confirmDeleteSlug === editingSkill.slug ? (
-                      <div className="inline-flex items-center gap-1.5 text-[11px]">
-                        <span className="text-rose-200">¿Eliminar?</span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {(
+                      [
+                        { label: "Pausada", value: 0.9 },
+                        { label: "Natural", value: 1.0 },
+                        { label: "Ágil", value: 1.15 },
+                      ] as const
+                    ).map((preset) => {
+                      const isActive = Math.abs(speedDraft - preset.value) < 0.01;
+                      return (
                         <button
+                          key={preset.value}
                           type="button"
-                          disabled={savingSkill}
-                          onClick={() => void handleDeleteSkill(editingSkill)}
-                          className="px-2 py-0.5 rounded-lg bg-rose-500/25 border border-rose-400/40 text-rose-100 cursor-pointer"
-                        >
-                          Sí, borrar
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDeleteSlug(null)}
-                          className="px-2 py-0.5 rounded-lg bg-white/[0.06] text-zinc-300 cursor-pointer"
-                        >
-                          Cancelar
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDeleteSlug(editingSkill.slug)}
-                        className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-rose-200 cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                        <span>Eliminar</span>
-                      </button>
-                    )
-                  )}
-                </div>
-
-                {editingSkill.scope === "builtin" && (
-                  <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[11px] text-zinc-300">
-                    Esta habilidad viene integrada en XOOK. Puedes consultarla o crear una propia personalizada.
-                  </div>
-                )}
-
-                <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-3.5 space-y-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 space-y-1">
-                      <label
-                        htmlFor={`${uid}-skill-title`}
-                        className="block text-[11.5px] font-medium text-zinc-200"
-                      >
-                        Nombre de la habilidad
-                      </label>
-                      <input
-                        id={`${uid}-skill-title`}
-                        type="text"
-                        required
-                        disabled={editingSkill.scope === "builtin"}
-                        value={editingSkill.title}
-                        onChange={(e) =>
-                          setEditingSkill((p) => (p ? { ...p, title: e.target.value } : p))
-                        }
-                        placeholder="Ej. Cierre semanal, Redactor de correos..."
-                        className="w-full min-h-[34px] px-3 py-1.5 rounded-xl bg-[#07080b] border border-white/[0.09] text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] disabled:opacity-60 select-text"
-                      />
-                    </div>
-
-                    {editingSkill.scope !== "builtin" && (
-                      <div className="space-y-1 shrink-0 pt-0.5">
-                        <span className="block text-[11px] font-medium text-zinc-300 text-right">
-                          Estado
-                        </span>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-label="Habilidad activa"
-                          aria-checked={editingSkill.enabled}
-                          onClick={() =>
-                            setEditingSkill((p) => (p ? { ...p, enabled: !p.enabled } : p))
-                          }
-                          className={`min-h-[34px] px-2.5 rounded-xl border text-[11px] font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
-                            editingSkill.enabled
-                              ? "bg-emerald-500/15 border-emerald-400/30 text-emerald-200"
-                              : "bg-white/[0.04] border-white/[0.1] text-zinc-400"
+                          aria-pressed={isActive}
+                          onClick={() => {
+                            setSpeedDraft(preset.value);
+                            ttsPlayer.setSpeed(preset.value);
+                            void handleUpdateVoice({ speed: preset.value });
+                          }}
+                          className={`px-2.5 py-1 rounded-full text-[10.5px] border transition-colors cursor-pointer ${
+                            isActive
+                              ? "bg-white/[0.12] border-white/[0.24] text-white font-medium"
+                              : "bg-white/[0.025] border-white/[0.07] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06]"
                           }`}
                         >
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              editingSkill.enabled ? "bg-emerald-300" : "bg-zinc-500"
-                            }`}
-                          />
-                          <span>{editingSkill.enabled ? "Activa" : "Pausada"}</span>
+                          {preset.label} · {preset.value.toFixed(preset.value === 1.15 ? 2 : 1)}x
                         </button>
-                      </div>
-                    )}
+                      );
+                    })}
                   </div>
-
-                  <div className="space-y-1">
-                    <label
-                      htmlFor={`${uid}-skill-desc`}
-                      className="block text-[11.5px] font-medium text-zinc-200"
-                    >
-                      Para qué sirve (en una frase simple)
-                    </label>
-                    <input
-                      id={`${uid}-skill-desc`}
-                      type="text"
-                      disabled={editingSkill.scope === "builtin"}
-                      value={editingSkill.description}
-                      onChange={(e) =>
-                        setEditingSkill((p) => (p ? { ...p, description: e.target.value } : p))
-                      }
-                      placeholder="Ej. Ayuda a revisar facturas y detectar precios repetidos."
-                      className="w-full min-h-[34px] px-3 py-1.5 rounded-xl bg-[#07080b] border border-white/[0.09] text-[11.5px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] disabled:opacity-60 select-text"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    <div className="space-y-1">
-                      <label
-                        htmlFor={`${uid}-skill-scope`}
-                        className="block text-[11px] font-medium text-zinc-300"
-                      >
-                        Dónde se usa
-                      </label>
-                      <select
-                        id={`${uid}-skill-scope`}
-                        disabled={editingSkill.scope === "builtin" || !isNewSkill}
-                        value={editingSkill.scope}
-                        onChange={(e) =>
-                          setEditingSkill((p) =>
-                            p
-                              ? {
-                                  ...p,
-                                  scope: e.target.value === "workspace" ? "workspace" : "global",
-                                }
-                              : p
-                          )
-                        }
-                        className="w-full min-h-[32px] px-2.5 py-1 rounded-xl bg-[#07080b] border border-white/[0.09] text-[11.5px] text-zinc-100 disabled:opacity-60"
-                      >
-                        <option value="global">Global (todos tus espacios)</option>
-                        {hasActiveWorkspace && (
-                          <option value="workspace">
-                            Solo en {activeWorkspaceName || "este espacio"}
-                          </option>
-                        )}
-                      </select>
-                    </div>
-
-                    <div className="space-y-1">
-                      <label
-                        htmlFor={`${uid}-skill-domain`}
-                        className="block text-[11px] font-medium text-zinc-300"
-                      >
-                        Categoría
-                      </label>
-                      <select
-                        id={`${uid}-skill-domain`}
-                        disabled={editingSkill.scope === "builtin"}
-                        value={editingSkill.domain}
-                        onChange={(e) =>
-                          setEditingSkill((p) => (p ? { ...p, domain: e.target.value } : p))
-                        }
-                        className="w-full min-h-[32px] px-2.5 py-1 rounded-xl bg-[#07080b] border border-white/[0.09] text-[11.5px] text-zinc-100 disabled:opacity-60"
-                      >
-                        {SKILL_DOMAIN_OPTIONS.map((opt) => (
-                          <option key={opt.id} value={opt.id}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                </section>
-
-                {/* Bloques de texto amigables */}
-                <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-3.5 space-y-4">
-                  <EditableTextBlockList
-                    idPrefix={`${uid}-skill-steps`}
-                    label="Pasos que debe seguir"
-                    helperText={`Qué hace ${displayAgentName} paso a paso cuando usa esta habilidad.`}
-                    items={editingSkill.steps}
-                    disabled={editingSkill.scope === "builtin"}
-                    placeholder="Ej. Leer el documento completo primero"
-                    onChange={(next) =>
-                      setEditingSkill((p) => (p ? { ...p, steps: next } : p))
-                    }
-                  />
-
-                  <EditableTextBlockList
-                    idPrefix={`${uid}-skill-donts`}
-                    label="Qué debe evitar"
-                    helperText="Límites claros o errores que nunca debe cometer."
-                    items={editingSkill.donts}
-                    disabled={editingSkill.scope === "builtin"}
-                    placeholder="Ej. No inventar precios si faltan en el archivo"
-                    onChange={(next) =>
-                      setEditingSkill((p) => (p ? { ...p, donts: next } : p))
-                    }
-                  />
-
-                  <EditableTextBlockList
-                    idPrefix={`${uid}-skill-prefs`}
-                    label="Preferencias de estilo para esta tarea"
-                    items={editingSkill.prefs}
-                    disabled={editingSkill.scope === "builtin"}
-                    placeholder="Ej. Entregar tabla corta al final"
-                    onChange={(next) =>
-                      setEditingSkill((p) => (p ? { ...p, prefs: next } : p))
-                    }
-                  />
-
-                  <div className="space-y-1">
-                    <label
-                      htmlFor={`${uid}-skill-notes`}
-                      className="block text-[11.5px] font-medium text-zinc-200"
-                    >
-                      Indicaciones adicionales (texto libre)
-                    </label>
-                    <textarea
-                      id={`${uid}-skill-notes`}
-                      rows={3}
-                      disabled={editingSkill.scope === "builtin"}
-                      value={editingSkill.instructions}
-                      onChange={(e) =>
-                        setEditingSkill((p) => (p ? { ...p, instructions: e.target.value } : p))
-                      }
-                      placeholder="Cualquier detalle extra, formato o ejemplo de cómo te gustaría recibir el resultado..."
-                      className="w-full px-3 py-2 rounded-xl bg-[#07080b] border border-white/[0.09] text-[11.5px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] disabled:opacity-60 leading-relaxed select-text"
-                    />
-                  </div>
-                </section>
-
-                {/* Vista previa opcional discreta para quien quiera ver el texto generado */}
-                <div className="rounded-xl border border-white/[0.06] bg-black/20">
-                  <button
-                    type="button"
-                    aria-expanded={showRawPreview}
-                    onClick={() => setShowRawPreview((v) => !v)}
-                    className="w-full px-3 py-2 flex items-center justify-between text-[11px] text-zinc-400 hover:text-zinc-200 cursor-pointer"
-                  >
-                    <span>Vista previa de texto generado</span>
-                    <ChevronDown
-                      className={`w-3.5 h-3.5 transition-transform ${showRawPreview ? "rotate-180" : ""}`}
-                      aria-hidden="true"
-                    />
-                  </button>
-                  {showRawPreview && (
-                    <pre className="px-3 pb-3 text-[10.5px] font-mono text-zinc-400 whitespace-pre-wrap overflow-x-auto border-t border-white/[0.05] pt-2 select-text">
-                      {serializeBlocksToSkillMarkdown(editingSkill)}
-                    </pre>
-                  )}
                 </div>
 
-                {editingSkill.scope !== "builtin" && (
-                  <div className="flex justify-end gap-2">
+                {(workerRunning || (inTauriVoice && modelsInstalled)) && (
+                  <div className="pt-2.5 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-[10.5px]">
+                    <div className="flex items-center gap-2 text-zinc-400">
+                      <span>
+                        {workerRunning
+                          ? `Motor activo (~${Math.round(workerRssMb)} MB RAM)`
+                          : "Motor en reposo (0 MB RAM)"}
+                      </span>
+                      {workerRunning && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void unloadTtsWorker().then(onTtsStatusChanged).catch(() => {})
+                          }
+                          className="px-2 py-0.5 rounded-md bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-zinc-200 hover:text-white transition-colors cursor-pointer"
+                        >
+                          Liberar RAM
+                        </button>
+                      )}
+                    </div>
+
+                    {inTauriVoice && modelsInstalled && (
+                      confirmDeleteModels ? (
+                        <span className="inline-flex items-center gap-2 text-rose-200">
+                          <span>¿Borrar paquete local?</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void deleteTtsModels()
+                                .then((st) => {
+                                  onTtsStatusChanged(st);
+                                  setConfirmDeleteModels(false);
+                                })
+                                .catch((err) => setVoiceError(cleanTtsErrorMessage(err)))
+                            }
+                            className="px-2 py-0.5 rounded bg-rose-500/20 border border-rose-400/30 text-rose-100 cursor-pointer"
+                          >
+                            Sí, borrar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteModels(false)}
+                            className="text-zinc-300 hover:text-white cursor-pointer"
+                          >
+                            Cancelar
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteModels(true)}
+                          className="text-zinc-500 hover:text-rose-200 cursor-pointer"
+                        >
+                          Eliminar archivos locales
+                        </button>
+                      )
+                    )}
+                  </div>
+                )}
+              </DisclosureGroup>
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* TAB 3: SKILLS / HABILIDADES POR BLOQUES DE TEXTO                  */}
+          {/* ================================================================= */}
+          {activeTab === "skills" && (
+            <div
+              role="tabpanel"
+              aria-labelledby={`${uid}-tab-skills`}
+              className="space-y-3"
+            >
+              {editingSkill ? (
+                /* --- Vista Editor de Bloques para una Skill --- */
+                <form onSubmit={handleSaveSkillBlocks} className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
                     <button
                       type="button"
                       onClick={() => {
                         setEditingSkill(null);
                         setIsNewSkill(false);
+                        setConfirmDeleteSlug(null);
                       }}
-                      className="px-3 py-1.5 rounded-xl text-[11.5px] text-zinc-300 hover:text-white cursor-pointer"
+                      className="inline-flex items-center gap-1 text-[11.5px] text-zinc-300 hover:text-white cursor-pointer"
                     >
-                      Cancelar
+                      <ChevronLeft className="w-4 h-4" aria-hidden="true" />
+                      <span>Volver a habilidades</span>
                     </button>
-                    <button
-                      type="submit"
-                      disabled={savingSkill}
-                      className="min-h-[34px] px-4 py-1.5 rounded-xl bg-white text-zinc-950 hover:bg-zinc-200 text-[11.5px] font-medium inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    >
-                      {savingSkill ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+
+                    {editingSkill.scope !== "builtin" && !isNewSkill && (
+                      confirmDeleteSlug === editingSkill.slug ? (
+                        <div className="inline-flex items-center gap-1.5 text-[11px]">
+                          <span className="text-rose-200">¿Eliminar?</span>
+                          <button
+                            type="button"
+                            disabled={savingSkill}
+                            onClick={() => void handleDeleteSkill(editingSkill)}
+                            className="px-2 py-0.5 rounded-lg bg-rose-500/25 border border-rose-400/40 text-rose-100 cursor-pointer"
+                          >
+                            Sí, borrar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteSlug(null)}
+                            className="px-2 py-0.5 rounded-lg bg-white/[0.06] text-zinc-300 cursor-pointer"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
                       ) : (
-                        <Save className="w-3.5 h-3.5" aria-hidden="true" />
-                      )}
-                      <span>{savingSkill ? "Guardando..." : "Guardar habilidad"}</span>
-                    </button>
-                  </div>
-                )}
-              </form>
-            ) : (
-              /* --- Lista visual de Skills + Plantillas + Catálogo oficial --- */
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h3 className="text-[12.5px] font-semibold text-white">
-                      Habilidades de {displayAgentName}
-                    </h3>
-                    <p className="text-[11px] text-zinc-400">
-                      Enséñale procesos con bloques simples; también puedes pedirle por chat que cree o ajuste una.
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => handleStartNewSkill()}
-                    className="min-h-[32px] px-3 py-1.5 rounded-xl bg-white text-zinc-950 hover:bg-zinc-200 text-[11.5px] font-medium inline-flex items-center gap-1.5 cursor-pointer shrink-0"
-                  >
-                    <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>Nueva habilidad</span>
-                  </button>
-                </div>
-
-                {/* Plantillas rápidas para usuarios normales */}
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[10.5px] text-zinc-400 mr-1">Empezar rápido:</span>
-                  {SKILL_STARTER_TEMPLATES.map((tpl, idx) => (
-                    <button
-                      key={tpl.id}
-                      type="button"
-                      onClick={() => handleStartNewSkill(idx)}
-                      className="px-2.5 py-1 rounded-full bg-white/[0.04] hover:bg-white/[0.09] border border-white/[0.08] text-[10.5px] text-zinc-200 cursor-pointer transition-colors"
-                    >
-                      + {tpl.label}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Lista de habilidades instaladas/creadas */}
-                {skills.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed border-white/[0.1] bg-white/[0.02] p-5 text-center space-y-2">
-                    <Sparkles className="w-5 h-5 text-zinc-400 mx-auto" aria-hidden="true" />
-                    <p className="text-[12px] font-medium text-zinc-200">
-                      Aún no agregas habilidades personalizadas
-                    </p>
-                    <p className="text-[11px] text-zinc-400">
-                      Crea una con bloques simples o dile a {displayAgentName} en el chat cómo quieres que trabaje.
-                    </p>
-                  </div>
-                ) : (
-                  <ul className="space-y-2">
-                    {skills.map((entry) => {
-                      const isHighlighted = highlightedSkillSlug === entry.slug;
-                      const scopeLabel =
-                        entry.scope === "global"
-                          ? "Global"
-                          : entry.scope === "workspace"
-                            ? "Este espacio"
-                            : "Integrada";
-                      return (
-                        <li
-                          key={`${entry.scope}-${entry.slug}`}
-                          className={`rounded-2xl border p-3 flex items-start justify-between gap-2.5 transition-colors ${
-                            isHighlighted
-                              ? "xook-node-highlight border"
-                              : "bg-white/[0.025] border-white/[0.08] hover:border-white/[0.14]"
-                          }`}
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteSlug(editingSkill.slug)}
+                          className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-rose-200 cursor-pointer"
                         >
-                          <div className="min-w-0 space-y-1 flex-1">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span
-                                className={`text-[12.5px] font-medium truncate ${
-                                  entry.enabled ? "text-white" : "text-zinc-400 line-through"
-                                }`}
-                              >
-                                {entry.name}
-                              </span>
-                              <span className="px-1.5 py-0.5 rounded-md bg-white/[0.06] border border-white/[0.08] text-[9.5px] text-zinc-300">
-                                {scopeLabel}
-                              </span>
-                              {!entry.enabled && (
-                                <span className="px-1.5 py-0.5 rounded-md bg-zinc-800 text-[9.5px] text-zinc-400">
-                                  Pausada
-                                </span>
-                              )}
-                            </div>
-                            {entry.description && (
-                              <p className="text-[11px] text-zinc-400 line-clamp-2 leading-snug">
-                                {entry.description}
-                              </p>
-                            )}
-                          </div>
+                          <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                          <span>Eliminar</span>
+                        </button>
+                      )
+                    )}
+                  </div>
 
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {entry.scope !== "builtin" && (
-                              <button
-                                type="button"
-                                role="switch"
-                                aria-label={`${entry.enabled ? "Pausar" : "Activar"} habilidad ${entry.name}`}
-                                aria-checked={entry.enabled}
-                                onClick={() => void handleToggleSkillEnabled(entry)}
-                                title={entry.enabled ? "Pausar habilidad" : "Activar habilidad"}
-                                className={`relative inline-flex h-5 w-9 items-center rounded-full border transition-colors cursor-pointer ${
-                                  entry.enabled
-                                    ? "bg-emerald-500/35 border-emerald-300/40"
-                                    : "bg-white/[0.07] border-white/[0.12]"
-                                }`}
-                              >
-                                <span
-                                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                                    entry.enabled ? "translate-x-4" : "translate-x-0.5"
-                                  }`}
-                                />
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setIsNewSkill(false);
-                                setShowRawPreview(false);
-                                setEditingSkill(parseSkillToBlocks(entry));
-                              }}
-                              className="quick-liquid-btn px-2.5 py-1 rounded-lg text-[11px] text-zinc-100 cursor-pointer"
-                            >
-                              {entry.scope === "builtin" ? "Ver" : "Editar"}
-                            </button>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
+                  {editingSkill.scope === "builtin" && (
+                    <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[11px] text-zinc-300">
+                      Esta habilidad viene integrada en XOOK. Puedes consultarla o crear una propia personalizada.
+                    </div>
+                  )}
 
-                {/* Explorador de skills oficiales verificadas */}
-                <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] overflow-hidden">
-                  <button
-                    type="button"
-                    aria-expanded={showOfficialHub}
-                    onClick={() => setShowOfficialHub((v) => !v)}
-                    className="w-full px-3.5 py-2.5 flex items-center justify-between gap-2 text-left hover:bg-white/[0.03] cursor-pointer"
-                  >
-                    <span className="inline-flex items-center gap-2 text-[11.5px] font-medium text-zinc-200">
-                      <Search className="w-3.5 h-3.5 text-zinc-400" aria-hidden="true" />
-                      <span>Buscar habilidades oficiales verificadas</span>
-                    </span>
-                    <ChevronDown
-                      className={`w-3.5 h-3.5 text-zinc-400 transition-transform ${
-                        showOfficialHub ? "rotate-180" : ""
-                      }`}
-                      aria-hidden="true"
+                  {/* Datos básicos de la skill */}
+                  <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3.5 space-y-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 space-y-1">
+                        <label
+                          htmlFor={`${uid}-skill-title`}
+                          className="block text-[11px] font-medium text-zinc-300"
+                        >
+                          Nombre de la habilidad
+                        </label>
+                        <input
+                          id={`${uid}-skill-title`}
+                          type="text"
+                          required
+                          disabled={editingSkill.scope === "builtin"}
+                          value={editingSkill.title}
+                          onChange={(e) =>
+                            setEditingSkill((p) => (p ? { ...p, title: e.target.value } : p))
+                          }
+                          placeholder="Ej. Cierre semanal, Redactor de correos..."
+                          className="w-full min-h-[34px] px-3 py-1.5 rounded-xl bg-black/35 border border-white/[0.08] text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] disabled:opacity-60 select-text"
+                        />
+                      </div>
+
+                      {editingSkill.scope !== "builtin" && (
+                        <div className="space-y-1 shrink-0">
+                          <span className="block text-[11px] font-medium text-zinc-300 text-right">
+                            Estado
+                          </span>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-label="Habilidad activa"
+                            aria-checked={editingSkill.enabled}
+                            onClick={() =>
+                              setEditingSkill((p) => (p ? { ...p, enabled: !p.enabled } : p))
+                            }
+                            className={`min-h-[34px] px-2.5 rounded-xl border text-[11px] font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
+                              editingSkill.enabled
+                                ? "bg-emerald-500/15 border-emerald-400/30 text-emerald-200"
+                                : "bg-white/[0.04] border-white/[0.1] text-zinc-400"
+                            }`}
+                          >
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full ${
+                                editingSkill.enabled ? "bg-emerald-300" : "bg-zinc-500"
+                              }`}
+                            />
+                            <span>{editingSkill.enabled ? "Activa" : "Pausada"}</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-1">
+                      <label
+                        htmlFor={`${uid}-skill-desc`}
+                        className="block text-[11px] font-medium text-zinc-300"
+                      >
+                        Para qué sirve
+                      </label>
+                      <input
+                        id={`${uid}-skill-desc`}
+                        type="text"
+                        disabled={editingSkill.scope === "builtin"}
+                        value={editingSkill.description}
+                        onChange={(e) =>
+                          setEditingSkill((p) => (p ? { ...p, description: e.target.value } : p))
+                        }
+                        placeholder="Ej. Ayuda a revisar facturas y detectar precios repetidos."
+                        className="w-full min-h-[34px] px-3 py-1.5 rounded-xl bg-black/35 border border-white/[0.08] text-[11.5px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] disabled:opacity-60 select-text"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div className="space-y-1">
+                        <label
+                          htmlFor={`${uid}-skill-scope`}
+                          className="block text-[11px] font-medium text-zinc-300"
+                        >
+                          Dónde se usa
+                        </label>
+                        <select
+                          id={`${uid}-skill-scope`}
+                          disabled={editingSkill.scope === "builtin" || !isNewSkill}
+                          value={editingSkill.scope}
+                          onChange={(e) =>
+                            setEditingSkill((p) =>
+                              p
+                                ? {
+                                    ...p,
+                                    scope:
+                                      e.target.value === "workspace" ? "workspace" : "global",
+                                  }
+                                : p
+                            )
+                          }
+                          className="w-full min-h-[32px] px-2.5 py-1 rounded-xl bg-black/35 border border-white/[0.08] text-[11.5px] text-zinc-100 disabled:opacity-60"
+                        >
+                          <option value="global">Global (todos tus espacios)</option>
+                          {hasActiveWorkspace && (
+                            <option value="workspace">
+                              Solo en {activeWorkspaceName || "este espacio"}
+                            </option>
+                          )}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label
+                          htmlFor={`${uid}-skill-domain`}
+                          className="block text-[11px] font-medium text-zinc-300"
+                        >
+                          Categoría
+                        </label>
+                        <select
+                          id={`${uid}-skill-domain`}
+                          disabled={editingSkill.scope === "builtin"}
+                          value={editingSkill.domain}
+                          onChange={(e) =>
+                            setEditingSkill((p) => (p ? { ...p, domain: e.target.value } : p))
+                          }
+                          className="w-full min-h-[32px] px-2.5 py-1 rounded-xl bg-black/35 border border-white/[0.08] text-[11.5px] text-zinc-100 disabled:opacity-60"
+                        >
+                          {SKILL_DOMAIN_OPTIONS.map((opt) => (
+                            <option key={opt.id} value={opt.id}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* Pasos principales siempre visibles */}
+                  <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3.5">
+                    <EditableTextBlockList
+                      idPrefix={`${uid}-skill-steps`}
+                      label="Pasos que debe seguir"
+                      helperText={`Qué hace ${displayAgentName} paso a paso cuando usa esta habilidad.`}
+                      items={editingSkill.steps}
+                      disabled={editingSkill.scope === "builtin"}
+                      placeholder="Ej. Leer el documento completo primero"
+                      onChange={(next) =>
+                        setEditingSkill((p) => (p ? { ...p, steps: next } : p))
+                      }
                     />
-                  </button>
+                  </section>
 
-                  {showOfficialHub && (
-                    <div className="px-3.5 pb-3.5 pt-2 border-t border-white/[0.06] space-y-2.5">
-                      <search>
-                        <form onSubmit={handleSearchOfficial} className="flex gap-1.5">
+                  {/* Detalles secundarios agrupados */}
+                  <DisclosureGroup
+                    title="Qué debe evitar"
+                    meta={editingSkill.donts.length > 0 ? `${editingSkill.donts.length}` : "Opcional"}
+                    defaultOpen={editingSkill.donts.length > 0}
+                  >
+                    <EditableTextBlockList
+                      idPrefix={`${uid}-skill-donts`}
+                      label="Qué debe evitar"
+                      hideHeader
+                      helperText="Límites claros o errores que nunca debe cometer."
+                      items={editingSkill.donts}
+                      disabled={editingSkill.scope === "builtin"}
+                      placeholder="Ej. No inventar precios si faltan en el archivo"
+                      onChange={(next) =>
+                        setEditingSkill((p) => (p ? { ...p, donts: next } : p))
+                      }
+                    />
+                  </DisclosureGroup>
+
+                  <DisclosureGroup
+                    title="Preferencias y notas adicionales"
+                    meta={
+                      editingSkill.prefs.length > 0 || editingSkill.instructions.trim()
+                        ? "Configuradas"
+                        : "Opcional"
+                    }
+                    defaultOpen={
+                      editingSkill.prefs.length > 0 || Boolean(editingSkill.instructions.trim())
+                    }
+                  >
+                    <EditableTextBlockList
+                      idPrefix={`${uid}-skill-prefs`}
+                      label="Preferencias de estilo"
+                      items={editingSkill.prefs}
+                      disabled={editingSkill.scope === "builtin"}
+                      placeholder="Ej. Entregar tabla corta al final"
+                      onChange={(next) =>
+                        setEditingSkill((p) => (p ? { ...p, prefs: next } : p))
+                      }
+                    />
+
+                    <div className="space-y-1">
+                      <label
+                        htmlFor={`${uid}-skill-notes`}
+                        className="block text-[11.5px] font-medium text-zinc-200"
+                      >
+                        Indicaciones adicionales
+                      </label>
+                      <textarea
+                        id={`${uid}-skill-notes`}
+                        rows={3}
+                        disabled={editingSkill.scope === "builtin"}
+                        value={editingSkill.instructions}
+                        onChange={(e) =>
+                          setEditingSkill((p) => (p ? { ...p, instructions: e.target.value } : p))
+                        }
+                        placeholder="Cualquier detalle extra, formato o ejemplo de cómo te gustaría recibir el resultado..."
+                        className="w-full px-3 py-2 rounded-xl bg-black/35 border border-white/[0.08] text-[11.5px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] disabled:opacity-60 leading-relaxed select-text"
+                      />
+                    </div>
+                  </DisclosureGroup>
+
+                  <DisclosureGroup title="Vista previa de texto generado">
+                    <pre className="text-[10.5px] font-mono text-zinc-400 whitespace-pre-wrap overflow-x-auto select-text">
+                      {serializeBlocksToSkillMarkdown(editingSkill)}
+                    </pre>
+                  </DisclosureGroup>
+
+                  {editingSkill.scope !== "builtin" && (
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingSkill(null);
+                          setIsNewSkill(false);
+                        }}
+                        className="px-3 py-1.5 rounded-xl text-[11.5px] text-zinc-300 hover:text-white cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={savingSkill}
+                        className="min-h-[34px] px-4 py-1.5 rounded-xl bg-white text-zinc-950 hover:bg-zinc-200 text-[11.5px] font-medium inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        {savingSkill ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Save className="w-3.5 h-3.5" aria-hidden="true" />
+                        )}
+                        <span>{savingSkill ? "Guardando..." : "Guardar habilidad"}</span>
+                      </button>
+                    </div>
+                  )}
+                </form>
+              ) : (
+                /* --- Lista visual limpia de Skills + descubrimiento plegable --- */
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <h3 className="text-[12.5px] font-semibold text-white">
+                        Habilidades de {displayAgentName}
+                      </h3>
+                      <p className="text-[11px] text-zinc-400 truncate">
+                        Procesos reutilizables con bloques simples.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleStartNewSkill()}
+                      className="min-h-[32px] px-3 py-1.5 rounded-xl bg-white text-zinc-950 hover:bg-zinc-200 text-[11.5px] font-medium inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+                    >
+                      <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Nueva</span>
+                    </button>
+                  </div>
+
+                  {skills.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-white/[0.1] bg-white/[0.015] p-5 text-center space-y-3">
+                      <Sparkles className="w-5 h-5 text-zinc-400 mx-auto" aria-hidden="true" />
+                      <div className="space-y-1">
+                        <p className="text-[12px] font-medium text-zinc-200">
+                          Aún no agregas habilidades personalizadas
+                        </p>
+                        <p className="text-[11px] text-zinc-400">
+                          Empieza con una plantilla rápida o crea una desde cero.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap justify-center gap-1.5 pt-1">
+                        {SKILL_STARTER_TEMPLATES.map((tpl, idx) => (
+                          <button
+                            key={tpl.id}
+                            type="button"
+                            onClick={() => handleStartNewSkill(idx)}
+                            className="px-2.5 py-1 rounded-full bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.09] text-[10.5px] text-zinc-200 cursor-pointer transition-colors"
+                          >
+                            + {tpl.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <ul className="space-y-2">
+                        {skills.map((entry) => {
+                          const isHighlighted = highlightedSkillSlug === entry.slug;
+                          const scopeLabel =
+                            entry.scope === "global"
+                              ? "Global"
+                              : entry.scope === "workspace"
+                                ? "Este espacio"
+                                : "Integrada";
+                          return (
+                            <li
+                              key={`${entry.scope}-${entry.slug}`}
+                              className={`rounded-2xl border p-3 flex items-start justify-between gap-2.5 transition-colors ${
+                                isHighlighted
+                                  ? "xook-node-highlight border"
+                                  : "bg-white/[0.02] border-white/[0.06] hover:border-white/[0.13]"
+                              }`}
+                            >
+                              <div className="min-w-0 space-y-1 flex-1">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span
+                                    className={`text-[12.5px] font-medium truncate ${
+                                      entry.enabled ? "text-white" : "text-zinc-400 line-through"
+                                    }`}
+                                  >
+                                    {entry.name}
+                                  </span>
+                                  <span className="text-[10px] text-zinc-500">
+                                    · {scopeLabel}
+                                  </span>
+                                  {!entry.enabled && (
+                                    <span className="px-1.5 py-0.5 rounded-md bg-zinc-800/80 text-[9.5px] text-zinc-400">
+                                      Pausada
+                                    </span>
+                                  )}
+                                </div>
+                                {entry.description && (
+                                  <p className="text-[11px] text-zinc-400 line-clamp-2 leading-snug">
+                                    {entry.description}
+                                  </p>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                {entry.scope !== "builtin" && (
+                                  <LiquidSwitch
+                                    checked={entry.enabled}
+                                    label={`${entry.enabled ? "Pausar" : "Activar"} habilidad ${entry.name}`}
+                                    title={entry.enabled ? "Pausar habilidad" : "Activar habilidad"}
+                                    onToggle={() => void handleToggleSkillEnabled(entry)}
+                                  />
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsNewSkill(false);
+                                    setEditingSkill(parseSkillToBlocks(entry));
+                                  }}
+                                  className="quick-liquid-btn px-2.5 py-1 rounded-lg text-[11px] text-zinc-100 cursor-pointer"
+                                >
+                                  {entry.scope === "builtin" ? "Ver" : "Editar"}
+                                </button>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+
+                      {/* Plantillas rápidas agrupadas para no recargar la vista */}
+                      <DisclosureGroup
+                        title="Plantillas rápidas"
+                        meta={`${SKILL_STARTER_TEMPLATES.length} bases`}
+                      >
+                        <div className="flex flex-wrap gap-1.5">
+                          {SKILL_STARTER_TEMPLATES.map((tpl, idx) => (
+                            <button
+                              key={tpl.id}
+                              type="button"
+                              onClick={() => handleStartNewSkill(idx)}
+                              className="px-2.5 py-1 rounded-full bg-white/[0.04] hover:bg-white/[0.09] border border-white/[0.08] text-[10.5px] text-zinc-200 cursor-pointer transition-colors"
+                            >
+                              + {tpl.label}
+                            </button>
+                          ))}
+                        </div>
+                      </DisclosureGroup>
+                    </>
+                  )}
+
+                  {/* Explorador de skills oficiales verificadas */}
+                  <DisclosureGroup
+                    title="Explorar habilidades oficiales"
+                    meta="Verificadas"
+                  >
+                    <search>
+                      <form onSubmit={handleSearchOfficial} className="flex gap-1.5">
+                        <div className="relative flex-1">
+                          <Search
+                            className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                            aria-hidden="true"
+                          />
                           <input
                             type="search"
                             value={officialQuery}
                             onChange={(e) => setOfficialQuery(e.target.value)}
                             placeholder="Ej. pdf, react, ventas, design..."
                             aria-label="Buscar habilidades oficiales"
-                            className="flex-1 min-h-[32px] px-3 py-1 rounded-xl bg-[#07080b] border border-white/[0.09] text-[11.5px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
+                            className="w-full min-h-[32px] pl-8 pr-3 py-1 rounded-xl bg-black/35 border border-white/[0.08] text-[11.5px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-white/[0.24] select-text"
                           />
-                          <button
-                            type="submit"
-                            disabled={searchingOfficial || !officialQuery.trim()}
-                            className="min-h-[32px] px-3 py-1 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] border border-white/[0.1] text-[11px] font-medium text-white disabled:opacity-40 cursor-pointer shrink-0"
+                        </div>
+                        <button
+                          type="submit"
+                          disabled={searchingOfficial || !officialQuery.trim()}
+                          className="min-h-[32px] px-3 py-1 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] border border-white/[0.1] text-[11px] font-medium text-white disabled:opacity-40 cursor-pointer shrink-0"
+                        >
+                          {searchingOfficial ? "Buscando..." : "Buscar"}
+                        </button>
+                      </form>
+                    </search>
+
+                    {officialMessage && (
+                      <p className="text-[11px] text-zinc-400">{officialMessage}</p>
+                    )}
+
+                    {officialResults.length > 0 && (
+                      <ul className="space-y-1.5 max-h-56 overflow-y-auto">
+                        {officialResults.map((cand) => (
+                          <li
+                            key={cand.id}
+                            className="rounded-xl bg-black/35 border border-white/[0.07] px-3 py-2 flex items-center justify-between gap-2"
                           >
-                            {searchingOfficial ? "Buscando..." : "Buscar"}
-                          </button>
-                        </form>
-                      </search>
-
-                      {officialMessage && (
-                        <p className="text-[11px] text-zinc-400">{officialMessage}</p>
-                      )}
-
-                      {officialResults.length > 0 && (
-                        <ul className="space-y-1.5 max-h-56 overflow-y-auto">
-                          {officialResults.map((cand) => (
-                            <li
-                              key={cand.id}
-                              className="rounded-xl bg-[#07080b] border border-white/[0.07] px-3 py-2 flex items-center justify-between gap-2"
-                            >
-                              <div className="min-w-0">
-                                <div className="text-[11.5px] font-medium text-white truncate">
-                                  {cand.name}
-                                </div>
-                                <div className="text-[10px] text-zinc-400 truncate">
-                                  Verificado por {cand.publisher} · {cand.source}
-                                </div>
+                            <div className="min-w-0">
+                              <div className="text-[11.5px] font-medium text-white truncate">
+                                {cand.name}
                               </div>
-                              <button
-                                type="button"
-                                disabled={installingId === cand.id}
-                                onClick={() => void handleInstallOfficial(cand)}
-                                className="quick-liquid-btn px-2.5 py-1 rounded-lg text-[10.5px] text-white shrink-0 cursor-pointer disabled:opacity-50"
-                              >
-                                {installingId === cand.id ? "Agregando..." : "Agregar"}
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* =================================================================== */}
-        {/* TAB 4: REGLAS GLOBALES, GUSTOS Y LÍMITES                            */}
-        {/* =================================================================== */}
-        {activeTab === "rules" && (
-          <div
-            role="tabpanel"
-            aria-labelledby={`${uid}-tab-rules`}
-            className="space-y-4"
-          >
-            <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-3.5 space-y-4">
-              <EditableTextBlockList
-                idPrefix={`${uid}-global-rules`}
-                label={`Reglas obligatorias para ${displayAgentName}`}
-                helperText="Instrucciones fijas que siempre debe respetar en cualquier conversación o espacio."
-                items={draft.globalRules}
-                placeholder="Ej. Responder siempre en español claro y directo"
-                onChange={(next) => setDraft((p) => ({ ...p, globalRules: next }))}
-              />
-
-              <EditableTextBlockList
-                idPrefix={`${uid}-global-likes`}
-                label="Cómo te gusta recibir las respuestas"
-                items={draft.likes}
-                placeholder="Ej. Con ejemplos prácticos y listas cortas"
-                onChange={(next) => setDraft((p) => ({ ...p, likes: next }))}
-              />
-
-              <EditableTextBlockList
-                idPrefix={`${uid}-global-workflows`}
-                label="Tu forma preferida de avanzar"
-                items={draft.workflows}
-                placeholder="Ej. Primero dime el resumen y luego pregunta si profundizamos"
-                onChange={(next) => setDraft((p) => ({ ...p, workflows: next }))}
-              />
-
-              <EditableTextBlockList
-                idPrefix={`${uid}-global-donts`}
-                label="Qué NO debe hacer nunca"
-                items={draft.donts}
-                placeholder="Ej. Nunca inventar datos ni borrar archivos sin avisarme"
-                onChange={(next) => setDraft((p) => ({ ...p, donts: next }))}
-              />
-            </section>
-
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              {onAskXoxCustomize && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    onAskXoxCustomize(
-                      `Quiero actualizar mis reglas globales y preferencias: `
-                    )
-                  }
-                  className="px-3 py-1.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.09] text-[11px] text-zinc-200 inline-flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Wand2 className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Decírselo por chat a {displayAgentName}</span>
-                </button>
+                              <div className="text-[10px] text-zinc-400 truncate">
+                                Verificado por {cand.publisher} · {cand.source}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={installingId === cand.id}
+                              onClick={() => void handleInstallOfficial(cand)}
+                              className="quick-liquid-btn px-2.5 py-1 rounded-lg text-[10.5px] text-white shrink-0 cursor-pointer disabled:opacity-50"
+                            >
+                              {installingId === cand.id ? "Agregando..." : "Agregar"}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </DisclosureGroup>
+                </>
               )}
-
-              <button
-                type="button"
-                disabled={savingProfile || !profileDirty}
-                onClick={() => void handleSaveGlobalProfile()}
-                className={`min-h-[34px] px-4 py-1.5 rounded-xl text-[11.5px] font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ml-auto ${
-                  profileDirty
-                    ? "bg-white text-zinc-950 hover:bg-zinc-200"
-                    : "bg-white/[0.07] text-zinc-300 border border-white/[0.09]"
-                }`}
-              >
-                {savingProfile ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Save className="w-3.5 h-3.5" aria-hidden="true" />
-                )}
-                <span>{savingProfile ? "Guardando..." : "Guardar reglas y gustos"}</span>
-              </button>
             </div>
-          </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* TAB 4: REGLAS GLOBALES Y PREFERENCIAS (ACORDEÓN PROGRESIVO)       */}
+          {/* ================================================================= */}
+          {activeTab === "rules" && (
+            <div
+              role="tabpanel"
+              aria-labelledby={`${uid}-tab-rules`}
+              className="space-y-2.5"
+            >
+              <p className="text-[11px] text-zinc-400 px-0.5">
+                Límites y preferencias fijas que {displayAgentName} respeta en todos tus espacios.
+              </p>
+
+              <DisclosureGroup
+                title="Reglas obligatorias"
+                meta={draft.globalRules.length > 0 ? `${draft.globalRules.length}` : "Vacío"}
+                defaultOpen
+              >
+                <EditableTextBlockList
+                  idPrefix={`${uid}-global-rules`}
+                  label={`Reglas obligatorias para ${displayAgentName}`}
+                  hideHeader
+                  items={draft.globalRules}
+                  placeholder="Ej. Responder siempre en español claro y directo"
+                  onChange={(next) => setDraft((p) => ({ ...p, globalRules: next }))}
+                />
+              </DisclosureGroup>
+
+              <DisclosureGroup
+                title="Cómo te gusta recibir respuestas"
+                meta={draft.likes.length > 0 ? `${draft.likes.length}` : "Vacío"}
+                defaultOpen={draft.likes.length > 0}
+              >
+                <EditableTextBlockList
+                  idPrefix={`${uid}-global-likes`}
+                  label="Cómo te gusta recibir las respuestas"
+                  hideHeader
+                  items={draft.likes}
+                  placeholder="Ej. Con ejemplos prácticos y listas cortas"
+                  onChange={(next) => setDraft((p) => ({ ...p, likes: next }))}
+                />
+              </DisclosureGroup>
+
+              <DisclosureGroup
+                title="Tu forma preferida de avanzar"
+                meta={draft.workflows.length > 0 ? `${draft.workflows.length}` : "Vacío"}
+                defaultOpen={draft.workflows.length > 0}
+              >
+                <EditableTextBlockList
+                  idPrefix={`${uid}-global-workflows`}
+                  label="Tu forma preferida de avanzar"
+                  hideHeader
+                  items={draft.workflows}
+                  placeholder="Ej. Primero dime el resumen y luego pregunta si profundizamos"
+                  onChange={(next) => setDraft((p) => ({ ...p, workflows: next }))}
+                />
+              </DisclosureGroup>
+
+              <DisclosureGroup
+                title="Qué NO debe hacer nunca"
+                meta={draft.donts.length > 0 ? `${draft.donts.length}` : "Vacío"}
+                defaultOpen={draft.donts.length > 0}
+              >
+                <EditableTextBlockList
+                  idPrefix={`${uid}-global-donts`}
+                  label="Qué NO debe hacer nunca"
+                  hideHeader
+                  items={draft.donts}
+                  placeholder="Ej. Nunca inventar datos ni borrar archivos sin avisarme"
+                  onChange={(next) => setDraft((p) => ({ ...p, donts: next }))}
+                />
+              </DisclosureGroup>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Confirmación discreta flotante cuando se guardan cambios */}
+      <div
+        role="status"
+        aria-live="polite"
+        className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 z-30"
+      >
+        {saveMessage && !profileDirty && (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#0d1414]/95 border border-emerald-400/30 text-[11px] text-emerald-200 shadow-lg backdrop-blur-md">
+            <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
+            <span className="whitespace-nowrap">{saveMessage}</span>
+          </span>
         )}
       </div>
+
+      {/* Barra unificada de guardado: aparece solo cuando hay cambios pendientes */}
+      {profileDirty && (
+        <div className="shrink-0 px-4 py-2.5 border-t border-white/[0.08] bg-[#0b0e16]/95 backdrop-blur-xl flex items-center justify-between gap-2">
+          <span className="inline-flex items-center gap-2 text-[11.5px] text-zinc-200 min-w-0">
+            <span
+              className="w-2 h-2 rounded-full shrink-0"
+              style={{ backgroundColor: activeAccentSpec.glow }}
+              aria-hidden="true"
+            />
+            <span className="truncate">Cambios sin guardar</span>
+          </span>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              disabled={savingProfile}
+              onClick={handleDiscardProfile}
+              className="min-h-[30px] px-2.5 py-1 rounded-xl text-[11px] text-zinc-300 hover:text-white hover:bg-white/[0.07] inline-flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-45"
+            >
+              <RotateCcw className="w-3 h-3" aria-hidden="true" />
+              <span>Descartar</span>
+            </button>
+
+            <button
+              type="button"
+              disabled={savingProfile}
+              onClick={() => void handleSaveGlobalProfile()}
+              className="min-h-[30px] px-3.5 py-1 rounded-xl bg-white text-zinc-950 hover:bg-zinc-200 text-[11.5px] font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {savingProfile ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <Save className="w-3.5 h-3.5" aria-hidden="true" />
+              )}
+              <span>{savingProfile ? "Guardando..." : "Guardar"}</span>
+            </button>
+          </div>
+        </div>
+      )}
     </aside>
   );
 };

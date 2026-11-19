@@ -205,6 +205,55 @@ pub struct XoxChatRequest {
     pub active_mode: Option<String>,
     #[serde(default)]
     pub subagent_roster: Option<serde_json::Value>,
+    #[serde(default)]
+    pub context_scope: Option<String>,
+    #[serde(default)]
+    pub active_document: Option<serde_json::Value>,
+    #[serde(default)]
+    pub context_checkpoint: Option<serde_json::Value>,
+    #[serde(default)]
+    pub model_context_window: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactContextRequest {
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub history: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub prev_checkpoint: Option<serde_json::Value>,
+    #[serde(default)]
+    pub document_path: Option<String>,
+    #[serde(default)]
+    pub document_title: Option<String>,
+    #[serde(default)]
+    pub document_file_kind: Option<String>,
+    #[serde(default)]
+    pub focus_hint: Option<String>,
+    #[serde(default)]
+    pub keep_recent: Option<usize>,
+    #[serde(default)]
+    pub model_override: Option<String>,
+    #[serde(default)]
+    pub provider_override: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManageDocumentContextRequest {
+    pub action: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub file_kind: Option<String>,
+    #[serde(default)]
+    pub rules: Option<Vec<String>>,
+    #[serde(default)]
+    pub keep_rules: Option<bool>,
 }
 
 fn vault_file_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
@@ -1043,6 +1092,10 @@ pub async fn run_xox_chat<R: Runtime>(
                 "active_canvas": payload.active_canvas,
                 "active_mode": payload.active_mode,
                 "subagent_roster": payload.subagent_roster,
+                "context_scope": payload.context_scope,
+                "active_document": payload.active_document,
+                "context_checkpoint": payload.context_checkpoint,
+                "model_context_window": payload.model_context_window,
                 "unified_memory": {
                     "facts": facts,
                     "screen_summary": screen_summary,
@@ -4045,6 +4098,10 @@ pub async fn run_xox_chat_stream<R: Runtime>(
                 "active_canvas": payload.active_canvas,
                 "active_mode": payload.active_mode,
                 "subagent_roster": payload.subagent_roster,
+                "context_scope": payload.context_scope,
+                "active_document": payload.active_document,
+                "context_checkpoint": payload.context_checkpoint,
+                "model_context_window": payload.model_context_window,
                 "unified_memory": {
                     "facts": facts,
                     "screen_summary": screen_summary,
@@ -4058,6 +4115,95 @@ pub async fn run_xox_chat_stream<R: Runtime>(
     sync_vault_from_sidecar_result(&app_for_sync, &result, &eff_for_sync);
     record_chat_turn_in_ledger(&app_for_sync, &result, &eff_for_sync);
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn compact_xox_context<R: Runtime>(
+    app: AppHandle<R>,
+    payload: CompactContextRequest,
+) -> Result<serde_json::Value, String> {
+    let vault = load_vault(&app);
+    let requested_provider = payload
+        .provider_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_provider_id)
+        .unwrap_or_else(|| normalize_provider_id(&vault.provider))
+        .to_string();
+
+    let (effective_provider, api_key, default_entry_model) =
+        resolve_first_available_provider(&vault, &requested_provider)
+            .unwrap_or_else(|| (requested_provider.clone(), String::new(), default_model_for_provider(&requested_provider).to_string()));
+
+    let script = find_sidecar_script(&app)?;
+    let workspace_root = crate::slices::workspace_manager::registry::resolve_active_workspace_root(&app)
+        .map(|p| p.to_string_lossy().to_string());
+    let provider_region = vault
+        .providers
+        .get(&effective_provider)
+        .and_then(|e| e.api_region.clone());
+    let model_id = if effective_provider == requested_provider {
+        payload
+            .model_override
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| default_entry_model.clone())
+    } else {
+        default_entry_model
+    };
+
+    tokio::task::spawn_blocking(move || {
+        call_python_sidecar(
+            &script,
+            "compact_context",
+            serde_json::json!({
+                "provider": effective_provider,
+                "provider_region": provider_region,
+                "api_key": api_key,
+                "model_id": model_id,
+                "workspace_root": workspace_root,
+                "scope": payload.scope.unwrap_or_else(|| "chat".to_string()),
+                "history": payload.history,
+                "prev_checkpoint": payload.prev_checkpoint,
+                "document_path": payload.document_path,
+                "document_title": payload.document_title,
+                "document_file_kind": payload.document_file_kind,
+                "focus_hint": payload.focus_hint.unwrap_or_default(),
+                "keep_recent": payload.keep_recent.unwrap_or(2),
+            }),
+        )
+    })
+    .await
+    .map_err(|e| format!("Error de concurrencia: {e}"))?
+}
+
+#[tauri::command]
+pub async fn manage_document_context<R: Runtime>(
+    app: AppHandle<R>,
+    payload: ManageDocumentContextRequest,
+) -> Result<serde_json::Value, String> {
+    let script = find_sidecar_script(&app)?;
+    let workspace_root = crate::slices::workspace_manager::registry::resolve_active_workspace_root(&app)
+        .map(|p| p.to_string_lossy().to_string());
+
+    tokio::task::spawn_blocking(move || {
+        call_python_sidecar(
+            &script,
+            "manage_document_context",
+            serde_json::json!({
+                "workspace_root": workspace_root,
+                "action": payload.action,
+                "path": payload.path,
+                "title": payload.title,
+                "file_kind": payload.file_kind,
+                "rules": payload.rules,
+                "keep_rules": payload.keep_rules.unwrap_or(true),
+            }),
+        )
+    })
+    .await
+    .map_err(|e| format!("Error de concurrencia: {e}"))?
 }
 
 static USAGE_LEDGER_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();

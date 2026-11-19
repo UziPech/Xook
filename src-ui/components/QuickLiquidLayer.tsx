@@ -314,7 +314,7 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
       }
       if (waveACrestRef.current) {
         waveACrestRef.current.setAttribute("d", waveA.crestPath);
-        waveACrestRef.current.setAttribute("opacity", (0.54 + e * 0.34).toFixed(3));
+        waveACrestRef.current.setAttribute("opacity", (0.24 + e * 0.22).toFixed(3));
       }
 
       // 3. Filamento cáustico superior
@@ -330,7 +330,7 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
       });
       if (causticLineRef.current) {
         causticLineRef.current.setAttribute("d", caustic.crestPath);
-        causticLineRef.current.setAttribute("opacity", (0.34 + e * 0.32).toFixed(3));
+        causticLineRef.current.setAttribute("opacity", (0.16 + e * 0.18).toFixed(3));
       }
 
       // 4. Reflejo especular deslizante sobre el menisco superior del cristal
@@ -370,13 +370,13 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
       className="quick-liquid-canvas absolute inset-0 w-full h-full pointer-events-none"
     >
       <defs>
-        {/* Menisco fino en el borde (gota de agua transparente sin velo blanco interno) */}
+        {/* Menisco suave en el borde (curvatura de gota sin línea blanca dura) */}
         <linearGradient id={ids.meniscus} x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.09" />
-          <stop offset="8%" stopColor="#E0F2FE" stopOpacity="0.025" />
-          <stop offset="22%" stopColor="#E0F2FE" stopOpacity="0" />
-          <stop offset="88%" stopColor="#7DD3FC" stopOpacity="0.015" />
-          <stop offset="100%" stopColor="#BAE6FD" stopOpacity="0.05" />
+          <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.055" />
+          <stop offset="14%" stopColor="#E0F2FE" stopOpacity="0.018" />
+          <stop offset="30%" stopColor="#E0F2FE" stopOpacity="0" />
+          <stop offset="82%" stopColor="#7DD3FC" stopOpacity="0.014" />
+          <stop offset="100%" stopColor="#BAE6FD" stopOpacity="0.04" />
         </linearGradient>
 
         {/* Gradientes líquidos cristalinos multi-stop */}
@@ -424,18 +424,18 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         </linearGradient>
 
         <linearGradient id={ids.crestA} x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="#7DD3FC" stopOpacity="0.02" />
-          <stop offset="16%" stopColor="#E0F2FE" stopOpacity="0.24" />
-          <stop offset="56%" stopColor="#BAE6FD" stopOpacity="0.20" />
-          <stop offset="80%" stopColor="#FBCFE8" stopOpacity="0.14" />
-          <stop offset="100%" stopColor="#A78BFA" stopOpacity="0.04" />
+          <stop offset="0%" stopColor="#7DD3FC" stopOpacity="0.01" />
+          <stop offset="18%" stopColor="#E0F2FE" stopOpacity="0.085" />
+          <stop offset="56%" stopColor="#BAE6FD" stopOpacity="0.07" />
+          <stop offset="80%" stopColor="#FBCFE8" stopOpacity="0.05" />
+          <stop offset="100%" stopColor="#A78BFA" stopOpacity="0.015" />
         </linearGradient>
 
         <linearGradient id={ids.causticLine} x1="0%" y1="0%" x2="100%" y2="0%">
           <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0" />
-          <stop offset="18%" stopColor="#E0F2FE" stopOpacity="0.16" />
-          <stop offset="54%" stopColor="#5EEAD4" stopOpacity="0.14" />
-          <stop offset="78%" stopColor="#F9A8D4" stopOpacity="0.11" />
+          <stop offset="18%" stopColor="#E0F2FE" stopOpacity="0.055" />
+          <stop offset="54%" stopColor="#5EEAD4" stopOpacity="0.05" />
+          <stop offset="78%" stopColor="#F9A8D4" stopOpacity="0.04" />
           <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
         </linearGradient>
 
@@ -507,7 +507,8 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         fill="none"
         stroke={`url(#${ids.crestA})`}
         strokeWidth="1"
-        opacity="0.34"
+        vectorEffect="non-scaling-stroke"
+        opacity="0.20"
       />
 
       {/* 4. Filamento cáustico superior */}
@@ -517,7 +518,8 @@ export const QuickLiquidLayer: React.FC<QuickLiquidLayerProps> = ({
         fill="none"
         stroke={`url(#${ids.causticLine})`}
         strokeWidth="0.9"
-        opacity="0.22"
+        vectorEffect="non-scaling-stroke"
+        opacity="0.12"
       />
 
       {/* 5. Destello especular dinámico sobre la superficie vítrea */}

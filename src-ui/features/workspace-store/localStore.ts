@@ -1,4 +1,5 @@
 import type { UiChatMessage } from "../ai-service/ChatMessageList";
+import type { ContextCheckpoint } from "../ai-service/aiClient";
 
 export interface LocalUserProfile {
   id: string;
@@ -22,6 +23,8 @@ export interface ConversationThread {
   updatedAt: string;
   userId?: string | null;
   messages: UiChatMessage[];
+  checkpoint?: ContextCheckpoint | null;
+  compactedUpToMessageId?: string | null;
 }
 
 const LOCAL_USER_KEY = "xook.local_user.v1";

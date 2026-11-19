@@ -74,3 +74,14 @@ xook-workspace/
         │   ├── shelf_mutator.py        # Preparación de payloads para agregar productos
         │   └── schemas.py
         └── mcp_bridge/                 # Cliente universal Model Context Protocol
+
+
+
+        comandos 
+
+        npm run tauri dev
+
+        limpieza
+
+        npm run clean:all
+

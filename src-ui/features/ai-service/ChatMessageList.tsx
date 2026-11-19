@@ -61,6 +61,7 @@ import {
   AI_PROVIDER_LIST,
   AiProviderId,
   ClarificationSpec,
+  type ContextCheckpoint,
   GeneratedPdfArtifact,
   OpenRouterModelOption,
   ThinkingStep,
@@ -89,6 +90,16 @@ export interface UiChatAttachment {
   workspacePath?: string;
 }
 
+export interface UiCompactionNotice {
+  auto: boolean;
+  scope: "chat" | "document";
+  documentPath?: string;
+  documentTitle?: string;
+  compactedTurns: number;
+  savedPct: number;
+  checkpoint: ContextCheckpoint;
+}
+
 export interface UiChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -112,6 +123,9 @@ export interface UiChatMessage {
   generatedPdfs?: GeneratedPdfArtifact[];
   isError?: boolean;
   vaultPrompt?: VaultPromptSpec;
+  compactionNotice?: UiCompactionNotice;
+  isCompactionDividerOnly?: boolean;
+  documentScopeTag?: { path: string; title: string };
   actionButton?: {
     label: string;
     kind: "open_settings" | "save_pending_key" | "open_clarification" | "open_xox_studio";
@@ -577,7 +591,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   // Último turno de Xox: aquí vive el personaje guiando la conversación
   let lastAssistantIdx = -1;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i].role === "assistant") {
+    if (messages[i].role === "assistant" && !messages[i].isCompactionDividerOnly) {
       lastAssistantIdx = i;
       break;
     }
@@ -595,14 +609,96 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
     }
   };
 
+  const renderCompactionBanner = (notice: UiCompactionNotice, keyPrefix: string) => {
+    const scopeText =
+      notice.scope === "document" && notice.documentTitle
+        ? `Ventana: ${notice.documentTitle}`
+        : "Chat general";
+    const modeLabel = notice.auto
+      ? "Contexto compactado automáticamente"
+      : "Contexto compactado";
+    const statsParts: string[] = [];
+    if (notice.compactedTurns > 0) {
+      statsParts.push(`${notice.compactedTurns} turnos resumidos`);
+    }
+    if (notice.savedPct > 0) {
+      statsParts.push(`~${notice.savedPct}% liberado`);
+    }
+    return (
+      <div key={keyPrefix} className="flex items-center gap-3 my-1">
+        <div className="h-px flex-1 bg-white/[0.08]" aria-hidden="true" />
+        <details className="group max-w-[88%] rounded-2xl border border-white/[0.1] bg-white/[0.03] px-3 py-1.5 text-[11px] text-zinc-300">
+          <summary className="list-none cursor-pointer select-none inline-flex items-center gap-2 focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 rounded">
+            <Sparkles className="w-3 h-3 text-zinc-300 shrink-0" aria-hidden="true" />
+            <span className="font-medium text-zinc-200">{modeLabel}</span>
+            <span className="text-zinc-500">·</span>
+            <span className="text-zinc-400 truncate max-w-[180px]">{scopeText}</span>
+            {statsParts.length > 0 && (
+              <span className="text-[10px] font-mono text-zinc-400 bg-white/[0.05] border border-white/[0.08] rounded-full px-1.5 py-0.2">
+                {statsParts.join(" · ")}
+              </span>
+            )}
+          </summary>
+          <div className="mt-2 pt-2 border-t border-white/[0.07] space-y-1.5 text-[11px] text-zinc-300 select-text">
+            {notice.checkpoint.objective && (
+              <p>
+                <span className="text-zinc-400 font-medium">Objetivo vigente: </span>
+                {notice.checkpoint.objective}
+              </p>
+            )}
+            {notice.checkpoint.activeDecisions.length > 0 && (
+              <div>
+                <p className="text-zinc-400 font-medium mb-0.5">Acuerdos vigentes:</p>
+                <ul className="list-disc pl-4 space-y-0.5 text-zinc-300">
+                  {notice.checkpoint.activeDecisions.slice(0, 6).map((d, di) => (
+                    <li key={di}>{d}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {notice.checkpoint.supersededDiscarded.length > 0 && (
+              <div>
+                <p className="text-zinc-500 font-medium mb-0.5">Descartados (no se volverán a aplicar):</p>
+                <ul className="list-disc pl-4 space-y-0.5 text-zinc-400">
+                  {notice.checkpoint.supersededDiscarded.slice(0, 4).map((d, di) => (
+                    <li key={di}>{d}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {notice.checkpoint.documentState && (
+              <p className="text-zinc-400">
+                <span className="font-medium text-zinc-300">Estado: </span>
+                {notice.checkpoint.documentState}
+              </p>
+            )}
+          </div>
+        </details>
+        <div className="h-px flex-1 bg-white/[0.08]" aria-hidden="true" />
+      </div>
+    );
+  };
+
   return (
     <div className="@container space-y-6">
       {messages.map((msg, idx) => {
+        if (msg.isCompactionDividerOnly && msg.compactionNotice) {
+          return renderCompactionBanner(msg.compactionNotice, msg.id);
+        }
+
         if (msg.role === "user") {
           const attList = msg.attachments ?? [];
           return (
             <div key={msg.id} className="flex justify-end">
               <div className="max-w-[86%] @lg:max-w-[70%] @6xl:max-w-[62%] rounded-2xl rounded-tr-sm px-4 py-2.5 bg-white/[0.075] border border-white/[0.1] text-[13.5px] text-zinc-100 leading-relaxed select-text space-y-2">
+                {msg.documentScopeTag && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/[0.12] text-zinc-300 max-w-full">
+                      <FileText className="w-2.5 h-2.5 text-zinc-300 shrink-0" aria-hidden="true" />
+                      <span className="truncate">Ventana: {msg.documentScopeTag.title}</span>
+                    </span>
+                  </div>
+                )}
                 {attList.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {attList.map((att, aIdx) => (
@@ -688,7 +784,9 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
               : "";
 
         return (
-          <div key={msg.id} className="flex items-start gap-2 @md:gap-3 @lg:gap-4 @5xl:gap-6">
+          <React.Fragment key={msg.id}>
+            {msg.compactionNotice && renderCompactionBanner(msg.compactionNotice, `${msg.id}_cmp`)}
+            <div className="flex items-start gap-2 @md:gap-3 @lg:gap-4 @5xl:gap-6">
             {/* Mascota Xox: carril izquierdo responsive con deslizamiento suave hacia/desde Espacio de Xox */}
             <div
               className={`xox-chat-lane-slot shrink-0 self-start sticky top-4 @md:top-5 @5xl:top-6 w-[110px] @sm:w-[130px] @md:w-[150px] @lg:w-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] flex justify-center ${
@@ -703,6 +801,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     state={xoxState}
                     responsive
                     hitArea="star"
+                    clickBehavior="greet"
                     accentPreset={accentPreset}
                     glideTrigger={glideSeq}
                     glideDir={xoxTravelPhase === "to-studio" ? "right" : "left"}
@@ -1363,7 +1462,8 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 </div>
               )}
             </div>
-          </div>
+            </div>
+          </React.Fragment>
         );
       })}
     </div>

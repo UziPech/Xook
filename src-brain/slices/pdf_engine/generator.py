@@ -2384,7 +2384,15 @@ def generate_pdf_document(
             } if effective_has_cover else {"enabled": False, "layout": "none"},
             "blocks": blocks,
         }
-        save_pdf_spec_metadata(workspace_root, out_rel, spec_to_save, pdf_abs=out_abs)
+        fresh_cover_write = not has_prepend_cover and not has_prepend_all
+        save_pdf_spec_metadata(
+            workspace_root,
+            out_rel,
+            spec_to_save,
+            pdf_abs=out_abs,
+            overwrite_base=True,
+            overwrite_cover=fresh_cover_write,
+        )
     except Exception:
         pass
 
@@ -2400,6 +2408,7 @@ def generate_pdf_document(
         "has_cover": effective_has_cover,
         "cover_layout": cover_layout if has_cover else ("full_page" if has_prepend_cover else "none"),
         "theme": theme_name,
+        "revision": int(out_abs.stat().st_mtime * 1000) if out_abs.is_file() else 0,
     }
     if warnings:
         out["warnings"] = warnings

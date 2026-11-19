@@ -20,6 +20,7 @@ import {
   FolderOpen,
   GripHorizontal,
   Image as ImageIcon,
+  Layers,
   Loader2,
   Minus,
   Pencil,
@@ -35,7 +36,11 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import type { PdfDraftProgressEvent } from "../ai-service/aiClient";
+import {
+  formatTokenCount,
+  type DocumentContextSnapshot,
+  type PdfDraftProgressEvent,
+} from "../ai-service/aiClient";
 import {
   downloadWorkspaceFile,
   loadPdfEditableSpec,
@@ -65,10 +70,23 @@ export interface PdfWorkspacePanelState {
   universalDoc?: UniversalDocumentPayload | null;
   imageDataUrl?: string | null;
   initialMode?: "view" | "edit_blocks" | "edit_page";
+  /** Monotónico para invalidar cachés locales de bloques/parches al regenerar el mismo archivo */
+  revision?: number;
 }
 
 interface PdfWorkspacePanelProps {
   state: PdfWorkspacePanelState | null;
+  openTabs?: PdfWorkspacePanelState[];
+  activeTabPath?: string | null;
+  onSelectTab?: (path: string) => void;
+  onCloseTab?: (path: string) => void;
+  documentContext?: DocumentContextSnapshot | null;
+  isDocumentContextActive?: boolean;
+  isCompactingContext?: boolean;
+  onToggleDocumentContext?: () => void;
+  onCompactDocumentContext?: () => void;
+  onResetDocumentContext?: (keepRules: boolean) => void;
+  onUpdateDocumentRules?: (rules: string[]) => void;
   draftProgress: PdfDraftProgressEvent | null;
   onClose: () => void;
   onOpenExternal: (relativePath: string) => void;
@@ -132,6 +150,17 @@ function isPatchModified(patch: PdfPagePatch): boolean {
 
 export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
   state,
+  openTabs = [],
+  activeTabPath = null,
+  onSelectTab,
+  onCloseTab,
+  documentContext = null,
+  isDocumentContextActive = true,
+  isCompactingContext = false,
+  onToggleDocumentContext,
+  onCompactDocumentContext,
+  onResetDocumentContext,
+  onUpdateDocumentRules,
   draftProgress,
   onClose,
   onOpenExternal,
@@ -149,6 +178,7 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
   const [activePage, setActivePage] = useState<number>(1);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const tabButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const activeTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Siempre sobre la misma vista previa: "view" (lectura) | "edit_page" (edición directa in-place en la página)
@@ -157,7 +187,9 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
 
   // Barra inline para pedirle a Xox que modifique o agregue páginas manteniendo la misma tipografía y diseño
   const [showXoxBar, setShowXoxBar] = useState<boolean>(false);
-  const [xoxActionMode, setXoxActionMode] = useState<"append_pages" | "modify">("append_pages");
+  const [showContextDrawer, setShowContextDrawer] = useState<boolean>(false);
+  const [newRuleInput, setNewRuleInput] = useState<string>("");
+  const [xoxActionMode, setXoxActionMode] = useState<"append_pages" | "modify">("modify");
   const [xoxInstruction, setXoxInstruction] = useState<string>("");
 
   // Pestaña activa en hojas de cálculo (.xlsx, .xls, .csv)
@@ -208,7 +240,21 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
     setPagePatches(spec.pagePatches || []);
   }, []);
 
-  // Cargar documento cuando cambia el archivo activo
+  // Desplazar suavemente la pestaña activa a la vista en el tablist horizontal
+  useEffect(() => {
+    const key = activeTabPath || state?.path;
+    if (!key) return;
+    const btn = tabButtonRefs.current[key];
+    if (btn && typeof btn.scrollIntoView === "function") {
+      try {
+        btn.scrollIntoView({ block: "nearest", inline: "nearest" });
+      } catch {
+        // Ignorar si no soportado
+      }
+    }
+  }, [activeTabPath, state?.path, openTabs.length]);
+
+  // Cargar documento cuando cambia el archivo activo o su revisión (evita caché obsoleto al regenerar)
   useEffect(() => {
     setActivePage(1);
     setZoom(1);
@@ -217,6 +263,7 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
     setAddingNewTextMode(false);
     setDownloadedBadge(null);
     setActiveSheetIdx(0);
+    setPagePatches([]);
 
     if (!state) {
       setViewerMode("view");
@@ -268,6 +315,7 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
     };
   }, [
     state?.path,
+    state?.revision,
     state?.fileKind,
     state?.textContent,
     state?.universalDoc,
@@ -625,6 +673,88 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
       aria-label="Visor y editor de documentos"
       className="h-full flex flex-col rounded-2xl border border-white/[0.08] bg-gradient-to-b from-white/[0.04] via-[#090a0e]/95 to-[#050608]/98 backdrop-blur-2xl shadow-[0_24px_64px_rgba(0,0,0,0.68),inset_0_1px_0_rgba(255,255,255,0.08)] overflow-hidden select-none"
     >
+      {/* Pestañas de documentos abiertos (estilo editor de código: cada ventana conserva su propio contexto) */}
+      {openTabs.length > 0 && onSelectTab && (
+        <div className="px-2 pt-1.5 border-b border-white/[0.07] bg-black/65 shrink-0">
+          <div
+            role="tablist"
+            aria-label="Documentos abiertos"
+            className="xook-doc-tablist gap-1"
+            onKeyDown={(e) => {
+              if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(e.key)) return;
+              const paths = openTabs.map((t) => t.path);
+              if (paths.length <= 1) return;
+              const focusedIdx = paths.findIndex(
+                (p) => tabButtonRefs.current[p] === document.activeElement
+              );
+              const baseIdx =
+                focusedIdx >= 0
+                  ? focusedIdx
+                  : Math.max(0, paths.indexOf(activeTabPath || state?.path || ""));
+              let nextIdx = baseIdx;
+              if (e.key === "ArrowRight") nextIdx = (baseIdx + 1) % paths.length;
+              else if (e.key === "ArrowLeft") nextIdx = (baseIdx - 1 + paths.length) % paths.length;
+              else if (e.key === "Home") nextIdx = 0;
+              else if (e.key === "End") nextIdx = paths.length - 1;
+              e.preventDefault();
+              tabButtonRefs.current[paths[nextIdx]]?.focus();
+            }}
+          >
+            {openTabs.map((tab) => {
+              const isSelected = tab.path === (activeTabPath || state?.path);
+              const tabLabel = tab.title || tab.filename || tab.path.split("/").pop() || "Documento";
+              return (
+                <div
+                  key={tab.path}
+                  data-selected={isSelected ? "true" : "false"}
+                  className={`xook-doc-tab-group flex items-center rounded-t-xl border border-b-0 ${
+                    isSelected
+                      ? "bg-[#111319] border-white/[0.14] text-white"
+                      : "bg-white/[0.02] hover:bg-white/[0.05] border-white/[0.06] text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  <button
+                    ref={(el) => {
+                      tabButtonRefs.current[tab.path] = el;
+                    }}
+                    type="button"
+                    role="tab"
+                    aria-selected={isSelected}
+                    tabIndex={isSelected ? 0 : -1}
+                    onClick={() => onSelectTab(tab.path)}
+                    title={tab.path}
+                    className="xook-doc-tab flex-1 min-w-0 flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 text-[11px] font-medium cursor-pointer text-left"
+                  >
+                    {tab.fileKind === "text" ? (
+                      <FileCode2 className="w-3 h-3 shrink-0 opacity-80" aria-hidden="true" />
+                    ) : tab.fileKind === "image" ? (
+                      <ImageIcon className="w-3 h-3 shrink-0 opacity-80" aria-hidden="true" />
+                    ) : (
+                      <FileText className="w-3 h-3 shrink-0 opacity-80" aria-hidden="true" />
+                    )}
+                    <span className="truncate">{tabLabel}</span>
+                  </button>
+                  {onCloseTab && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onCloseTab(tab.path);
+                      }}
+                      aria-label={`Cerrar pestaña ${tabLabel}`}
+                      title={`Cerrar ${tabLabel}`}
+                      className="w-6 h-6 mr-0.5 rounded-lg inline-flex items-center justify-center text-zinc-500 hover:text-white hover:bg-white/[0.08] cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-white/70"
+                    >
+                      <X className="w-2.5 h-2.5" aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Cabecera minimalista Black/Gray Liquid Glass — Cierre directo con la X */}
       <header className="px-3.5 py-2 border-b border-white/[0.07] bg-black/45 flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
@@ -979,9 +1109,37 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
 
             <button
               type="button"
+              aria-pressed={showContextDrawer}
+              onClick={() => {
+                setShowContextDrawer((v) => !v);
+                setShowXoxBar(false);
+              }}
+              title="Ver y gestionar el contexto aislado, reglas fijadas y compactación de este documento"
+              className={`px-2 py-1 rounded-xl text-[10.5px] font-medium inline-flex items-center gap-1 transition-all cursor-pointer border ${
+                showContextDrawer
+                  ? "bg-zinc-200 text-zinc-950 border-white shadow-sm"
+                  : isDocumentContextActive
+                    ? "quick-liquid-btn text-zinc-100 hover:text-white border-white/[0.18]"
+                    : "quick-liquid-btn text-zinc-400 hover:text-zinc-200 border-white/[0.09]"
+              }`}
+            >
+              <Layers className="w-3 h-3" aria-hidden="true" />
+              <span>
+                Contexto
+                {documentContext && documentContext.pinnedRules.length > 0
+                  ? ` (${documentContext.pinnedRules.length})`
+                  : ""}
+              </span>
+            </button>
+
+            <button
+              type="button"
               aria-pressed={showXoxBar}
-              onClick={() => setShowXoxBar((v) => !v)}
-              title="Decirle a Xox que modifique o agregue más páginas manteniendo la misma tipografía y diseño"
+              onClick={() => {
+                setShowXoxBar((v) => !v);
+                setShowContextDrawer(false);
+              }}
+              title="Decirle a Xox que modifique o agregue más páginas usando el contexto propio de este documento"
               className={`px-2 py-1 rounded-xl text-[10.5px] font-medium inline-flex items-center gap-1 transition-all cursor-pointer border ${
                 showXoxBar
                   ? "bg-zinc-200 text-zinc-950 border-white shadow-sm"
@@ -992,6 +1150,165 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
               <span>Pedir a Xox</span>
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Panel de Contexto Propio de esta ventana de documento (reglas fijadas + compactación + reinicio) */}
+      {state && !isDraftingLive && showContextDrawer && (
+        <div className="px-3.5 py-2.5 border-b border-white/[0.08] bg-zinc-950/95 space-y-2.5 shrink-0 select-text">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <span
+                className={`w-2 h-2 rounded-full shrink-0 ${
+                  isDocumentContextActive ? "bg-emerald-400" : "bg-zinc-500"
+                }`}
+                aria-hidden="true"
+              />
+              <span className="text-[11px] font-semibold text-zinc-100 truncate">
+                Contexto aislado de este documento
+              </span>
+              {documentContext && (
+                <span className="text-[10px] font-mono text-zinc-400 bg-white/[0.05] border border-white/[0.08] rounded-full px-1.5 py-0.2 shrink-0">
+                  {documentContext.recentTurnsCount} turnos · ~{formatTokenCount(documentContext.estimatedTokens)} tok
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              {onToggleDocumentContext && (
+                <button
+                  type="button"
+                  onClick={onToggleDocumentContext}
+                  className="px-2 py-0.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.1] text-[10px] font-medium text-zinc-200 hover:text-white cursor-pointer"
+                >
+                  {isDocumentContextActive ? "Pausar foco" : "Activar foco"}
+                </button>
+              )}
+              {onCompactDocumentContext && (
+                <button
+                  type="button"
+                  disabled={isCompactingContext}
+                  onClick={onCompactDocumentContext}
+                  title="Compactar rondas de feedback antiguas en un resumen limpio conservando reglas fijadas"
+                  className="px-2 py-0.5 rounded-lg bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.14] text-[10px] font-medium text-white inline-flex items-center gap-1 cursor-pointer disabled:opacity-45"
+                >
+                  {isCompactingContext ? (
+                    <Loader2 className="w-2.5 h-2.5 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Sparkles className="w-2.5 h-2.5" aria-hidden="true" />
+                  )}
+                  <span>{isCompactingContext ? "Compactando…" : "Compactar"}</span>
+                </button>
+              )}
+              {onResetDocumentContext && (
+                <button
+                  type="button"
+                  onClick={() => onResetDocumentContext(true)}
+                  title="Limpiar historial de feedback de esta ventana conservando tus reglas fijadas y el archivo actual"
+                  className="px-2 py-0.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.1] border border-white/[0.08] text-[10px] text-zinc-300 hover:text-white inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <RotateCcw className="w-2.5 h-2.5" aria-hidden="true" />
+                  <span>Reiniciar</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          <p className="text-[10.5px] text-zinc-400 leading-snug">
+            Xox lee siempre las secciones reales actuales en disco y compacta automáticamente el feedback largo para no revolverse ni mezclar otros documentos.
+          </p>
+
+          {/* Resumen del Checkpoint compactado si existe */}
+          {documentContext?.checkpoint && (
+            <div className="rounded-xl border border-white/[0.08] bg-white/[0.025] p-2 space-y-1 text-[10.5px]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-zinc-200">
+                  Resumen compactado ({documentContext.checkpoint.compactedTurns} turnos previos)
+                </span>
+                {documentContext.checkpoint.savedPct ? (
+                  <span className="text-[9.5px] font-mono text-zinc-400">
+                    -{documentContext.checkpoint.savedPct}% tokens
+                  </span>
+                ) : null}
+              </div>
+              {documentContext.checkpoint.objective && (
+                <p className="text-zinc-300 leading-snug">
+                  <span className="text-zinc-500">Objetivo: </span>
+                  {documentContext.checkpoint.objective}
+                </p>
+              )}
+              {documentContext.checkpoint.activeDecisions.length > 0 && (
+                <ul className="list-disc pl-4 text-zinc-300 space-y-0.5">
+                  {documentContext.checkpoint.activeDecisions.slice(0, 4).map((d, idx) => (
+                    <li key={idx}>{d}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* Reglas fijadas del documento (nunca se pierden al compactar) */}
+          {onUpdateDocumentRules && (
+            <div className="space-y-1.5">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
+                Reglas fijadas de este documento (permanentes)
+              </div>
+              {documentContext && documentContext.pinnedRules.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {documentContext.pinnedRules.map((rule, rIdx) => (
+                    <span
+                      key={`${rule}-${rIdx}`}
+                      className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-lg bg-white/[0.06] border border-white/[0.11] text-[10.5px] text-zinc-200 max-w-full"
+                    >
+                      <span className="truncate max-w-[260px]">{rule}</span>
+                      <button
+                        type="button"
+                        aria-label={`Quitar regla: ${rule}`}
+                        onClick={() =>
+                          onUpdateDocumentRules(
+                            documentContext.pinnedRules.filter((_, idx) => idx !== rIdx)
+                          )
+                        }
+                        className="text-zinc-400 hover:text-white p-0.5 cursor-pointer"
+                      >
+                        <X className="w-2.5 h-2.5" aria-hidden="true" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const trimmed = newRuleInput.trim();
+                  if (!trimmed) return;
+                  const existing = documentContext?.pinnedRules ?? [];
+                  onUpdateDocumentRules([...existing, trimmed]);
+                  setNewRuleInput("");
+                }}
+                className="flex items-center gap-1.5"
+              >
+                <label htmlFor="xook-doc-rule-input" className="sr-only">
+                  Agregar regla fija para este documento
+                </label>
+                <input
+                  id="xook-doc-rule-input"
+                  type="text"
+                  value={newRuleInput}
+                  onChange={(e) => setNewRuleInput(e.target.value)}
+                  placeholder="Ej. Tono ejecutivo breve, sin relleno, conservar tablas…"
+                  className="flex-1 px-2.5 py-1 rounded-lg bg-black/80 border border-white/[0.12] focus:border-white/[0.3] focus:outline-none text-[11px] text-zinc-100 placeholder:text-zinc-500"
+                />
+                <button
+                  type="submit"
+                  disabled={!newRuleInput.trim()}
+                  className="px-2.5 py-1 rounded-lg bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.14] text-[10.5px] font-medium text-white cursor-pointer disabled:opacity-40"
+                >
+                  Fijar
+                </button>
+              </form>
+            </div>
+          )}
         </div>
       )}
 
@@ -1096,6 +1413,30 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
               Mejorar redacción
             </button>
           </div>
+
+          {documentContext && documentContext.headings.length > 0 && (
+            <div className="flex items-center gap-1 flex-wrap pt-0.5">
+              <span className="text-[9.5px] text-zinc-500 mr-0.5">Secciones:</span>
+              {documentContext.headings.slice(0, 8).map((h, hIdx) => (
+                <button
+                  key={`${h.text}-${hIdx}`}
+                  type="button"
+                  onClick={() => {
+                    setXoxActionMode("modify");
+                    setXoxInstruction((prev) =>
+                      prev.trim()
+                        ? prev
+                        : `En la sección "${h.text}": `
+                    );
+                  }}
+                  title={`Apuntar edición a la sección "${h.text}"`}
+                  className="px-1.5 py-0.5 rounded-md bg-white/[0.03] hover:bg-white/[0.09] border border-white/[0.07] text-[9.5px] text-zinc-400 hover:text-zinc-100 truncate max-w-[160px] cursor-pointer"
+                >
+                  {h.text}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -1639,7 +1980,7 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
                   );
                   return (
                     <div
-                      key={p.page}
+                      key={`${state.path}:${state.revision ?? 0}:p${p.page}`}
                       ref={(el) => {
                         pageRefs.current[p.page] = el;
                       }}

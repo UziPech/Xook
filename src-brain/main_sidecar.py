@@ -10,8 +10,10 @@ import threading
 from pathlib import Path
 from slices.task_ui.schemas import sanitize_task_proposal
 from slices.ai_service.openrouter_client import (
+    compact_context_rpc,
     list_openrouter_models,
     list_provider_models,
+    manage_document_context_rpc,
     run_agent_completion,
     stream_agent_completion,
     test_openrouter_key,
@@ -246,6 +248,10 @@ def handle_rpc_request(request_line):
                 tts_config=params.get("tts_config"),
                 active_mode=params.get("active_mode"),
                 subagent_roster=params.get("subagent_roster"),
+                context_scope=params.get("context_scope"),
+                active_document=params.get("active_document"),
+                context_checkpoint=params.get("context_checkpoint"),
+                model_context_window=params.get("model_context_window"),
             )
         elif method == "ai_chat_stream":
             stream_id = params.get("stream_id")
@@ -295,6 +301,10 @@ def handle_rpc_request(request_line):
                 tts_config=params.get("tts_config"),
                 active_mode=params.get("active_mode"),
                 subagent_roster=params.get("subagent_roster"),
+                context_scope=params.get("context_scope"),
+                active_document=params.get("active_document"),
+                context_checkpoint=params.get("context_checkpoint"),
+                model_context_window=params.get("model_context_window"),
             )
         elif method == "test_ai_key":
             prov = str(params.get("provider") or "openrouter")
@@ -478,6 +488,32 @@ def handle_rpc_request(request_line):
                 skills_root=skills_root,
                 scope=scope,
                 audit_root=cfg_dir if (scope == "global" and cfg_dir is not None) else ws_root,
+            )
+        elif method == "compact_context":
+            result = compact_context_rpc(
+                api_key=params.get("api_key", ""),
+                model_id=params.get("model_id", "openrouter/free"),
+                provider=params.get("provider", "openrouter"),
+                provider_region=params.get("provider_region"),
+                workspace_root=params.get("workspace_root"),
+                scope=str(params.get("scope") or "chat"),
+                history=params.get("history"),
+                prev_checkpoint=params.get("prev_checkpoint"),
+                document_path=params.get("document_path"),
+                document_title=params.get("document_title"),
+                document_file_kind=params.get("document_file_kind"),
+                focus_hint=str(params.get("focus_hint") or ""),
+                keep_recent=int(params.get("keep_recent") if params.get("keep_recent") is not None else 2),
+            )
+        elif method == "manage_document_context":
+            result = manage_document_context_rpc(
+                workspace_root=params.get("workspace_root"),
+                action=str(params.get("action") or "get"),
+                path=params.get("path"),
+                title=params.get("title"),
+                file_kind=params.get("file_kind"),
+                rules=params.get("rules"),
+                keep_rules=bool(params.get("keep_rules", True)),
             )
         elif method == "ping":
             result = {"status": "pong"}

@@ -1428,6 +1428,7 @@ export interface GeneratedPdfArtifact {
   imagesEmbedded?: number;
   tablesCount?: number;
   theme?: string;
+  revision?: number;
   previewPages?: Array<{
     page: number;
     width: number;
@@ -1435,6 +1436,175 @@ export interface GeneratedPdfArtifact {
     dataUrl: string;
   }>;
   previewHasMore?: boolean;
+}
+
+export interface ContextCheckpoint {
+  objective: string;
+  activeDecisions: string[];
+  supersededDiscarded: string[];
+  documentState: string;
+  pendingItems: string[];
+  summary: string;
+  compactedTurns: number;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  savedPct?: number;
+  auto?: boolean;
+  updatedAt?: string;
+}
+
+export interface ContextCompactedEvent {
+  auto: boolean;
+  scope: "chat" | "document";
+  documentPath?: string;
+  documentTitle?: string;
+  compactedTurnsThisPass: number;
+  keptRecentTurns: number;
+  tokensBefore: number;
+  tokensAfter: number;
+  savedPct: number;
+  checkpoint: ContextCheckpoint;
+}
+
+export interface DocumentContextSnapshot {
+  path: string;
+  title: string;
+  fileKind: "pdf" | "text" | "office" | "image" | string;
+  theme?: string;
+  pageCount?: number;
+  revision?: number;
+  pinnedRules: string[];
+  checkpoint?: ContextCheckpoint | null;
+  recentTurns: Array<{
+    role: "user" | "assistant";
+    content: string;
+    ts?: string;
+    editAction?: string;
+  }>;
+  recentTurnsCount: number;
+  totalTurnsRecorded: number;
+  headings: Array<{ level: number; text: string; blockIndex?: number; line?: number }>;
+  estimatedTokens: number;
+  updatedAt?: string;
+}
+
+export function sanitizeContextCheckpoint(raw: unknown): ContextCheckpoint | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const asStrList = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map((x) => String(x ?? "").trim()).filter(Boolean) : [];
+  const objective = String(o.objective ?? "").trim();
+  const activeDecisions = asStrList(o.activeDecisions ?? o.active_decisions);
+  const supersededDiscarded = asStrList(o.supersededDiscarded ?? o.superseded_discarded);
+  const documentState = String(o.documentState ?? o.document_state ?? "").trim();
+  const pendingItems = asStrList(o.pendingItems ?? o.pending_items);
+  const summary = String(o.summary ?? "").trim();
+  if (!objective && !summary && activeDecisions.length === 0 && !documentState) return null;
+  return {
+    objective,
+    activeDecisions,
+    supersededDiscarded,
+    documentState,
+    pendingItems,
+    summary: summary || objective || "Contexto anterior compactado.",
+    compactedTurns: Number(o.compactedTurns ?? o.compacted_turns ?? 0) || 0,
+    tokensBefore:
+      typeof (o.tokensBefore ?? o.tokens_before) === "number"
+        ? Number(o.tokensBefore ?? o.tokens_before)
+        : undefined,
+    tokensAfter:
+      typeof (o.tokensAfter ?? o.tokens_after) === "number"
+        ? Number(o.tokensAfter ?? o.tokens_after)
+        : undefined,
+    savedPct:
+      typeof (o.savedPct ?? o.saved_pct) === "number"
+        ? Number(o.savedPct ?? o.saved_pct)
+        : undefined,
+    auto: typeof o.auto === "boolean" ? o.auto : undefined,
+    updatedAt: typeof (o.updatedAt ?? o.updated_at) === "string" ? String(o.updatedAt ?? o.updated_at) : undefined,
+  };
+}
+
+export function sanitizeContextCompactedEvent(raw: unknown): ContextCompactedEvent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const ckpt = sanitizeContextCheckpoint(o.checkpoint);
+  if (!ckpt) return null;
+  const scopeRaw = String(o.scope ?? "chat").toLowerCase();
+  return {
+    auto: Boolean(o.auto ?? ckpt.auto ?? true),
+    scope: scopeRaw === "document" ? "document" : "chat",
+    documentPath:
+      typeof (o.documentPath ?? o.document_path) === "string"
+        ? String(o.documentPath ?? o.document_path)
+        : undefined,
+    documentTitle:
+      typeof (o.documentTitle ?? o.document_title) === "string"
+        ? String(o.documentTitle ?? o.document_title)
+        : undefined,
+    compactedTurnsThisPass: Number(o.compactedTurnsThisPass ?? o.compacted_turns_this_pass ?? 0) || 0,
+    keptRecentTurns: Number(o.keptRecentTurns ?? o.kept_recent_turns ?? 0) || 0,
+    tokensBefore: Number(o.tokensBefore ?? o.tokens_before ?? ckpt.tokensBefore ?? 0) || 0,
+    tokensAfter: Number(o.tokensAfter ?? o.tokens_after ?? ckpt.tokensAfter ?? 0) || 0,
+    savedPct: Number(o.savedPct ?? o.saved_pct ?? ckpt.savedPct ?? 0) || 0,
+    checkpoint: ckpt,
+  };
+}
+
+export function sanitizeDocumentContextSnapshot(raw: unknown): DocumentContextSnapshot | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const path = String(o.path ?? "").trim();
+  if (!path) return null;
+  const rawTurns = Array.isArray(o.recentTurns ?? o.recent_turns)
+    ? ((o.recentTurns ?? o.recent_turns) as unknown[])
+    : [];
+  const recentTurns = rawTurns
+    .filter((t): t is Record<string, unknown> => Boolean(t && typeof t === "object"))
+    .map((t) => ({
+      role: (t.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
+      content: String(t.content ?? ""),
+      ts: typeof t.ts === "string" ? t.ts : undefined,
+      editAction:
+        typeof (t.editAction ?? t.edit_action) === "string"
+          ? String(t.editAction ?? t.edit_action)
+          : undefined,
+    }))
+    .filter((t) => t.content.trim().length > 0);
+  const rawHeadings = Array.isArray(o.headings) ? o.headings : [];
+  const headings = rawHeadings
+    .filter((h): h is Record<string, unknown> => Boolean(h && typeof h === "object"))
+    .map((h) => ({
+      level: Number(h.level ?? 1) || 1,
+      text: String(h.text ?? "").trim(),
+      blockIndex:
+        typeof (h.blockIndex ?? h.block_index) === "number"
+          ? Number(h.blockIndex ?? h.block_index)
+          : undefined,
+      line: typeof h.line === "number" ? h.line : undefined,
+    }))
+    .filter((h) => h.text.length > 0);
+  return {
+    path,
+    title: String(o.title ?? path.split("/").pop() ?? "Documento"),
+    fileKind: String(o.fileKind ?? o.file_kind ?? "pdf"),
+    theme: typeof o.theme === "string" ? o.theme : undefined,
+    pageCount:
+      typeof (o.pageCount ?? o.page_count) === "number"
+        ? Number(o.pageCount ?? o.page_count)
+        : undefined,
+    revision: typeof o.revision === "number" ? o.revision : undefined,
+    pinnedRules: Array.isArray(o.pinnedRules ?? o.pinned_rules)
+      ? ((o.pinnedRules ?? o.pinned_rules) as unknown[]).map((r) => String(r ?? "").trim()).filter(Boolean)
+      : [],
+    checkpoint: sanitizeContextCheckpoint(o.checkpoint),
+    recentTurns,
+    recentTurnsCount: Number(o.recentTurnsCount ?? o.recent_turns_count ?? recentTurns.length) || 0,
+    totalTurnsRecorded: Number(o.totalTurnsRecorded ?? o.total_turns_recorded ?? recentTurns.length) || 0,
+    headings,
+    estimatedTokens: Number(o.estimatedTokens ?? o.estimated_tokens ?? 0) || 0,
+    updatedAt: typeof (o.updatedAt ?? o.updated_at) === "string" ? String(o.updatedAt ?? o.updated_at) : undefined,
+  };
 }
 
 export interface PdfDraftPreviewBlock {
@@ -1532,6 +1702,10 @@ export function sanitizeGeneratedPdfArtifact(raw: unknown): GeneratedPdfArtifact
         ? Number(obj.tablesCount ?? obj.tables_count)
         : undefined,
     theme: typeof obj.theme === "string" ? obj.theme : undefined,
+    revision:
+      typeof obj.revision === "number" && Number.isFinite(obj.revision)
+        ? obj.revision
+        : undefined,
     ...(previewPages && previewPages.length > 0 ? { previewPages } : {}),
     ...(obj.previewHasMore !== undefined || obj.preview_has_more !== undefined
       ? { previewHasMore: Boolean(obj.previewHasMore ?? obj.preview_has_more) }
@@ -1562,6 +1736,22 @@ export interface XoxAiChatRequest {
   businessContextSnapshot?: string;
   /** Canvas activo abierto para ediciones incrementales desde el chat */
   activeCanvas?: CanvasArtifact | null;
+  /** Ámbito de contexto: chat general o ventana aislada de un documento */
+  contextScope?: "chat" | "document";
+  /** Metadatos mínimos del documento abierto cuando contextScope === "document" */
+  activeDocument?: {
+    path: string;
+    title?: string;
+    fileKind?: string;
+    theme?: string;
+    pageCount?: number;
+    hasCover?: boolean;
+    revision?: number;
+  } | null;
+  /** Checkpoint compactado previo del chat general (para no perder acuerdos ni enviar historial viejo) */
+  contextCheckpoint?: ContextCheckpoint | null;
+  /** Ventana real de tokens del modelo activo para calcular umbrales de auto-compactación */
+  modelContextWindow?: number;
 }
 
 export interface XoxTokenUsage {
@@ -1620,6 +1810,8 @@ export interface XoxAiChatResponse {
   failoverNotice?: string;
   exhaustedProviders?: Array<Record<string, unknown>>;
   failoverEvents?: ProviderFailoverEvent[];
+  contextCompacted?: ContextCompactedEvent;
+  documentContext?: DocumentContextSnapshot;
 }
 
 /** Actividad de código/terminal que Xox muestra en la pantalla de su laptop. */
@@ -1651,6 +1843,7 @@ export interface XoxStreamCallbacks {
   onChecklistUpdate?: (checklist: ChecklistState) => void;
   onSubagentEvent?: (subagent: SubagentActivity) => void;
   onStudyDeck?: (deck: StudyDeckArtifact) => void;
+  onContextCompacted?: (event: ContextCompactedEvent) => void;
 }
 
 export interface WorkspaceContextSource {
@@ -5536,6 +5729,9 @@ export async function runXoxAiChatStream(
         callbacks?.onSubagentEvent?.(evt.subagent as SubagentActivity);
       } else if (evt.type === "study_deck" && evt.deck && typeof evt.deck === "object") {
         callbacks?.onStudyDeck?.(evt.deck as StudyDeckArtifact);
+      } else if (evt.type === "context_compacted") {
+        const compacted = sanitizeContextCompactedEvent(evt);
+        if (compacted) callbacks?.onContextCompacted?.(compacted);
       }
     });
 
@@ -5582,6 +5778,8 @@ export async function runXoxAiChatStream(
           estimated_cost_usd?: number;
         };
         rate_limits?: Record<string, unknown>;
+        context_compacted?: unknown;
+        document_context?: unknown;
       }>("run_xox_chat_stream", {
         payload: {
           message: req.message,
@@ -5596,6 +5794,12 @@ export async function runXoxAiChatStream(
           activeCanvas: req.activeCanvas ?? null,
           activeMode: req.activeMode ?? null,
           subagentRoster: req.subagentRoster ?? null,
+          contextScope: req.contextScope ?? null,
+          activeDocument: req.activeDocument ?? null,
+          contextCheckpoint: req.contextCheckpoint
+            ? serializeCheckpointForSidecar(req.contextCheckpoint)
+            : null,
+          modelContextWindow: req.modelContextWindow ?? null,
         },
       });
 
@@ -5698,6 +5902,8 @@ export async function runXoxAiChatStream(
           kind: fe.kind,
           reason: fe.reason,
         })),
+        contextCompacted: sanitizeContextCompactedEvent(res.context_compacted) ?? undefined,
+        documentContext: sanitizeDocumentContextSnapshot(res.document_context) ?? undefined,
       };
     } finally {
       unlisten();
@@ -6630,4 +6836,147 @@ async function runBrowserAiChat(req: XoxAiChatRequest): Promise<XoxAiChatRespons
     usage: usageObj,
     rateLimits: browserRateLimits ?? undefined,
   };
+}
+
+function serializeCheckpointForSidecar(ckpt: ContextCheckpoint): Record<string, unknown> {
+  return {
+    objective: ckpt.objective,
+    active_decisions: ckpt.activeDecisions,
+    superseded_discarded: ckpt.supersededDiscarded,
+    document_state: ckpt.documentState,
+    pending_items: ckpt.pendingItems,
+    summary: ckpt.summary,
+    compacted_turns: ckpt.compactedTurns,
+    tokens_before: ckpt.tokensBefore,
+    tokens_after: ckpt.tokensAfter,
+    saved_pct: ckpt.savedPct,
+    auto: ckpt.auto,
+    updated_at: ckpt.updatedAt,
+  };
+}
+
+export interface CompactContextResult {
+  ok: boolean;
+  scope: "chat" | "document";
+  documentPath?: string;
+  checkpoint: ContextCheckpoint | null;
+  compactedTurnsThisPass: number;
+  keptRecentTurns: number;
+  tokensBefore: number;
+  tokensAfter: number;
+  savedPct: number;
+  documentContext?: DocumentContextSnapshot | null;
+}
+
+export async function compactXoxContext(params: {
+  scope: "chat" | "document";
+  history?: ChatTurnMessage[];
+  prevCheckpoint?: ContextCheckpoint | null;
+  documentPath?: string;
+  documentTitle?: string;
+  documentFileKind?: string;
+  focusHint?: string;
+  keepRecent?: number;
+  modelOverride?: string;
+  providerOverride?: string;
+}): Promise<CompactContextResult> {
+  if (isTauriRuntime()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const raw = await invoke<Record<string, unknown>>("compact_xox_context", {
+      payload: {
+        scope: params.scope,
+        history: params.history ?? [],
+        prevCheckpoint: params.prevCheckpoint
+          ? serializeCheckpointForSidecar(params.prevCheckpoint)
+          : null,
+        documentPath: params.documentPath ?? null,
+        documentTitle: params.documentTitle ?? null,
+        documentFileKind: params.documentFileKind ?? null,
+        focusHint: params.focusHint ?? null,
+        keepRecent: params.keepRecent ?? 2,
+        modelOverride: params.modelOverride ?? null,
+        providerOverride: params.providerOverride ?? null,
+      },
+    });
+    const ckpt = sanitizeContextCheckpoint(raw?.checkpoint);
+    return {
+      ok: Boolean(raw?.ok ?? ckpt !== null),
+      scope: String(raw?.scope ?? params.scope) === "document" ? "document" : "chat",
+      documentPath:
+        typeof (raw?.documentPath ?? raw?.document_path) === "string"
+          ? String(raw?.documentPath ?? raw?.document_path)
+          : params.documentPath,
+      checkpoint: ckpt,
+      compactedTurnsThisPass: Number(raw?.compactedTurnsThisPass ?? raw?.compacted_turns_this_pass ?? 0) || 0,
+      keptRecentTurns: Number(raw?.keptRecentTurns ?? raw?.kept_recent_turns ?? 0) || 0,
+      tokensBefore: Number(raw?.tokensBefore ?? raw?.tokens_before ?? ckpt?.tokensBefore ?? 0) || 0,
+      tokensAfter: Number(raw?.tokensAfter ?? raw?.tokens_after ?? ckpt?.tokensAfter ?? 0) || 0,
+      savedPct: Number(raw?.savedPct ?? raw?.saved_pct ?? ckpt?.savedPct ?? 0) || 0,
+      documentContext: sanitizeDocumentContextSnapshot(raw?.document_context ?? raw?.documentContext),
+    };
+  }
+
+  // Fallback local determinístico en modo navegador (sin Tauri)
+  const hist = (params.history ?? []).filter((m) => m.content.trim().length > 0);
+  const keep = Math.max(0, Math.min(6, params.keepRecent ?? 2));
+  const older = hist.length > keep && keep > 0 ? hist.slice(0, -keep) : hist;
+  const tokensBefore = older.reduce((acc, m) => acc + estimateTokens(m.content), 0);
+  const userLines = older.filter((m) => m.role === "user").map((m) => m.content.trim().slice(0, 180));
+  const asstLines = older.filter((m) => m.role === "assistant").map((m) => m.content.trim().slice(0, 240));
+  const ckpt: ContextCheckpoint = {
+    objective:
+      params.prevCheckpoint?.objective ||
+      (params.documentTitle ? `Perfeccionar "${params.documentTitle}".` : userLines[0] || "Continuar sesión."),
+    activeDecisions: [...(params.prevCheckpoint?.activeDecisions ?? []).slice(-3), ...userLines.slice(-5)].slice(-8),
+    supersededDiscarded: params.prevCheckpoint?.supersededDiscarded ?? [],
+    documentState: asstLines[asstLines.length - 1] || params.prevCheckpoint?.documentState || "",
+    pendingItems: params.prevCheckpoint?.pendingItems ?? [],
+    summary: `Compactados ${older.length} mensajes previos.`,
+    compactedTurns: (params.prevCheckpoint?.compactedTurns ?? 0) + older.length,
+    tokensBefore,
+    tokensAfter: Math.max(60, Math.round(tokensBefore * 0.28)),
+    savedPct: tokensBefore > 0 ? 72 : 0,
+    auto: false,
+    updatedAt: new Date().toISOString(),
+  };
+  return {
+    ok: true,
+    scope: params.scope,
+    documentPath: params.documentPath,
+    checkpoint: ckpt,
+    compactedTurnsThisPass: older.length,
+    keptRecentTurns: Math.max(0, hist.length - older.length),
+    tokensBefore,
+    tokensAfter: ckpt.tokensAfter ?? 0,
+    savedPct: ckpt.savedPct ?? 0,
+    documentContext: null,
+  };
+}
+
+export async function manageDocumentContext(params: {
+  action: "get" | "update_rules" | "reset" | "list";
+  path?: string;
+  title?: string;
+  fileKind?: string;
+  rules?: string[];
+  keepRules?: boolean;
+}): Promise<{ ok: boolean; documentContext?: DocumentContextSnapshot | null }> {
+  if (isTauriRuntime()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const raw = await invoke<Record<string, unknown>>("manage_document_context", {
+      payload: {
+        action: params.action,
+        path: params.path ?? null,
+        title: params.title ?? null,
+        fileKind: params.fileKind ?? null,
+        rules: params.rules ?? null,
+        keepRules: params.keepRules ?? true,
+      },
+    });
+    return {
+      ok: Boolean(raw?.ok ?? true),
+      documentContext: sanitizeDocumentContextSnapshot(raw?.document_context ?? raw?.documentContext),
+    };
+  }
+  return { ok: true, documentContext: null };
 }

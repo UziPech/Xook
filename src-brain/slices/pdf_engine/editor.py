@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -134,6 +135,9 @@ def save_pdf_spec_metadata(
     rel_path: str,
     spec_data: Dict[str, Any],
     pdf_abs: Optional[Path] = None,
+    *,
+    overwrite_base: bool = False,
+    overwrite_cover: bool = False,
 ) -> None:
     """Guarda la especificación editable asociada a un PDF del workspace."""
     try:
@@ -149,6 +153,7 @@ def save_pdf_spec_metadata(
         if not isinstance(blocks, list):
             blocks, _ = _normalize_blocks_input(spec_data)
 
+        pdf_stat = pdf_abs.stat() if (pdf_abs and pdf_abs.is_file()) else None
         payload: Dict[str, Any] = {
             "path": rel_path,
             "title": str(spec_data.get("title") or existing.get("title") or "Documento").strip(),
@@ -172,22 +177,28 @@ def save_pdf_spec_metadata(
             "page_patches": (
                 spec_data.get("page_patches")
                 if isinstance(spec_data.get("page_patches"), list)
-                else (existing.get("page_patches") if isinstance(existing.get("page_patches"), list) else [])
+                else ([] if overwrite_base else (existing.get("page_patches") if isinstance(existing.get("page_patches"), list) else []))
             ),
+            "revision": int(spec_data.get("revision") or int(time.time() * 1000)),
+            "pdf_mtime": float(pdf_stat.st_mtime) if pdf_stat else existing.get("pdf_mtime"),
+            "pdf_size": int(pdf_stat.st_size) if pdf_stat else existing.get("pdf_size"),
         }
         paths["json"].write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         if pdf_abs and pdf_abs.is_file():
             try:
-                if not paths["base_pdf"].is_file():
+                if overwrite_base or not paths["base_pdf"].is_file():
                     shutil.copy2(pdf_abs, paths["base_pdf"])
                 reader = PdfReader(str(pdf_abs))
-                if len(reader.pages) >= 1 and (payload["has_cover"] or payload["preserve_first_page"]):
-                    if not paths["cover_pdf"].is_file():
+                wants_cover = bool(payload["has_cover"] or payload["preserve_first_page"])
+                if len(reader.pages) >= 1 and wants_cover:
+                    if overwrite_cover or not paths["cover_pdf"].is_file():
                         writer = PdfWriter()
                         writer.add_page(reader.pages[0])
                         with open(paths["cover_pdf"], "wb") as f:
                             writer.write(f)
+                elif overwrite_cover and not wants_cover and paths["cover_pdf"].is_file():
+                    paths["cover_pdf"].unlink(missing_ok=True)
             except Exception:
                 pass
     except Exception:
@@ -743,9 +754,27 @@ def load_pdf_editable_spec(
     directamente sobre la misma vista previa.
     """
     paths = get_spec_paths(workspace_root, rel_path)
-    if pdf_abs.is_file() and not paths["base_pdf"].is_file():
+    external_overwrite = False
+    if pdf_abs.is_file() and paths["json"].is_file():
+        try:
+            saved_probe = json.loads(paths["json"].read_text(encoding="utf-8"))
+            rec_mtime = saved_probe.get("pdf_mtime")
+            rec_size = saved_probe.get("pdf_size")
+            st = pdf_abs.stat()
+            if (
+                isinstance(rec_mtime, (int, float))
+                and isinstance(rec_size, int)
+                and (abs(st.st_mtime - float(rec_mtime)) > 1.5 or st.st_size != rec_size)
+            ):
+                external_overwrite = True
+        except Exception:
+            pass
+
+    if pdf_abs.is_file() and (external_overwrite or not paths["base_pdf"].is_file()):
         try:
             shutil.copy2(pdf_abs, paths["base_pdf"])
+            if external_overwrite and paths["cover_pdf"].is_file():
+                paths["cover_pdf"].unlink(missing_ok=True)
         except Exception:
             pass
 
@@ -755,7 +784,7 @@ def load_pdf_editable_spec(
     summary = inspect_pdf_summary(pdf_abs)
     page_count = int(summary.get("page_count") or 1)
 
-    if paths["json"].is_file():
+    if paths["json"].is_file() and not external_overwrite:
         try:
             saved = json.loads(paths["json"].read_text(encoding="utf-8"))
             blocks = saved.get("blocks") if isinstance(saved.get("blocks"), list) else []
@@ -1719,9 +1748,27 @@ def modify_or_append_pdf_by_agent(
         return saved
 
     # 4) Modo `modify`: recompila el cuerpo del documento conservando la portada original (Página 1)
-    #    y siguiendo la misma tipografía y estilo visual (`theme`).
+    #    salvo que el usuario/agente haya pedido cambiarla o quitarla explícitamente.
     blocks_to_compile = new_blocks if new_blocks else existing_blocks
-    preserve_first = bool(existing_spec.get("preserve_first_page")) or bool(existing_spec.get("has_cover"))
+    explicit_cover_arg = spec.get("cover")
+    explicit_cover_img = spec.get("cover_image") or spec.get("coverImage") or spec.get("portada_imagen")
+    wants_new_or_removed_cover = (
+        bool(explicit_cover_img)
+        or (isinstance(explicit_cover_arg, bool))
+        or (
+            isinstance(explicit_cover_arg, dict)
+            and (
+                explicit_cover_arg.get("enabled") is False
+                or bool(explicit_cover_arg.get("image_path") or explicit_cover_arg.get("image") or explicit_cover_arg.get("path"))
+                or str(explicit_cover_arg.get("layout") or "").strip().lower() not in ("", "keep")
+            )
+        )
+    )
+    preserve_first = (
+        False
+        if wants_new_or_removed_cover
+        else (bool(existing_spec.get("preserve_first_page")) or bool(existing_spec.get("has_cover")))
+    )
     prepend_cover = paths["cover_pdf"] if (preserve_first and paths["cover_pdf"].is_file()) else None
 
     modify_spec: Dict[str, Any] = {
@@ -1732,9 +1779,11 @@ def modify_or_append_pdf_by_agent(
         "theme": theme,
         "output_path": rel_path,
         "blocks": blocks_to_compile,
-        "skip_inline_title": bool(existing_spec.get("skip_inline_title")),
-        "cover": {"enabled": False, "layout": "none"} if prepend_cover else (spec.get("cover") or existing_spec.get("cover")),
+        "skip_inline_title": False if wants_new_or_removed_cover else bool(existing_spec.get("skip_inline_title")),
+        "cover": {"enabled": False, "layout": "none"} if prepend_cover else (spec.get("cover") if "cover" in spec else existing_spec.get("cover")),
     }
+    if explicit_cover_img:
+        modify_spec["cover_image"] = explicit_cover_img
     if footer_text is not None:
         modify_spec["footer_text"] = footer_text
     if watermark_cfg is not None:
@@ -1748,13 +1797,17 @@ def modify_or_append_pdf_by_agent(
         progress_callback=progress_callback,
         allow_any_workspace_zone=True,
         prepend_first_page_from=prepend_cover,
-        save_spec_override={
-            **modify_spec,
-            "has_cover": bool(prepend_cover) or bool(existing_spec.get("has_cover")),
-            "preserve_first_page": preserve_first,
-            "cover": existing_spec.get("cover"),
-            "page_patches": [],
-        },
+        save_spec_override=(
+            None
+            if wants_new_or_removed_cover
+            else {
+                **modify_spec,
+                "has_cover": bool(prepend_cover) or bool(existing_spec.get("has_cover")),
+                "preserve_first_page": preserve_first,
+                "cover": existing_spec.get("cover"),
+                "page_patches": [],
+            }
+        ),
     )
     if pdf_abs.is_file():
         shutil.copy2(pdf_abs, paths["base_pdf"])

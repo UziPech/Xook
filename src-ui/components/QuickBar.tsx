@@ -23,7 +23,6 @@ import {
 } from "../features/xox-studio/xoxStudioApi";
 import { QuickLiquidLayer } from "./QuickLiquidLayer";
 import { JellyPillTrack } from "./JellyPillTrack";
-import { LiquidGlassBackdrop } from "./LiquidGlassBackdrop";
 import { MarkdownContent, renderInlineMarkdown } from "../utils/markdownRenderer";
 import { getQuickBarPlaceholder } from "../utils/xoxGreetings";
 import { useAnimatedPresence } from "../hooks/useAnimatedPresence";
@@ -111,7 +110,7 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   return Boolean(
     target.closest(
-      "textarea, input, button, select, a, [role='listbox'], [role='option'], [data-no-drag='true']"
+      "textarea, input, button, select, a, [role='listbox'], [role='menu'], [role='option'], [data-no-drag='true']"
     )
   );
 }
@@ -1475,8 +1474,6 @@ export const QuickBar: React.FC = () => {
               dragging={isDragging}
             />
 
-            <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.16] to-transparent" />
-            <div className="absolute inset-x-14 bottom-0 h-px bg-gradient-to-r from-transparent via-sky-200/[0.14] to-transparent" />
             <span aria-hidden="true" className="quick-starlight-sweep" />
             {settleSeq > 0 && (
               <span key={settleSeq} aria-hidden="true" className="quick-settle-sweep" />
@@ -1516,8 +1513,8 @@ export const QuickBar: React.FC = () => {
             <span
               className={`h-[3px] rounded-full transition-all duration-200 ${
                 isDragging
-                  ? "w-12 bg-sky-100/95 shadow-[0_0_6px_rgba(224,242,254,0.65)]"
-                  : "w-8 bg-white/30 group-hover/grip:w-11 group-hover/grip:bg-sky-100/70"
+                  ? "w-12 bg-sky-100/80 shadow-[0_0_6px_rgba(224,242,254,0.45)]"
+                  : "w-8 bg-white/[0.15] group-hover/grip:w-11 group-hover/grip:bg-sky-100/45"
               }`}
             />
           </div>
@@ -1601,8 +1598,8 @@ export const QuickBar: React.FC = () => {
                 />
               </div>
 
-              {/* Lectura de pantalla + Selector de modelo + Enviar (estilo Liquid Glass) */}
-              <div className="flex items-center gap-1.5 shrink-0">
+              {/* Lectura de pantalla + Selector de modelo + Enviar (estilo Liquid Glass neumórfico) */}
+              <div className="flex items-center gap-2 shrink-0">
                 <div ref={screenMenuRef} className="relative">
                   <button
                     type="button"
@@ -1622,19 +1619,19 @@ export const QuickBar: React.FC = () => {
                             ? `Memoria de pantalla activa (${screenStatus.retentionMinutes} min)`
                             : "Opciones de lectura de pantalla"
                     }
-                    className={`relative w-8 h-8 inline-flex items-center justify-center rounded-full text-white cursor-pointer transition-all ${
+                    className={`group/eye relative w-8 h-8 inline-flex items-center justify-center rounded-full text-white cursor-pointer ${
                       attachLiveScreen
                         ? "quick-liquid-chip-active"
-                        : "quick-liquid-btn opacity-75 hover:opacity-100"
+                        : "quick-liquid-btn"
                     }`}
                   >
                     <Eye
-                      className={`w-3.5 h-3.5 shrink-0 ${
+                      className={`w-3.5 h-3.5 shrink-0 transition-colors ${
                         attachLiveScreen
                           ? "text-sky-200"
                           : screenStatus?.permissionGranted === false || screenStatus?.pausedSensitive
                             ? "text-amber-300/90"
-                            : "text-white/75"
+                            : "text-white/75 group-hover/eye:text-white"
                       }`}
                     />
                     {(attachLiveScreen ||
@@ -1658,21 +1655,34 @@ export const QuickBar: React.FC = () => {
                       role="menu"
                       className={`quick-liquid-menu ${
                         showScreenMenu ? "menu-in" : "menu-out pointer-events-none"
-                      } menu-origin-top-right absolute right-0 top-full mt-2 w-72 overflow-hidden p-2 rounded-2xl z-30`}
+                      } menu-origin-top-right absolute right-0 top-full ${
+                        inputExpanded || hasQuickResult ? "mt-2.5" : "mt-[30px]"
+                      } w-72 overflow-hidden p-2 rounded-[20px] z-30`}
                     >
-                      <LiquidGlassBackdrop variant="menu" />
-                      <div className="relative z-[1] space-y-1.5">
-                        <div className="px-2 py-1 flex items-center justify-between text-[10.5px] text-zinc-200/80 border-b border-white/[0.08]">
+                      <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
+                        <QuickLiquidLayer
+                          motionRef={xoxDragMotionRef}
+                          active={isQuickVisible && !isLeaving && showScreenMenu}
+                          busy={isBusy}
+                          dragging={isDragging}
+                        />
+                      </div>
+                      <div className="relative z-[1] space-y-1.5 [text-shadow:0_1px_4px_rgba(4,8,18,0.72)]">
+                        <div className="px-2 py-1 flex items-center justify-between text-[10.5px] text-zinc-100/85">
                           <span className="inline-flex items-center gap-1.5 font-medium text-white">
                             <Monitor className="w-3 h-3 text-sky-200" />
                             <span>Lectura de pantalla</span>
                           </span>
-                          <span className="text-[10px] text-zinc-200/70">
+                          <span className="text-[10px] text-zinc-100/80">
                             {screenStatus?.observationCount
                               ? `${screenStatus.observationCount} rec.`
                               : "En RAM"}
                           </span>
                         </div>
+                        <div
+                          aria-hidden="true"
+                          className="h-px w-full bg-gradient-to-r from-transparent via-white/[0.06] to-transparent"
+                        />
 
                         {screenStatus?.permissionGranted === false && (
                           <div className="quick-liquid-subcard rounded-xl p-2 space-y-1.5 text-[11px] text-amber-100">
@@ -1870,11 +1880,20 @@ export const QuickBar: React.FC = () => {
                       role="listbox"
                       className={`quick-liquid-menu ${
                         showModels ? "menu-in" : "menu-out pointer-events-none"
-                      } menu-origin-top-right absolute right-0 top-full mt-2 w-72 overflow-hidden p-1.5 rounded-2xl z-30`}
+                      } menu-origin-top-right absolute right-0 top-full ${
+                        inputExpanded || hasQuickResult ? "mt-2.5" : "mt-[30px]"
+                      } w-72 overflow-hidden p-1.5 rounded-[20px] z-30`}
                     >
-                      <LiquidGlassBackdrop variant="menu" />
+                      <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
+                        <QuickLiquidLayer
+                          motionRef={xoxDragMotionRef}
+                          active={isQuickVisible && !isLeaving && showModels}
+                          busy={isBusy}
+                          dragging={isDragging}
+                        />
+                      </div>
 
-                      <div className="relative z-[1] px-2.5 py-1 mb-1 flex items-center justify-between gap-2 text-[10px] text-zinc-200/75 border-b border-white/[0.06]">
+                      <div className="relative z-[1] px-2.5 py-1 flex items-center justify-between gap-2 text-[10px] text-zinc-100/85 [text-shadow:0_1px_4px_rgba(4,8,18,0.72)]">
                         <span className="inline-flex items-center gap-1.5 truncate">
                           <ProviderIcon provider={activeProvider} size={11} className="shrink-0" />
                           <span>{activeSpec.shortName} ({modelOptions.length})</span>
@@ -1892,7 +1911,7 @@ export const QuickBar: React.FC = () => {
                               }}
                               aria-expanded={expandModels}
                               title={expandModels ? "Contraer lista" : "Ver más modelos"}
-                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9.5px] font-medium text-sky-200/85 hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9.5px] font-medium text-sky-200/90 hover:text-white hover:bg-white/[0.10] transition-colors cursor-pointer"
                             >
                               <span>{expandModels ? "Menos" : "Más"}</span>
                               <ChevronDown
@@ -1904,10 +1923,14 @@ export const QuickBar: React.FC = () => {
                           )}
                         </div>
                       </div>
+                      <div
+                        aria-hidden="true"
+                        className="relative z-[1] mb-1 h-px w-full bg-gradient-to-r from-transparent via-white/[0.06] to-transparent"
+                      />
 
                       <div
                         className={`xook-expand-list relative z-[1] ${
-                          expandModels ? "max-h-[268px]" : "max-h-52"
+                          expandModels ? "max-h-[280px]" : "max-h-[228px]"
                         } overflow-y-auto space-y-0.5`}
                       >
                         {modelOptions.map((m) => (
@@ -1933,20 +1956,20 @@ export const QuickBar: React.FC = () => {
                             }`}
                           >
                             <span className="min-w-0">
-                              <span className="flex items-center gap-1.5 text-xs font-medium text-white truncate [text-shadow:0_1px_4px_rgba(4,8,18,0.65)]">
+                              <span className="flex items-center gap-1.5 text-xs font-medium text-white truncate [text-shadow:0_1px_4px_rgba(4,8,18,0.72)]">
                                 <span className="truncate">{m.name}</span>
                                 {m.is_free ? (
-                                  <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[8.5px] font-medium text-zinc-200/90 shrink-0">
+                                  <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[8.5px] font-medium text-zinc-100/95 shrink-0">
                                     gratis
                                   </span>
                                 ) : typeof m.prompt_price_per_million === "number" &&
                                   m.prompt_price_per_million > 0 ? (
-                                  <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[8.5px] font-mono text-zinc-300/90 shrink-0 tabular-nums">
+                                  <span className="quick-liquid-chip px-1.5 py-0.5 rounded-md text-[8.5px] font-mono text-zinc-100/90 shrink-0 tabular-nums">
                                     {formatPricePerMillion(m.prompt_price_per_million)}/1M
                                   </span>
                                 ) : null}
                               </span>
-                              <span className="block text-[10.5px] text-zinc-200/75 truncate [text-shadow:0_1px_3px_rgba(4,8,18,0.6)]">
+                              <span className="block text-[10.5px] text-zinc-100/80 truncate [text-shadow:0_1px_4px_rgba(4,8,18,0.72)]">
                                 {m.hint}
                               </span>
                             </span>
@@ -1960,28 +1983,34 @@ export const QuickBar: React.FC = () => {
                       </div>
 
                       {aiConfig.hasApiKey && (
-                        <div className="relative z-[1] mt-1.5 pt-1.5 px-2 pb-0.5 border-t border-white/[0.06] space-y-1">
-                          <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-200/80">
-                            <span className="truncate">{quickUsageSummary.sourceBadge}</span>
-                            <span className="font-mono text-zinc-100 shrink-0 tabular-nums">
-                              {quickUsageSummary.headline}
-                            </span>
+                        <>
+                          <div
+                            aria-hidden="true"
+                            className="relative z-[1] mt-1.5 h-px w-full bg-gradient-to-r from-transparent via-white/[0.06] to-transparent"
+                          />
+                          <div className="relative z-[1] pt-1.5 px-2 pb-0.5 space-y-1 [text-shadow:0_1px_4px_rgba(4,8,18,0.72)]">
+                            <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-100/85">
+                              <span className="truncate">{quickUsageSummary.sourceBadge}</span>
+                              <span className="font-mono text-white shrink-0 tabular-nums">
+                                {quickUsageSummary.headline}
+                              </span>
+                            </div>
+                            {quickUsageSummary.hasMeterBar && (
+                              <progress
+                                className="xook-usage-progress"
+                                value={Math.max(0, Math.min(100, quickUsageSummary.pct))}
+                                max={100}
+                                aria-label={`${quickUsageSummary.tierLabel}: ${quickUsageSummary.headline}`}
+                                style={{
+                                  ["--xook-progress-fill" as string]: getUsageMeterFillColor({
+                                    meterMode: quickUsageSummary.meterMode,
+                                    pct: quickUsageSummary.pct,
+                                  }),
+                                }}
+                              />
+                            )}
                           </div>
-                          {quickUsageSummary.hasMeterBar && (
-                            <progress
-                              className="xook-usage-progress"
-                              value={Math.max(0, Math.min(100, quickUsageSummary.pct))}
-                              max={100}
-                              aria-label={`${quickUsageSummary.tierLabel}: ${quickUsageSummary.headline}`}
-                              style={{
-                                ["--xook-progress-fill" as string]: getUsageMeterFillColor({
-                                  meterMode: quickUsageSummary.meterMode,
-                                  pct: quickUsageSummary.pct,
-                                }),
-                              }}
-                            />
-                          )}
-                        </div>
+                        </>
                       )}
                     </div>
                   )}
@@ -1994,8 +2023,8 @@ export const QuickBar: React.FC = () => {
                   aria-label="Enviar"
                   className={`w-8 h-8 rounded-full flex items-center justify-center ${
                     canSubmit
-                      ? "quick-liquid-btn-ready active:scale-95 cursor-pointer"
-                      : "quick-liquid-btn text-zinc-100/80 cursor-not-allowed"
+                      ? "quick-liquid-btn-ready cursor-pointer"
+                      : "quick-liquid-btn text-zinc-100/60 cursor-not-allowed"
                   }`}
                 >
                   <Send className="w-3.5 h-3.5" />

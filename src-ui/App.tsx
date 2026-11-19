@@ -26,6 +26,9 @@ import {
   Settings,
   Slash,
   Users,
+  Layers,
+  Sparkles,
+  Loader2,
 } from "lucide-react";
 import {
   SlashCommandMenu,
@@ -198,11 +201,15 @@ import {
   type AiUsageLedger,
   type AttachedContextItem,
   ClarificationSpec,
+  type ContextCheckpoint,
+  type ContextCompactedEvent,
+  type DocumentContextSnapshot,
   type GeneratedPdfArtifact,
   type PdfDraftProgressEvent,
   OPENROUTER_PRESET_MODELS,
   OpenRouterModelOption,
   ThinkingStep,
+  compactXoxContext,
   computeProviderUsageSummary,
   detectApiKeyInText,
   detectKeySetupIntentWithProvider,
@@ -221,6 +228,7 @@ import {
   getProviderSpec,
   getUsageMeterFillColor,
   incrementLocalDailyRequestCount,
+  manageDocumentContext,
   normalizeApiKey,
   normalizeProviderIdClient,
   onAiUsageUpdated,
@@ -732,6 +740,7 @@ function XoxHeaderFace({
   const colors = resolveXoxStateColors(accentPreset, state);
   const isAlert = state === "alert";
   const isSuccess = state === "success";
+  const isTalking = state === "talking";
   const isThinking = state === "thinking";
   const isSyncing = state === "syncing";
 
@@ -795,7 +804,9 @@ function XoxHeaderFace({
               ? "opacity-0"
               : isSuccess
                 ? "opacity-75"
-                : "opacity-0 group-hover:opacity-55"
+                : isTalking
+                  ? "opacity-60"
+                  : "opacity-0 group-hover:opacity-55"
           }`}
         >
           <ellipse cx="99.5" cy="127" rx="9.5" ry="5.8" transform="rotate(-8 99.5 127)" fill={`url(#${ids.blush})`} />
@@ -970,7 +981,7 @@ export default function App() {
     void refreshXoxStudioData();
   };
   
-  // Estados para paneles laterales, tareas y visor de documentos dedicado
+  // Estados para paneles laterales, tareas y visor de documentos multi-pestaña (estilo editor)
   const [showLeftSidebar, setShowLeftSidebar] = useState<boolean>(false);
   const [showRightSidebar, setShowRightSidebar] = useState<boolean>(false);
   const [showDocViewer, setShowDocViewer] = useState<boolean>(false);
@@ -980,7 +991,86 @@ export default function App() {
       setShowXoxStudio(false);
     }
   }, [showDocViewer]);
-  const [pdfPanelState, setPdfPanelState] = useState<PdfWorkspacePanelState | null>(null);
+
+  const [openDocTabs, setOpenDocTabs] = useState<PdfWorkspacePanelState[]>([]);
+  const [activeDocTabPath, setActiveDocTabPath] = useState<string | null>(null);
+  const pdfPanelState = useMemo<PdfWorkspacePanelState | null>(() => {
+    if (openDocTabs.length === 0) return null;
+    if (activeDocTabPath) {
+      const found = openDocTabs.find((t) => t.path === activeDocTabPath);
+      if (found) return found;
+    }
+    return openDocTabs[openDocTabs.length - 1] ?? null;
+  }, [openDocTabs, activeDocTabPath]);
+
+  // Contexto aislado por ventana de documento + checkpoints de compactación (auto y manual)
+  const [docContextsByPath, setDocContextsByPath] = useState<
+    Record<string, DocumentContextSnapshot>
+  >({});
+  const [docContextScopeEnabled, setDocContextScopeEnabled] = useState<boolean>(true);
+  const [isCompactingContext, setIsCompactingContext] = useState<boolean>(false);
+  const [chatCheckpoint, setChatCheckpoint] = useState<ContextCheckpoint | null>(null);
+  const [compactedUpToMessageId, setCompactedUpToMessageId] = useState<string | null>(null);
+
+  const chatCheckpointRef = useRef<ContextCheckpoint | null>(chatCheckpoint);
+  chatCheckpointRef.current = chatCheckpoint;
+  const compactedUpToMsgIdRef = useRef<string | null>(compactedUpToMessageId);
+  compactedUpToMsgIdRef.current = compactedUpToMessageId;
+  const docContextScopeEnabledRef = useRef<boolean>(docContextScopeEnabled);
+  docContextScopeEnabledRef.current = docContextScopeEnabled;
+
+  const upsertDocTab = (next: PdfWorkspacePanelState, activate = true) => {
+    const stamped: PdfWorkspacePanelState = {
+      ...next,
+      revision: next.revision ?? Date.now(),
+    };
+    setOpenDocTabs((prev) => {
+      const idx = prev.findIndex((t) => t.path === stamped.path);
+      if (idx >= 0) {
+        return prev.map((t, i) => (i === idx ? stamped : t));
+      }
+      return [...prev.slice(-9), stamped];
+    });
+    if (activate) {
+      setActiveDocTabPath(stamped.path);
+    }
+  };
+
+  const patchDocTab = (
+    targetPath: string,
+    updater: (curr: PdfWorkspacePanelState) => PdfWorkspacePanelState
+  ) => {
+    setOpenDocTabs((prev) =>
+      prev.map((t) => (t.path === targetPath ? updater(t) : t))
+    );
+  };
+
+  const closeDocTab = (targetPath: string) => {
+    setOpenDocTabs((prev) => {
+      const idx = prev.findIndex((t) => t.path === targetPath);
+      if (idx < 0) return prev;
+      const nextList = prev.filter((t) => t.path !== targetPath);
+      if (nextList.length === 0) {
+        setActiveDocTabPath(null);
+        setShowDocViewer(false);
+        setPdfDraftProgress(null);
+        rightPanelAutoOpenedTurnRef.current = null;
+      } else if (activeDocTabPath === targetPath) {
+        const fallback = nextList[Math.max(0, idx - 1)] ?? nextList[0];
+        setActiveDocTabPath(fallback.path);
+      }
+      return nextList;
+    });
+  };
+
+  const closeAllDocTabs = () => {
+    setShowDocViewer(false);
+    setOpenDocTabs([]);
+    setActiveDocTabPath(null);
+    setPdfDraftProgress(null);
+    rightPanelAutoOpenedTurnRef.current = null;
+  };
+
   const docViewerRef = useRef<{ show: boolean; state: PdfWorkspacePanelState | null }>({
     show: false,
     state: null,
@@ -993,6 +1083,29 @@ export default function App() {
   const pdfPreviewReqRef = useRef<number>(0);
   const rightPanelAutoOpenedTurnRef = useRef<string | null>(null);
   const lastPdfByTurnRef = useRef<Record<string, GeneratedPdfArtifact>>({});
+  const turnOpenedPdfRevRef = useRef<Record<string, number>>({});
+
+  // Sincroniza el contexto aislado en disco cada vez que se cambia o abre una pestaña de documento
+  useEffect(() => {
+    const activeTab = pdfPanelState;
+    if (!showDocViewer || !activeTab?.path) return;
+    let cancelled = false;
+    void manageDocumentContext({
+      action: "get",
+      path: activeTab.path,
+      title: activeTab.title,
+      fileKind: activeTab.fileKind ?? "pdf",
+    })
+      .then((res) => {
+        if (cancelled || !res?.documentContext) return;
+        const snap = res.documentContext;
+        setDocContextsByPath((prev) => ({ ...prev, [snap.path]: snap }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [showDocViewer, pdfPanelState?.path, pdfPanelState?.revision, pdfPanelState?.title, pdfPanelState?.fileKind]);
 
   // Límites y anchos redimensionables para paneles laterales (Estilo Antigravity / IDE)
   const MIN_LEFT_WIDTH = 220;
@@ -1177,6 +1290,7 @@ export default function App() {
   const [greetingLeaving, setGreetingLeaving] = useState<boolean>(false);
   const [summonSeq, setSummonSeq] = useState<number>(0);
   const greetingTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const greetingSeqRef = useRef(0);
   const lastBubbleMessageRef = useRef<string | null>(null);
   const [homeGreetingSlot, setHomeGreetingSlot] = useState<{
     seed: number;
@@ -1391,10 +1505,48 @@ export default function App() {
   const activeContextItems = contextItems.filter(
     (c) => c.pinned || selectedContext?.id === c.id
   );
-  const totalActiveTokens = activeContextItems.reduce(
+  const pinnedFilesTokens = activeContextItems.reduce(
     (sum, item) => sum + estimateTokens(item.content),
     0
   );
+  const activeDocumentContext: DocumentContextSnapshot | null =
+    pdfPanelState?.path ? (docContextsByPath[pdfPanelState.path] ?? null) : null;
+  const isDocumentWindowFocused = Boolean(
+    showDocViewer && pdfPanelState?.path && docContextScopeEnabled
+  );
+  const activeChatTurnsTokens = useMemo(() => {
+    let startIdx = 0;
+    if (compactedUpToMessageId) {
+      const foundIdx = chatMessages.findIndex((m) => m.id === compactedUpToMessageId);
+      if (foundIdx >= 0) startIdx = foundIdx + 1;
+    }
+    let sum = 0;
+    for (let i = startIdx; i < chatMessages.length; i += 1) {
+      const m = chatMessages[i];
+      if (!m || m.isError || m.isCompactionDividerOnly) continue;
+      sum += 8 + estimateTokens(m.content);
+    }
+    return sum;
+  }, [chatMessages, compactedUpToMessageId]);
+  const chatCheckpointTokens = useMemo(() => {
+    if (!chatCheckpoint) return 0;
+    return (
+      chatCheckpoint.tokensAfter ??
+      estimateTokens(
+        [
+          chatCheckpoint.objective,
+          chatCheckpoint.summary,
+          chatCheckpoint.documentState,
+          ...chatCheckpoint.activeDecisions,
+          ...chatCheckpoint.supersededDiscarded,
+        ].join(" ")
+      )
+    );
+  }, [chatCheckpoint]);
+
+  const totalActiveTokens = isDocumentWindowFocused
+    ? (activeDocumentContext?.estimatedTokens ?? 1400) + pinnedFilesTokens
+    : 2200 + chatCheckpointTokens + activeChatTurnsTokens + pinnedFilesTokens;
   const modelContextWindow = activeModel.context_length ?? 128000;
   const contextUsagePct =
     modelContextWindow > 0
@@ -1748,7 +1900,9 @@ export default function App() {
 
   const persistConversation = async (
     nextMessages: UiChatMessage[],
-    convId = activeConvIdRef.current
+    convId = activeConvIdRef.current,
+    checkpointOverride?: ContextCheckpoint | null,
+    compactedUpToOverride?: string | null
   ) => {
     if (nextMessages.length === 0) return;
     const now = new Date().toISOString();
@@ -1759,6 +1913,12 @@ export default function App() {
       updatedAt: now,
       userId: localUser?.id ?? null,
       messages: nextMessages,
+      checkpoint:
+        checkpointOverride !== undefined ? checkpointOverride : chatCheckpointRef.current,
+      compactedUpToMessageId:
+        compactedUpToOverride !== undefined
+          ? compactedUpToOverride
+          : compactedUpToMsgIdRef.current,
     };
     try {
       const updatedList = await saveLocalConversation(thread);
@@ -1774,6 +1934,8 @@ export default function App() {
     activeConvCreatedAtRef.current = new Date().toISOString();
     setActiveConversationId(nextId);
     setChatMessages([]);
+    setChatCheckpoint(null);
+    setCompactedUpToMessageId(null);
     setActiveCanvas(null);
     setShowCanvas(false);
     setActiveChecklist(null);
@@ -1794,6 +1956,8 @@ export default function App() {
     setActiveConversationId(thread.id);
     const msgs = thread.messages ?? [];
     setChatMessages(msgs);
+    setChatCheckpoint(thread.checkpoint ?? null);
+    setCompactedUpToMessageId(thread.compactedUpToMessageId ?? null);
     let restoredCanvas: CanvasArtifact | null = null;
     for (let i = msgs.length - 1; i >= 0; i -= 1) {
       const candidate =
@@ -1874,18 +2038,15 @@ export default function App() {
         void readUniversalDocument(targetPath)
           .then((doc) => {
             if (!doc) return;
-            setPdfPanelState((curr) =>
-              curr && curr.path === targetPath
-                ? {
-                    ...curr,
-                    title: doc.title || curr.title,
-                    sizeBytes: doc.sizeBytes ?? curr.sizeBytes,
-                    universalDoc: doc,
-                    textContent: doc.markdown ?? doc.text ?? curr.textContent,
-                    error: doc.ok === false ? doc.error || "No se pudo leer el archivo." : null,
-                  }
-                : curr
-            );
+            patchDocTab(targetPath, (curr) => ({
+              ...curr,
+              title: doc.title || curr.title,
+              sizeBytes: doc.sizeBytes ?? curr.sizeBytes,
+              universalDoc: doc,
+              textContent: doc.markdown ?? doc.text ?? curr.textContent,
+              revision: Date.now(),
+              error: doc.ok === false ? doc.error || "No se pudo leer el archivo." : null,
+            }));
           })
           .catch(() => {});
       }
@@ -2829,7 +2990,7 @@ export default function App() {
           });
         } else if (preview.kind === "image" && preview.dataUrl) {
           setPdfDraftProgress(null);
-          setPdfPanelState({
+          upsertDocTab({
             path: preview.relativePath,
             filename: preview.name,
             title: preview.name,
@@ -2840,6 +3001,7 @@ export default function App() {
             fileExtension: ext,
             imageDataUrl: preview.dataUrl,
             initialMode: "view",
+            revision: Date.now(),
           });
           setShowDocViewer(true);
         }
@@ -2870,7 +3032,7 @@ export default function App() {
         });
       } else {
         setPdfDraftProgress(null);
-        setPdfPanelState({
+        upsertDocTab({
           path: f.relativePath,
           filename: f.name,
           title: f.name,
@@ -2881,6 +3043,7 @@ export default function App() {
           textContent: f.content,
           fileExtension: ext || "txt",
           initialMode: "view",
+          revision: Date.now(),
         });
         setShowDocViewer(true);
       }
@@ -3261,16 +3424,265 @@ export default function App() {
     setTimeout(() => setStatusMessage(null), 3500);
   };
 
+  const applyCompactedContextEvent = (
+    evt: ContextCompactedEvent,
+    opts?: { attachToAssistantMsgId?: string; insertStandaloneDivider?: boolean }
+  ) => {
+    const notice = {
+      auto: evt.auto,
+      scope: evt.scope,
+      documentPath: evt.documentPath,
+      documentTitle: evt.documentTitle,
+      compactedTurns: evt.compactedTurnsThisPass,
+      savedPct: evt.savedPct,
+      checkpoint: evt.checkpoint,
+    };
+
+    if (evt.scope === "document" && evt.documentPath) {
+      setDocContextsByPath((prev) => {
+        const curr = prev[evt.documentPath!];
+        return {
+          ...prev,
+          [evt.documentPath!]: curr
+            ? {
+                ...curr,
+                checkpoint: evt.checkpoint,
+                recentTurnsCount: evt.keptRecentTurns,
+                estimatedTokens: Math.max(
+                  900,
+                  curr.estimatedTokens - Math.max(0, evt.tokensBefore - evt.tokensAfter)
+                ),
+              }
+            : {
+                path: evt.documentPath!,
+                title: evt.documentTitle || evt.documentPath!.split("/").pop() || "Documento",
+                fileKind: "pdf",
+                pinnedRules: [],
+                checkpoint: evt.checkpoint,
+                recentTurns: [],
+                recentTurnsCount: evt.keptRecentTurns,
+                totalTurnsRecorded: evt.checkpoint.compactedTurns,
+                headings: [],
+                estimatedTokens: Math.max(1200, evt.tokensAfter + 900),
+              },
+        };
+      });
+    } else {
+      chatCheckpointRef.current = evt.checkpoint;
+      setChatCheckpoint(evt.checkpoint);
+      const msgs = chatMessagesRef.current;
+      // Determinar el último mensaje incluido en la compactación (conservando los `keptRecentTurns` recientes)
+      const eligible = msgs.filter(
+        (m) =>
+          !m.isError &&
+          !m.isCompactionDividerOnly &&
+          m.id !== opts?.attachToAssistantMsgId
+      );
+      const keep = Math.max(0, evt.keptRecentTurns);
+      const boundaryIdx = eligible.length - keep - 1;
+      if (boundaryIdx >= 0 && eligible[boundaryIdx]) {
+        compactedUpToMsgIdRef.current = eligible[boundaryIdx].id;
+        setCompactedUpToMessageId(eligible[boundaryIdx].id);
+      } else if (keep === 0 && eligible.length > 0) {
+        compactedUpToMsgIdRef.current = eligible[eligible.length - 1].id;
+        setCompactedUpToMessageId(eligible[eligible.length - 1].id);
+      }
+    }
+
+    if (opts?.attachToAssistantMsgId) {
+      const targetId = opts.attachToAssistantMsgId;
+      setChatMessages((prev) =>
+        prev.map((m) => (m.id === targetId ? { ...m, compactionNotice: notice } : m))
+      );
+    } else if (opts?.insertStandaloneDivider) {
+      const dividerMsg: UiChatMessage = {
+        id: `msg_cmp_${Date.now()}`,
+        role: "assistant",
+        content: "",
+        isCompactionDividerOnly: true,
+        compactionNotice: notice,
+      };
+      const nextMsgs = [...chatMessagesRef.current, dividerMsg];
+      setChatMessages(nextMsgs);
+      void persistConversation(nextMsgs);
+    }
+  };
+
+  const handleRunManualCompact = async (
+    focusHint = "",
+    forceScope?: "chat" | "document"
+  ) => {
+    if (isCompactingContext || isChatStreaming) return;
+    const targetDoc =
+      showDocViewer && pdfPanelState?.path ? pdfPanelState : null;
+    const scope: "chat" | "document" =
+      forceScope ??
+      (targetDoc && docContextScopeEnabledRef.current ? "document" : "chat");
+
+    setIsCompactingContext(true);
+    setXoxState("thinking");
+    setXoxMessage(
+      scope === "document" && targetDoc
+        ? `Compactando contexto de ${targetDoc.title}...`
+        : "Compactando memoria de conversación..."
+    );
+    try {
+      const baseMsgs = chatMessagesRef.current;
+      let startIdx = 0;
+      if (scope === "chat" && compactedUpToMsgIdRef.current) {
+        const idx = baseMsgs.findIndex((m) => m.id === compactedUpToMsgIdRef.current);
+        if (idx >= 0) startIdx = idx + 1;
+      }
+      const chatHist = baseMsgs
+        .slice(startIdx)
+        .filter((m) => !m.isError && !m.isCompactionDividerOnly && m.content.trim().length > 0)
+        .map((m) => ({ role: m.role, content: m.content.trim() }));
+
+      const res = await compactXoxContext({
+        scope,
+        history: chatHist,
+        prevCheckpoint:
+          scope === "document" && targetDoc
+            ? (docContextsByPath[targetDoc.path]?.checkpoint ?? null)
+            : chatCheckpointRef.current,
+        documentPath: scope === "document" && targetDoc ? targetDoc.path : undefined,
+        documentTitle: scope === "document" && targetDoc ? targetDoc.title : undefined,
+        documentFileKind: scope === "document" && targetDoc ? (targetDoc.fileKind ?? "pdf") : undefined,
+        focusHint: focusHint.trim(),
+        keepRecent: 2,
+        modelOverride: modelId,
+        providerOverride: activeProvider,
+      });
+
+      if (res.documentContext) {
+        const snap = res.documentContext;
+        setDocContextsByPath((prev) => ({ ...prev, [snap.path]: snap }));
+      }
+      if (res.checkpoint) {
+        applyCompactedContextEvent(
+          {
+            auto: false,
+            scope: res.scope,
+            documentPath: res.documentPath,
+            documentTitle: targetDoc?.title,
+            compactedTurnsThisPass: res.compactedTurnsThisPass,
+            keptRecentTurns: res.keptRecentTurns,
+            tokensBefore: res.tokensBefore,
+            tokensAfter: res.tokensAfter,
+            savedPct: res.savedPct,
+            checkpoint: res.checkpoint,
+          },
+          { insertStandaloneDivider: true }
+        );
+        const pctNote = res.savedPct > 0 ? ` (~${res.savedPct}% liberado)` : "";
+        setStatusMessage(
+          res.scope === "document" && targetDoc
+            ? `Contexto de "${targetDoc.title}" compactado${pctNote}.`
+            : `Conversación compactada${pctNote}.`
+        );
+      } else {
+        setStatusMessage("El contexto ya está limpio y compacto.");
+      }
+      setTimeout(() => setStatusMessage(null), 4000);
+      setXoxState("success");
+      setXoxMessage("Contexto compactado.");
+      setTimeout(() => {
+        setXoxState((s) => (s === "success" ? "idle" : s));
+        setXoxMessage("¿En qué puedo ayudarte?");
+      }, 2400);
+    } catch (err) {
+      setStatusMessage(extractErrorMessage(err, "No se pudo compactar el contexto."));
+      setTimeout(() => setStatusMessage(null), 4000);
+      setXoxState("idle");
+      setXoxMessage("¿En qué puedo ayudarte?");
+    } finally {
+      setIsCompactingContext(false);
+    }
+  };
+
+  const handleUpdateActiveDocRules = async (rules: string[]) => {
+    const activeTab = pdfPanelState;
+    if (!activeTab?.path) return;
+    try {
+      const res = await manageDocumentContext({
+        action: "update_rules",
+        path: activeTab.path,
+        title: activeTab.title,
+        fileKind: activeTab.fileKind ?? "pdf",
+        rules,
+      });
+      if (res.documentContext) {
+        const snap = res.documentContext;
+        setDocContextsByPath((prev) => ({ ...prev, [snap.path]: snap }));
+      }
+      setStatusMessage(`Reglas fijadas actualizadas para "${activeTab.title}".`);
+      setTimeout(() => setStatusMessage(null), 3200);
+    } catch {
+      // Ignorar fallo silencioso
+    }
+  };
+
+  const handleResetActiveDocContext = async (keepRules = true) => {
+    const activeTab = pdfPanelState;
+    if (!activeTab?.path) return;
+    try {
+      const res = await manageDocumentContext({
+        action: "reset",
+        path: activeTab.path,
+        title: activeTab.title,
+        fileKind: activeTab.fileKind ?? "pdf",
+        keepRules,
+      });
+      if (res.documentContext) {
+        const snap = res.documentContext;
+        setDocContextsByPath((prev) => ({ ...prev, [snap.path]: snap }));
+      }
+      setStatusMessage(
+        keepRules
+          ? `Historial de "${activeTab.title}" reiniciado (reglas fijadas conservadas).`
+          : `Contexto de "${activeTab.title}" reiniciado por completo.`
+      );
+      setTimeout(() => setStatusMessage(null), 3600);
+    } catch {
+      // Ignorar fallo silencioso
+    }
+  };
+
   const runPromptQuery = async (
     rawQuery: string,
     overrideMessages?: UiChatMessage[],
-    options?: { overrideMode?: XoxModeId | null }
+    options?: {
+      overrideMode?: XoxModeId | null;
+      forceScope?: "chat" | "document";
+      forceDocument?: {
+        path: string;
+        title?: string;
+        fileKind?: string;
+        theme?: string;
+        pageCount?: number;
+        hasCover?: boolean;
+        revision?: number;
+      };
+    }
   ) => {
     const rawTrimmed = rawQuery.trim();
-    if ((!rawTrimmed && attachments.length === 0) || isChatStreaming) return;
-
     const effectiveMode: XoxModeId | null =
       options && "overrideMode" in options ? (options.overrideMode ?? null) : activeMode;
+
+    // Interceptar `/compact` real (manual) antes de enviar al chat normal
+    if (
+      !isChatStreaming &&
+      (effectiveMode === "compact" || /^\/compact(?:\s+|$)/i.test(rawTrimmed))
+    ) {
+      const focusHint = rawTrimmed.replace(/^\/compact\s*/i, "").trim();
+      setInputPrompt("");
+      setActiveMode(null);
+      await handleRunManualCompact(focusHint, options?.forceScope);
+      return;
+    }
+
+    if ((!rawTrimmed && attachments.length === 0) || isChatStreaming) return;
+
     const effectiveModeSpec = effectiveMode ? XOX_COMMAND_SPECS[effectiveMode] : null;
     const baseMessages = overrideMessages ?? chatMessagesRef.current;
     const currentAttachments = attachments;
@@ -3413,11 +3825,39 @@ export default function App() {
       kind: classifyAttachmentFile(file),
     }));
 
+    const resolvedDocTarget =
+      options?.forceDocument ??
+      (showDocViewer && pdfPanelState?.path && docContextScopeEnabledRef.current
+        ? {
+            path: pdfPanelState.path,
+            title: pdfPanelState.title || pdfPanelState.filename || pdfPanelState.path,
+            fileKind: pdfPanelState.fileKind || "pdf",
+            theme: pdfPanelState.theme || "executive",
+            pageCount: pdfPanelState.pageCount || pdfPanelState.pages.length || 1,
+            hasCover: pdfPanelState.hasCover,
+            revision: pdfPanelState.revision,
+          }
+        : null);
+    const effectiveScope: "chat" | "document" =
+      options?.forceScope === "chat"
+        ? "chat"
+        : resolvedDocTarget
+          ? "document"
+          : "chat";
+
     const userMsg: UiChatMessage = {
       id: `msg_u_${Date.now()}`,
       role: "user",
       content: query,
       mode: effectiveMode ?? undefined,
+      ...(effectiveScope === "document" && resolvedDocTarget
+        ? {
+            documentScopeTag: {
+              path: resolvedDocTarget.path,
+              title: resolvedDocTarget.title || resolvedDocTarget.path.split("/").pop() || "Documento",
+            },
+          }
+        : {}),
       ...(initialAttachmentsMeta.length > 0 ? { attachments: initialAttachmentsMeta } : {}),
     };
 
@@ -3532,45 +3972,57 @@ export default function App() {
     // 3) Inferencia real en streaming contra el proveedor activo (con respaldo automático por cuota)
     const convId = activeConvIdRef.current;
     const assistantMsgId = `msg_a_${Date.now() + 1}`;
-    const priorHistory = baseMessages
-      .filter(
-        (m) =>
-          !m.isError &&
-          (m.content.trim().length > 0 ||
-            (m.generatedPdfs && m.generatedPdfs.length > 0) ||
-            (m.attachments && m.attachments.length > 0) ||
-            Boolean(m.canvas) ||
-            (m.canvases && m.canvases.length > 0))
-      )
-      .slice(-10)
-      .map((m) => {
-        const notes: string[] = [];
-        if (m.attachments && m.attachments.length > 0) {
-          const attDesc = m.attachments
-            .map((a) => (a.workspacePath ? `${a.name} (${a.workspacePath})` : a.name))
-            .join(", ");
-          notes.push(`[Archivos adjuntos en este turno: ${attDesc}]`);
-        }
-        if (m.generatedPdfs && m.generatedPdfs.length > 0) {
-          const pdfDesc = m.generatedPdfs
-            .map(
-              (p) =>
-                `${p.path} (título: "${p.title || p.filename}", ${p.pageCount || 1} pág., theme: ${p.theme || "executive"})`
+    const historyStartIdx = (() => {
+      if (effectiveScope === "chat" && compactedUpToMsgIdRef.current) {
+        const idx = baseMessages.findIndex((m) => m.id === compactedUpToMsgIdRef.current);
+        if (idx >= 0) return idx + 1;
+      }
+      return 0;
+    })();
+    const priorHistory =
+      effectiveScope === "document"
+        ? []
+        : baseMessages
+            .slice(historyStartIdx)
+            .filter(
+              (m) =>
+                !m.isError &&
+                !m.isCompactionDividerOnly &&
+                (m.content.trim().length > 0 ||
+                  (m.generatedPdfs && m.generatedPdfs.length > 0) ||
+                  (m.attachments && m.attachments.length > 0) ||
+                  Boolean(m.canvas) ||
+                  (m.canvases && m.canvases.length > 0))
             )
-            .join("; ");
-          notes.push(`[PDFs generados/editados en este turno: ${pdfDesc}]`);
-        }
-        const turnCanvases =
-          m.canvases && m.canvases.length > 0 ? m.canvases : m.canvas ? [m.canvas] : [];
-        if (turnCanvases.length > 0) {
-          const canvasDesc = turnCanvases
-            .map((c) => `"${c.title || "Canvas"}" (id: ${c.id}, tipo: ${c.kind})`)
-            .join(", ");
-          notes.push(`[Canvas de este turno: ${canvasDesc}]`);
-        }
-        const suffix = notes.length > 0 ? `\n${notes.join("\n")}` : "";
-        return { role: m.role, content: `${m.content.trim()}${suffix}`.trim() };
-      });
+            .slice(-24)
+            .map((m) => {
+              const notes: string[] = [];
+              if (m.attachments && m.attachments.length > 0) {
+                const attDesc = m.attachments
+                  .map((a) => (a.workspacePath ? `${a.name} (${a.workspacePath})` : a.name))
+                  .join(", ");
+                notes.push(`[Archivos adjuntos en este turno: ${attDesc}]`);
+              }
+              if (m.generatedPdfs && m.generatedPdfs.length > 0) {
+                const pdfDesc = m.generatedPdfs
+                  .map(
+                    (p) =>
+                      `${p.path} (título: "${p.title || p.filename}", ${p.pageCount || 1} pág., theme: ${p.theme || "executive"})`
+                  )
+                  .join("; ");
+                notes.push(`[PDFs generados/editados en este turno: ${pdfDesc}]`);
+              }
+              const turnCanvases =
+                m.canvases && m.canvases.length > 0 ? m.canvases : m.canvas ? [m.canvas] : [];
+              if (turnCanvases.length > 0) {
+                const canvasDesc = turnCanvases
+                  .map((c) => `"${c.title || "Canvas"}" (id: ${c.id}, tipo: ${c.kind})`)
+                  .join(", ");
+                notes.push(`[Canvas de este turno: ${canvasDesc}]`);
+              }
+              const suffix = notes.length > 0 ? `\n${notes.join("\n")}` : "";
+              return { role: m.role, content: `${m.content.trim()}${suffix}`.trim() };
+            });
 
     const initialStep: ThinkingStep = {
       id: "read_context",
@@ -3609,6 +4061,13 @@ export default function App() {
         (!isTauriTtsRuntime() || Boolean(cfg?.modelsInstalled))
       );
     };
+
+    // Si había una burbuja de saludo abierta, cancelarla limpiamente antes de iniciar el turno
+    greetingSeqRef.current += 1;
+    greetingTimers.current.forEach(clearTimeout);
+    greetingTimers.current = [];
+    setGreeting(null);
+    setGreetingLeaving(false);
 
     setChatMessages(startedMessages);
     setIsChatStreaming(true);
@@ -3775,7 +4234,7 @@ export default function App() {
           content: c.content.slice(0, 2500),
         }));
 
-      if (showDocViewer && pdfPanelState?.path) {
+      if (effectiveScope !== "document" && showDocViewer && pdfPanelState?.path) {
         const viewerKind = pdfPanelState.fileKind || "pdf";
         const activeDocName =
           pdfPanelState.title || pdfPanelState.filename || pdfPanelState.path;
@@ -3833,6 +4292,7 @@ export default function App() {
           : null;
 
       setPermissionItems([]);
+      let turnCompactedEvt: ContextCompactedEvent | null = null;
       const res = await runXoxAiChatStream(
         {
           message: query,
@@ -3853,10 +4313,18 @@ export default function App() {
             : null,
           businessContextSnapshot,
           activeCanvas: effectiveActiveCanvas,
+          contextScope: effectiveScope,
+          activeDocument: effectiveScope === "document" ? resolvedDocTarget : null,
+          contextCheckpoint: effectiveScope === "chat" ? chatCheckpointRef.current : null,
+          modelContextWindow,
         },
         {
           onStreamStart: (sid) => {
             activeStreamIdRef.current = sid;
+          },
+          onContextCompacted: (evt) => {
+            turnCompactedEvt = evt;
+            applyCompactedContextEvent(evt, { attachToAssistantMsgId: assistantMsgId });
           },
           onProviderFailover: (evt) => {
             const toSpec = getProviderSpec(evt.toProvider);
@@ -4068,12 +4536,15 @@ export default function App() {
             handlePdfDraftProgress(draft, assistantMsgId);
           },
           onPdfGenerated: (pdf) => {
+            const freshRev = pdf.revision || Date.now();
+            const stampedPdf: GeneratedPdfArtifact = { ...pdf, revision: freshRev };
             const slimPdf: GeneratedPdfArtifact = {
-              ...pdf,
+              ...stampedPdf,
               previewPages: undefined,
               previewHasMore: undefined,
             };
             lastPdfByTurnRef.current[assistantMsgId] = slimPdf;
+            turnOpenedPdfRevRef.current[assistantMsgId] = freshRev;
             setChatMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== assistantMsgId) return m;
@@ -4084,7 +4555,7 @@ export default function App() {
                 return { ...m, generatedPdfs: nextList };
               })
             );
-            void openPdfInRightPanel(pdf);
+            void openPdfInRightPanel(stampedPdf);
           },
         }
       );
@@ -4174,6 +4645,31 @@ export default function App() {
       const nextClarification = res.clarification ?? null;
       const nextVaultAction = res.vaultAction ?? undefined;
       const resPdfs = res.generatedPdfs ?? [];
+      if (res.documentContext) {
+        const snap = res.documentContext;
+        setDocContextsByPath((prev) => ({ ...prev, [snap.path]: snap }));
+      }
+      if (res.contextCompacted && !turnCompactedEvt) {
+        turnCompactedEvt = res.contextCompacted;
+        applyCompactedContextEvent(res.contextCompacted, {
+          attachToAssistantMsgId: assistantMsgId,
+        });
+      }
+      // Garantizar apertura fresca del último PDF generado incluso si la pestaña se cerró antes o si se omitió el evento de stream
+      if (resPdfs.length > 0) {
+        const latestPdf = resPdfs[resPdfs.length - 1];
+        const openedRev = turnOpenedPdfRevRef.current[assistantMsgId] ?? 0;
+        const alreadyOpenedSamePath =
+          openedRev > 0 &&
+          docViewerRef.current.show &&
+          docViewerRef.current.state?.path === latestPdf.path &&
+          (docViewerRef.current.state?.pages?.length ?? 0) > 0;
+        if (!alreadyOpenedSamePath) {
+          const freshRev = latestPdf.revision || Date.now();
+          turnOpenedPdfRevRef.current[assistantMsgId] = freshRev;
+          void openPdfInRightPanel({ ...latestPdf, revision: freshRev }, "view");
+        }
+      }
       const replyWithFailover =
         res.failoverNotice && res.reply && !res.reply.includes(res.failoverNotice)
           ? `> *Nota de respaldo automático:* ${res.failoverNotice}\n\n${res.reply}`
@@ -4550,7 +5046,8 @@ export default function App() {
   // Saludo al hacer clic: única situación en la que aparece la burbuja de diálogo
   const handleXoxClick = () => {
     if (xoxState !== "idle" || greeting) return;
-    setXoxState("success");
+    const seq = ++greetingSeqRef.current;
+    setXoxState("talking");
     setGreetingLeaving(false);
     const bubbleMessage = getXoxBubbleGreeting({
       agentName: effectiveAgentName,
@@ -4563,13 +5060,23 @@ export default function App() {
     lastBubbleMessageRef.current = bubbleMessage;
     setGreeting(bubbleMessage);
     greetingTimers.current.forEach(clearTimeout);
+    // Duración de habla proporcional a la frase, cerrando con una sonrisa breve mientras la burbuja se despide
+    const talkMs = Math.min(3100, Math.max(2000, 1350 + bubbleMessage.length * 25));
+    const leaveMs = Math.max(3500, talkMs + 550);
     greetingTimers.current = [
-      setTimeout(() => setGreetingLeaving(true), 3400),
       setTimeout(() => {
+        if (greetingSeqRef.current !== seq) return;
+        setXoxState((s) => (s === "talking" ? "idle" : s));
+      }, talkMs),
+      setTimeout(() => {
+        if (greetingSeqRef.current !== seq) return;
+        setGreetingLeaving(true);
+      }, leaveMs),
+      setTimeout(() => {
+        if (greetingSeqRef.current !== seq) return;
         setGreeting(null);
         setGreetingLeaving(false);
-        setXoxState((s) => (s === "success" ? "idle" : s));
-      }, 3640),
+      }, leaveMs + 240),
     ];
   };
 
@@ -4837,18 +5344,20 @@ export default function App() {
       sizeBytes?: number;
       hasCover?: boolean;
       theme?: string;
+      revision?: number;
       previewPages?: Array<{ page: number; width: number; height: number; dataUrl: string }>;
       previewHasMore?: boolean;
     },
     initialMode: "view" | "edit_blocks" | "edit_page" = "view"
   ) => {
     const reqId = (pdfPreviewReqRef.current += 1);
+    const freshRev = meta.revision ?? Date.now();
     setPdfDraftProgress(null);
     setShowDocViewer(true);
 
     const cleanTitle = meta.title || meta.filename || meta.path.split("/").pop() || "Documento PDF";
     if (meta.previewPages && meta.previewPages.length > 0) {
-      setPdfPanelState({
+      upsertDocTab({
         path: meta.path,
         filename: meta.filename || meta.path.split("/").pop(),
         title: cleanTitle,
@@ -4861,64 +5370,56 @@ export default function App() {
         isLoadingPages: false,
         fileKind: "pdf",
         initialMode,
+        revision: freshRev,
       });
       return;
     }
 
-    setPdfPanelState((prev) => ({
+    const existingTab = openDocTabs.find((t) => t.path === meta.path);
+    upsertDocTab({
       path: meta.path,
       filename: meta.filename || meta.path.split("/").pop(),
       title: cleanTitle,
-      pageCount: meta.pageCount ?? prev?.pageCount,
-      sizeBytes: meta.sizeBytes ?? prev?.sizeBytes,
-      hasCover: meta.hasCover ?? prev?.hasCover,
-      theme: meta.theme ?? prev?.theme,
+      pageCount: meta.pageCount ?? existingTab?.pageCount,
+      sizeBytes: meta.sizeBytes ?? existingTab?.sizeBytes,
+      hasCover: meta.hasCover ?? existingTab?.hasCover,
+      theme: meta.theme ?? existingTab?.theme,
       pages: [],
       hasMore: false,
       isLoadingPages: true,
       fileKind: "pdf",
       initialMode,
-    }));
+      revision: freshRev,
+    });
 
     if (!isTauriEnv) return;
     try {
       const res = await renderPdfPreview(meta.path, { startPage: 1, maxPages: 8 });
       if (reqId !== pdfPreviewReqRef.current) return;
       if (res && res.ok && res.pages.length > 0) {
-        setPdfPanelState((curr) =>
-          curr
-            ? {
-                ...curr,
-                pageCount: res.pageCount,
-                pages: res.pages,
-                hasMore: res.hasMore,
-                isLoadingPages: false,
-                error: null,
-              }
-            : null
-        );
+        patchDocTab(meta.path, (curr) => ({
+          ...curr,
+          pageCount: res.pageCount,
+          pages: res.pages,
+          hasMore: res.hasMore,
+          isLoadingPages: false,
+          error: null,
+          revision: freshRev,
+        }));
       } else {
-        setPdfPanelState((curr) =>
-          curr
-            ? {
-                ...curr,
-                isLoadingPages: false,
-                error: res?.error || "No se pudo generar la vista previa de páginas.",
-              }
-            : null
-        );
+        patchDocTab(meta.path, (curr) => ({
+          ...curr,
+          isLoadingPages: false,
+          error: res?.error || "No se pudo generar la vista previa de páginas.",
+        }));
       }
     } catch (err) {
       if (reqId !== pdfPreviewReqRef.current) return;
-      setPdfPanelState((curr) =>
-        curr
-          ? {
-              ...curr,
-              isLoadingPages: false,
-              error: extractErrorMessage(err, "No se pudo renderizar la vista previa del PDF."),
-            }
-          : null
-      );
+      patchDocTab(meta.path, (curr) => ({
+        ...curr,
+        isLoadingPages: false,
+        error: extractErrorMessage(err, "No se pudo renderizar la vista previa del PDF."),
+      }));
     }
   };
 
@@ -4932,8 +5433,9 @@ export default function App() {
   }) => {
     const ext = (opts.ext || opts.path.split(".").pop() || "").toLowerCase();
     const isSpreadsheetText = ext === "csv" || ext === "tsv";
+    const freshRev = Date.now();
     setPdfDraftProgress(null);
-    setPdfPanelState({
+    upsertDocTab({
       path: opts.path,
       filename: opts.filename,
       title: opts.filename,
@@ -4944,34 +5446,28 @@ export default function App() {
       fileExtension: ext,
       textContent: opts.textContent,
       initialMode: opts.editMode ? "edit_page" : "view",
+      revision: freshRev,
     });
     setShowDocViewer(true);
 
     try {
       const doc = await readUniversalDocument(opts.path);
-      setPdfPanelState((curr) =>
-        curr && curr.path === opts.path
-          ? {
-              ...curr,
-              title: doc?.title || opts.filename,
-              sizeBytes: doc?.sizeBytes ?? opts.sizeBytes,
-              isLoadingPages: false,
-              universalDoc: doc ?? null,
-              textContent: opts.textContent ?? doc?.markdown ?? doc?.text ?? "",
-              error: doc && doc.ok === false ? doc.error || "No se pudo leer el archivo." : null,
-            }
-          : curr
-      );
+      patchDocTab(opts.path, (curr) => ({
+        ...curr,
+        title: doc?.title || opts.filename,
+        sizeBytes: doc?.sizeBytes ?? opts.sizeBytes,
+        isLoadingPages: false,
+        universalDoc: doc ?? null,
+        textContent: opts.textContent ?? doc?.markdown ?? doc?.text ?? "",
+        revision: freshRev,
+        error: doc && doc.ok === false ? doc.error || "No se pudo leer el archivo." : null,
+      }));
     } catch (err) {
-      setPdfPanelState((curr) =>
-        curr && curr.path === opts.path
-          ? {
-              ...curr,
-              isLoadingPages: false,
-              error: extractErrorMessage(err, "No se pudo abrir el documento en el visor."),
-            }
-          : curr
-      );
+      patchDocTab(opts.path, (curr) => ({
+        ...curr,
+        isLoadingPages: false,
+        error: extractErrorMessage(err, "No se pudo abrir el documento en el visor."),
+      }));
     }
   };
 
@@ -5006,7 +5502,7 @@ export default function App() {
     }
     if (file.kind === "image" && file.dataUrl) {
       setPdfDraftProgress(null);
-      setPdfPanelState({
+      upsertDocTab({
         path: file.relativePath,
         filename: file.name,
         title: file.name,
@@ -5017,12 +5513,13 @@ export default function App() {
         fileExtension: ext,
         imageDataUrl: file.dataUrl,
         initialMode: "view",
+        revision: Date.now(),
       });
       setShowDocViewer(true);
       return;
     }
     setPdfDraftProgress(null);
-    setPdfPanelState({
+    upsertDocTab({
       path: file.relativePath,
       filename: file.name,
       title: file.name,
@@ -5033,6 +5530,7 @@ export default function App() {
       textContent: file.content,
       fileExtension: ext,
       initialMode: editMode ? "edit_page" : "view",
+      revision: Date.now(),
     });
     setShowDocViewer(true);
   };
@@ -5067,20 +5565,21 @@ export default function App() {
   };
 
   const handleLoadMorePdfPages = async (relativePath?: string, nextStartPage?: number) => {
-    const snap = pdfPanelState;
+    const snap = relativePath
+      ? openDocTabs.find((t) => t.path === relativePath) ?? pdfPanelState
+      : pdfPanelState;
     const targetPath = relativePath || snap?.path;
     if (!snap || !targetPath || snap.isLoadingPages || !isTauriEnv) {
       return;
     }
     const reqId = pdfPreviewReqRef.current;
     const nextStart = nextStartPage ?? snap.pages.length + 1;
-    setPdfPanelState((curr) => (curr ? { ...curr, isLoadingPages: true } : curr));
+    patchDocTab(targetPath, (curr) => ({ ...curr, isLoadingPages: true }));
     try {
       const res = await renderPdfPreview(targetPath, { startPage: nextStart, maxPages: 8 });
       if (reqId !== pdfPreviewReqRef.current) return;
       if (res && res.ok) {
-        setPdfPanelState((curr) => {
-          if (!curr) return curr;
+        patchDocTab(targetPath, (curr) => {
           const seen = new Set(curr.pages.map((p) => p.page));
           const merged = [...curr.pages, ...res.pages.filter((p) => !seen.has(p.page))];
           return {
@@ -5092,15 +5591,18 @@ export default function App() {
           };
         });
       } else {
-        setPdfPanelState((curr) => (curr ? { ...curr, isLoadingPages: false } : curr));
+        patchDocTab(targetPath, (curr) => ({ ...curr, isLoadingPages: false }));
       }
     } catch {
-      setPdfPanelState((curr) => (curr ? { ...curr, isLoadingPages: false } : curr));
+      patchDocTab(targetPath, (curr) => ({ ...curr, isLoadingPages: false }));
     }
   };
 
   const handlePdfDraftProgress = (draft: PdfDraftProgressEvent, turnId: string) => {
-    pdfPreviewReqRef.current += 1;
+    // Nunca cancelar una vista previa ya abierta en este mismo turno ni re-pisar el PDF final
+    if (!turnOpenedPdfRevRef.current[turnId]) {
+      pdfPreviewReqRef.current += 1;
+    }
     if (rightPanelAutoOpenedTurnRef.current !== turnId) {
       rightPanelAutoOpenedTurnRef.current = turnId;
       setShowDocViewer(true);
@@ -5213,10 +5715,12 @@ export default function App() {
       setPdfDraftProgress(null);
       setXoxState("alert");
       const msg = extractErrorMessage(err, "No se pudo exportar el PDF.");
-      if (reqId === pdfPreviewReqRef.current) {
-        setPdfPanelState((curr) =>
-          curr ? { ...curr, error: msg, isLoadingPages: false } : curr
-        );
+      if (reqId === pdfPreviewReqRef.current && pdfPanelState?.path) {
+        patchDocTab(pdfPanelState.path, (curr) => ({
+          ...curr,
+          error: msg,
+          isLoadingPages: false,
+        }));
       }
       setStatusMessage(msg);
       setTimeout(() => setStatusMessage(null), 4500);
@@ -5580,29 +6084,35 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Capacidad de memoria del chat actual */}
+                    {/* Capacidad de memoria real de la ventana activa (Documento aislado o Chat general) */}
                     <div
                       className="pt-2 border-t border-white/[0.06]"
-                      title={`Modelo activo: ${activeModel.name} (${formatTokenCount(totalActiveTokens)} de ${formatContextLength(modelContextWindow)} tokens en uso)`}
+                      title={`Modelo activo: ${activeModel.name} (${formatTokenCount(totalActiveTokens)} de ${formatContextLength(modelContextWindow)} tokens en uso · auto-compact activo)`}
                     >
                       <div className="flex items-center justify-between gap-2 text-[11px] mb-1.5">
                         <span className="text-zinc-300 font-medium truncate">
-                          Memoria de conversación
+                          {isDocumentWindowFocused && pdfPanelState
+                            ? `Ventana: ${pdfPanelState.title}`
+                            : "Memoria de conversación"}
                         </span>
                         <span className="text-zinc-200 font-mono text-[10.5px] tabular-nums shrink-0">
-                          {contextUsagePct <= 1 ? "Disponible" : `${contextUsagePct}% en uso`}
+                          {formatTokenCount(totalActiveTokens)} · {contextUsagePct < 1 ? "<1%" : `${contextUsagePct}%`}
                         </span>
                       </div>
                       <div
                         className="w-full bg-white/[0.07] h-1 rounded-full overflow-hidden"
                         role="progressbar"
-                        aria-label="Memoria de conversación"
+                        aria-label="Memoria de ventana de contexto"
                         aria-valuenow={contextUsagePct}
                         aria-valuemin={0}
                         aria-valuemax={100}
                       >
                         <div
-                          className="h-full rounded-full transition-all duration-300 bg-zinc-300"
+                          className={`h-full rounded-full transition-all duration-300 ${
+                            contextUsagePct >= 65
+                              ? "bg-amber-300"
+                              : "bg-zinc-300"
+                          }`}
                           style={{
                             width: `${Math.min(
                               100,
@@ -5612,7 +6122,25 @@ export default function App() {
                         />
                       </div>
                       <div className="mt-1.5 flex items-center justify-between gap-2 text-[10.5px] text-zinc-500">
-                        <span className="truncate">Asistente: {activeModel.name}</span>
+                        <span className="truncate">
+                          {isDocumentWindowFocused
+                            ? "Contexto aislado · Auto-compact"
+                            : `Asistente: ${activeModel.name}`}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={isCompactingContext || isChatStreaming}
+                          onClick={() => void handleRunManualCompact()}
+                          title="Compactar ahora la ventana de contexto activa (/compact)"
+                          className="px-2 py-0.5 rounded-md bg-white/[0.05] hover:bg-white/[0.11] border border-white/[0.09] text-zinc-200 hover:text-white font-medium shrink-0 cursor-pointer transition-colors disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-white/60 inline-flex items-center gap-1"
+                        >
+                          {isCompactingContext ? (
+                            <Loader2 className="w-2.5 h-2.5 animate-spin" aria-hidden="true" />
+                          ) : (
+                            <Sparkles className="w-2.5 h-2.5" aria-hidden="true" />
+                          )}
+                          <span>{isCompactingContext ? "Compactando…" : "Compactar"}</span>
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -5947,6 +6475,7 @@ export default function App() {
                         state={xoxState}
                         responsive
                         hitArea="star"
+                        clickBehavior="greet"
                         accentPreset={displayAccentPreset}
                         glideTrigger={xoxGlideSeq}
                         glideDir={xoxTravelPhase === "to-studio" ? "right" : "left"}
@@ -6260,6 +6789,73 @@ export default function App() {
 
                 {/* Formulario Principal de Entrada */}
                 <form onSubmit={handlePromptSubmit} className="space-y-2.5">
+                  {/* Píldora de Ventana de Contexto Aislado cuando hay un documento abierto */}
+                  {showDocViewer && pdfPanelState?.path && (
+                    <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-white/[0.035] border border-white/[0.09] text-[11px]">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`w-2 h-2 rounded-full shrink-0 ${
+                            docContextScopeEnabled ? "bg-emerald-400" : "bg-zinc-500"
+                          }`}
+                          aria-hidden="true"
+                        />
+                        <Layers className="w-3.5 h-3.5 text-zinc-300 shrink-0" aria-hidden="true" />
+                        <span className="font-medium text-zinc-100 truncate">
+                          {docContextScopeEnabled
+                            ? `Ventana: ${pdfPanelState.title}`
+                            : `Chat general (visor: ${pdfPanelState.title})`}
+                        </span>
+                        {docContextScopeEnabled && activeDocumentContext && (
+                          <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-mono text-zinc-400 bg-white/[0.05] border border-white/[0.08] rounded-full px-1.5 py-0.2 shrink-0">
+                            {activeDocumentContext.recentTurnsCount} turnos · ~{formatTokenCount(activeDocumentContext.estimatedTokens)} tok
+                          </span>
+                        )}
+                        {docContextScopeEnabled &&
+                          activeDocumentContext &&
+                          activeDocumentContext.pinnedRules.length > 0 && (
+                            <span className="hidden md:inline-flex text-[10px] text-zinc-300 bg-white/[0.06] border border-white/[0.1] rounded-full px-1.5 py-0.2 shrink-0">
+                              {activeDocumentContext.pinnedRules.length} regla
+                              {activeDocumentContext.pinnedRules.length === 1 ? "" : "s"}
+                            </span>
+                          )}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setDocContextScopeEnabled((v) => !v)}
+                          aria-pressed={docContextScopeEnabled}
+                          title={
+                            docContextScopeEnabled
+                              ? "Cambiar temporalmente al contexto del chat general sin cerrar el documento"
+                              : "Volver al contexto aislado de este documento"
+                          }
+                          className="px-2 py-0.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.12] border border-white/[0.09] text-[10px] font-medium text-zinc-200 hover:text-white cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-white/70"
+                        >
+                          {docContextScopeEnabled ? "Chat general" : "Focar doc"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isCompactingContext || isChatStreaming}
+                          onClick={() =>
+                            void handleRunManualCompact(
+                              "",
+                              docContextScopeEnabled ? "document" : "chat"
+                            )
+                          }
+                          title="Compactar ahora el contexto activo (/compact)"
+                          className="px-2 py-0.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.13] border border-white/[0.1] text-[10px] font-medium text-zinc-100 hover:text-white inline-flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-white/70"
+                        >
+                          {isCompactingContext ? (
+                            <Loader2 className="w-2.5 h-2.5 animate-spin" aria-hidden="true" />
+                          ) : (
+                            <Sparkles className="w-2.5 h-2.5" aria-hidden="true" />
+                          )}
+                          <span>Compactar</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Archivos adjuntos */}
                   {attachments.length > 0 && (
                     <div className="flex flex-wrap gap-1.5 px-1">
@@ -6646,7 +7242,11 @@ export default function App() {
 
                     <button
                       type="submit"
-                      disabled={(!inputPrompt.trim() && attachments.length === 0) || isChatStreaming}
+                      disabled={
+                        (!inputPrompt.trim() && attachments.length === 0 && activeMode !== "compact") ||
+                        isChatStreaming ||
+                        isCompactingContext
+                      }
                       className={`shrink-0 mb-0.5 w-8 h-8 rounded-full flex items-center justify-center ${
                         (!inputPrompt.trim() && attachments.length === 0) || isChatStreaming
                           ? "quick-liquid-btn text-zinc-200/70 cursor-not-allowed"
@@ -6935,12 +7535,35 @@ export default function App() {
             >
               <PdfWorkspacePanel
               state={pdfPanelState}
-              draftProgress={pdfDraftProgress}
-              onClose={() => {
-                setShowDocViewer(false);
-                setPdfPanelState(null);
-                setPdfDraftProgress(null);
+              openTabs={openDocTabs}
+              activeTabPath={pdfPanelState?.path ?? null}
+              onSelectTab={(targetPath) => {
+                setActiveDocTabPath(targetPath);
+                setDocContextScopeEnabled(true);
+                const tab = openDocTabs.find((t) => t.path === targetPath);
+                if (tab && tab.fileKind === "pdf" && tab.pages.length === 0 && !tab.isLoadingPages) {
+                  void openPdfInRightPanel({
+                    path: tab.path,
+                    title: tab.title,
+                    filename: tab.filename,
+                    pageCount: tab.pageCount,
+                    sizeBytes: tab.sizeBytes,
+                    hasCover: tab.hasCover,
+                    theme: tab.theme,
+                    revision: Date.now(),
+                  });
+                }
               }}
+              onCloseTab={(targetPath) => closeDocTab(targetPath)}
+              documentContext={activeDocumentContext}
+              isDocumentContextActive={docContextScopeEnabled}
+              isCompactingContext={isCompactingContext}
+              onToggleDocumentContext={() => setDocContextScopeEnabled((v) => !v)}
+              onCompactDocumentContext={() => void handleRunManualCompact("", "document")}
+              onResetDocumentContext={(keepRules) => void handleResetActiveDocContext(keepRules)}
+              onUpdateDocumentRules={(rules) => void handleUpdateActiveDocRules(rules)}
+              draftProgress={pdfDraftProgress}
+              onClose={closeAllDocTabs}
               onOpenExternal={(rel) => void openWorkspaceFile(rel)}
               onRevealInFolder={(rel) => void openWorkspaceFolder(rel)}
               onLoadMorePages={(rel, nextStart) => void handleLoadMorePdfPages(rel, nextStart)}
@@ -6961,52 +7584,60 @@ export default function App() {
                     sizeBytes: pdfPanelState?.sizeBytes,
                     hasCover: pdfPanelState?.hasCover,
                     theme: pdfPanelState?.theme,
+                    revision: Date.now(),
                   });
                 }
               }}
               onAskXoxAboutPdf={(_rel, title) => {
+                setDocContextScopeEnabled(true);
                 setInputPrompt((prev) =>
                   prev.trim() ? prev : `Sobre el documento "${title}": `
                 );
                 requestAnimationFrame(() => inputRef.current?.focus());
               }}
               onSendXoxDocumentInstruction={(payload) => {
-                const modeDesc =
+                setDocContextScopeEnabled(true);
+                const prefix =
                   payload.mode === "append_pages"
-                    ? `Agrega más páginas al final del PDF "${payload.path}" (usando pdf_generate con source_pdf_path="${payload.path}", edit_action="append_pages" y theme="${payload.theme || "executive"}" para conservar exactamente la misma tipografía, diseño, encabezados y numeración continua)`
-                    : `Modifica el documento "${payload.path}" (usando pdf_generate con source_pdf_path="${payload.path}", edit_action="modify" y theme="${payload.theme || "executive"}" conservando su misma tipografía y diseño)`;
-                void runPromptQuery(`${modeDesc}: ${payload.instruction}`);
+                    ? `Agrega nuevas páginas al final conservando la misma tipografía y estilo (${payload.theme || "executive"}): `
+                    : `Aplica este ajuste conservando diseño y tipografía (${payload.theme || "executive"}): `;
+                void runPromptQuery(`${prefix}${payload.instruction}`, undefined, {
+                  forceScope: "document",
+                  forceDocument: {
+                    path: payload.path,
+                    title: payload.title,
+                    fileKind: pdfPanelState?.fileKind || "pdf",
+                    theme: payload.theme || "executive",
+                    pageCount: payload.pageCount,
+                    hasCover: pdfPanelState?.hasCover,
+                    revision: pdfPanelState?.revision,
+                  },
+                });
               }}
               onPdfUpdated={(updated) => {
-                setPdfPanelState((curr) =>
-                  curr
-                    ? {
-                        ...curr,
-                        path: updated.path,
-                        title: updated.title,
-                        theme: updated.theme,
-                        pageCount: updated.pageCount,
-                        sizeBytes: updated.sizeBytes,
-                        pages: updated.pages,
-                        hasMore: updated.hasMore,
-                        isLoadingPages: false,
-                        error: null,
-                      }
-                    : null
-                );
+                patchDocTab(updated.path, (curr) => ({
+                  ...curr,
+                  path: updated.path,
+                  title: updated.title,
+                  theme: updated.theme,
+                  pageCount: updated.pageCount,
+                  sizeBytes: updated.sizeBytes,
+                  pages: updated.pages,
+                  hasMore: updated.hasMore,
+                  isLoadingPages: false,
+                  error: null,
+                  revision: Date.now(),
+                }));
                 void handleRefreshWorkspace();
               }}
               onSaveTextFile={async (rel, newContent) => {
                 await handleSaveWorkspaceFile(rel, newContent);
-                setPdfPanelState((curr) =>
-                  curr
-                    ? {
-                        ...curr,
-                        textContent: newContent,
-                        sizeBytes: new Blob([newContent]).size,
-                      }
-                    : null
-                );
+                patchDocTab(rel, (curr) => ({
+                  ...curr,
+                  textContent: newContent,
+                  sizeBytes: new Blob([newContent]).size,
+                  revision: Date.now(),
+                }));
               }}
               onExportTextToPdf={handleExportTextDocumentToPdf}
               onStatusNotice={(msg) => {

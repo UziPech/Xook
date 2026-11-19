@@ -2081,20 +2081,24 @@ class WorkspaceToolExecutor:
         has_meta_edit = any(
             k in args for k in ("theme", "title", "subtitle", "footer_text", "watermark", "branding", "author", "date")
         )
+        is_explicit_fresh_create = edit_action in ("create", "recreate", "regenerate", "new")
         is_edit_or_append = (
-            bool(source_pdf_ref)
-            or bool(args.get("append_pages"))
-            or bool(replacements)
-            or bool(section_updates)
-            or edit_action in ("append_pages", "add_pages", "append", "agregar_paginas", "modify", "update", "edit")
+            not is_explicit_fresh_create
+            and (
+                bool(source_pdf_ref)
+                or bool(args.get("append_pages"))
+                or bool(replacements)
+                or bool(section_updates)
+                or edit_action in ("append_pages", "add_pages", "append", "agregar_paginas", "modify", "update", "edit")
+            )
         )
-        if not is_edit_or_append and args.get("output_path"):
+        if not is_edit_or_append and not is_explicit_fresh_create and args.get("output_path"):
             existing_match = _find_existing_pdf_in_workspace(
                 self.workspace_root,
                 str(args.get("output_path")),
                 resolve_workspace_path,
             )
-            if existing_match is not None and edit_action != "create":
+            if existing_match is not None:
                 is_edit_or_append = True
 
         title = str(args.get("title") or "").strip()
@@ -2252,6 +2256,7 @@ class WorkspaceToolExecutor:
                         pass
                 self._emit_workspace_changed(str(out["path"]), "create_pdf")
 
+            out["revision"] = int(time.time() * 1000)
             self.generated_pdfs.append(out)
             if self.emit_event:
                 pdf_event_payload = dict(out)
@@ -3293,6 +3298,27 @@ class WorkspaceToolExecutor:
             snippet_preview += f"\n... ({len(code_lines) - 35} líneas más)"
         detail_preview = f"Script ({prog}) · {purpose}\n\n{snippet_preview}"
 
+        def _snapshot_workspace_pdfs() -> Dict[str, Tuple[float, int]]:
+            snap: Dict[str, Tuple[float, int]] = {}
+            for sub in ("agente/reportes", "agente/borradores", "datos/documentos", "datos"):
+                base_dir = self.workspace_root / sub
+                if not base_dir.is_dir():
+                    continue
+                try:
+                    for item in base_dir.rglob("*.pdf"):
+                        if not item.is_file():
+                            continue
+                        rel_p = str(item.relative_to(self.workspace_root)).replace("\\", "/")
+                        if _has_hidden_component(rel_p):
+                            continue
+                        st = item.stat()
+                        snap[rel_p] = (float(st.st_mtime), int(st.st_size))
+                except Exception:
+                    continue
+            return snap
+
+        pdfs_before = _snapshot_workspace_pdfs()
+
         try:
             req_id = f"cmd_{uuid.uuid4().hex[:12]}"
             res = self.command_bridge({
@@ -3308,6 +3334,45 @@ class WorkspaceToolExecutor:
                 if keep_script:
                     res["saved_script_path"] = script_rel_norm
                 self._emit_workspace_changed(script_rel_norm if keep_script else ".", "custom_script")
+                pdfs_after = _snapshot_workspace_pdfs()
+                changed_pdfs = [
+                    rel_p
+                    for rel_p, meta in pdfs_after.items()
+                    if rel_p not in pdfs_before or pdfs_before[rel_p] != meta
+                ]
+                if changed_pdfs:
+                    try:
+                        from slices.pdf_engine import inspect_pdf_summary, render_pdf_preview
+
+                        for rel_pdf in changed_pdfs[-2:]:
+                            pdf_abs = self.workspace_root / rel_pdf
+                            if not pdf_abs.is_file():
+                                continue
+                            summary = inspect_pdf_summary(pdf_abs)
+                            rev_ms = int(time.time() * 1000)
+                            pdf_out: Dict[str, Any] = {
+                                "ok": True,
+                                "path": rel_pdf,
+                                "filename": pdf_abs.name,
+                                "title": str(summary.get("title") or pdf_abs.stem),
+                                "page_count": int(summary.get("page_count") or 1),
+                                "size_bytes": int(pdf_abs.stat().st_size),
+                                "theme": "executive",
+                                "revision": rev_ms,
+                            }
+                            self.generated_pdfs.append(pdf_out)
+                            if self.emit_event:
+                                payload = dict(pdf_out)
+                                try:
+                                    prev = render_pdf_preview(pdf_abs, start_page=1, max_pages=8)
+                                    if prev and prev.get("ok"):
+                                        payload["preview_pages"] = prev.get("pages") or []
+                                        payload["preview_has_more"] = bool(prev.get("has_more"))
+                                except Exception:
+                                    pass
+                                self.emit_event({"type": "pdf_generated", "pdf": payload})
+                    except Exception:
+                        pass
             return res
         finally:
             if not keep_script:

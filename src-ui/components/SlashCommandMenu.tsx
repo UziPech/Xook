@@ -95,16 +95,12 @@ Ejecuta una auditoría real y minuciosa sin modificar datos:
   compact: {
     id: "compact",
     slash: "/compact",
-    name: "Sintetizar & Limpiar Memoria",
-    badge: "Memoria",
-    description: "Extrae hechos duraderos a memoria persistente y compacta aprendizajes clave de la conversación.",
-    hint: "Usa herramientas reales: memory_record_fact y agent_checklist_update",
-    inputPlaceholder: "Modo Compact: Presiona Enter para sintetizar los aprendizajes clave...",
-    promptPrefix: `[MODO COMPACT (/compact)]:
-Sintetiza los aprendizajes, decisiones y preferencias clave de esta conversación:
-1. Si hay hechos duraderos relevantes, usa \`memory_record_fact\` para guardarlos en memoria persistente.
-2. Usa \`agent_checklist_update\` para resumir los acuerdos consolidados.
-3. Entrega un resumen compacto y limpio para continuar sin perder contexto.`,
+    name: "Compactar Ventana de Contexto",
+    badge: "Auto + Manual",
+    description: "Comprime el historial del chat o del documento activo en un resumen estructurado (también se ejecuta automáticamente al crecer el contexto).",
+    hint: "Compactación real del contexto (estilo Claude Code / Antigravity) preservando acuerdos vigentes",
+    inputPlaceholder: "Opcional: indica en qué enfocarse al compactar y presiona Enter…",
+    promptPrefix: `[MODO COMPACT (/compact)]:`,
   },
 };
 

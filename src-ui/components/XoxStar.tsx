@@ -45,11 +45,13 @@ export interface XoxAccentSpec {
   glow: string;
   /** Tono profundo en la misma familia para el núcleo en `thinking`. */
   deep: string;
+  /** Tono cromático equilibrado para el núcleo en reposo (evita blanco puro detrás de los ojos). */
+  idleCore: string;
   /** Acento secundario armónico para anillos, chispas y sincronización. */
   accessory: string;
   /** Acento brillante de la familia (sombra interna de la boca al hablar). */
   pupil: string;
-  /** Tono de pupila/iris: azul muy clarito y discreto (común a todas las auras). */
+  /** Tono de pupila/iris: azul celeste nítido y discreto (común a todas las auras). */
   eye: string;
   /** Aura y tono medio al celebrar (`success`), manteniendo armonía sin choques. */
   celebrateMid: string;
@@ -68,9 +70,10 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     tint: "#E0F2FE",
     glow: "#38BDF8",
     deep: "#0EA5E9",
+    idleCore: "#0D86C3",
     accessory: "#61E4F0",
     pupil: "#38BDF8",
-    eye: "#BAE6FD",
+    eye: "#7DD3FC",
     celebrateMid: "#BAE6FD",
     celebrateGlow: "#4BE2F0",
     blush: "#BAE6FD",
@@ -84,11 +87,12 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     tint: "#EDE9FE",
     glow: "#A78BFA",
     deep: "#7E6CDA",
+    idleCore: "#7569CE",
     accessory: "#EAB7FF",
     pupil: "#C084FC",
-    eye: "#BAE6FD",
+    eye: "#7DD3FC",
     celebrateMid: "#E9D5FF",
-    celebrateGlow: "#E9B2FF",
+    celebrateGlow: "#D29BFF",
     blush: "#BAE6FD",
     blushCore: "#E0F2FE",
   },
@@ -100,11 +104,12 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     tint: "#D1FAE5",
     glow: "#34D399",
     deep: "#08B16F",
+    idleCore: "#09976A",
     accessory: "#70E6CB",
     pupil: "#34D399",
-    eye: "#BAE6FD",
+    eye: "#7DD3FC",
     celebrateMid: "#A7F3D0",
-    celebrateGlow: "#5FE5C7",
+    celebrateGlow: "#38D6B2",
     blush: "#BAE6FD",
     blushCore: "#E0F2FE",
   },
@@ -115,12 +120,13 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     rim2: "#F9BC8B",
     tint: "#FEF3C7",
     glow: "#FBBF24",
-    deep: "#DE9D00",
+    deep: "#C98508",
+    idleCore: "#B5720D",
     accessory: "#E6CD72",
     pupil: "#F59E0B",
-    eye: "#BAE6FD",
+    eye: "#7DD3FC",
     celebrateMid: "#FEF08A",
-    celebrateGlow: "#E5C964",
+    celebrateGlow: "#E5AF36",
     blush: "#BAE6FD",
     blushCore: "#E0F2FE",
   },
@@ -132,11 +138,12 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     tint: "#FFE4E6",
     glow: "#FB7185",
     deep: "#D94D72",
+    idleCore: "#C14E66",
     accessory: "#FFBAAE",
     pupil: "#FB7185",
-    eye: "#BAE6FD",
+    eye: "#7DD3FC",
     celebrateMid: "#FECDD3",
-    celebrateGlow: "#FFB5A9",
+    celebrateGlow: "#F88B98",
     blush: "#BAE6FD",
     blushCore: "#E0F2FE",
   },
@@ -175,21 +182,29 @@ export function getXoxBubbleVars(accentPreset?: string | null): React.CSSPropert
  */
 export function getXoxCosmosVars(accentPreset?: string | null): React.CSSProperties {
   const preset = resolveXoxAccentPreset(accentPreset);
+  const spec = XOX_ACCENT_PRESETS[preset];
   if (preset === "classic") {
     return {
       "--xox-cosmos-bloom": "var(--ref-gemini-bloom-core)",
       "--xox-cosmos-bloom-warm": "var(--ref-gemini-bloom-warm)",
       "--xox-cosmos-corona": "var(--ref-gemini-corona)",
       "--xox-cosmos-halo": "var(--ref-gemini-halo)",
+      "--xox-cosmos-whisper": spec.glow,
+      "--xox-input-accent": spec.glow,
+      "--xox-input-rim": spec.rim,
+      "--xox-input-mid": spec.mid,
       "--xox-cosmos-border": "color-mix(in oklab, var(--ref-gemini-bloom-core) 58%, rgba(255, 255, 255, 0.16))",
     } as React.CSSProperties;
   }
-  const spec = XOX_ACCENT_PRESETS[preset];
   return {
     "--xox-cosmos-bloom": `color-mix(in oklab, var(--ref-gemini-bloom-core) 64%, ${spec.deep})`,
     "--xox-cosmos-bloom-warm": `color-mix(in oklab, var(--ref-gemini-bloom-warm) 60%, ${spec.glow})`,
     "--xox-cosmos-corona": `color-mix(in oklab, var(--ref-gemini-corona) 68%, ${spec.deep})`,
     "--xox-cosmos-halo": `color-mix(in oklab, var(--ref-gemini-halo) 74%, ${spec.deep})`,
+    "--xox-cosmos-whisper": spec.glow,
+    "--xox-input-accent": spec.glow,
+    "--xox-input-rim": spec.rim,
+    "--xox-input-mid": spec.mid,
     "--xox-cosmos-border": `color-mix(in oklab, ${spec.glow} 38%, rgba(255, 255, 255, 0.14))`,
   } as React.CSSProperties;
 }
@@ -229,6 +244,8 @@ interface XoxStarProps {
   subagents?: XoxSubagentOrbitItem[];
   /** Edición de código / respuesta de terminal que Xox revisa en su laptop (estado `coding`). */
   terminal?: XoxTerminalFeed | null;
+  /** "greet" hace un saltito alegre + saludo con la punta en lugar del giro 360° (ideal cuando Xox habla al clic). */
+  clickBehavior?: "spin" | "greet";
 }
 
 /**
@@ -299,8 +316,8 @@ export function resolveXoxStateColors(
       bodyGlow: "#EF4444",
       rim1: "#FECACA",
       rim2: "#F87171",
-      core: "#FCA5A5",
-      mid: "#DC2626",
+      core: "#EF4444",
+      mid: "#B91C1C",
       glow: "#EF4444",
       pupil: "#FCA5A5",
       eye: "#FBD5D5",
@@ -331,8 +348,8 @@ export function resolveXoxStateColors(
       bodyGlow: spec.celebrateGlow,
       rim1: spec.rim,
       rim2: spec.accessory,
-      core: "#FFFFFF",
-      mid: spec.celebrateMid,
+      core: spec.celebrateGlow,
+      mid: spec.deep,
       glow: spec.celebrateGlow,
       pupil: spec.pupil,
       eye: spec.eye,
@@ -347,8 +364,8 @@ export function resolveXoxStateColors(
       bodyGlow: spec.glow,
       rim1: spec.rim,
       rim2: state === "coding" ? spec.accessory : spec.rim2,
-      core: "#FFFFFF",
-      mid: spec.mid,
+      core: spec.glow,
+      mid: spec.deep,
       glow: spec.accessory,
       pupil: spec.pupil,
       eye: spec.eye,
@@ -362,8 +379,8 @@ export function resolveXoxStateColors(
     bodyGlow: spec.glow,
     rim1: spec.rim,
     rim2: spec.rim2,
-    core: "#FFFFFF",
-    mid: spec.mid,
+    core: spec.idleCore,
+    mid: spec.deep,
     glow: spec.glow,
     pupil: spec.pupil,
     eye: spec.eye,
@@ -548,17 +565,23 @@ function buildStar({ phase, amp, lag, reach, wave }: ShapeParams): string {
   return roundedPath(STAR_PTS, STAR_RADII);
 }
 
+function calcTalkMouthTop(cy: number, openAmt: number, smileLift: number) {
+  const yCorner = cy - smileLift * 0.85;
+  // Con sonrisa cálida (vocales abiertas o pausa) las comisuras suben; con vocales redondas se arquea en "o"
+  const yTopCtrl = cy - 0.95 - openAmt * 0.55 + smileLift * 0.72;
+  return { yCorner, yTopCtrl };
+}
+
 /** Construye una boca orgánica articulada (labio superior curvado en sonrisa + mandíbula suave). */
 function buildOrganicTalkMouthPath(cx: number, cy: number, halfW: number, openAmt: number, smileLift: number): string {
   const xL = (cx - halfW).toFixed(2);
   const xR = (cx + halfW).toFixed(2);
-  const yCorner = (cy - smileLift * 0.7).toFixed(2);
-  const yTopCtrl = (cy - 1.15 - openAmt * 1.1 + smileLift * 0.25).toFixed(2);
-  const yBotCtrl = (cy + 1.85 + openAmt * 6.4).toFixed(2);
-  const xCtrl = (halfW * 0.72).toFixed(2);
+  const { yCorner, yTopCtrl } = calcTalkMouthTop(cy, openAmt, smileLift);
+  const yBotCtrl = (cy + 1.55 + openAmt * 6.2).toFixed(2);
+  const xCtrl = (halfW * 0.7).toFixed(2);
   const xLCtrl = (cx - Number(xCtrl)).toFixed(2);
   const xRCtrl = (cx + Number(xCtrl)).toFixed(2);
-  return `M ${xL} ${yCorner} Q ${cx.toFixed(2)} ${yTopCtrl} ${xR} ${yCorner} C ${xRCtrl} ${yBotCtrl} ${xLCtrl} ${yBotCtrl} ${xL} ${yCorner} Z`;
+  return `M ${xL} ${yCorner.toFixed(2)} Q ${cx.toFixed(2)} ${yTopCtrl.toFixed(2)} ${xR} ${yCorner.toFixed(2)} C ${xRCtrl} ${yBotCtrl} ${xLCtrl} ${yBotCtrl} ${xL} ${yCorner.toFixed(2)} Z`;
 }
 
 export const XoxStar: React.FC<XoxStarProps> = ({
@@ -577,10 +600,12 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   glideDir = "right",
   subagents,
   terminal,
+  clickBehavior = "spin",
 }) => {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const ids = {
     body: `xox-body-${uid}`,
+    bodyClip: `xox-body-clip-${uid}`,
     rim: `xox-rim-${uid}`,
     core: `xox-core-${uid}`,
     glow: `xox-glow-${uid}`,
@@ -605,6 +630,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const yawRef = useRef<SVGGElement>(null);
   const starUnderlayRef = useRef<SVGPathElement>(null);
   const starRef = useRef<SVGPathElement>(null);
+  const starClipPathRef = useRef<SVGPathElement>(null);
   const coreRef = useRef<SVGCircleElement>(null);
   const faceRef = useRef<SVGGElement>(null);
   const eyeLRef = useRef<SVGGElement>(null);
@@ -675,6 +701,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     core0: SVGStopElement | null;
     core1: SVGStopElement | null;
     core2: SVGStopElement | null;
+    core3: SVGStopElement | null;
     glow0: SVGStopElement | null;
     glow1: SVGStopElement | null;
     glow2: SVGStopElement | null;
@@ -689,6 +716,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     core0: null,
     core1: null,
     core2: null,
+    core3: null,
     glow0: null,
     glow1: null,
     glow2: null,
@@ -709,6 +737,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const accentRef = useRef<XoxAccentPreset>(resolvedAccent);
   const hoverRef = useRef(false);
   const dragMotionPropRef = useRef(dragMotionRef);
+  const glassContrastRef = useRef(glassContrast);
+  glassContrastRef.current = glassContrast;
 
   const colorStateRef = useRef<{ cur: OklabColorMap; target: OklabColorMap }>({
     cur: toOklabColorMap(initialColors),
@@ -734,6 +764,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     summonAt: -10,
     colorMorphAt: -10,
     stateChangeAt: -10,
+    talkStartedAt: 0,
+    postTalkSmileUntil: -10,
     forceBlinkAt: -10,
     termPulseAt: -10,
     blushBoostUntil: -10,
@@ -792,6 +824,17 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     // Coreografía de transición suave al cambiar entre CUALQUIER par de estados
     if (prev !== state) {
       a.stateChangeAt = a.t;
+      if (state === "talking") {
+        a.talkStartedAt = a.t;
+        if (prev === "idle") {
+          a.waveStart = a.t;
+          a.blushBoostUntil = Math.max(a.blushBoostUntil, a.t + 1.5);
+          a.blushPeak = Math.max(a.blushPeak, 0.58);
+        }
+      } else if (prev === "talking" && state === "idle") {
+        // Sonrisa cálida breve al terminar de hablar para despedir la frase con carisma
+        a.postTalkSmileUntil = a.t + 0.9;
+      }
       // Parpadeo puente al cambiar de expresión facial (ej. success <-> idle, thinking -> talking)
       if (prev === "success" || state === "success" || prev === "talking" || state === "talking" || prev === "coding" || state === "coding") {
         a.forceBlinkAt = a.t;
@@ -801,6 +844,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           // Aterrizaje acolchado al pasar de Feliz a Reposo
           a.squashKick += 1.45;
           a.jumpKick += 28;
+        } else if (state === "talking") {
+          // Impulso ligero y cercano al tomar la palabra
+          a.squashKick += 1.05;
+          a.jumpKick -= 44;
         } else if (state !== "success") {
           // Micro-anticipación orgánica al entrar a un nuevo estado
           a.squashKick += 1.15;
@@ -994,6 +1041,42 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const wCode = clamp(popLaptop.x, 0, 1);
       const wSucc = clamp(wSuccess.x, 0, 1);
 
+      // --- Cadencia conversacional (frases con pausas breves de sonrisa y sílabas asimétricas) ---
+      const talkT = Math.max(0, t - a.talkStartedAt);
+      const phraseCycle = talkT % 2.45;
+      // Dos ráfagas naturales de palabras separadas por un respiro breve (~0.26s) con sonrisa cálida
+      const phraseEnv =
+        phraseCycle < 1.12
+          ? 0.85 + 0.15 * Math.sin((phraseCycle / 1.12) * Math.PI)
+          : phraseCycle < 1.38
+            ? 0.14
+            : phraseCycle < 2.26
+              ? 0.88 + 0.12 * Math.sin(((phraseCycle - 1.38) / 0.88) * Math.PI)
+              : 0.18;
+      const sylWave =
+        0.52 +
+        0.34 * Math.sin(talkT * 14.8 + 0.35) +
+        0.22 * Math.sin(talkT * 9.3 + 1.1) +
+        0.16 * Math.cos(talkT * 20.5);
+      // Curva ligeramente asimétrica: vocales abiertas más legibles y cierres ágiles entre sílabas
+      const shapedSyl = Math.pow(clamp(sylWave, 0, 1.08), 0.86);
+      const targetMouthOpen = talking
+        ? clamp(shapedSyl * phraseEnv, phraseEnv < 0.25 ? 0.06 : 0.18, 1.04) * wTalk
+        : 0;
+      // Alternancia entre vocales amplias ("a/e") y vocales redondeadas ("o/u")
+      const vowelRound = (0.5 + 0.5 * Math.sin(talkT * 5.2 + 0.9)) * smooth01(0.2, 0.75, phraseEnv);
+      const targetHalfW = talking
+        ? (4.9 - 1.35 * vowelRound + 0.45 * targetMouthOpen) * (0.74 + 0.26 * wTalk)
+        : 3.6;
+
+      step(mouthOpenSpring, targetMouthOpen, 290, 20, dt);
+      step(mouthWidthSpring, targetHalfW, 230, 18.5, dt);
+
+      const mOpen = clamp(mouthOpenSpring.x, 0, 1.12);
+      const mHalfW = clamp(mouthWidthSpring.x, 2.7, 5.4);
+      const talkEmphasis = wTalk * smooth01(0.28, 0.88, mOpen);
+      const smileLift = 0.48 + 0.74 * (1 - vowelRound) + 0.18 * (1 - smooth01(0.15, 0.55, mOpen));
+
       // En modo coding: determina si está editando código o viendo la respuesta de la terminal
       const tf = terminalRef.current;
       // Si no hay evento explícito (ej. catálogo de Xox Studio), alterna entre edición y terminal cada ~6.4s
@@ -1063,11 +1146,17 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
 
       const pose = FOCUS_POSES[shownExpr];
+      // Calidez ocular carismática al hablar (suaviza ligeramente los ojos en sílabas alegres con leve asimetría)
+      const talkWarmthWeight = wTalk * (1 - analyzeWeight);
+      const talkAsym = Math.sin(talkT * 1.45) * 0.045;
+      const talkSquintL = talkWarmthWeight * (0.065 + 0.075 * talkEmphasis + Math.max(0, talkAsym));
+      const talkSquintR = talkWarmthWeight * (0.065 + 0.075 * talkEmphasis + Math.max(0, -talkAsym));
+      const talkPupilBoost = talkWarmthWeight * (0.08 + 0.055 * talkEmphasis);
       // Resortes críticamente amortiguados (c ≈ 2√k): llegan firmes a la pose sin rebotar
-      step(squintL, pose.sL * analyzeWeight, 300, 35, dt);
-      step(squintR, pose.sR * analyzeWeight, 300, 35, dt);
-      step(pupilScaleL, 1 + (pose.pL - 1) * analyzeWeight, 260, 32, dt);
-      step(pupilScaleR, 1 + (pose.pR - 1) * analyzeWeight, 260, 32, dt);
+      step(squintL, pose.sL * analyzeWeight + talkSquintL, 300, 35, dt);
+      step(squintR, pose.sR * analyzeWeight + talkSquintR, 300, 35, dt);
+      step(pupilScaleL, 1 + (pose.pL - 1) * analyzeWeight + talkPupilBoost, 260, 32, dt);
+      step(pupilScaleR, 1 + (pose.pR - 1) * analyzeWeight + talkPupilBoost, 260, 32, dt);
 
       // --- Lectura ocular coherente con el cursor del editor ---------------
       // Fijaciones discretas que avanzan con el texto que se escribe y un barrido de retorno
@@ -1147,6 +1236,17 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         // Inquieto: mira nervioso de un lado a otro
         tx = 0.85 * Math.sin(t * 5.3) * Math.cos(t * 1.7);
         ty = 0.3 * Math.sin(t * 3.9);
+      } else if (talking) {
+        // Conversación atenta y cercana: si el cursor está activo lo sigue con calidez; si no, mantiene contacto visual vivo
+        const talkGlanceX = 0.24 * Math.sin(talkT * 1.35) + 0.12 * Math.cos(talkT * 2.4);
+        const talkGlanceY = -0.14 + 0.1 * Math.sin(talkT * 1.9);
+        if (now - a.mouseTime < 3500) {
+          tx = clamp(a.lookTX * 0.72 + talkGlanceX * 0.35, -0.85, 0.85);
+          ty = clamp(a.lookTY * 0.65 + talkGlanceY * 0.4, -0.65, 0.55);
+        } else {
+          tx = talkGlanceX;
+          ty = talkGlanceY;
+        }
       } else if (now - a.mouseTime < 3500) {
         tx = a.lookTX;
         ty = a.lookTY;
@@ -1185,10 +1285,11 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const interactiveBlush = hoverRef.current ? 0.62 : 0;
       const boostBlush = t <= a.blushBoostUntil ? a.blushPeak : 0;
       const successBlush = wSucc * 0.96;
+      const talkingBlush = wTalk * (0.4 + 0.16 * talkEmphasis);
       const codingOkBlush = wCode * (isTermPhase && isTermDoneOk ? 0.48 : 0);
       const blushTarget =
         (1 - wAlert) *
-        clamp(Math.max(successBlush, boostBlush, interactiveBlush, codingOkBlush), 0, 1);
+        clamp(Math.max(successBlush, boostBlush, interactiveBlush, talkingBlush, codingOkBlush), 0, 1);
       const blushRising = blushTarget > blush.x;
       const windup = a.windupUntil ? -18 : 0;
 
@@ -1196,16 +1297,16 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const swayIdle = 3.4 * Math.sin(t * 0.85);
       const swayThink = 5.5 * Math.sin(t * 2.2);
       const swayRead = -3.8 * Math.sin(t * 1.6);
-      const swayTalk = 4.2 * Math.sin(t * 3.1) + 1.4 * Math.cos(t * 5.2);
+      const swayTalk = 5.6 * Math.sin(talkT * 1.55 + 0.25) + 1.8 * Math.sin(talkT * 3.85);
       const swayCode = 5.0 * lapSideWave + 1.6 * Math.sin(t * 3.2);
       const sway = alerting
         ? (3.4 * Math.sin(t * 0.85) + 3.2 * Math.sin(t * 23)) * A
         : (swayIdle * (1 - Math.max(wThink, wRead, wTalk, wCode)) +
-            swayThink * wThink +
-            swayRead * wRead +
-            swayTalk * wTalk +
-            swayCode * wCode) *
-          A;
+          swayThink * wThink +
+          swayRead * wRead +
+          swayTalk * wTalk +
+          swayCode * wCode) *
+        A;
 
       const dragTilt = dragging ? -dragNx * 14 * A : 0;
       const subSteps = dt > 0.018 ? 2 : 1;
@@ -1235,22 +1336,23 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
 
       const stretch = Math.min(Math.abs(jump.v) * 0.0005, 0.12);
-      const sy = (1 - squash.x * 0.45) * (1 + stretch);
-      const sx = (1 + squash.x * 0.4) * (1 - stretch * 0.55);
+      const talkBounce = wTalk * (mOpen - 0.34) * 0.036 * A;
+      const sy = (1 - squash.x * 0.45) * (1 + stretch + talkBounce);
+      const sx = (1 + squash.x * 0.4) * (1 - stretch * 0.55 - talkBounce * 0.72);
 
       // Flotación vertical continua (conservando el pulso rápido exacto en `alert`)
       const bobIdle = 3.2 * Math.sin(t * 1.15);
       const bobThink = 4.5 * Math.sin(t * 2.4);
-      const bobTalk = 2.4 * Math.sin(t * 5.8) + 1.8 * Math.sin(t * 2.0);
+      const bobTalk = 2.1 * Math.sin(talkT * 2.35) - 2.3 * talkEmphasis;
       const bobCode = 2.4 * Math.sin(t * 2.8) + (isTermPhase && isTermDoneOk ? -2.2 * Math.abs(Math.sin(t * 4.5)) : 0);
       const activeBobWeight = clamp(wThink + wTalk + wCode, 0, 1);
       const bob = alerting
         ? 2 * Math.sin(t * 9) * A
         : (bobIdle * (1 - activeBobWeight) +
-            bobThink * wThink +
-            bobTalk * wTalk +
-            bobCode * wCode) *
-          A;
+          bobThink * wThink +
+          bobTalk * wTalk +
+          bobCode * wCode) *
+        A;
 
       const y = C + bob + jump.x;
       const shakeX = alerting ? 1.8 * Math.sin(t * 37) * A : 0;
@@ -1268,32 +1370,49 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       );
 
       // --- Cuerpo gelatinoso (follow-through en las puntas, estrella pura sin brazos) ---
-      const starSpeed = alerting ? 3.2 : 1 + 0.8 * wThink + 0.35 * wCode + 0.25 * wTalk;
+      const starSpeed = alerting ? 3.2 : 1 + 0.8 * wThink + 0.35 * wCode + 0.32 * wTalk;
       a.starPhase += dt * starSpeed;
-      const starAmp = (alerting ? 2.1 : 1 + 0.6 * wThink + 0.18 * wCode) * A;
+      const starAmp = (alerting ? 2.1 : 1 + 0.6 * wThink + 0.18 * wCode + 0.28 * wTalk) * A;
       const lag = clamp(-rot.v * 0.014, -14, 14);
       const starPath = buildStar({
         phase: a.starPhase,
         amp: starAmp,
         lag,
-        reach: hover.x * 0.03 + wSucc * 0.02,
+        reach: hover.x * 0.03 + wSucc * 0.02 + talkEmphasis * 0.018,
         wave: t - a.waveStart,
       });
       starRef.current?.setAttribute("d", starPath);
       starUnderlayRef.current?.setAttribute("d", starPath);
+      starClipPathRef.current?.setAttribute("d", starPath);
 
-      // --- Núcleo y aura (mezclados suavemente) ---------------------------
-      const coreBase = 14 + 1.2 * Math.sin(t * 2);
-      const coreThink = 19 + 3 * Math.sin(t * 6);
-      const coreTalk = 15.5 + 2.2 * Math.abs(Math.sin(t * 8.5));
-      const coreCode = 16.5 + 2.0 * Math.sin(t * 5.2);
+      // --- Núcleo y aura (resplandor interno amplio y difuso, centrado en el corazón del cuerpo) ---
+      const coreBase = 33 + 1.8 * Math.sin(t * 2);
+      const coreThink = 38 + 3.2 * Math.sin(t * 6);
+      const coreTalk = 34.5 + 3.2 * mOpen;
+      const coreCode = 36 + 2.2 * Math.sin(t * 5.2);
       const coreR = alerting
-        ? 16 + 3 * Math.sin(t * 9)
+        ? 35 + 3.0 * Math.sin(t * 9)
         : coreBase * (1 - clamp(wThink + wTalk + wCode, 0, 1)) +
-          coreThink * wThink +
-          coreTalk * wTalk +
-          coreCode * wCode;
+        coreThink * wThink +
+        coreTalk * wTalk +
+        coreCode * wCode;
       coreRef.current?.setAttribute("r", coreR.toFixed(2));
+
+      const isGlassContrast = glassContrastRef.current;
+      const corePeakBase = isGlassContrast ? 0.30 : 0.21;
+      const corePeakOp = clamp(
+        corePeakBase +
+        wThink * (0.16 + 0.05 * Math.sin(t * 6)) +
+        wTalk * 0.08 +
+        wCode * 0.08 +
+        wSucc * 0.11 +
+        wAlert * 0.15 +
+        hover.x * 0.03,
+        0.16,
+        isGlassContrast ? 0.52 : 0.44
+      );
+      const coreMidOp = corePeakOp * 0.56;
+      const coreOuterOp = corePeakOp * 0.16;
 
       const summonPhase = (t - a.summonAt) / 0.65;
       const summonActive = summonPhase >= 0 && summonPhase <= 1 && !a.reduce;
@@ -1322,8 +1441,12 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       sr.rim1?.setAttribute("stop-color", cRim1);
       sr.rim2?.setAttribute("stop-color", cRim2);
       sr.core0?.setAttribute("stop-color", cCore);
+      sr.core0?.setAttribute("stop-opacity", corePeakOp.toFixed(3));
       sr.core1?.setAttribute("stop-color", cMid);
+      sr.core1?.setAttribute("stop-opacity", coreMidOp.toFixed(3));
       sr.core2?.setAttribute("stop-color", cMid);
+      sr.core2?.setAttribute("stop-opacity", coreOuterOp.toFixed(3));
+      sr.core3?.setAttribute("stop-color", cMid);
       sr.glow0?.setAttribute("stop-color", cGlow);
       sr.glow1?.setAttribute("stop-color", cGlow);
       sr.glow2?.setAttribute("stop-color", cGlow);
@@ -1489,8 +1612,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             rIdx < activeRow
               ? 1
               : rIdx === activeRow
-              ? smooth01(0, 0.86, rowFrac)
-              : 0.22;
+                ? smooth01(0, 0.86, rowFrac)
+                : 0.22;
           const curTotal = totalMax * progress;
           const pW = clamp(curTotal, 2.2, pMax);
           const sW = clamp(curTotal - pMax - 1.6, 0, sMax);
@@ -1534,10 +1657,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             isTermErr && idx === 2
               ? "#FCA5A5"
               : isTermDoneOk && idx === 2
-              ? "#6EE7B7"
-              : idx === 0
-              ? cRim1
-              : "#CBD5E1"
+                ? "#6EE7B7"
+                : idx === 0
+                  ? cRim1
+                  : "#CBD5E1"
           );
         });
 
@@ -1599,12 +1722,12 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       eyeClipEllipseRRef.current?.setAttribute("ry", ryR.toFixed(2));
 
       // Sombra interna de párpado superior recortada dentro del ojo cuando ese ojo entrecierra analizando
-      const lidDropL = clamp(squintL.x * 4.2, 0, 2.2);
-      const lidDropR = clamp(squintR.x * 4.2, 0, 2.2);
+      const lidDropL = clamp(squintL.x * 4.2 * analyzeWeight, 0, 2.2);
+      const lidDropR = clamp(squintR.x * 4.2 * analyzeWeight, 0, 2.2);
       lidShadeLRef.current?.setAttribute("y", (-ryL - 2.6 + lidDropL).toFixed(2));
-      lidShadeLRef.current?.setAttribute("opacity", clamp(squintL.x * 0.7, 0, 0.26).toFixed(3));
+      lidShadeLRef.current?.setAttribute("opacity", clamp(squintL.x * 0.7 * analyzeWeight, 0, 0.26).toFixed(3));
       lidShadeRRef.current?.setAttribute("y", (-ryR - 2.6 + lidDropR).toFixed(2));
-      lidShadeRRef.current?.setAttribute("opacity", clamp(squintR.x * 0.7, 0, 0.26).toFixed(3));
+      lidShadeRRef.current?.setAttribute("opacity", clamp(squintR.x * 0.7 * analyzeWeight, 0, 0.26).toFixed(3));
 
       // Movimiento vivo de iris, pupila y brillo especular (con sacadas de análisis y zoom por ojo)
       const pupX = clamp(0.45 + lookX.x * 1.25 + saccadeX.x * 0.95, -1.65, 1.85);
@@ -1650,9 +1773,14 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       eyeHappyRRef.current?.setAttribute("opacity", happyEyeOp.toFixed(3));
 
       // --- Boca coherente con cada fase: una sola curva paramétrica que se transforma con resortes ---
-      // (concentrada al editar, expectante en terminal, sonriente al terminar) sin saltos ni temblor.
+      // (concentrada al editar, expectante en terminal, sonriente al terminar o tras despedir un saludo)
       const codingMouthWeight = wCode * 0.92;
-      const smileTargetWeight = Math.max(hover.x * 0.85, wSucc, codingMouthWeight) * (1 - wTalk);
+      const postTalkSmile =
+        t < a.postTalkSmileUntil
+          ? (1 - smooth01(a.postTalkSmileUntil - 0.45, a.postTalkSmileUntil, t)) * 0.9
+          : 0;
+      const smileTargetWeight =
+        Math.max(hover.x * 0.85, wSucc, codingMouthWeight, postTalkSmile) * (1 - wTalk);
       if (mouthRef.current) {
         // Boca genérica (hover / celebración), expresada en los mismos parámetros
         const genW = 3.0 + 1.5 * wSucc;
@@ -1678,41 +1806,19 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
 
       // --- Boca blanca luminosa con tonalidades al hablar (sílabas vivas y expresivas) ---
-      // Envolvente de frase suave que nunca aplasta la boca a una sola línea
-      const phraseWave = 0.65 + 0.35 * Math.sin(t * 2.9) * Math.cos(t * 1.3);
-      const rawSyllable =
-        0.58 +
-        0.34 * Math.sin(t * 15.6) +
-        0.24 * Math.sin(t * 9.8 + 0.7) +
-        0.18 * Math.cos(t * 22.0);
-      const targetMouthOpen = talking ? clamp(rawSyllable * phraseWave, 0.22, 1.05) * wTalk : 0;
-      // Alternancia entre vocales amplias ("a/e") y vocales redondeadas ("o/u")
-      const vowelRound = 0.5 + 0.5 * Math.sin(t * 5.8 + 1.1);
-      const targetHalfW = talking
-        ? (4.8 - 1.25 * vowelRound + 0.55 * targetMouthOpen) * (0.72 + 0.28 * wTalk)
-        : 3.6;
-
-      step(mouthOpenSpring, targetMouthOpen, 280, 19, dt);
-      step(mouthWidthSpring, targetHalfW, 220, 18, dt);
-
-      const mOpen = clamp(mouthOpenSpring.x, 0, 1.12);
-      const mHalfW = clamp(mouthWidthSpring.x, 2.7, 5.5);
-      const smileLift = 0.65 + 0.4 * (1 - vowelRound);
-
       if (talkMouthGroupRef.current) {
         if (wTalk > 0.01) {
-          const mouthCy = C + 6.8;
+          const mouthCy = C + 6.6;
           const mouthD = buildOrganicTalkMouthPath(C, mouthCy, mHalfW, mOpen, smileLift);
           talkMouthPathRef.current?.setAttribute("d", mouthD);
           talkMouthClipPathRef.current?.setAttribute("d", mouthD);
-          // Borde superior luminoso en sonrisa
+          // Borde superior luminoso en sonrisa cálida
           const xL = (C - mHalfW).toFixed(2);
           const xR = (C + mHalfW).toFixed(2);
-          const yCorner = (mouthCy - smileLift * 0.7).toFixed(2);
-          const yTopCtrl = (mouthCy - 1.15 - mOpen * 1.1 + smileLift * 0.25).toFixed(2);
+          const { yCorner, yTopCtrl } = calcTalkMouthTop(mouthCy, mOpen, smileLift);
           talkUpperLipRef.current?.setAttribute(
             "d",
-            `M ${xL} ${yCorner} Q ${C} ${yTopCtrl} ${xR} ${yCorner}`
+            `M ${xL} ${yCorner.toFixed(2)} Q ${C} ${yTopCtrl.toFixed(2)} ${xR} ${yCorner.toFixed(2)}`
           );
           // Tonalidad media celeste/acento e interior cálido sobre la base blanca de la boca
           talkInnerShadeRef.current?.setAttribute("cy", (mouthCy + 1.4 + mOpen * 2.2).toFixed(2));
@@ -1728,14 +1834,15 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
 
       if (talkWaveRef.current) {
-        const waveScale = Math.max(wTalk * (0.9 + 0.16 * mOpen), 0.0001);
+        const waveEnergy = clamp(mOpen * 1.15, 0, 1);
+        const waveScale = Math.max(wTalk * (0.86 + 0.2 * waveEnergy), 0.0001);
         talkWaveRef.current.setAttribute(
           "transform",
-          `translate(${(C + 68).toFixed(2)} ${(y - 8 + 2 * Math.sin(t * 7)).toFixed(2)}) scale(${waveScale.toFixed(4)})`
+          `translate(${(C + 68).toFixed(2)} ${(y - 8 + 1.8 * Math.sin(t * 6.5)).toFixed(2)}) scale(${waveScale.toFixed(4)})`
         );
         talkWaveRef.current.setAttribute(
           "opacity",
-          (wTalk * (0.45 + 0.55 * mOpen)).toFixed(3)
+          (wTalk * (0.26 + 0.74 * waveEnergy)).toFixed(3)
         );
         // Propagación escalonada en las 3 ondas de voz
         const w1 = 0.5 + 0.5 * Math.sin(t * 14);
@@ -1836,10 +1943,23 @@ export const XoxStar: React.FC<XoxStarProps> = ({
 
   const handleActivate = () => {
     const a = anim.current;
-    a.blushBoostUntil = Math.max(a.blushBoostUntil, a.t + 2.6);
-    a.blushPeak = 1;
-    if (!a.reduce) a.blushKick += 1.6;
-    triggerSpin();
+    if (clickBehavior === "greet") {
+      // Saludo carismático: impulso alegre + ola con la punta superior derecha + rubor cálido (sin giro 360° al hablar)
+      const isIdleNow = stateRef.current === "idle";
+      a.blushBoostUntil = Math.max(a.blushBoostUntil, a.t + 2.8);
+      a.blushPeak = Math.max(a.blushPeak, 0.78);
+      a.waveStart = a.t;
+      if (!a.reduce) {
+        a.squashKick += isIdleNow ? 2.1 : 1.0;
+        a.jumpKick -= isIdleNow ? 112 : 45;
+        a.blushKick += 1.15;
+      }
+    } else {
+      a.blushBoostUntil = Math.max(a.blushBoostUntil, a.t + 2.6);
+      a.blushPeak = 1;
+      if (!a.reduce) a.blushKick += 1.6;
+      triggerSpin();
+    }
     onClick?.();
   };
 
@@ -1863,25 +1983,24 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         starOnlyHit
           ? undefined
           : (e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                handleActivate();
-              }
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              handleActivate();
             }
+          }
       }
       onPointerEnter={starOnlyHit ? undefined : triggerWave}
       onPointerLeave={
         starOnlyHit
           ? undefined
           : () => {
-              hoverRef.current = false;
-            }
+            hoverRef.current = false;
+          }
       }
-      className={`relative inline-block select-none rounded-full ${
-        starOnlyHit
-          ? "pointer-events-none"
-          : "cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/40"
-      } ${className}`}
+      className={`relative inline-block select-none rounded-full ${starOnlyHit
+        ? "pointer-events-none"
+        : "cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/40"
+        } ${className}`}
       style={responsive ? undefined : { width: size, height: size }}
     >
       {starOnlyHit && (
@@ -1917,9 +2036,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.94" : "0.7"} />
           </linearGradient>
           <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
-            <stop ref={(el) => { stopRefs.current.core0 = el; }} offset="0%" stopColor={initialColors.core} stopOpacity={glassContrast ? "0.98" : "0.9"} />
-            <stop ref={(el) => { stopRefs.current.core1 = el; }} offset="50%" stopColor={initialColors.mid} stopOpacity={glassContrast ? "0.42" : "0.3"} />
-            <stop ref={(el) => { stopRefs.current.core2 = el; }} offset="100%" stopColor={initialColors.mid} stopOpacity="0" />
+            <stop ref={(el) => { stopRefs.current.core0 = el; }} offset="0%" stopColor={initialColors.core} stopOpacity={glassContrast ? "0.30" : "0.21"} />
+            <stop ref={(el) => { stopRefs.current.core1 = el; }} offset="42%" stopColor={initialColors.mid} stopOpacity={glassContrast ? "0.168" : "0.118"} />
+            <stop ref={(el) => { stopRefs.current.core2 = el; }} offset="76%" stopColor={initialColors.mid} stopOpacity={glassContrast ? "0.048" : "0.034"} />
+            <stop ref={(el) => { stopRefs.current.core3 = el; }} offset="100%" stopColor={initialColors.mid} stopOpacity="0" />
           </radialGradient>
           {/* Aura dibujada dentro del SVG: halo íntimo sutil para no teñir de cian el fondo cósmico */}
           <radialGradient id={ids.glow} cx="50%" cy="50%" r="50%">
@@ -1933,6 +2053,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             <stop ref={(el) => { stopRefs.current.blush1 = el; }} offset="50%" stopColor={initialColors.blush} stopOpacity="0.24" />
             <stop ref={(el) => { stopRefs.current.blush2 = el; }} offset="100%" stopColor={initialColors.blush} stopOpacity="0" />
           </radialGradient>
+          <clipPath id={ids.bodyClip}>
+            <path ref={starClipPathRef} d={initialPath} />
+          </clipPath>
           <clipPath id={ids.mouthClip}>
             <path
               ref={talkMouthClipPathRef}
@@ -2127,6 +2250,15 @@ export const XoxStar: React.FC<XoxStarProps> = ({
               strokeWidth={glassContrast ? "2.05" : "1.6"}
               strokeLinejoin="round"
             />
+            {/* Núcleo de energía interno (centrado en el corazón del cuerpo y recortado a la silueta para un brillo envolvente y suave) */}
+            <circle
+              ref={coreRef}
+              cx={C}
+              cy={C - 2.5}
+              r="33"
+              fill={`url(#${ids.core})`}
+              clipPath={`url(#${ids.bodyClip})`}
+            />
             {/* Reflejo especular interno */}
             <ellipse
               cx="106"
@@ -2138,9 +2270,6 @@ export const XoxStar: React.FC<XoxStarProps> = ({
               opacity="0.13"
             />
           </g>
-
-          {/* Núcleo de energía */}
-          <circle ref={coreRef} cx={C} cy={C} r="14" fill={`url(#${ids.core})`} />
 
           {/* Rostro */}
           <g ref={faceRef}>
@@ -2154,14 +2283,25 @@ export const XoxStar: React.FC<XoxStarProps> = ({
               <ellipse ref={cheekRCoreRef} cx="0" cy="-0.2" rx="3.8" ry="2.0" transform="rotate(9)" fill={initialColors.blushCore} opacity="0.20" />
             </g>
 
-            {/* Ojo izquierdo: esclerótica con zoom/squint independiente + iris/pupila redonda recortada ("ojo dentro del ojo") */}
+            {/* Ojo izquierdo: esclerótica con borde óptico oscuro sutil + iris/pupila recortada ("ojo dentro del ojo") */}
             <g ref={eyeLRef} transform={`translate(${C - 8} ${C - 3})`}>
               <g ref={eyeOpenLRef}>
-                <ellipse ref={eyeScleraLRef} cx="0" cy="0" rx="3.4" ry="5.2" fill="#FFFFFF" opacity="0.96" />
+                <ellipse
+                  ref={eyeScleraLRef}
+                  cx="0"
+                  cy="0"
+                  rx="3.4"
+                  ry="5.2"
+                  fill="#FFFFFF"
+                  opacity="0.98"
+                  stroke="rgba(6, 10, 22, 0.36)"
+                  strokeWidth="1.2"
+                  paintOrder="stroke"
+                />
                 <g clipPath={`url(#${ids.eyeClipL})`}>
-                  <circle ref={irisLRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.eye} opacity="0.35" />
+                  <circle ref={irisLRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.eye} opacity="0.42" />
                   <circle ref={pupilLRef} cx="1.1" cy="-1.5" r="1.18" fill={currentColors.eye} />
-                  <circle ref={glintLRef} cx="0.65" cy="-2.0" r="0.4" fill="#FFFFFF" opacity="0.8" />
+                  <circle ref={glintLRef} cx="0.65" cy="-2.0" r="0.4" fill="#FFFFFF" opacity="0.86" />
                   <rect ref={lidShadeLRef} x="-5" y="-7.5" width="10" height="3.2" fill={currentColors.eye} opacity="0" />
                 </g>
               </g>
@@ -2175,14 +2315,25 @@ export const XoxStar: React.FC<XoxStarProps> = ({
                 opacity="0"
               />
             </g>
-            {/* Ojo derecho: esclerótica con zoom/squint independiente + iris/pupila redonda recortada ("ojo dentro del ojo") */}
+            {/* Ojo derecho: esclerótica con borde óptico oscuro sutil + iris/pupila recortada ("ojo dentro del ojo") */}
             <g ref={eyeRRef} transform={`translate(${C + 8} ${C - 3})`}>
               <g ref={eyeOpenRRef}>
-                <ellipse ref={eyeScleraRRef} cx="0" cy="0" rx="3.4" ry="5.2" fill="#FFFFFF" opacity="0.96" />
+                <ellipse
+                  ref={eyeScleraRRef}
+                  cx="0"
+                  cy="0"
+                  rx="3.4"
+                  ry="5.2"
+                  fill="#FFFFFF"
+                  opacity="0.98"
+                  stroke="rgba(6, 10, 22, 0.36)"
+                  strokeWidth="1.2"
+                  paintOrder="stroke"
+                />
                 <g clipPath={`url(#${ids.eyeClipR})`}>
-                  <circle ref={irisRRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.eye} opacity="0.35" />
+                  <circle ref={irisRRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.eye} opacity="0.42" />
                   <circle ref={pupilRRef} cx="1.1" cy="-1.5" r="1.18" fill={currentColors.eye} />
-                  <circle ref={glintRRef} cx="0.65" cy="-2.0" r="0.4" fill="#FFFFFF" opacity="0.8" />
+                  <circle ref={glintRRef} cx="0.65" cy="-2.0" r="0.4" fill="#FFFFFF" opacity="0.86" />
                   <rect ref={lidShadeRRef} x="-5" y="-7.5" width="10" height="3.2" fill={currentColors.eye} opacity="0" />
                 </g>
               </g>
