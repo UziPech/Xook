@@ -69,6 +69,7 @@ export type XoxStudioTabId = "identity" | "voice" | "skills" | "rules";
 
 interface XoxStudioPanelProps {
   visible?: boolean;
+  hideStar?: boolean;
   initialTab?: XoxStudioTabId;
   highlightedSkillSlug?: string | null;
   glideSeq?: number;
@@ -336,6 +337,7 @@ const XOX_ANIMATION_CATALOG: Array<{
 
 export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   visible = true,
+  hideStar = false,
   initialTab = "identity",
   highlightedSkillSlug = null,
   glideSeq = 0,
@@ -368,7 +370,6 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   const stageCheerTimerRef = useRef<number | null>(null);
   const [catalogAnim, setCatalogAnim] = useState<XoxAnimCatalogOption>("auto");
   const [stageReplaySeq, setStageReplaySeq] = useState(0);
-  const [colorRippleSeq, setColorRippleSeq] = useState(0);
 
   // Estado del popover compacto de animaciones en el dock
   const supportsNativePopover = useMemo(
@@ -935,7 +936,6 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
 
   const selectAccent = (key: XoxAccentPreset) => {
     setDraft((p) => ({ ...p, accentPreset: key }));
-    setColorRippleSeq((n) => n + 1);
     onPreviewAccentChange?.(key);
   };
 
@@ -998,7 +998,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
       style={
         { "--xox-control-accent": activeAccentSpec.glow } as React.CSSProperties
       }
-      className={`relative h-full flex flex-col rounded-2xl border border-white/[0.08] bg-[#080a0f]/95 backdrop-blur-xl overflow-hidden transition-opacity duration-200 ${
+      className={`relative h-full flex flex-col rounded-2xl border border-white/[0.08] bg-[#080a0f] overflow-hidden transition-opacity duration-200 ${
         visible ? "opacity-100" : "opacity-0 pointer-events-none"
       }`}
     >
@@ -1037,7 +1037,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
         <section
           id={`${uid}-xox-stage`}
           aria-label={`Escenario de ${displayAgentName}`}
-          className="xook-xox-sanctuary relative px-4 pt-3 pb-4 flex flex-col items-center text-center transition-[background] duration-500"
+          className="xook-xox-sanctuary relative px-4 pt-3 pb-4 flex flex-col items-center text-center"
           style={getXoxCosmosVars(activeAccent)}
         >
           {/* Etiqueta discreta de alcance arriba a la izquierda */}
@@ -1048,34 +1048,32 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
             </span>
           </div>
 
-          {/* Onda expansiva centrada al cambiar el aura de Xox */}
-          {colorRippleSeq > 0 && (
-            <span
-              key={`ripple-${colorRippleSeq}`}
-              aria-hidden="true"
-              className="xox-window-color-ripple pointer-events-none absolute left-1/2 top-[43%] -ml-[108px] -mt-[108px] w-[216px] h-[216px] rounded-full border"
-              style={{ borderColor: `${activeAccentSpec.glow}85` }}
-            />
-          )}
-
-          {/* Estrella Xox protagonista en su propio espacio */}
-          <div className="xox-window-star-arrive relative z-[1] flex items-center justify-center -my-7 sm:-my-8">
+          {/* Estrella Xox protagonista en su propio espacio (oculta durante el vuelo para evitar duplicado) */}
+          <div
+            data-xox-stage="studio"
+            className={`relative z-[1] flex items-center justify-center -my-7 sm:-my-8 ${
+              hideStar ? "opacity-0 pointer-events-none" : "opacity-100"
+            }`}
+          >
             <XoxStar
               state={stageXoxState}
               responsive
               hitArea="star"
               accentPreset={activeAccent}
-              glideTrigger={glideSeq}
+              glideTrigger={hideStar ? 0 : glideSeq}
               glideDir="right"
               summonTrigger={stageReplaySeq}
-              active={visible}
+              active={visible && !hideStar}
               className="w-[228px] h-[228px] sm:w-[258px] sm:h-[258px]"
               onClick={handleStageXoxClick}
             />
           </div>
 
           {/* Firma centrada de Xox */}
-          <div className="relative z-10 mt-1 flex flex-col items-center max-w-full px-2">
+          <div
+            className="xox-studio-enter-stagger relative z-10 mt-1 flex flex-col items-center max-w-full px-2"
+            style={{ animationDelay: "50ms" }}
+          >
             <h2 className="text-[19px] font-semibold tracking-tight text-white leading-tight truncate max-w-full">
               {displayAgentName}
             </h2>
@@ -1085,7 +1083,10 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
           </div>
 
           {/* Dock discreto en el escenario: Aura + Selector de gestos (popover) + Voz */}
-          <div className="relative z-10 mt-3.5 inline-flex items-center gap-1 p-1 rounded-full bg-black/45 backdrop-blur-xl border border-white/[0.1] shadow-[0_12px_32px_-12px_rgba(0,0,0,0.85)] max-w-full">
+          <div
+            className="xox-studio-enter-stagger relative z-10 mt-3.5 inline-flex items-center gap-1 p-1 rounded-full bg-black/45 backdrop-blur-xl border border-white/[0.1] shadow-[0_12px_32px_-12px_rgba(0,0,0,0.85)] max-w-full"
+            style={{ animationDelay: "90ms" }}
+          >
             {/* 1. Puntos de color del Aura en vivo */}
             <div
               role="radiogroup"
@@ -1294,7 +1295,10 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
         {/* =================================================================== */}
         {/* NAVEGACIÓN PRINCIPAL CENTRADA EN UNA SOLA FILA STICKY               */}
         {/* =================================================================== */}
-        <div className="sticky top-0 z-20 px-4 py-2 bg-[#080a0f]/92 backdrop-blur-md border-b border-white/[0.06] overflow-x-auto no-scrollbar">
+        <div
+          className="xox-studio-enter-stagger sticky top-0 z-20 px-4 py-2 bg-[#080a0f]/95 border-b border-white/[0.06] overflow-x-auto no-scrollbar"
+          style={{ animationDelay: "120ms" }}
+        >
           <div className="w-max mx-auto">
             <JellyPillTrack
               activeKey={activeTab}
@@ -1382,7 +1386,10 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
         )}
 
         {/* Contenido de la pestaña activa */}
-        <div className="px-4 pt-4 pb-10 space-y-3.5">
+        <div
+          className="xox-studio-enter-stagger px-4 pt-4 pb-10 space-y-3.5"
+          style={{ animationDelay: "155ms" }}
+        >
           {/* ================================================================= */}
           {/* TAB 1: IDENTIDAD (ESENCIAL VISIBLE + DETALLE PLEGABLE)            */}
           {/* ================================================================= */}

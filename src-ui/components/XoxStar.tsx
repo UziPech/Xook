@@ -267,6 +267,25 @@ interface XoxStarProps {
 
 const C = 120; // centro del viewBox 240x240
 
+// Continuidad de fase compartida (Chat <-> Vuelo <-> Espacio de Xox) para que ni Xox ni sus partículas salten al relevo
+const sharedXoxPhase = {
+  t: 0,
+  starPhase: 0,
+  sparkPhase: 0,
+  updatedAt: 0,
+};
+
+function syncSharedPhase(a: { t: number; starPhase: number; sparkPhase: number }) {
+  if (sharedXoxPhase.updatedAt <= 0) return;
+  const elapsed = Math.min(Math.max(0, (performance.now() - sharedXoxPhase.updatedAt) / 1000), 0.25);
+  const nextT = sharedXoxPhase.t + elapsed;
+  if (nextT > a.t) {
+    a.t = nextT;
+    a.starPhase = sharedXoxPhase.starPhase + elapsed;
+    a.sparkPhase = sharedXoxPhase.sparkPhase + elapsed;
+  }
+}
+
 // Geometría base ligeramente asimétrica (ángulo en grados, radio)
 const PEAKS = [
   { a: -84, r: 65 },
@@ -624,7 +643,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const wrapRef = useRef<HTMLDivElement>(null);
   const cradleRef = useRef<SVGCircleElement>(null);
   const glowRef = useRef<SVGCircleElement>(null);
-  const summonRingRef = useRef<SVGCircleElement>(null);
+  const summonSilhouetteRef = useRef<SVGPathElement>(null);
   const ringRef = useRef<SVGEllipseElement>(null);
   const bodyRef = useRef<SVGGElement>(null);
   const yawRef = useRef<SVGGElement>(null);
@@ -753,6 +772,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const anim = useRef({
     t: 0,
     starPhase: 0,
+    sparkPhase: 0,
     bobPhase: 0,
     reduce: false,
     spinTarget: 0,
@@ -760,6 +780,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     lastSpin: -10,
     squashKick: 0,
     jumpKick: 0,
+    rotKick: 0,
+    lookKickX: 0,
+    landedAt: -10,
     waveStart: -10,
     summonAt: -10,
     colorMorphAt: -10,
@@ -901,17 +924,25 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     a.jumpKick = -195;
   }, [summonTrigger]);
 
-  // Impulso lateral cuando Xox se desliza hacia o desde la ventana de su espacio
+  // Aterrizaje vivo y expresivo al llegar desde el vuelo Chat <-> Espacio de Xox (sin giro 360°)
   useEffect(() => {
     if (!glideTrigger) return;
     const a = anim.current;
+    syncSharedPhase(a);
+    const dir = glideDir === "right" ? 1 : -1;
+    a.landedAt = a.t;
     a.summonAt = a.t;
     a.waveStart = a.t;
-    a.blushBoostUntil = Math.max(a.blushBoostUntil, a.t + 1.45);
-    a.blushPeak = Math.max(a.blushPeak, 0.52);
+    a.postTalkSmileUntil = Math.max(a.postTalkSmileUntil, a.t + 1.25);
+    a.blushBoostUntil = Math.max(a.blushBoostUntil, a.t + 1.7);
+    a.blushPeak = Math.max(a.blushPeak, 0.64);
+    a.forceBlinkAt = a.t;
     if (a.reduce) return;
-    a.squashKick = glideDir === "right" ? -2.8 : 2.8;
-    a.jumpKick = -85;
+    // Aterrizaje con peso real: balanceo de frenado, rebote gelatinoso visible y desaceleración suave de chispas
+    a.rotKick = dir * 175;
+    a.lookKickX = dir * 3.0;
+    a.squashKick = 4.0;
+    a.jumpKick = 125;
   }, [glideTrigger, glideDir]);
 
   // Seguimiento global del cursor: Xox mira hacia donde esté el puntero solo cuando está activo
@@ -934,6 +965,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   useEffect(() => {
     if (!active) return;
     const a = anim.current;
+    syncSharedPhase(a);
     a.reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     const A = a.reduce ? 0.35 : 1;
 
@@ -983,7 +1015,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     let nextBlink = a.t + 1.6;
     let blinkStart = -10;
     let blinkHold = 0;
-    let lastForceBlinkSeen = a.forceBlinkAt;
+    let lastForceBlinkSeen =
+      a.forceBlinkAt >= a.t - 0.05 ? a.forceBlinkAt - 1 : a.forceBlinkAt;
+    let summonShown = false;
+    summonSilhouetteRef.current?.setAttribute("display", "none");
     // Expresión de enfoque que se muestra actualmente; sólo cambia con los ojos cerrados
     let shownExpr: FocusExpr = "none";
     let exprSwapPending = false;
@@ -1000,7 +1035,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         nextBlink = at + (Math.random() < 0.18 ? 0.32 : 2.6 + Math.random() * 3.4);
       }
     };
-    let nextGlance = a.t + 2;
+    let nextGlance = a.t + 0.55;
     let glance = { x: 0, y: 0 };
     let prevDragActive = false;
 
@@ -1011,7 +1046,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
 
       const st = stateRef.current;
-      const dt = Math.min((now - last) / 1000, 1 / 20);
+      const dt = clamp((now - last) / 1000, 0, 1 / 20);
       last = now;
       a.t += dt;
       const t = a.t;
@@ -1192,21 +1227,22 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const dm = dragMotionPropRef.current?.current ?? null;
       const dragging = Boolean(dm?.active);
       if (dragging && !prevDragActive) {
-        // Anticipación/despegue suave al agarrar la Quick Bar
+        // Anticipación/despegue vivo al iniciar desplazamiento o arrastre
+        a.waveStart = a.t;
         if (!a.reduce) {
-          a.squashKick += 1.6;
-          a.jumpKick -= 70;
+          a.squashKick += 2.2;
+          a.jumpKick -= 95;
         }
       } else if (!dragging && prevDragActive) {
         // Asentamiento con compresión proporcional al impulso de suelta
         const impact = clamp(
           Math.hypot(dm?.releaseVx ?? 0, dm?.releaseVy ?? 0) / 900,
-          0.3,
-          1.35
+          0.35,
+          1.45
         );
         if (!a.reduce) {
-          a.squashKick += 2.4 * impact;
-          a.jumpKick += 55 * impact;
+          a.squashKick += 2.8 * impact;
+          a.jumpKick += 68 * impact;
         }
       }
       prevDragActive = dragging;
@@ -1278,18 +1314,27 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         jump.v += a.jumpKick;
         a.jumpKick = 0;
       }
+      if (a.rotKick) {
+        rot.v += a.rotKick;
+        a.rotKick = 0;
+      }
+      if (a.lookKickX) {
+        lookX.v += a.lookKickX;
+        a.lookKickX = 0;
+      }
       if (a.blushKick) {
         blush.v += a.blushKick;
         a.blushKick = 0;
       }
       const interactiveBlush = hoverRef.current ? 0.62 : 0;
       const boostBlush = t <= a.blushBoostUntil ? a.blushPeak : 0;
+      const dragBlush = dragging ? smooth01(0.15, 0.7, dragSpeed) * 0.52 : 0;
       const successBlush = wSucc * 0.96;
       const talkingBlush = wTalk * (0.4 + 0.16 * talkEmphasis);
       const codingOkBlush = wCode * (isTermPhase && isTermDoneOk ? 0.48 : 0);
       const blushTarget =
         (1 - wAlert) *
-        clamp(Math.max(successBlush, boostBlush, interactiveBlush, talkingBlush, codingOkBlush), 0, 1);
+        clamp(Math.max(successBlush, boostBlush, interactiveBlush, dragBlush, talkingBlush, codingOkBlush), 0, 1);
       const blushRising = blushTarget > blush.x;
       const windup = a.windupUntil ? -18 : 0;
 
@@ -1308,15 +1353,20 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           swayCode * wCode) *
         A;
 
-      const dragTilt = dragging ? -dragNx * 14 * A : 0;
+      const landingPhase = (t - a.landedAt) / 0.95;
+      const landingEnergy =
+        landingPhase >= 0 && landingPhase <= 1 && !a.reduce
+          ? Math.pow(1 - landingPhase, 1.75)
+          : 0;
+      const dragTilt = dragging ? -dragNx * 16 * A : 0;
       const subSteps = dt > 0.018 ? 2 : 1;
       const h = dt / subSteps;
       for (let sIdx = 0; sIdx < subSteps; sIdx += 1) {
         step(
           rot,
           a.spinTarget + windup + sway + lookX.x * 8 * A + dragTilt,
-          alerting ? 160 : dragging ? 110 : 78,
-          alerting ? 11 : dragging ? 14 : 14,
+          alerting ? 160 : dragging ? 120 : 78,
+          alerting ? 11 : dragging ? 13 : 13.5,
           h
         );
 
@@ -1369,16 +1419,19 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         `translate(${(C - lookX.x * 2.5).toFixed(2)} ${C}) scale(${yaw.toFixed(4)} 1) translate(${-C} ${-C})`
       );
 
-      // --- Cuerpo gelatinoso (follow-through en las puntas, estrella pura sin brazos) ---
-      const starSpeed = alerting ? 3.2 : 1 + 0.8 * wThink + 0.35 * wCode + 0.32 * wTalk;
+      // --- Cuerpo gelatinoso (follow-through vivo en las puntas durante vuelo y aterrizaje) ---
+      const starSpeed = alerting
+        ? 3.2
+        : 1 + 0.8 * wThink + 0.35 * wCode + 0.32 * wTalk + dragSpeed * 1.45 + landingEnergy * 1.1;
       a.starPhase += dt * starSpeed;
-      const starAmp = (alerting ? 2.1 : 1 + 0.6 * wThink + 0.18 * wCode + 0.28 * wTalk) * A;
-      const lag = clamp(-rot.v * 0.014, -14, 14);
+      const starAmp =
+        (alerting ? 2.1 : 1 + 0.6 * wThink + 0.18 * wCode + 0.28 * wTalk + dragSpeed * 0.95 + landingEnergy * 0.75) * A;
+      const lag = clamp(-rot.v * 0.017 - dragNx * 13 * A, -18, 18);
       const starPath = buildStar({
         phase: a.starPhase,
         amp: starAmp,
         lag,
-        reach: hover.x * 0.03 + wSucc * 0.02 + talkEmphasis * 0.018,
+        reach: hover.x * 0.03 + wSucc * 0.02 + talkEmphasis * 0.018 + dragSpeed * 0.032 + landingEnergy * 0.024,
         wave: t - a.waveStart,
       });
       starRef.current?.setAttribute("d", starPath);
@@ -1414,7 +1467,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const coreMidOp = corePeakOp * 0.56;
       const coreOuterOp = corePeakOp * 0.16;
 
-      const summonPhase = (t - a.summonAt) / 0.65;
+      const summonPhase = (t - a.summonAt) / 0.62;
       const summonActive = summonPhase >= 0 && summonPhase <= 1 && !a.reduce;
       const colorMorphPhase = (t - a.colorMorphAt) / 0.72;
       const colorMorphActive = colorMorphPhase >= 0 && colorMorphPhase <= 1;
@@ -1473,7 +1526,6 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       lensHandleRef.current?.setAttribute("stroke", cRim1);
       lensRingRef.current?.setAttribute("stroke", cBodyTint);
       lensRingRef.current?.setAttribute("fill", cRim1);
-      summonRingRef.current?.setAttribute("stroke", cGlow);
       laptopBaseRimRef.current?.setAttribute("stroke", cRim1);
       laptopScreenRimRef.current?.setAttribute("stroke", cAccessory);
 
@@ -1496,15 +1548,35 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           clamp(baseGlowOp + summonBoost + colorBoost, 0, 1).toFixed(3)
         );
       }
-      if (summonRingRef.current) {
+      // --- Silueta estelar expansiva al aparecer / cambiar aura (dentro de yawRef: hereda la pose exacta) ---
+      if (summonSilhouetteRef.current) {
         if (summonActive) {
-          const ease = 1 - Math.pow(1 - summonPhase, 3);
-          summonRingRef.current.setAttribute("cy", y.toFixed(2));
-          summonRingRef.current.setAttribute("r", (34 + 70 * ease).toFixed(2));
-          summonRingRef.current.setAttribute("stroke-width", (2.4 - 1.9 * ease).toFixed(2));
-          summonRingRef.current.setAttribute("opacity", (0.72 * Math.pow(1 - summonPhase, 1.5)).toFixed(3));
-        } else {
-          summonRingRef.current.setAttribute("opacity", "0");
+          const ease = 1 - Math.pow(1 - summonPhase, 3.2);
+          const fadeIn = Math.min(summonPhase / 0.1, 1);
+          const fadeOut = Math.pow(1 - summonPhase, 1.65);
+          const env = fadeIn * fadeOut;
+          const scale = 1.01 + 0.31 * ease;
+          const offset = (C * (1 - scale)).toFixed(2);
+
+          if (!summonShown) {
+            summonSilhouetteRef.current.setAttribute("display", "inline");
+            summonShown = true;
+          }
+          summonSilhouetteRef.current.setAttribute("d", starPath);
+          summonSilhouetteRef.current.setAttribute(
+            "transform",
+            `translate(${offset} ${offset}) scale(${scale.toFixed(4)})`
+          );
+          summonSilhouetteRef.current.setAttribute("fill", cGlow);
+          summonSilhouetteRef.current.setAttribute("fill-opacity", (0.13 * env).toFixed(3));
+          summonSilhouetteRef.current.setAttribute("stroke-opacity", (0.85 * env).toFixed(3));
+          summonSilhouetteRef.current.setAttribute(
+            "stroke-width",
+            ((1.85 - 1.15 * ease) / scale).toFixed(2)
+          );
+        } else if (summonShown) {
+          summonSilhouetteRef.current.setAttribute("display", "none");
+          summonShown = false;
         }
       }
       // Anillo de datos orbital: transición suave con wThink (escala + opacidad)
@@ -1779,8 +1851,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         t < a.postTalkSmileUntil
           ? (1 - smooth01(a.postTalkSmileUntil - 0.45, a.postTalkSmileUntil, t)) * 0.9
           : 0;
+      const dragSmile = dragging ? smooth01(0.15, 0.65, dragSpeed) * 0.72 : 0;
       const smileTargetWeight =
-        Math.max(hover.x * 0.85, wSucc, codingMouthWeight, postTalkSmile) * (1 - wTalk);
+        Math.max(hover.x * 0.85, wSucc, codingMouthWeight, postTalkSmile, dragSmile) * (1 - wTalk);
       if (mouthRef.current) {
         // Boca genérica (hover / celebración), expresada en los mismos parámetros
         const genW = 3.0 + 1.5 * wSucc;
@@ -1873,23 +1946,48 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       );
       cheekRRef.current?.setAttribute("opacity", cheekOpacity);
 
-      // --- Chispas en órbita elíptica (profundidad por opacidad + color morph) ---
+      // --- Chispas en órbita elíptica continua (vivas durante el vuelo y desaceleran con suavidad al aterrizar) ---
       const colorOrbitBoost =
         colorMorphActive && !a.reduce ? 1.8 * Math.sin(colorMorphPhase * Math.PI) : 0;
       const orbitBoost =
-        1 + 1.2 * wThink + 0.45 * wTalk + 0.55 * wCode + (dragging ? dragSpeed * 1.4 : 0) + colorOrbitBoost;
+        1 +
+        1.2 * wThink +
+        0.45 * wTalk +
+        0.55 * wCode +
+        (dragging ? dragSpeed * 4.2 : 0) +
+        landingEnergy * 3.0 +
+        colorOrbitBoost;
+      a.sparkPhase += dt * orbitBoost;
       sparkRefs.current.forEach((el, i) => {
         if (!el) return;
-        const ang = t * (0.35 + i * 0.12) * orbitBoost + i * 2.094;
-        const radius = 92 + 5 * Math.sin(t * 1.3 + i) + (colorMorphActive && !a.reduce ? 6 * Math.sin(colorMorphPhase * Math.PI) : 0);
+        const ang = a.sparkPhase * (0.35 + i * 0.12) + i * 2.094;
+        const radius =
+          92 +
+          5 * Math.sin(t * 1.3 + i) +
+          (dragging ? 7 * dragSpeed : 0) +
+          landingEnergy * 5 +
+          (colorMorphActive && !a.reduce ? 6 * Math.sin(colorMorphPhase * Math.PI) : 0);
+        const trailX = dragging ? -dragNx * (14 + i * 5) * A : 0;
+        const trailY = dragging ? -dragNy * (9 + i * 4) * A : 0;
         const depth = 0.5 + 0.5 * Math.sin(ang); // 0 = atrás, 1 = adelante
         const twinkle = 0.5 + 0.5 * Math.sin(t * 3 + i * 1.7);
-        el.setAttribute("cx", (C + Math.cos(ang) * radius).toFixed(2));
-        el.setAttribute("cy", (C + bob * 0.5 + Math.sin(ang) * radius * 0.5).toFixed(2));
-        el.setAttribute("opacity", ((0.2 + 0.6 * twinkle) * (0.45 + 0.55 * depth)).toFixed(3));
-        el.setAttribute("r", (1.2 + 0.9 * depth).toFixed(2));
+        const sparkOp = clamp(
+          (0.2 + 0.6 * twinkle) * (0.45 + 0.55 * depth) + (dragging ? 0.22 * dragSpeed : 0) + landingEnergy * 0.16,
+          0,
+          0.98
+        );
+        el.setAttribute("cx", (C + Math.cos(ang) * radius + trailX).toFixed(2));
+        el.setAttribute("cy", (C + bob * 0.5 + jump.x * 0.35 + Math.sin(ang) * radius * 0.5 + trailY).toFixed(2));
+        el.setAttribute("opacity", sparkOp.toFixed(3));
+        el.setAttribute("r", (1.2 + 0.9 * depth + landingEnergy * 0.35).toFixed(2));
         el.setAttribute("fill", i === 1 ? cAccessory : i === 2 ? cRim1 : "#FFFFFF");
       });
+
+      // Comparte fase viva para relevos sin cortes entre Chat <-> Vuelo <-> Espacio de Xox
+      sharedXoxPhase.t = t;
+      sharedXoxPhase.starPhase = a.starPhase;
+      sharedXoxPhase.sparkPhase = a.sparkPhase;
+      sharedXoxPhase.updatedAt = now;
 
       // --- Satélites orbitales de sub-agentes activos (mini-Xox pequeños con cristal nítido) ---
       const currentSubs = subagentsRef.current ?? [];
@@ -1938,6 +2036,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       if (raf) cancelAnimationFrame(raf);
+      summonSilhouetteRef.current?.setAttribute("display", "none");
     };
   }, [active]);
 
@@ -2110,18 +2209,6 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         {/* Aura */}
         <circle ref={glowRef} cx={C} cy={C} r="84" fill={`url(#${ids.glow})`} opacity="0.55" />
 
-        {/* Destello estelar al aparecer */}
-        <circle
-          ref={summonRingRef}
-          cx={C}
-          cy={C}
-          r="34"
-          fill="none"
-          stroke={initialColors.glow}
-          strokeWidth="2"
-          opacity="0"
-        />
-
         {/* Chispas en órbita */}
         {[0, 1, 2].map((i) => (
           <circle
@@ -2232,6 +2319,18 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         {/* Cuerpo */}
         <g ref={bodyRef}>
           <g ref={yawRef}>
+            {/* Silueta estelar expansiva al aparecer / cambiar aura (hereda exactamente pose, rotación y yaw 3D) */}
+            <path
+              ref={summonSilhouetteRef}
+              d={initialPath}
+              fill={initialColors.glow}
+              fillOpacity="0"
+              stroke={state === "alert" ? "#F87171" : `url(#${ids.rim})`}
+              strokeWidth="1.6"
+              strokeLinejoin="round"
+              display="none"
+              pointerEvents="none"
+            />
             {glassContrast && (
               <path
                 ref={starUnderlayRef}

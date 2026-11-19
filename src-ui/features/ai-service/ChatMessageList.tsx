@@ -177,6 +177,7 @@ interface ChatMessageListProps {
   accentPreset?: XoxAccentPreset | string;
   agentName?: string;
   xoxAwayInStudio?: boolean;
+  xoxInFlight?: boolean;
   xoxTravelPhase?: "idle" | "to-studio" | "from-studio";
   glideSeq?: number;
   rosterSubagents?: XoxSubagentOrbitItem[];
@@ -568,6 +569,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   accentPreset = "classic",
   agentName = "Xox",
   xoxAwayInStudio = false,
+  xoxInFlight = false,
   xoxTravelPhase = "idle",
   glideSeq = 0,
   rosterSubagents,
@@ -776,8 +778,9 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
           .replace(/<\s*(?:\/\s*)?(?:analisis|analysis|respuesta|response|canvas|lienzo|acciones|actions|posta|reply|resp)\s*(?:>|$)/gi, "")
           .trim();
 
-        const laneTravelClass =
-          xoxTravelPhase === "to-studio"
+        const laneTravelClass = xoxInFlight
+          ? "opacity-0 pointer-events-none"
+          : xoxTravelPhase === "to-studio"
             ? "xox-stage-away"
             : xoxTravelPhase === "from-studio"
               ? "xox-stage-home"
@@ -789,12 +792,14 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
             <div className="flex items-start gap-2 @md:gap-3 @lg:gap-4 @5xl:gap-6">
             {/* Mascota Xox: carril izquierdo responsive con deslizamiento suave hacia/desde Espacio de Xox */}
             <div
+              data-xox-lane-slot={isActiveGuideTurn ? "active" : undefined}
               className={`xox-chat-lane-slot shrink-0 self-start sticky top-4 @md:top-5 @5xl:top-6 w-[110px] @sm:w-[130px] @md:w-[150px] @lg:w-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] flex justify-center ${
                 xoxAwayInStudio ? "is-away" : ""
               }`}
             >
               {isActiveGuideTurn ? (
                 <div
+                  data-xox-stage="chat-lane"
                   className={`relative shrink-0 -my-1 @md:-my-2 @5xl:-my-3 select-none pointer-events-none ${laneTravelClass}`}
                 >
                   <XoxStar
@@ -803,9 +808,9 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     hitArea="star"
                     clickBehavior="greet"
                     accentPreset={accentPreset}
-                    glideTrigger={glideSeq}
+                    glideTrigger={xoxInFlight ? 0 : glideSeq}
                     glideDir={xoxTravelPhase === "to-studio" ? "right" : "left"}
-                    active={!xoxAwayInStudio || xoxTravelPhase !== "to-studio"}
+                    active={!xoxAwayInStudio && !xoxInFlight}
                     className="w-[110px] h-[110px] @sm:w-[130px] @sm:h-[130px] @md:w-[150px] @md:h-[150px] @lg:w-[174px] @lg:h-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] @2xl:h-[clamp(198px,19.5cqi,264px)]"
                     summonTrigger={summonTrigger}
                     onClick={onXoxClick}

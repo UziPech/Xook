@@ -1,5 +1,5 @@
 // Logotipo tipográfico brutalista XOOK (geometría arquitectónica, sin recuadros)
-export function XookWordmark({ className = "h-3.5 w-auto" }: { className?: string }) {
+export function XookWordmark({ className = "block h-3.5 w-auto" }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 94 16"

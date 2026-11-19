@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useId } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useId } from "react";
 import { 
   CheckCircle2, 
   Brain, 
@@ -57,6 +57,11 @@ import {
   type XoxAccentPreset,
   type XoxTerminalFeed,
 } from "./components/XoxStar";
+import {
+  XoxFlightOverlay,
+  type XoxFlightPoint,
+  type XoxFlightSpec,
+} from "./components/XoxFlightOverlay";
 import {
   XoxStudioPanel,
   type XoxStudioTabId,
@@ -715,7 +720,7 @@ function ContextIcon({ type, className = "w-3.5 h-3.5 text-zinc-400 shrink-0" }:
   }
 }
 
-// Miniatura del rostro de Xox para el header (silueta fiel al cuerpo estelar y expresión)
+// Miniatura del rostro de Xox para la identidad de marca en el panel lateral (silueta fiel al cuerpo estelar y expresión)
 const XOX_MINI_STAR_PATH =
   "M118.1 67.6Q126.8 55.4 132.4 69.3L137.9 82.7Q142.8 94.7 155.2 98.6L167.3 102.4Q181.6 106.9 170.2 116.6L160.1 125.0Q150.1 133.4 149.7 146.4L149.5 155.2Q149.0 170.2 135.4 163.8L130.5 161.5Q118.7 156.0 106.7 160.9L100.9 163.3Q87.0 168.9 87.7 153.9L88.2 143.7Q88.8 130.7 79.7 121.4L69.6 111.0Q59.1 100.2 73.8 97.3L88.2 94.4Q101.0 91.8 108.5 81.2Z";
 
@@ -752,7 +757,7 @@ function XoxHeaderFace({
       title={`${agentName} · Haz clic para saludar`}
       className="group w-[26px] h-[26px] shrink-0 flex items-center justify-center cursor-pointer transition-transform hover:scale-110 active:scale-95 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/40 rounded-full"
     >
-      <svg viewBox="55 52 130 126" className="w-full h-full" aria-hidden="true">
+      <svg viewBox="55 52 130 126" className="block w-full h-full" aria-hidden="true">
         <defs>
           <linearGradient id={ids.body} x1="65" y1="60" x2="175" y2="170" gradientUnits="userSpaceOnUse">
             <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.34" />
@@ -888,6 +893,21 @@ export default function App() {
   const [xoxTravelPhase, setXoxTravelPhase] = useState<"idle" | "to-studio" | "from-studio">("idle");
   const [xoxGlideSeq, setXoxGlideSeq] = useState<number>(0);
   const [xoxExitingStage, setXoxExitingStage] = useState<boolean>(false);
+  const [xoxFlight, setXoxFlight] = useState<XoxFlightSpec | null>(null);
+  const [xoxFlightPending, setXoxFlightPending] = useState<boolean>(false);
+  const xoxInFlight = Boolean(xoxFlight) || xoxFlightPending;
+  const xoxFlightIdRef = useRef<number>(0);
+  const pendingXoxFlightRef = useRef<{
+    direction: "to-studio";
+    from: XoxFlightPoint;
+  } | null>(null);
+  const lastChatXoxSnapshotRef = useRef<{
+    cx: number;
+    cy: number;
+    size: number;
+    viewportH: number;
+    isHero: boolean;
+  } | null>(null);
   const prevShowStudioRef = useRef<boolean>(false);
 
   const [activeMode, setActiveMode] = useState<XoxModeId | null>(null);
@@ -939,6 +959,42 @@ export default function App() {
   const displayAccentPreset =
     showXoxStudio && previewAccentPreset ? previewAccentPreset : effectiveAccentPreset;
 
+  const prefersReducedMotion = () =>
+    typeof window !== "undefined" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const measureFlightPoint = (selector: string): XoxFlightPoint | null => {
+    const el = document.querySelector<HTMLElement>(selector);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (r.width < 24 || r.height < 24) return null;
+    if (
+      r.bottom < 0 ||
+      r.top > window.innerHeight ||
+      r.right < 0 ||
+      r.left > window.innerWidth
+    ) {
+      return null;
+    }
+    return {
+      cx: r.left + r.width / 2,
+      cy: r.top + r.height / 2,
+      size: r.width,
+    };
+  };
+
+  const getStudioRightEdge = () => {
+    const rightSplitter = document.querySelector<HTMLElement>(
+      '[data-xox-right-splitter][data-xox-right-open="true"]'
+    );
+    if (rightSplitter) {
+      const r = rightSplitter.getBoundingClientRect();
+      if (r.left > 0) return r.left;
+    }
+    const mainRow = document.querySelector<HTMLElement>("[data-xox-main-row]");
+    return mainRow ? mainRow.getBoundingClientRect().right : window.innerWidth;
+  };
+
   useEffect(() => {
     if (prevShowStudioRef.current === showXoxStudio) return;
     prevShowStudioRef.current = showXoxStudio;
@@ -946,14 +1002,18 @@ export default function App() {
       setXoxTravelPhase("to-studio");
       setXoxExitingStage(true);
       setXoxGlideSeq((n) => n + 1);
-      const t = window.setTimeout(() => setXoxExitingStage(false), 480);
+      const t = window.setTimeout(() => setXoxExitingStage(false), 380);
       return () => window.clearTimeout(t);
     }
+    pendingXoxFlightRef.current = null;
+    setXoxFlightPending(false);
+    setXoxFlight((curr) => (curr?.direction === "to-studio" ? null : curr));
     setXoxExitingStage(false);
     setXoxTravelPhase("from-studio");
     setXoxGlideSeq((n) => n + 1);
     setPreviewAccentPreset(null);
-    return undefined;
+    const t2 = window.setTimeout(() => setXoxTravelPhase("idle"), 440);
+    return () => window.clearTimeout(t2);
   }, [showXoxStudio]);
 
   const refreshXoxStudioData = async () => {
@@ -973,12 +1033,94 @@ export default function App() {
     tab: XoxStudioTabId = "identity",
     skillSlug?: string | null
   ) => {
+    if (!showXoxStudio && !prefersReducedMotion()) {
+      const liveFlightFrom = measureFlightPoint("[data-xox-flight-mover]");
+      const heroFrom = measureFlightPoint('[data-xox-stage="chat-hero"]');
+      const laneFrom = heroFrom ? null : measureFlightPoint('[data-xox-stage="chat-lane"]');
+      const from = liveFlightFrom ?? heroFrom ?? laneFrom;
+      if (from) {
+        if (!liveFlightFrom) {
+          lastChatXoxSnapshotRef.current = {
+            ...from,
+            viewportH: window.innerHeight,
+            isHero: Boolean(heroFrom),
+          };
+        }
+        pendingXoxFlightRef.current = { direction: "to-studio", from };
+        setXoxFlightPending(true);
+      }
+    }
     setShowCanvas(false);
     setShowDocViewer(false);
     setXoxStudioTab(tab);
     setHighlightedSkillSlug(skillSlug ?? null);
     setShowXoxStudio(true);
     void refreshXoxStudioData();
+  };
+
+  const closeXoxStudio = () => {
+    if (showXoxStudio && !prefersReducedMotion()) {
+      const from =
+        measureFlightPoint("[data-xox-flight-mover]") ??
+        measureFlightPoint('[data-xox-stage="studio"]');
+      const chatSec = document.querySelector<HTMLElement>("[data-xox-chat-section]");
+      if (from && chatSec) {
+        const chatRect = chatSec.getBoundingClientRect();
+        const finalRight = getStudioRightEdge();
+        const finalChatW = Math.max(300, finalRight - chatRect.left);
+        const hasHeroDom = Boolean(document.querySelector('[data-xox-stage="chat-hero"]'));
+        const snap = lastChatXoxSnapshotRef.current;
+        let to: XoxFlightPoint | null = null;
+
+        if (hasHeroDom) {
+          const responsiveSize =
+            window.innerWidth >= 1280
+              ? 456
+              : window.innerWidth >= 1024
+                ? 408
+                : window.innerWidth >= 640
+                  ? 384
+                  : 308;
+          const sameViewportH =
+            Boolean(snap && snap.isHero && Math.abs(snap.viewportH - window.innerHeight) < 8);
+          const toSize = sameViewportH && snap ? snap.size : responsiveSize;
+          const toCy =
+            sameViewportH && snap
+              ? snap.cy
+              : chatRect.top + Math.max(180, (chatRect.height - 170) * 0.44);
+          to = {
+            cx: chatRect.left + finalChatW / 2,
+            cy: toCy,
+            size: toSize,
+          };
+        } else if (snap && !snap.isHero) {
+          const laneSlot = document.querySelector<HTMLElement>('[data-xox-lane-slot="active"]');
+          if (laneSlot) {
+            const lr = laneSlot.getBoundingClientRect();
+            if (lr.top >= 0 && lr.top <= window.innerHeight - 60) {
+              to = {
+                cx: snap.cx,
+                cy: lr.top + snap.size / 2 - 4,
+                size: snap.size,
+              };
+            }
+          }
+        }
+
+        if (to) {
+          pendingXoxFlightRef.current = null;
+          setXoxFlightPending(false);
+          xoxFlightIdRef.current += 1;
+          setXoxFlight({
+            id: xoxFlightIdRef.current,
+            direction: "from-studio",
+            from,
+            to,
+          });
+        }
+      }
+    }
+    setShowXoxStudio(false);
   };
   
   // Estados para paneles laterales, tareas y visor de documentos multi-pestaña (estilo editor)
@@ -5098,11 +5240,47 @@ export default function App() {
   const leftPresence = useAnimatedPresence(showLeftSidebar, 290);
   const rightPresence = useAnimatedPresence(showRightSidebar, 290);
   const canvasPresence = useAnimatedPresence(showCanvas && Boolean(activeCanvas), 290);
-  const studioPresence = useAnimatedPresence(showXoxStudio, 290);
+  const studioPresence = useAnimatedPresence(showXoxStudio, 400);
   const docViewerPresence = useAnimatedPresence(
     showDocViewer && Boolean(pdfPanelState || pdfDraftProgress),
     290
   );
+
+  // Calcula la coordenada destino exacta del santuario antes del primer paint para iniciar el vuelo físico
+  useLayoutEffect(() => {
+    if (!showXoxStudio || !studioPresence.mounted) return;
+    const pending = pendingXoxFlightRef.current;
+    if (!pending || pending.direction !== "to-studio") return;
+    pendingXoxFlightRef.current = null;
+
+    const innerEl = document.querySelector<HTMLElement>("[data-xox-studio-inner]");
+    const starEl = document.querySelector<HTMLElement>('[data-xox-stage="studio"]');
+    if (!innerEl || !starEl) {
+      setXoxFlightPending(false);
+      return;
+    }
+
+    const innerRect = innerEl.getBoundingClientRect();
+    const starRect = starEl.getBoundingClientRect();
+    const finalStudioRight = getStudioRightEdge();
+    const finalInnerLeft = finalStudioRight - studioPanelWidth;
+    const relX = starRect.left - innerRect.left;
+
+    const to: XoxFlightPoint = {
+      cx: finalInnerLeft + relX + starRect.width / 2,
+      cy: starRect.top + starRect.height / 2,
+      size: starRect.width,
+    };
+
+    xoxFlightIdRef.current += 1;
+    setXoxFlightPending(false);
+    setXoxFlight({
+      id: xoxFlightIdRef.current,
+      direction: "to-studio",
+      from: pending.from,
+      to,
+    });
+  }, [showXoxStudio, studioPresence.mounted, studioPanelWidth, showRightSidebar]);
 
   const handleOpenCanvas = (canvas: CanvasArtifact) => {
     setShowXoxStudio(false);
@@ -5779,8 +5957,8 @@ export default function App() {
         }`}
       >
         
-        {/* Identidad de Marca y Toggle de Contexto Izquierdo */}
-        <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+        {/* Toggle de Contexto Izquierdo */}
+        <div className="flex items-center gap-2 min-w-0">
           <button
             type="button"
             onClick={() => setShowLeftSidebar(!showLeftSidebar)}
@@ -5795,18 +5973,6 @@ export default function App() {
           >
             <PanelLeft className="w-4 h-4" aria-hidden="true" />
           </button>
-
-          <div aria-hidden="true" className="h-4 w-px bg-white/[0.08] mx-0.5 shrink-0" />
-
-          <div className="flex items-center gap-2 min-w-0">
-            <XoxHeaderFace
-              state={xoxState}
-              onClick={handleXoxClick}
-              agentName={effectiveAgentName}
-              accentPreset={displayAccentPreset}
-            />
-            <XookWordmark className="h-3 sm:h-3.5 w-auto shrink-0 text-zinc-100" />
-          </div>
         </div>
 
         {/* Lado Derecho: Espacio de Xox + Toggle de Canvas + Tareas y Decisiones */}
@@ -5815,7 +5981,7 @@ export default function App() {
             type="button"
             onClick={() => {
               if (showXoxStudio) {
-                setShowXoxStudio(false);
+                closeXoxStudio();
               } else {
                 openXoxStudio("identity");
               }
@@ -5893,7 +6059,7 @@ export default function App() {
       </header>
 
       {/* 2. Cuerpo Principal en 3 Columnas: [Contexto Izq] | [Xox Centro] | [Tareas Der] */}
-      <div className="flex-1 flex overflow-hidden">
+      <div data-xox-main-row className="flex-1 flex overflow-hidden">
         
         {/* ========================================================================= */}
         {/* COLUMNA 1: CONTEXTO DEL LADO IZQUIERDO                                    */}
@@ -5913,106 +6079,105 @@ export default function App() {
                 className="h-full bg-[#07080b] flex flex-col shrink-0 overflow-hidden select-none"
               >
               
-              {/* Cabecera del Panel con Tabs Contexto / Chats */}
-              <div className="px-2.5 py-2 border-b border-white/[0.06] flex items-center justify-between gap-2 bg-[#090a0e]">
-                <JellyPillTrack
-                  activeKey={leftTab}
-                  role="tablist"
-                  aria-label="Secciones del panel lateral"
-                  pillRadius="9999px"
-                  className="flex items-center gap-1 p-0.5 rounded-full"
-                  onKeyDown={(e) => {
-                    if (
-                      e.key === "ArrowLeft" ||
-                      e.key === "ArrowRight" ||
-                      e.key === "Home" ||
-                      e.key === "End"
-                    ) {
-                      e.preventDefault();
-                      const nextTab: "context" | "chats" =
-                        e.key === "Home"
-                          ? "context"
-                          : e.key === "End"
-                          ? "chats"
-                          : leftTab === "context"
-                          ? "chats"
-                          : "context";
-                      setLeftTab(nextTab);
-                      document
-                        .getElementById(
-                          nextTab === "context"
-                            ? "xook-sidebar-tab-context"
-                            : "xook-sidebar-tab-chats"
-                        )
-                        ?.focus();
-                    }
-                  }}
-                >
-                  <button
-                    id="xook-sidebar-tab-context"
-                    type="button"
-                    role="tab"
-                    aria-selected={leftTab === "context"}
-                    tabIndex={leftTab === "context" ? 0 : -1}
-                    onClick={() => setLeftTab("context")}
-                    className={`xook-jelly-tab flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
-                      leftTab === "context"
-                        ? "text-white"
-                        : "text-zinc-400 hover:text-zinc-200"
-                    }`}
-                  >
-                    <FolderOpen
-                      className={`w-3.5 h-3.5 transition-colors duration-200 ${
-                        leftTab === "context" ? "text-zinc-200" : "text-zinc-500"
-                      }`}
+              {/* Cabecera del Panel Lateral: Identidad XOOK + Tabs Contexto / Chats */}
+              <div className="xook-sidebar-header-shell w-full px-2.5 py-2 border-b border-white/[0.06] bg-[#090a0e] shrink-0">
+                <div className="xook-sidebar-header-inner">
+                  <div className="flex items-center-safe gap-2 shrink-0 min-w-0">
+                    <XoxHeaderFace
+                      state={xoxState}
+                      onClick={handleXoxClick}
+                      agentName={effectiveAgentName}
+                      accentPreset={displayAccentPreset}
                     />
-                    <span>Contexto</span>
-                  </button>
-                  <button
-                    id="xook-sidebar-tab-chats"
-                    type="button"
-                    role="tab"
-                    aria-selected={leftTab === "chats"}
-                    tabIndex={leftTab === "chats" ? 0 : -1}
-                    onClick={() => setLeftTab("chats")}
-                    className={`xook-jelly-tab flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
-                      leftTab === "chats"
-                        ? "text-white"
-                        : "text-zinc-400 hover:text-zinc-200"
-                    }`}
-                  >
-                    <MessageSquare
-                      className={`w-3.5 h-3.5 transition-colors duration-200 ${
-                        leftTab === "chats" ? "text-zinc-200" : "text-zinc-500"
-                      }`}
-                    />
-                    <span>Chats</span>
-                    {conversations.length > 0 && (
-                      <span
-                        className={`text-[10px] font-mono tabular-nums px-1.5 py-0.2 rounded-full transition-colors duration-200 ${
-                          leftTab === "chats"
-                            ? "bg-white/[0.12] text-white"
-                            : "bg-white/[0.07] text-zinc-300"
-                        }`}
-                      >
-                        {conversations.length}
-                      </span>
-                    )}
-                  </button>
-                </JellyPillTrack>
+                    <XookWordmark className="block h-3.5 w-auto shrink-0 text-zinc-100" />
+                  </div>
 
-                {leftTab === "chats" && (conversations.length > 0 || chatMessages.length > 0) ? (
-                  <button
-                    type="button"
-                    onClick={handleStartNewChat}
-                    disabled={isChatStreaming}
-                    title="Iniciar nueva conversación"
-                    className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-200 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.1] px-2.5 py-1 rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0 focus-visible:outline-2 focus-visible:outline-white/60"
+                  <JellyPillTrack
+                    activeKey={leftTab}
+                    role="tablist"
+                    aria-label="Secciones del panel lateral"
+                    pillRadius="9999px"
+                    className="flex items-center gap-1 p-0.5 rounded-full shrink-0"
+                    onKeyDown={(e) => {
+                      if (
+                        e.key === "ArrowLeft" ||
+                        e.key === "ArrowRight" ||
+                        e.key === "Home" ||
+                        e.key === "End"
+                      ) {
+                        e.preventDefault();
+                        const nextTab: "context" | "chats" =
+                          e.key === "Home"
+                            ? "context"
+                            : e.key === "End"
+                            ? "chats"
+                            : leftTab === "context"
+                            ? "chats"
+                            : "context";
+                        setLeftTab(nextTab);
+                        document
+                          .getElementById(
+                            nextTab === "context"
+                              ? "xook-sidebar-tab-context"
+                              : "xook-sidebar-tab-chats"
+                          )
+                          ?.focus();
+                      }
+                    }}
                   >
-                    <SquarePen className="w-3 h-3 text-zinc-300" />
-                    <span>Nueva</span>
-                  </button>
-                ) : null}
+                    <button
+                      id="xook-sidebar-tab-context"
+                      type="button"
+                      role="tab"
+                      aria-selected={leftTab === "context"}
+                      tabIndex={leftTab === "context" ? 0 : -1}
+                      onClick={() => setLeftTab("context")}
+                      className={`xook-jelly-tab flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
+                        leftTab === "context"
+                          ? "text-white"
+                          : "text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      <FolderOpen
+                        className={`w-3.5 h-3.5 transition-colors duration-200 ${
+                          leftTab === "context" ? "text-zinc-200" : "text-zinc-500"
+                        }`}
+                      />
+                      <span>Contexto</span>
+                    </button>
+                    <button
+                      id="xook-sidebar-tab-chats"
+                      type="button"
+                      role="tab"
+                      aria-selected={leftTab === "chats"}
+                      tabIndex={leftTab === "chats" ? 0 : -1}
+                      onClick={() => setLeftTab("chats")}
+                      className={`xook-jelly-tab flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
+                        leftTab === "chats"
+                          ? "text-white"
+                          : "text-zinc-400 hover:text-zinc-200"
+                      }`}
+                    >
+                      <MessageSquare
+                        className={`w-3.5 h-3.5 transition-colors duration-200 ${
+                          leftTab === "chats" ? "text-zinc-200" : "text-zinc-500"
+                        }`}
+                      />
+                      <span>Chats</span>
+                      {conversations.length > 0 && (
+                        <span
+                          className={`text-[10px] font-mono tabular-nums px-1.5 py-0.2 rounded-full transition-colors duration-200 ${
+                            leftTab === "chats"
+                              ? "bg-white/[0.12] text-white"
+                              : "bg-white/[0.07] text-zinc-300"
+                          }`}
+                        >
+                          {conversations.length}
+                        </span>
+                      )}
+                    </button>
+                  </JellyPillTrack>
+                </div>
               </div>
 
               {leftTab === "context" ? (
@@ -6190,8 +6355,25 @@ export default function App() {
                   id="xook-sidebar-panel-chats"
                   role="tabpanel"
                   aria-labelledby="xook-sidebar-tab-chats"
-                  className="flex-1 flex flex-col overflow-hidden"
+                  className="flex-1 flex flex-col min-h-0 overflow-hidden"
                 >
+                  {(conversations.length > 0 || chatMessages.length > 0) && (
+                    <div className="px-2.5 pt-2.5 pb-1 flex items-center-safe justify-between gap-2 shrink-0 min-w-0">
+                      <span className="text-[11px] font-medium text-zinc-400 truncate">
+                        Conversaciones
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleStartNewChat}
+                        disabled={isChatStreaming}
+                        title="Iniciar nueva conversación"
+                        className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-200 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.1] px-2.5 py-1 rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0 focus-visible:outline-2 focus-visible:outline-white/60"
+                      >
+                        <SquarePen className="w-3 h-3 text-zinc-300" />
+                        <span>Nueva</span>
+                      </button>
+                    </div>
+                  )}
                   <div className="p-2.5 flex-1 overflow-y-auto space-y-1">
                     {conversations.length === 0 ? (
                       <div className="h-full flex flex-col items-center justify-center text-center px-5 py-10 space-y-3">
@@ -6370,6 +6552,7 @@ export default function App() {
 
         {/* COLUMNA CENTRAL: Xox + Conversación + Input Pinned al fondo */}
         <section
+          data-xox-chat-section
           style={getXoxCosmosVars(displayAccentPreset)}
           className={`xook-gemini-backdrop flex-1 min-w-0 flex flex-col overflow-hidden relative ${
             showXoxStudio ? "is-studio-open" : ""
@@ -6459,16 +6642,21 @@ export default function App() {
                   {/* Estrella Xox: protagonista en el Home; se desliza hacia Espacio de Xox al abrirlo */}
                   <div
                     className={`xox-hero-slot relative flex flex-col items-center justify-center select-none pointer-events-none -mt-8 -mb-10 sm:-mt-10 sm:-mb-14 lg:-mb-16 ${
-                      showXoxStudio ? "is-away" : ""
+                      showXoxStudio && !xoxFlightPending ? "is-away" : ""
                     }`}
                   >
                     <div
+                      data-xox-stage="chat-hero"
                       className={
-                        xoxTravelPhase === "to-studio"
-                          ? "xox-stage-away"
-                          : xoxTravelPhase === "from-studio"
-                            ? "xox-stage-home"
-                            : ""
+                        xoxFlight
+                          ? "opacity-0 pointer-events-none"
+                          : xoxFlightPending
+                            ? ""
+                            : xoxTravelPhase === "to-studio"
+                              ? "xox-stage-away"
+                              : xoxTravelPhase === "from-studio"
+                                ? "xox-stage-home"
+                                : ""
                       }
                     >
                       <XoxStar
@@ -6477,9 +6665,9 @@ export default function App() {
                         hitArea="star"
                         clickBehavior="greet"
                         accentPreset={displayAccentPreset}
-                        glideTrigger={xoxGlideSeq}
-                        glideDir={xoxTravelPhase === "to-studio" ? "right" : "left"}
-                        active={!showXoxStudio || xoxExitingStage}
+                        glideTrigger={showXoxStudio || xoxInFlight ? 0 : xoxGlideSeq}
+                        glideDir="left"
+                        active={!showXoxStudio && !xoxFlight}
                         className="w-[308px] h-[308px] sm:w-[384px] sm:h-[384px] lg:w-[408px] lg:h-[408px] xl:w-[456px] xl:h-[456px]"
                         summonTrigger={summonSeq}
                         onClick={handleXoxClick}
@@ -6623,8 +6811,9 @@ export default function App() {
                     accentPreset={displayAccentPreset}
                     agentName={effectiveAgentName}
                     xoxAwayInStudio={showXoxStudio && !xoxExitingStage}
+                    xoxInFlight={xoxInFlight}
                     xoxTravelPhase={xoxTravelPhase}
-                    glideSeq={xoxGlideSeq}
+                    glideSeq={showXoxStudio || xoxInFlight ? 0 : xoxGlideSeq}
                     xoxTerminal={xoxTerminalFeed}
                     rosterSubagents={
                       activeMode === "agent" && subagentTeamMode === "custom"
@@ -7436,16 +7625,18 @@ export default function App() {
             aria-hidden={!showXoxStudio}
             inert={!showXoxStudio}
             style={{ width: studioPresence.visible ? `${studioPanelWidth}px` : "0px" }}
-            className={`sidebar-slot shrink-0 bg-[#060709] overflow-hidden ${
+            className={`sidebar-slot sidebar-studio-slot shrink-0 bg-[#060709] overflow-hidden ${
               studioPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
             }`}
           >
             <div
+              data-xox-studio-inner
               style={{ width: `${studioPanelWidth}px` }}
               className="h-full border-l border-white/[0.07] p-2.5 shrink-0"
             >
               <XoxStudioPanel
                 visible={studioPresence.visible}
+                hideStar={xoxInFlight}
                 initialTab={xoxStudioTab}
                 highlightedSkillSlug={highlightedSkillSlug}
                 glideSeq={xoxGlideSeq}
@@ -7470,7 +7661,7 @@ export default function App() {
                   setStatusMessage(msg);
                   setTimeout(() => setStatusMessage((curr) => (curr === msg ? null : curr)), 3800);
                 }}
-                onClose={() => setShowXoxStudio(false)}
+                onClose={closeXoxStudio}
               />
             </div>
           </div>
@@ -7656,6 +7847,8 @@ export default function App() {
           <>
             {/* Separador redimensionable derecho (Splitter Aurora de Vidrio) */}
             <div
+              data-xox-right-splitter
+              data-xox-right-open={showRightSidebar ? "true" : "false"}
               onMouseDown={(e) => {
                 e.preventDefault();
                 setIsResizingRight(true);
@@ -7787,6 +7980,20 @@ export default function App() {
           setTimeout(() => setStatusMessage(null), 3800);
         }}
       />
+
+      {xoxFlight && (
+        <XoxFlightOverlay
+          flight={xoxFlight}
+          xoxState={xoxState}
+          accentPreset={displayAccentPreset}
+          terminal={xoxTerminalFeed}
+          onComplete={(flightId) => {
+            setXoxFlight((curr) => (curr && curr.id === flightId ? null : curr));
+            setXoxTravelPhase("idle");
+            setXoxExitingStage(false);
+          }}
+        />
+      )}
     </div>
   );
 }
