@@ -606,7 +606,7 @@ function getInlineStyles(options: InlineMarkdownOptions) {
       options.codeClassName ??
       (isLiquid
         ? "px-1.5 py-[1px] rounded-[5px] bg-white/[0.11] border border-white/[0.18] text-[0.9em] text-sky-100 font-mono [text-shadow:none]"
-        : "px-1.5 py-0.5 rounded-md bg-white/[0.08] border border-white/10 text-[12px] text-zinc-100 font-mono"),
+        : "px-1.5 py-0.5 rounded-md bg-white/[0.08] border border-white/10 text-[0.875em] text-zinc-100 font-mono"),
     link:
       options.linkClassName ??
       (isLiquid
@@ -619,7 +619,7 @@ function getInlineStyles(options: InlineMarkdownOptions) {
         : "px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/10 text-indigo-100 font-medium"),
     kbd: isLiquid
       ? "px-1.5 py-[1px] rounded-[5px] bg-white/[0.12] border border-white/[0.22] text-[0.85em] text-zinc-100 font-mono shadow-[inset_0_-1px_0_rgba(0,0,0,0.28)] [text-shadow:none]"
-      : "px-1.5 py-0.5 rounded-md bg-white/[0.09] border border-white/15 text-[11px] text-zinc-100 font-mono shadow-[inset_0_-1px_0_rgba(0,0,0,0.4)]",
+      : "px-1.5 py-0.5 rounded-md bg-white/[0.09] border border-white/15 text-[0.8em] text-zinc-100 font-mono shadow-[inset_0_-1px_0_rgba(0,0,0,0.4)]",
   };
 }
 
@@ -1371,18 +1371,18 @@ function parseMarkdownBlocks(rawText: string): MarkdownBlock[] {
 
 function headingClassFor(level: number, compact: boolean): string {
   if (compact) {
-    if (level <= 2) return "font-semibold text-white text-[13.5px] tracking-tight pt-0.5";
-    return "font-semibold text-zinc-100 text-[13px] pt-0.5";
+    if (level <= 2) return "font-semibold text-white text-[1.07em] tracking-tight pt-0.5";
+    return "font-semibold text-zinc-100 text-[1.02em] pt-0.5";
   }
   switch (level) {
     case 1:
-      return "text-[16px] font-bold text-white tracking-tight pt-1.5";
+      return "text-[1.2em] font-bold text-white tracking-tight pt-1.5";
     case 2:
-      return "text-[15px] font-semibold text-white tracking-tight pt-1";
+      return "text-[1.12em] font-semibold text-white tracking-tight pt-1";
     case 3:
-      return "text-[14px] font-semibold text-zinc-100 pt-1";
+      return "text-[1.04em] font-semibold text-zinc-100 pt-1";
     default:
-      return "text-[13px] font-semibold text-zinc-200 pt-0.5";
+      return "text-[0.98em] font-semibold text-zinc-200 pt-0.5";
   }
 }
 

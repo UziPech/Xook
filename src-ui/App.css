@@ -244,6 +244,342 @@
   }
 }
 
+/* Popover nativo monocromo para pantalla dividida en la cabecera */
+[popover].xook-assist-popover {
+  color: inherit;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  background: rgba(11, 11, 13, 0.96);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 22px 48px -14px rgba(0, 0, 0, 0.88);
+  overflow-x: hidden;
+  overflow-y: auto;
+  max-height: calc(100dvh - 68px);
+}
+
+[popover].xook-assist-popover:is(:popover-open, .\:popover-open) {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [popover].xook-assist-popover {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+    transition:
+      opacity 0.16s ease,
+      transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+      overlay 0.16s allow-discrete,
+      display 0.16s allow-discrete;
+  }
+
+  @starting-style {
+    [popover].xook-assist-popover:is(:popover-open, .\:popover-open) {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.98);
+    }
+  }
+}
+
+@supports (position-area: block-end) {
+  [popover].xook-assist-popover {
+    inset: auto;
+    margin: 8px 0 0;
+    position-area: block-end span-inline-start;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  }
+}
+
+@supports not (position-area: block-end) {
+  [popover].xook-assist-popover {
+    position: fixed;
+    inset: 52px 10px auto auto;
+    margin: 0;
+  }
+}
+
+/* En carriles angostos (<=520px), centra el panel bajo la cabecera para que nunca se corte a la izquierda */
+@media (max-width: 520px) {
+  [popover].xook-assist-popover {
+    position: fixed;
+    position-area: normal;
+    inset: 52px 8px auto 8px;
+    margin: 0 auto;
+  }
+}
+
+/* ==========================================================================
+   MODO ASISTENCIA / CARRIL COMPACTO: CONTAINER QUERIES Y DRAWERS SUPERPUESTOS
+   ========================================================================== */
+.xook-chat-container {
+  container-type: inline-size;
+  container-name: xook-chat;
+}
+
+.xox-hero-star-size {
+  width: min(324px, 92cqi);
+  height: min(324px, 92cqi);
+}
+
+.xox-hero-slot-adaptive {
+  margin-top: -1.75rem;
+  margin-bottom: -2.25rem;
+}
+
+.xox-hero-title-adaptive {
+  font-size: 1.25rem;
+  line-height: 1.28;
+}
+
+.xook-chat-scroll-pad {
+  padding-inline: 1rem;
+  padding-block: 0.875rem;
+}
+
+.xook-composer-pad {
+  padding-inline: 0.625rem;
+}
+
+/* En cualquier modo dividido ([data-xox-split="true"]) o vista angosta (<580px),
+   Xox acompaña fija y grande en la esquina inferior derecha sobre el input, creciendo con el ancho.
+   En ventana normal/completa (>=580px) vive en el carril izquierdo con simetría centrada. */
+.xox-compact-dock-perch {
+  display: none;
+  --xox-perch-size: clamp(296px, 62cqi, 430px);
+}
+
+.xox-compact-perch-star {
+  width: var(--xox-perch-size);
+  height: var(--xox-perch-size);
+  transition: width 0.22s ease, height 0.22s ease;
+}
+
+.xox-turn-row-adaptive {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.375rem;
+}
+
+.xox-lane-desktop-only {
+  display: none;
+}
+
+.xox-badge-compact-only {
+  display: flex;
+}
+
+[data-xox-split="true"] .xox-compact-dock-perch {
+  display: flex;
+  position: absolute;
+  right: calc(var(--xox-perch-size) * -0.11);
+  bottom: calc(100% - var(--xox-perch-size) * 0.22);
+  z-index: 20;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+[data-xox-split="true"] .xox-compact-dock-perch .xox-bubble {
+  left: auto !important;
+  right: 74%;
+  bottom: 58% !important;
+  transform: none !important;
+}
+
+[data-xox-split="true"] .xox-compact-dock-perch .xox-bubble-body {
+  max-width: min(220px, calc(100cqi - 160px));
+  text-align: left;
+}
+
+/* Columna centrada y contenida en TODOS los tamaños divididos (evita texto pegado al borde derecho) */
+[data-xox-split="true"] .xox-split-text-body {
+  width: min(510px, 86%);
+  max-width: 510px;
+  margin-inline: auto;
+  flex: none;
+}
+
+/* Tipografía adaptativa fluida para respuestas generadas y mensajes del chat según ancho del contenedor */
+.xox-chat-reply-text {
+  font-size: clamp(14.25px, calc(13.2px + 0.32cqi), 16.5px);
+  line-height: 1.58;
+}
+
+.xox-chat-user-text {
+  font-size: clamp(13.75px, calc(12.9px + 0.25cqi), 15.5px);
+  line-height: 1.5;
+}
+
+@container xook-chat (max-width: 579px) {
+  .xox-compact-dock-perch {
+    display: flex;
+    position: absolute;
+    right: calc(var(--xox-perch-size) * -0.11);
+    bottom: calc(100% - var(--xox-perch-size) * 0.22);
+    z-index: 20;
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .xox-compact-dock-perch .xox-bubble {
+    left: auto !important;
+    right: 74%;
+    bottom: 58% !important;
+    transform: none !important;
+  }
+
+  .xox-compact-dock-perch .xox-bubble-body {
+    max-width: min(210px, calc(100cqi - 150px));
+    text-align: left;
+  }
+
+  .xox-split-text-body {
+    width: min(510px, 86%);
+    max-width: 510px;
+    margin-inline: auto;
+    flex: none;
+  }
+}
+
+@container xook-chat (min-width: 580px) {
+  [data-xox-split="false"] .xox-chat-reply-text {
+    line-height: 1.64;
+  }
+
+  [data-xox-split="false"] .xox-turn-row-adaptive {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  [data-xox-split="false"] .xox-lane-desktop-only {
+    display: flex;
+  }
+
+  [data-xox-split="false"] .xox-badge-compact-only {
+    display: none;
+  }
+}
+
+@container xook-chat (max-width: 500px) {
+  .xox-hero-slot .xox-bubble {
+    left: 50% !important;
+    bottom: calc(100% - 22px) !important;
+    transform: translateX(-50%);
+  }
+
+  .xox-hero-slot .xox-bubble-body {
+    max-width: min(240px, calc(100cqi - 32px));
+    text-align: center;
+  }
+
+  .xox-hero-slot .xox-bubble-trail {
+    display: none;
+  }
+}
+
+@container xook-chat (min-width: 480px) {
+  .xox-hero-star-size {
+    width: 376px;
+    height: 376px;
+  }
+
+  .xox-hero-slot-adaptive {
+    margin-top: -2.25rem;
+    margin-bottom: -3.25rem;
+  }
+
+  .xox-hero-title-adaptive {
+    font-size: 1.6rem;
+    line-height: 1.24;
+  }
+
+  .xook-chat-scroll-pad {
+    padding-inline: 1.25rem;
+    padding-block: 1.25rem;
+  }
+
+  .xook-composer-pad {
+    padding-inline: 1rem;
+  }
+}
+
+@container xook-chat (min-width: 680px) {
+  .xox-hero-star-size {
+    width: 432px;
+    height: 432px;
+  }
+
+  .xox-hero-slot-adaptive {
+    margin-top: -2.75rem;
+    margin-bottom: -4rem;
+  }
+
+  .xox-hero-title-adaptive {
+    font-size: 1.875rem;
+    line-height: 1.2;
+  }
+
+  .xook-chat-scroll-pad {
+    padding-inline: 1.5rem;
+    padding-block: 1.5rem;
+  }
+}
+
+@container xook-chat (min-width: 980px) {
+  .xox-hero-star-size {
+    width: 472px;
+    height: 472px;
+  }
+
+  .xox-hero-slot-adaptive {
+    margin-bottom: -4.5rem;
+  }
+
+  .xox-hero-title-adaptive {
+    font-size: 2.125rem;
+    line-height: 1.18;
+  }
+}
+
+@container xook-chat (min-width: 1200px) {
+  .xox-hero-star-size {
+    width: 500px;
+    height: 500px;
+  }
+}
+
+.xook-compact-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  background: rgba(3, 5, 10, 0.62);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  transition: opacity 0.2s ease;
+}
+
+.xook-compact-drawer-surface {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 30;
+  box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.85);
+}
+
+.xook-compact-drawer-surface.is-left {
+  left: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.xook-compact-drawer-surface.is-right {
+  right: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
 /* Switch unificado Liquid Glass armonizado con el aura activa de Xox */
 .xook-liquid-switch {
   position: relative;
@@ -3408,7 +3744,8 @@ progress.xook-usage-progress::-moz-progress-bar {
   .xook-jelly-pill-thumb,
   .xook-liquid-switch,
   .xook-liquid-switch-thumb,
-  .xook-att-remove {
+  .xook-att-remove,
+  .xook-compact-drawer-backdrop {
     transition: none;
   }
 

@@ -34,3 +34,7 @@ __pycache__/
 *$py.class
 .venv/
 env/
+
+# Repos de referencia / investigación local (no se versionan)
+referencias/
+repos-ideas/

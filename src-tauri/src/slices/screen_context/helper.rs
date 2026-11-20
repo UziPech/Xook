@@ -126,26 +126,27 @@ fn cleanup_stale_binaries_and_keep(dir: &Path, keep_bin: &Path, keep_src: &Path)
 }
 
 #[cfg(target_os = "macos")]
-fn run_helper_command<R: Runtime>(
+pub fn run_helper_raw_json<R: Runtime>(
     app: &AppHandle<R>,
     args: &[&str],
-) -> Result<ScreenCaptureOutput, String> {
+    timeout_secs: u64,
+) -> Result<String, String> {
     let bin = ensure_compiled_helper(app)?;
     let mut child = Command::new(&bin)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Error ejecutando lector de pantalla nativo: {e}"))?;
+        .map_err(|e| format!("Error ejecutando auxiliar nativo de macOS: {e}"))?;
 
     let mut stdout_pipe = child
         .stdout
         .take()
-        .ok_or_else(|| "No se pudo abrir stdout del lector de pantalla.".to_string())?;
+        .ok_or_else(|| "No se pudo abrir stdout del auxiliar nativo.".to_string())?;
     let mut stderr_pipe = child
         .stderr
         .take()
-        .ok_or_else(|| "No se pudo abrir stderr del lector de pantalla.".to_string())?;
+        .ok_or_else(|| "No se pudo abrir stderr del auxiliar nativo.".to_string())?;
 
     let stdout_handle = thread::spawn(move || {
         let mut buf = Vec::new();
@@ -158,7 +159,7 @@ fn run_helper_command<R: Runtime>(
         buf
     });
 
-    let deadline = Instant::now() + Duration::from_secs(6);
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(2));
     let mut timed_out = false;
     loop {
         match child.try_wait() {
@@ -170,12 +171,12 @@ fn run_helper_command<R: Runtime>(
                     let _ = child.wait();
                     break;
                 }
-                thread::sleep(Duration::from_millis(25));
+                thread::sleep(Duration::from_millis(20));
             }
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("Error monitoreando lector de pantalla nativo: {e}"));
+                return Err(format!("Error monitoreando auxiliar nativo: {e}"));
             }
         }
     }
@@ -185,7 +186,7 @@ fn run_helper_command<R: Runtime>(
 
     if timed_out {
         return Err(
-            "La lectura de pantalla tardó demasiado (>6s) y fue cancelada para evitar bloqueo."
+            "La operación nativa de macOS tardó demasiado y fue cancelada para evitar bloqueo."
                 .to_string(),
         );
     }
@@ -195,13 +196,31 @@ fn run_helper_command<R: Runtime>(
     if trimmed.is_empty() {
         let stderr = String::from_utf8_lossy(&stderr_bytes);
         return Err(format!(
-            "El lector de pantalla no devolvió respuesta ({}).",
+            "El auxiliar nativo no devolvió respuesta ({}).",
             stderr.trim()
         ));
     }
 
-    serde_json::from_str::<ScreenCaptureOutput>(trimmed)
+    Ok(trimmed.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn run_helper_command<R: Runtime>(
+    app: &AppHandle<R>,
+    args: &[&str],
+) -> Result<ScreenCaptureOutput, String> {
+    let raw = run_helper_raw_json(app, args, 6)?;
+    serde_json::from_str::<ScreenCaptureOutput>(&raw)
         .map_err(|e| format!("Respuesta inválida del lector de pantalla: {e}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn run_helper_raw_json<R: Runtime>(
+    _app: &AppHandle<R>,
+    _args: &[&str],
+    _timeout_secs: u64,
+) -> Result<String, String> {
+    Err("Disponible solo en macOS.".to_string())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -241,6 +260,7 @@ pub fn capture_screen_sync<R: Runtime>(
     };
     let inc_flag = if include_image { "1" } else { "0" };
     let dim_str = max_dim.clamp(480, 1920).to_string();
+    let self_pid = std::process::id().to_string();
 
     run_helper_command(
         app,
@@ -248,6 +268,8 @@ pub fn capture_screen_sync<R: Runtime>(
             "capture",
             "--mode",
             mode_norm,
+            "--exclude-pid",
+            &self_pid,
             "--exclude-title",
             "Xox Quick Bar",
             "--include-image",
@@ -265,6 +287,21 @@ pub fn open_macos_screen_settings() -> Result<(), String> {
             .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
             .spawn()
             .map_err(|e| format!("No se pudo abrir Ajustes del Sistema: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Disponible solo en macOS.".to_string())
+    }
+}
+
+pub fn open_macos_accessibility_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir Ajustes de Accesibilidad: {e}"))?;
         Ok(())
     }
     #[cfg(not(target_os = "macos"))]

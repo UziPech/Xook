@@ -34,6 +34,51 @@ struct WindowCandidate {
     let bounds: CGRect
 }
 
+struct WindowRectJson: Encodable {
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+}
+
+struct WindowListItemJson: Encodable {
+    let windowId: UInt32
+    let pid: Int32
+    let appName: String
+    let bundleId: String
+    let title: String
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+}
+
+struct WindowListOutputJson: Encodable {
+    let ok: Bool
+    let accessibilityGranted: Bool
+    let windows: [WindowListItemJson]
+    let error: String?
+}
+
+struct WindowTileOutputJson: Encodable {
+    let ok: Bool
+    let accessibilityGranted: Bool
+    let pid: Int32?
+    let windowId: UInt32?
+    let appName: String
+    let bundleId: String
+    let windowTitle: String
+    let prevFrame: WindowRectJson?
+    let appliedFrame: WindowRectJson?
+    let error: String?
+}
+
+struct AccessibilityOutputJson: Encodable {
+    let ok: Bool
+    let accessibilityGranted: Bool
+    let error: String?
+}
+
 enum HelperError: Error, LocalizedError {
     case message(String)
     var errorDescription: String? {
@@ -96,16 +141,20 @@ private func isoNow() -> String {
     return formatter.string(from: Date())
 }
 
-private func printJsonAndExit(_ payload: CaptureResult, exitCode: Int32 = 0) -> Never {
+private func printEncodedJsonAndExit<T: Encodable>(_ payload: T, exitCode: Int32 = 0) -> Never {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.withoutEscapingSlashes]
     if let data = try? encoder.encode(payload), let text = String(data: data, encoding: .utf8) {
         print(text)
     } else {
-        print("{\"ok\":false,\"permissionGranted\":false,\"accessibilityGranted\":false,\"blockedSensitive\":false,\"appName\":\"\",\"bundleId\":\"\",\"windowTitle\":\"\",\"captureMode\":\"display\",\"ocrText\":\"\",\"axText\":\"\",\"mergedText\":\"\",\"capturedAt\":\"\",\"error\":\"JSON encode error\"}")
+        print("{\"ok\":false,\"error\":\"JSON encode error\"}")
     }
     fflush(stdout)
     exit(exitCode)
+}
+
+private func printJsonAndExit(_ payload: CaptureResult, exitCode: Int32 = 0) -> Never {
+    printEncodedJsonAndExit(payload, exitCode: exitCode)
 }
 
 private func redactSecrets(_ raw: String) -> String {
@@ -143,14 +192,76 @@ private func detectSensitiveReason(appName: String, bundleId: String, windowTitl
     return nil
 }
 
-private func findTopVisibleNonXookWindow(excludeTitles: [String]) -> WindowCandidate? {
+private let excludedSystemBundleIds: Set<String> = [
+    "com.xook.app",
+    "com.apple.controlcenter",
+    "com.apple.notificationcenterui",
+    "com.apple.dock",
+    "com.apple.Spotlight",
+    "com.apple.WindowManager",
+    "com.apple.loginwindow",
+    "com.apple.screencaptureui",
+    "com.apple.systemuiserver",
+    "com.apple.wallpaper.agent",
+]
+
+private let excludedSystemOwnerNames: Set<String> = [
+    "xook",
+    "window server",
+    "dock",
+    "control center",
+    "notification center",
+    "spotlight",
+    "wallpaper",
+    "systemuiserver",
+    "windowmanager",
+]
+
+private func isXookOrSystemWindow(
+    pid: pid_t,
+    bundleId: String,
+    ownerName: String,
+    title: String,
+    excludePids: Set<pid_t>,
+    excludeTitles: [String]
+) -> Bool {
     let myPid = ProcessInfo.processInfo.processIdentifier
+    if pid == myPid || excludePids.contains(pid) {
+        return true
+    }
+    let lowerBundle = bundleId.lowercased()
+    let lowerOwner = ownerName.lowercased()
+    let lowerTitle = title.lowercased()
+    if excludedSystemBundleIds.contains(lowerBundle) || lowerBundle == "com.xook.app" {
+        return true
+    }
+    if excludedSystemOwnerNames.contains(lowerOwner) || lowerOwner == "xook" {
+        return true
+    }
+    if lowerTitle == "xox quick bar" {
+        return true
+    }
+    let isXookOwner = lowerBundle == "com.xook.app" || lowerOwner == "xook"
+    if isXookOwner && excludeTitles.contains(where: { !$0.isEmpty && lowerTitle == $0.lowercased() }) {
+        return true
+    }
+    return false
+}
+
+private func listVisibleNonXookWindows(
+    excludePids: Set<pid_t>,
+    excludeTitles: [String],
+    forTiling: Bool
+) -> [WindowCandidate] {
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
     guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-        return nil
+        return []
     }
 
-    let loweredExcludes = excludeTitles.map { $0.lowercased() }
+    let minW: CGFloat = forTiling ? 180 : 120
+    let minH: CGFloat = forTiling ? 120 : 80
+    var results: [WindowCandidate] = []
+    var seenWindowIds = Set<CGWindowID>()
 
     for info in list {
         guard let pidNum = info[kCGWindowOwnerPID as String] as? Int32 else { continue }
@@ -165,15 +276,19 @@ private func findTopVisibleNonXookWindow(excludeTitles: [String]) -> WindowCandi
         let running = NSRunningApplication(processIdentifier: pidNum)
         let bundleId = running?.bundleIdentifier ?? ""
 
-        if pidNum == myPid && loweredExcludes.contains(where: { !($0.isEmpty) && title.lowercased().contains($0) }) {
+        if isXookOrSystemWindow(
+            pid: pidNum,
+            bundleId: bundleId,
+            ownerName: ownerName,
+            title: title,
+            excludePids: excludePids,
+            excludeTitles: excludeTitles
+        ) {
             continue
         }
-        // Skip QuickBar or tiny helper overlays; also skip XOOK itself when picking active external context
-        if pidNum == myPid {
-            continue
-        }
-        if bundleId == "com.apple.controlcenter" || bundleId == "com.apple.notificationcenterui" || ownerName == "Window Server" || ownerName == "Dock" {
-            continue
+
+        if forTiling {
+            guard let app = running, app.activationPolicy == .regular else { continue }
         }
 
         var bounds = CGRect.zero
@@ -181,24 +296,244 @@ private func findTopVisibleNonXookWindow(excludeTitles: [String]) -> WindowCandi
            let parsed = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) {
             bounds = parsed
         }
-        if bounds.width < 120 || bounds.height < 80 {
+        if bounds.width < minW || bounds.height < minH {
             continue
         }
 
         let wid = info[kCGWindowNumber as String] as? CGWindowID ?? kCGNullWindowID
-        let appName = ownerName.isEmpty ? (running?.localizedName ?? "") : ownerName
+        if wid != kCGNullWindowID && seenWindowIds.contains(wid) {
+            continue
+        }
+        if wid != kCGNullWindowID {
+            seenWindowIds.insert(wid)
+        }
 
-        return WindowCandidate(
-            windowId: wid,
-            pid: pidNum,
-            appName: appName,
-            bundleId: bundleId,
-            title: title,
-            bounds: bounds
+        let appName = ownerName.isEmpty ? (running?.localizedName ?? "") : ownerName
+        if appName.isEmpty { continue }
+
+        results.append(
+            WindowCandidate(
+                windowId: wid,
+                pid: pidNum,
+                appName: appName,
+                bundleId: bundleId,
+                title: title,
+                bounds: bounds
+            )
         )
     }
 
+    return results
+}
+
+private func findTopVisibleNonXookWindow(excludePids: Set<pid_t>, excludeTitles: [String]) -> WindowCandidate? {
+    return listVisibleNonXookWindows(excludePids: excludePids, excludeTitles: excludeTitles, forTiling: false).first
+}
+
+private func axReadString(_ el: AXUIElement, _ attr: CFString) -> String? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el, attr, &value) == .success, let str = value as? String else {
+        return nil
+    }
+    return str.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func axReadBool(_ el: AXUIElement, _ attr: CFString) -> Bool? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el, attr, &value) == .success else { return nil }
+    if let b = value as? Bool { return b }
+    if let n = value as? NSNumber { return n.boolValue }
     return nil
+}
+
+private func axReadPoint(_ el: AXUIElement, _ attr: CFString) -> CGPoint? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el, attr, &value) == .success, let val = value else {
+        return nil
+    }
+    guard CFGetTypeID(val) == AXValueGetTypeID() else { return nil }
+    let axVal = val as! AXValue
+    var pt = CGPoint.zero
+    return AXValueGetValue(axVal, .cgPoint, &pt) ? pt : nil
+}
+
+private func axReadSize(_ el: AXUIElement, _ attr: CFString) -> CGSize? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el, attr, &value) == .success, let val = value else {
+        return nil
+    }
+    guard CFGetTypeID(val) == AXValueGetTypeID() else { return nil }
+    let axVal = val as! AXValue
+    var sz = CGSize.zero
+    return AXValueGetValue(axVal, .cgSize, &sz) ? sz : nil
+}
+
+private func axReadFrame(_ el: AXUIElement) -> CGRect? {
+    guard let pos = axReadPoint(el, kAXPositionAttribute as CFString),
+          let size = axReadSize(el, kAXSizeAttribute as CFString) else {
+        return nil
+    }
+    return CGRect(origin: pos, size: size)
+}
+
+private func axSetPosition(_ el: AXUIElement, _ point: CGPoint) -> AXError {
+    var pt = point
+    guard let axVal = AXValueCreate(.cgPoint, &pt) else { return .failure }
+    return AXUIElementSetAttributeValue(el, kAXPositionAttribute as CFString, axVal)
+}
+
+private func axSetSize(_ el: AXUIElement, _ size: CGSize) -> AXError {
+    var sz = size
+    guard let axVal = AXValueCreate(.cgSize, &sz) else { return .failure }
+    return AXUIElementSetAttributeValue(el, kAXSizeAttribute as CFString, axVal)
+}
+
+private func findBestAxWindow(
+    appEl: AXUIElement,
+    preferredTitle: String?,
+    preferredBounds: CGRect?
+) -> AXUIElement? {
+    var candidates: [AXUIElement] = []
+
+    var windowsRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+       let wins = windowsRef as? [AXUIElement] {
+        candidates.append(contentsOf: wins)
+    }
+
+    if candidates.isEmpty {
+        var focusedRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &focusedRef) == .success,
+           let fw = focusedRef {
+            candidates.append(fw as! AXUIElement)
+        }
+    }
+    if candidates.isEmpty {
+        var mainRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appEl, kAXMainWindowAttribute as CFString, &mainRef) == .success,
+           let mw = mainRef {
+            candidates.append(mw as! AXUIElement)
+        }
+    }
+
+    guard !candidates.isEmpty else { return nil }
+
+    let wantedTitle = (preferredTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    var bestEl: AXUIElement?
+    var bestScore = Double.infinity
+
+    for win in candidates {
+        let subrole = axReadString(win, kAXSubroleAttribute as CFString) ?? ""
+        let minimized = axReadBool(win, kAXMinimizedAttribute as CFString) ?? false
+        let frame = axReadFrame(win)
+        if let f = frame, (f.width < 120 || f.height < 80) && !minimized {
+            continue
+        }
+
+        var score = 0.0
+        if !subrole.isEmpty && subrole != (kAXStandardWindowSubrole as String) {
+            score += 400.0
+        }
+        if minimized {
+            score += 250.0
+        }
+        if !wantedTitle.isEmpty {
+            let axTitle = axReadString(win, kAXTitleAttribute as CFString) ?? ""
+            if axTitle == wantedTitle {
+                score -= 200.0
+            } else if !axTitle.isEmpty && (axTitle.contains(wantedTitle) || wantedTitle.contains(axTitle)) {
+                score -= 80.0
+            }
+        }
+        if let target = preferredBounds, let f = frame {
+            let dist = abs(f.origin.x - target.origin.x)
+                + abs(f.origin.y - target.origin.y)
+                + abs(f.size.width - target.size.width)
+                + abs(f.size.height - target.size.height)
+            score += Double(dist) * 0.15
+        }
+        if score < bestScore {
+            bestScore = score
+            bestEl = win
+        }
+    }
+
+    return bestEl ?? candidates.first
+}
+
+private func applyAxWindowFrame(
+    pid: pid_t,
+    preferredTitle: String?,
+    preferredBounds: CGRect?,
+    targetRect: CGRect,
+    raiseAndActivate: Bool
+) -> (ok: Bool, prevFrame: CGRect?, appliedFrame: CGRect?, title: String, error: String?) {
+    let appEl = AXUIElementCreateApplication(pid)
+    guard let axWin = findBestAxWindow(
+        appEl: appEl,
+        preferredTitle: preferredTitle,
+        preferredBounds: preferredBounds
+    ) else {
+        return (false, nil, nil, preferredTitle ?? "", "No se encontró una ventana redimensionable en la app seleccionada.")
+    }
+
+    let resolvedTitle = axReadString(axWin, kAXTitleAttribute as CFString) ?? (preferredTitle ?? "")
+
+    if axReadBool(axWin, "AXFullScreen" as CFString) == true {
+        return (
+            false,
+            axReadFrame(axWin),
+            nil,
+            resolvedTitle,
+            "La ventana acompañante está en pantalla completa nativa de macOS. Sal de pantalla completa para dividirla con Xook."
+        )
+    }
+
+    let prevFrame = axReadFrame(axWin) ?? preferredBounds
+
+    if axReadBool(axWin, kAXMinimizedAttribute as CFString) == true {
+        _ = AXUIElementSetAttributeValue(axWin, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+    }
+
+    // Desactiva temporalmente AXEnhancedUserInterface (Electron/Chromium) para evitar rezago al acoplar
+    let enhancedAttr = "AXEnhancedUserInterface" as CFString
+    let wasEnhanced = axReadBool(appEl, enhancedAttr) == true
+    if wasEnhanced {
+        _ = AXUIElementSetAttributeValue(appEl, enhancedAttr, kCFBooleanFalse)
+    }
+
+    let pos = CGPoint(x: targetRect.origin.x.rounded(), y: targetRect.origin.y.rounded())
+    let size = CGSize(width: max(200.0, targetRect.size.width.rounded()), height: max(200.0, targetRect.size.height.rounded()))
+
+    let errPos1 = axSetPosition(axWin, pos)
+    let errSize1 = axSetSize(axWin, size)
+    let errPos2 = axSetPosition(axWin, pos)
+    _ = axSetSize(axWin, size)
+
+    if wasEnhanced {
+        _ = AXUIElementSetAttributeValue(appEl, enhancedAttr, kCFBooleanTrue)
+    }
+
+    if raiseAndActivate {
+        _ = AXUIElementPerformAction(axWin, kAXRaiseAction as CFString)
+        if let app = NSRunningApplication(processIdentifier: pid) {
+            app.activate(options: [])
+        }
+    }
+
+    let appliedFrame = axReadFrame(axWin)
+    let ok = (errPos1 == .success || errPos2 == .success) && errSize1 == .success
+    if !ok {
+        return (
+            false,
+            prevFrame,
+            appliedFrame,
+            resolvedTitle,
+            "Esta app no permitió ajustar su posición/tamaño automáticamente."
+        )
+    }
+
+    return (true, prevFrame, appliedFrame, resolvedTitle, nil)
 }
 
 private func extractAccessibilityText(pid: pid_t) -> (text: String, secureFocused: Bool) {
@@ -426,8 +761,16 @@ private struct CliOptions {
     var command: String = "check-permission"
     var mode: String = "display"
     var excludeTitles: [String] = ["Xox Quick Bar"]
+    var excludePids: Set<pid_t> = []
     var includeImage: Bool = false
     var maxDim: Int = 1280
+    var targetPid: pid_t? = nil
+    var targetWindowId: CGWindowID? = nil
+    var targetTitle: String? = nil
+    var rectX: Double? = nil
+    var rectY: Double? = nil
+    var rectW: Double? = nil
+    var rectH: Double? = nil
 }
 
 private func parseArgs() -> CliOptions {
@@ -451,6 +794,46 @@ private func parseArgs() -> CliOptions {
                 if !title.isEmpty && !opts.excludeTitles.contains(title) {
                     opts.excludeTitles.append(title)
                 }
+                i += 1
+            }
+        case "--exclude-pid":
+            if i + 1 < args.count, let parsed = Int32(args[i + 1]) {
+                opts.excludePids.insert(parsed)
+                i += 1
+            }
+        case "--target-pid":
+            if i + 1 < args.count, let parsed = Int32(args[i + 1]) {
+                opts.targetPid = parsed
+                i += 1
+            }
+        case "--target-window-id":
+            if i + 1 < args.count, let parsed = UInt32(args[i + 1]) {
+                opts.targetWindowId = parsed
+                i += 1
+            }
+        case "--target-title":
+            if i + 1 < args.count {
+                opts.targetTitle = args[i + 1]
+                i += 1
+            }
+        case "--x":
+            if i + 1 < args.count, let parsed = Double(args[i + 1]) {
+                opts.rectX = parsed
+                i += 1
+            }
+        case "--y":
+            if i + 1 < args.count, let parsed = Double(args[i + 1]) {
+                opts.rectY = parsed
+                i += 1
+            }
+        case "--w":
+            if i + 1 < args.count, let parsed = Double(args[i + 1]) {
+                opts.rectW = parsed
+                i += 1
+            }
+        case "--h":
+            if i + 1 < args.count, let parsed = Double(args[i + 1]) {
+                opts.rectH = parsed
                 i += 1
             }
         case "--include-image":
@@ -477,6 +860,250 @@ struct XookScreenHelperMain {
     static func main() async {
         let opts = parseArgs()
         let axTrusted = AXIsProcessTrusted()
+
+        if opts.command == "request-accessibility" {
+            let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+            let trusted = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+            printEncodedJsonAndExit(
+                AccessibilityOutputJson(
+                    ok: trusted,
+                    accessibilityGranted: trusted,
+                    error: trusted ? nil : "Autoriza a XOOK en Ajustes del Sistema > Privacidad y Seguridad > Accesibilidad."
+                )
+            )
+        }
+
+        if opts.command == "list-windows" {
+            let visible = listVisibleNonXookWindows(
+                excludePids: opts.excludePids,
+                excludeTitles: opts.excludeTitles,
+                forTiling: true
+            )
+            // Mantén hasta 12 ventanas visibles (priorizando orden Z frontal -> trasera)
+            let items = visible.prefix(12).map { win in
+                WindowListItemJson(
+                    windowId: win.windowId,
+                    pid: win.pid,
+                    appName: win.appName,
+                    bundleId: win.bundleId,
+                    title: win.title,
+                    x: Double(win.bounds.origin.x),
+                    y: Double(win.bounds.origin.y),
+                    width: Double(win.bounds.size.width),
+                    height: Double(win.bounds.size.height)
+                )
+            }
+            printEncodedJsonAndExit(
+                WindowListOutputJson(
+                    ok: true,
+                    accessibilityGranted: axTrusted,
+                    windows: items,
+                    error: nil
+                )
+            )
+        }
+
+        if opts.command == "tile-window" {
+            guard axTrusted else {
+                printEncodedJsonAndExit(
+                    WindowTileOutputJson(
+                        ok: false,
+                        accessibilityGranted: false,
+                        pid: opts.targetPid,
+                        windowId: opts.targetWindowId,
+                        appName: "",
+                        bundleId: "",
+                        windowTitle: "",
+                        prevFrame: nil,
+                        appliedFrame: nil,
+                        error: "Permiso de Accesibilidad pendiente para ajustar automáticamente la otra ventana."
+                    )
+                )
+            }
+
+            guard let rx = opts.rectX, let ry = opts.rectY, let rw = opts.rectW, let rh = opts.rectH else {
+                printEncodedJsonAndExit(
+                    WindowTileOutputJson(
+                        ok: false,
+                        accessibilityGranted: true,
+                        pid: opts.targetPid,
+                        windowId: opts.targetWindowId,
+                        appName: "",
+                        bundleId: "",
+                        windowTitle: "",
+                        prevFrame: nil,
+                        appliedFrame: nil,
+                        error: "Coordenadas de división incompletas."
+                    )
+                )
+            }
+
+            let visible = listVisibleNonXookWindows(
+                excludePids: opts.excludePids,
+                excludeTitles: opts.excludeTitles,
+                forTiling: true
+            )
+
+            let chosen: WindowCandidate? = {
+                if let wantedWid = opts.targetWindowId,
+                   let match = visible.first(where: { $0.windowId == wantedWid }) {
+                    return match
+                }
+                if let wantedPid = opts.targetPid,
+                   let match = visible.first(where: { $0.pid == wantedPid }) {
+                    return match
+                }
+                return visible.first
+            }()
+
+            let resolvedPid = chosen?.pid ?? opts.targetPid
+            guard let pid = resolvedPid else {
+                printEncodedJsonAndExit(
+                    WindowTileOutputJson(
+                        ok: false,
+                        accessibilityGranted: true,
+                        pid: nil,
+                        windowId: nil,
+                        appName: "",
+                        bundleId: "",
+                        windowTitle: "",
+                        prevFrame: nil,
+                        appliedFrame: nil,
+                        error: "No hay otra ventana abierta visible para acoplar junto a Xook."
+                    )
+                )
+            }
+
+            let running = NSRunningApplication(processIdentifier: pid)
+            let appName = chosen?.appName ?? running?.localizedName ?? "Aplicación"
+            let bundleId = chosen?.bundleId ?? running?.bundleIdentifier ?? ""
+            let preferredTitle = chosen?.title.isEmpty == false ? chosen?.title : opts.targetTitle
+            let targetRect = CGRect(x: rx, y: ry, width: rw, height: rh)
+
+            let outcome = applyAxWindowFrame(
+                pid: pid,
+                preferredTitle: preferredTitle,
+                preferredBounds: chosen?.bounds,
+                targetRect: targetRect,
+                raiseAndActivate: true
+            )
+
+            printEncodedJsonAndExit(
+                WindowTileOutputJson(
+                    ok: outcome.ok,
+                    accessibilityGranted: true,
+                    pid: pid,
+                    windowId: chosen?.windowId ?? opts.targetWindowId,
+                    appName: appName,
+                    bundleId: bundleId,
+                    windowTitle: outcome.title,
+                    prevFrame: outcome.prevFrame.map {
+                        WindowRectJson(
+                            x: Double($0.origin.x),
+                            y: Double($0.origin.y),
+                            width: Double($0.size.width),
+                            height: Double($0.size.height)
+                        )
+                    },
+                    appliedFrame: outcome.appliedFrame.map {
+                        WindowRectJson(
+                            x: Double($0.origin.x),
+                            y: Double($0.origin.y),
+                            width: Double($0.size.width),
+                            height: Double($0.size.height)
+                        )
+                    },
+                    error: outcome.error
+                )
+            )
+        }
+
+        if opts.command == "restore-window" {
+            guard axTrusted else {
+                printEncodedJsonAndExit(
+                    WindowTileOutputJson(
+                        ok: false,
+                        accessibilityGranted: false,
+                        pid: opts.targetPid,
+                        windowId: opts.targetWindowId,
+                        appName: "",
+                        bundleId: "",
+                        windowTitle: "",
+                        prevFrame: nil,
+                        appliedFrame: nil,
+                        error: "Permiso de Accesibilidad no concedido."
+                    )
+                )
+            }
+            guard let pid = opts.targetPid,
+                  let rx = opts.rectX,
+                  let ry = opts.rectY,
+                  let rw = opts.rectW,
+                  let rh = opts.rectH else {
+                printEncodedJsonAndExit(
+                    WindowTileOutputJson(
+                        ok: false,
+                        accessibilityGranted: true,
+                        pid: opts.targetPid,
+                        windowId: opts.targetWindowId,
+                        appName: "",
+                        bundleId: "",
+                        windowTitle: "",
+                        prevFrame: nil,
+                        appliedFrame: nil,
+                        error: "Datos insuficientes para restaurar la ventana acompañante."
+                    )
+                )
+            }
+
+            let running = NSRunningApplication(processIdentifier: pid)
+            if running == nil {
+                printEncodedJsonAndExit(
+                    WindowTileOutputJson(
+                        ok: false,
+                        accessibilityGranted: true,
+                        pid: pid,
+                        windowId: opts.targetWindowId,
+                        appName: "",
+                        bundleId: "",
+                        windowTitle: "",
+                        prevFrame: nil,
+                        appliedFrame: nil,
+                        error: "La app acompañante ya no está abierta."
+                    )
+                )
+            }
+
+            let outcome = applyAxWindowFrame(
+                pid: pid,
+                preferredTitle: opts.targetTitle,
+                preferredBounds: nil,
+                targetRect: CGRect(x: rx, y: ry, width: rw, height: rh),
+                raiseAndActivate: false
+            )
+
+            printEncodedJsonAndExit(
+                WindowTileOutputJson(
+                    ok: outcome.ok,
+                    accessibilityGranted: true,
+                    pid: pid,
+                    windowId: opts.targetWindowId,
+                    appName: running?.localizedName ?? "",
+                    bundleId: running?.bundleIdentifier ?? "",
+                    windowTitle: outcome.title,
+                    prevFrame: nil,
+                    appliedFrame: outcome.appliedFrame.map {
+                        WindowRectJson(
+                            x: Double($0.origin.x),
+                            y: Double($0.origin.y),
+                            width: Double($0.size.width),
+                            height: Double($0.size.height)
+                        )
+                    },
+                    error: outcome.error
+                )
+            )
+        }
 
         if opts.command == "check-permission" {
             let granted = CGPreflightScreenCaptureAccess()
@@ -548,7 +1175,7 @@ struct XookScreenHelperMain {
             )
         }
 
-        let topWindow = findTopVisibleNonXookWindow(excludeTitles: opts.excludeTitles)
+        let topWindow = findTopVisibleNonXookWindow(excludePids: opts.excludePids, excludeTitles: opts.excludeTitles)
         let activeAppName = topWindow?.appName ?? ""
         let activeBundleId = topWindow?.bundleId ?? ""
         let activeTitle = topWindow?.title ?? ""
@@ -609,12 +1236,20 @@ struct XookScreenHelperMain {
 
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
             let myPid = ProcessInfo.processInfo.processIdentifier
-            let loweredExcludes = opts.excludeTitles.map { $0.lowercased() }
 
             let excludedWindows = content.windows.filter { win in
-                guard let owningPid = win.owningApplication?.processID else { return false }
+                guard let owningApp = win.owningApplication else { return false }
+                let owningPid = owningApp.processID
+                let bundleLower = owningApp.bundleIdentifier.lowercased()
+                let appLower = owningApp.applicationName.lowercased()
                 let titleLower = (win.title ?? "").lowercased()
-                if owningPid == myPid && loweredExcludes.contains(where: { !$0.isEmpty && titleLower.contains($0) }) {
+                if owningPid == myPid || opts.excludePids.contains(owningPid) {
+                    return true
+                }
+                if bundleLower == "com.xook.app" || appLower == "xook" {
+                    return true
+                }
+                if titleLower == "xox quick bar" {
                     return true
                 }
                 return false

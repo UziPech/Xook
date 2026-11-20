@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useId } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useId, useCallback } from "react";
 import { 
   CheckCircle2, 
   Brain, 
@@ -28,6 +28,21 @@ import {
   Sparkles,
   Loader2,
 } from "lucide-react";
+import { AssistDockMenu } from "./components/AssistDockMenu";
+import {
+  DEFAULT_ASSIST_STATUS,
+  applyAssistLayout,
+  exitAssistLayout,
+  getAssistWindowState,
+  listCompanionWindows,
+  openAccessibilitySettings,
+  rebalanceAssistSplit,
+  requestAccessibilityPermission,
+  setAssistAlwaysOnTop,
+  type ApplyAssistLayoutPayload,
+  type AssistWindowStatus,
+  type CompanionWindowCandidate,
+} from "./features/window-assist/windowAssistApi";
 import {
   SlashCommandMenu,
   ActiveModeChip,
@@ -1271,16 +1286,209 @@ export default function App() {
     };
   }, [hasMacOverlayChrome]);
 
-  const studioPanelWidth = Math.min(
-    860,
-    Math.max(440, Math.round(viewportWidth * 0.54)),
-    Math.max(360, viewportWidth - 260)
+  const isCompactViewport = viewportWidth < 740;
+  const effectiveLeftWidth = isCompactViewport
+    ? Math.min(300, Math.max(248, viewportWidth - 44))
+    : leftWidth;
+  const effectiveRightWidth = isCompactViewport
+    ? Math.min(340, Math.max(280, viewportWidth - 28))
+    : rightWidth;
+
+  const studioPanelWidth = isCompactViewport
+    ? viewportWidth
+    : Math.min(
+        860,
+        Math.max(440, Math.round(viewportWidth * 0.54)),
+        Math.max(360, viewportWidth - 260)
+      );
+  const docViewerPanelWidth = isCompactViewport
+    ? viewportWidth
+    : Math.min(
+        680,
+        Math.max(360, Math.round(viewportWidth * 0.46)),
+        Math.max(320, viewportWidth - 260)
+      );
+
+  // Estado y controles de Modo Asistencia (pantalla dividida con app acompañante)
+  const [assistStatus, setAssistStatus] = useState<AssistWindowStatus>(DEFAULT_ASSIST_STATUS);
+  const [companionWindows, setCompanionWindows] = useState<CompanionWindowCandidate[]>([]);
+  const [loadingCompanions, setLoadingCompanions] = useState<boolean>(false);
+  const [assistBusy, setAssistBusy] = useState<boolean>(false);
+  const prevCompactViewportRef = useRef<boolean>(isCompactViewport);
+
+  useEffect(() => {
+    if (!prevCompactViewportRef.current && isCompactViewport) {
+      setShowLeftSidebar(false);
+      setShowRightSidebar(false);
+    }
+    prevCompactViewportRef.current = isCompactViewport;
+  }, [isCompactViewport]);
+
+  const refreshCompanionWindows = useCallback(async () => {
+    if (!isWorkspaceTauriRuntime()) return;
+    setLoadingCompanions(true);
+    try {
+      const res = await listCompanionWindows();
+      setCompanionWindows(res.windows ?? []);
+      setAssistStatus((prev) => ({
+        ...prev,
+        accessibilityGranted: res.accessibilityGranted,
+      }));
+    } catch {
+      // Ignora si no hay entorno Tauri activo
+    } finally {
+      setLoadingCompanions(false);
+    }
+  }, []);
+
+  const assistStatusRef = useRef<AssistWindowStatus>(assistStatus);
+  assistStatusRef.current = assistStatus;
+
+  useEffect(() => {
+    if (!isWorkspaceTauriRuntime()) return;
+    let mounted = true;
+    const syncAssistOnFocus = async () => {
+      try {
+        const prev = assistStatusRef.current;
+        const st = await getAssistWindowState();
+        if (!mounted) return;
+        setAssistStatus(st);
+        // Si el usuario acaba de activar Accesibilidad en Ajustes y volvió a Xook,
+        // completamos automáticamente la división de ambas ventanas sin pedirle otro clic.
+        if (
+          st.active &&
+          st.splitCompanion &&
+          st.accessibilityGranted &&
+          (!prev.accessibilityGranted || !st.companion?.tiledOk)
+        ) {
+          const applied = await applyAssistLayout({
+            preset: st.preset,
+            side: st.side,
+            splitCompanion: true,
+            alwaysOnTop: st.alwaysOnTop,
+          });
+          if (mounted) setAssistStatus(applied);
+        }
+      } catch {
+        // Ignora errores transitorios
+      }
+    };
+    void syncAssistOnFocus();
+    const onFocus = () => {
+      void syncAssistOnFocus();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      mounted = false;
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
+
+  const flashAssistNotice = useCallback((msg: string) => {
+    setStatusMessage(msg);
+    setTimeout(() => {
+      setStatusMessage((curr) => (curr === msg ? null : curr));
+    }, 4200);
+  }, []);
+
+  const handleApplyAssistLayout = useCallback(
+    async (payload: ApplyAssistLayoutPayload) => {
+      if (!isWorkspaceTauriRuntime()) return;
+      setAssistBusy(true);
+      try {
+        setShowLeftSidebar(false);
+        setShowRightSidebar(false);
+        const next = await applyAssistLayout(payload);
+        setAssistStatus(next);
+        if (next.notice) {
+          flashAssistNotice(next.notice);
+        } else if (next.companion?.tiledOk && next.companion.appName) {
+          flashAssistNotice(`Modo Asistencia dividido con ${next.companion.appName}`);
+        }
+      } catch (err) {
+        flashAssistNotice(
+          err instanceof Error ? err.message : "No se pudo aplicar el Modo Asistencia."
+        );
+      } finally {
+        setAssistBusy(false);
+      }
+    },
+    [flashAssistNotice]
   );
-  const docViewerPanelWidth = Math.min(
-    680,
-    Math.max(360, Math.round(viewportWidth * 0.46)),
-    Math.max(320, viewportWidth - 260)
+
+  const handleRebalanceAssistSplit = useCallback(async () => {
+    if (!isWorkspaceTauriRuntime()) return;
+    setAssistBusy(true);
+    try {
+      const next = await rebalanceAssistSplit();
+      setAssistStatus(next);
+      if (next.notice) {
+        flashAssistNotice(next.notice);
+      } else if (next.companion?.appName) {
+        flashAssistNotice(`División reajustada con ${next.companion.appName}`);
+      }
+    } catch (err) {
+      flashAssistNotice(
+        err instanceof Error ? err.message : "No se pudo reajustar la división."
+      );
+    } finally {
+      setAssistBusy(false);
+    }
+  }, [flashAssistNotice]);
+
+  const handleToggleAssistPin = useCallback(
+    async (enabled: boolean) => {
+      if (!isWorkspaceTauriRuntime()) return;
+      try {
+        const next = await setAssistAlwaysOnTop(enabled);
+        setAssistStatus(next);
+      } catch (err) {
+        flashAssistNotice(
+          err instanceof Error ? err.message : "No se pudo cambiar 'Siempre visible'."
+        );
+      }
+    },
+    [flashAssistNotice]
   );
+
+  const handleExitAssist = useCallback(async () => {
+    if (!isWorkspaceTauriRuntime()) return;
+    setAssistBusy(true);
+    try {
+      const next = await exitAssistLayout(true);
+      setAssistStatus(next);
+      flashAssistNotice("Ventana restaurada al tamaño normal");
+    } catch (err) {
+      flashAssistNotice(
+        err instanceof Error ? err.message : "No se pudo restaurar la ventana."
+      );
+    } finally {
+      setAssistBusy(false);
+    }
+  }, [flashAssistNotice]);
+
+  const handleRequestAccessibility = useCallback(async () => {
+    try {
+      const granted = await requestAccessibilityPermission();
+      setAssistStatus((prev) => ({ ...prev, accessibilityGranted: granted }));
+      if (granted) {
+        flashAssistNotice("Accesibilidad autorizada: ya puedes dividir automáticamente con otras apps.");
+        void refreshCompanionWindows();
+      } else {
+        flashAssistNotice("Autoriza a XOOK en Ajustes > Privacidad y Seguridad > Accesibilidad.");
+      }
+    } catch {
+      void openAccessibilitySettings();
+    }
+  }, [flashAssistNotice, refreshCompanionWindows]);
+
+  const handleOpenAccessibilitySettings = useCallback(async () => {
+    try {
+      await openAccessibilitySettings();
+    } catch {
+      // Ignora fuera de macOS
+    }
+  }, []);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const chatInputId = useId();
@@ -1451,21 +1659,51 @@ export default function App() {
   const [activeCanvas, setActiveCanvas] = useState<CanvasArtifact | null>(null);
   const [showCanvas, setShowCanvas] = useState<boolean>(false);
   const [canvasExpanded, setCanvasExpanded] = useState<boolean>(false);
-  const canvasPanelWidth = canvasExpanded
-    ? Math.min(
-        980,
-        Math.max(520, Math.round(viewportWidth * 0.62)),
-        Math.max(340, viewportWidth - 240)
-      )
-    : Math.min(
-        660,
-        Math.max(330, Math.round(viewportWidth * 0.44)),
-        Math.max(300, viewportWidth - 260)
-      );
+  const canvasPanelWidth = isCompactViewport
+    ? viewportWidth
+    : canvasExpanded
+      ? Math.min(
+          980,
+          Math.max(520, Math.round(viewportWidth * 0.62)),
+          Math.max(340, viewportWidth - 240)
+        )
+      : Math.min(
+          660,
+          Math.max(330, Math.round(viewportWidth * 0.44)),
+          Math.max(300, viewportWidth - 260)
+        );
   const hasRightSplitOpen = showCanvas || showRightSidebar || showXoxStudio || showDocViewer;
+  const hasCompactOverlayOpen =
+    isCompactViewport &&
+    (showLeftSidebar ||
+      showRightSidebar ||
+      showXoxStudio ||
+      (showCanvas && Boolean(activeCanvas)) ||
+      (showDocViewer && Boolean(pdfPanelState || pdfDraftProgress)));
+
+  const closeAllCompactOverlays = () => {
+    if (showLeftSidebar) setShowLeftSidebar(false);
+    if (showRightSidebar) setShowRightSidebar(false);
+    if (showXoxStudio) closeXoxStudio();
+    if (showCanvas) {
+      setShowCanvas(false);
+      setCanvasExpanded(false);
+    }
+    if (showDocViewer) closeAllDocTabs();
+  };
+
+  // El diseño de pantalla dividida solo aplica mientras el ancho siga siendo de panel dividido (<= ~56% del monitor);
+  // si el usuario estira/expande la ventana manualmente a ancho completo, vuelve automáticamente al diseño de escritorio.
+  const splitMaxLayoutWidth =
+    assistStatus.monitorWidth > 0
+      ? Math.max(780, Math.round(assistStatus.monitorWidth * 0.56))
+      : 820;
+  const isEffectiveSplitLayout =
+    assistStatus.active && !isWindowFullscreen && viewportWidth <= splitMaxLayoutWidth;
+
   useEffect(() => {
-    setChecklistCollapsed(hasRightSplitOpen);
-  }, [hasRightSplitOpen]);
+    setChecklistCollapsed(hasRightSplitOpen || isCompactViewport);
+  }, [hasRightSplitOpen, isCompactViewport]);
   const [isChatStreaming, setIsChatStreaming] = useState<boolean>(false);
   const [localUser, setLocalUser] = useState<LocalUserProfile | null>(null);
   const [showLocalAuth, setShowLocalAuth] = useState<boolean>(false);
@@ -2453,10 +2691,10 @@ export default function App() {
     }
   };
 
-  // Atajo de teclado ⌘K para enfocar el input y respaldo local ⌘⇧X para Quick Bar
+  // Atajos de teclado: ⌘K (input), ⌘⇧X (Quick Bar), ⌘⌥→ / ⌘⌥← / ⌘⌥↑ (Modo Asistencia) y Escape (drawers compactos)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "k") {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
         e.preventDefault();
         inputRef.current?.focus();
         return;
@@ -2466,11 +2704,63 @@ export default function App() {
         void import("@tauri-apps/api/core")
           .then(({ invoke }) => invoke("toggle_quick_bar_cmd"))
           .catch(() => {});
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.altKey && !e.shiftKey && isTauriEnv) {
+        if (e.key === "ArrowRight") {
+          e.preventDefault();
+          void handleApplyAssistLayout({
+            preset: assistStatus.active ? assistStatus.preset : "balanced",
+            side: "right",
+            splitCompanion: assistStatus.splitCompanion,
+            alwaysOnTop: assistStatus.alwaysOnTop,
+          });
+          return;
+        }
+        if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          void handleApplyAssistLayout({
+            preset: assistStatus.active ? assistStatus.preset : "balanced",
+            side: "left",
+            splitCompanion: assistStatus.splitCompanion,
+            alwaysOnTop: assistStatus.alwaysOnTop,
+          });
+          return;
+        }
+        if (e.key === "ArrowUp" && assistStatus.active) {
+          e.preventDefault();
+          void handleExitAssist();
+          return;
+        }
+      }
+      if (
+        e.key === "Escape" &&
+        hasCompactOverlayOpen &&
+        !showModelMenu &&
+        !showContextMenu &&
+        !showCommandMenu &&
+        !showRosterPopover
+      ) {
+        e.preventDefault();
+        closeAllCompactOverlays();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isTauriEnv]);
+  }, [
+    isTauriEnv,
+    assistStatus.active,
+    assistStatus.preset,
+    assistStatus.splitCompanion,
+    assistStatus.alwaysOnTop,
+    hasCompactOverlayOpen,
+    showModelMenu,
+    showContextMenu,
+    showCommandMenu,
+    showRosterPopover,
+    handleApplyAssistLayout,
+    handleExitAssist,
+  ]);
 
   // Manejador global de arrastre para redimensionar paneles (60fps sin pérdida de foco)
   useEffect(() => {
@@ -6167,47 +6457,85 @@ export default function App() {
       {/* 1. Header Minimalista & Stealth integrado en la barra superior de ventana */}
       <header
         data-tauri-drag-region="deep"
-        className={`h-12 min-h-12 border-b border-white/[0.06] bg-[#090a0f]/80 backdrop-blur-xl pr-4 flex items-center justify-between gap-2 shrink-0 z-20 ${
-          hasMacOverlayChrome && !isWindowFullscreen ? "pl-[88px]" : "pl-4"
+        className={`h-12 min-h-12 border-b border-white/[0.06] bg-[#090a0f]/80 backdrop-blur-xl pr-2.5 sm:pr-4 flex items-center justify-between gap-1.5 sm:gap-2 shrink-0 z-20 ${
+          hasMacOverlayChrome && !isWindowFullscreen ? "pl-[84px] sm:pl-[88px]" : "pl-3 sm:pl-4"
         }`}
       >
         
         {/* Toggle de Contexto Izquierdo */}
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
           <button
             type="button"
-            onClick={() => setShowLeftSidebar(!showLeftSidebar)}
+            onClick={() => {
+              const next = !showLeftSidebar;
+              if (next && isCompactViewport) {
+                if (showRightSidebar) setShowRightSidebar(false);
+                if (showXoxStudio) closeXoxStudio();
+                if (showCanvas) setShowCanvas(false);
+                if (showDocViewer) closeAllDocTabs();
+              }
+              setShowLeftSidebar(next);
+            }}
             aria-pressed={showLeftSidebar}
             aria-label={showLeftSidebar ? "Ocultar panel de contexto" : "Mostrar panel de contexto"}
             title={showLeftSidebar ? "Ocultar panel de contexto" : "Mostrar panel de contexto"}
-            className={`shrink-0 min-w-[28px] min-h-[28px] p-1.5 rounded-lg border transition-all cursor-pointer flex items-center justify-center ${
+            className={`shrink-0 min-w-[28px] min-h-[28px] p-1.5 rounded-lg border border-transparent transition-colors cursor-pointer flex items-center justify-center ${
               showLeftSidebar
-                ? "bg-white/[0.08] text-white border-white/[0.1]"
-                : "bg-transparent text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]"
+                ? "bg-white/[0.045] text-zinc-100 hover:bg-white/[0.07]"
+                : "bg-transparent text-zinc-400/85 hover:text-zinc-200 hover:bg-white/[0.04]"
             }`}
           >
             <PanelLeft className="w-4 h-4" aria-hidden="true" />
           </button>
+          {isEffectiveSplitLayout && assistStatus.companion?.appName && (
+            <span
+              data-tauri-drag-region="deep"
+              className="hidden min-[440px]:inline text-[11px] text-zinc-500 truncate select-none"
+            >
+              {assistStatus.companion.appName}
+            </span>
+          )}
         </div>
 
-        {/* Lado Derecho: Espacio de Xox + Toggle de Canvas + Tareas y Decisiones */}
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+        {/* Lado Derecho: Modo Asistencia + Espacio de Xox + Toggle de Canvas + Tareas y Decisiones */}
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+          {(isTauriEnv || isWorkspaceTauriRuntime()) && (
+            <AssistDockMenu
+              status={assistStatus}
+              viewportWidth={viewportWidth}
+              companions={companionWindows}
+              loadingCompanions={loadingCompanions}
+              busy={assistBusy}
+              onRefreshCompanions={() => void refreshCompanionWindows()}
+              onApplyLayout={handleApplyAssistLayout}
+              onRebalanceSplit={handleRebalanceAssistSplit}
+              onToggleAlwaysOnTop={handleToggleAssistPin}
+              onExitAssist={handleExitAssist}
+              onRequestAccessibility={handleRequestAccessibility}
+              onOpenAccessibilitySettings={handleOpenAccessibilitySettings}
+            />
+          )}
+
           <button
             type="button"
             onClick={() => {
               if (showXoxStudio) {
                 closeXoxStudio();
               } else {
+                if (isCompactViewport) {
+                  setShowLeftSidebar(false);
+                  setShowRightSidebar(false);
+                }
                 openXoxStudio("identity");
               }
             }}
             aria-pressed={showXoxStudio}
             aria-label={`Espacio de ${effectiveAgentName}`}
             title={`Abrir Espacio de ${effectiveAgentName} (nombre, voz, skills, prompt global)`}
-            className={`shrink-0 min-h-[28px] px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
+            className={`shrink-0 min-h-[28px] px-2 sm:px-2.5 py-1.5 rounded-lg border border-transparent flex items-center gap-1.5 transition-colors cursor-pointer ${
               showXoxStudio
-                ? "bg-white/[0.1] text-white border-white/[0.18]"
-                : "bg-transparent text-zinc-300 border-transparent hover:text-white hover:bg-white/[0.06]"
+                ? "bg-white/[0.045] text-zinc-100 hover:bg-white/[0.07]"
+                : "bg-transparent text-zinc-400/90 hover:text-zinc-100 hover:bg-white/[0.04]"
             }`}
           >
             <XoxSilhouetteIcon
@@ -6232,7 +6560,7 @@ export default function App() {
               aria-pressed={showCanvas}
               aria-label="Ocultar Canvas"
               title="Ocultar Canvas"
-              className="shrink-0 min-h-[28px] px-2.5 py-1.5 rounded-lg border bg-white/[0.08] text-white border-white/[0.12] hover:bg-white/[0.12] flex items-center gap-1.5 transition-all cursor-pointer"
+              className="shrink-0 min-h-[28px] px-2 sm:px-2.5 py-1.5 rounded-lg border border-transparent bg-white/[0.045] text-zinc-100 hover:bg-white/[0.07] flex items-center gap-1.5 transition-colors cursor-pointer"
             >
               <Table2 className="w-3.5 h-3.5 text-zinc-200" aria-hidden="true" />
               <span className="text-[11px] font-medium hidden sm:inline max-w-[120px] truncate">
@@ -6243,7 +6571,16 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => setShowRightSidebar((v) => !v)}
+            onClick={() => {
+              const next = !showRightSidebar;
+              if (next && isCompactViewport) {
+                if (showLeftSidebar) setShowLeftSidebar(false);
+                if (showXoxStudio) closeXoxStudio();
+                if (showCanvas) setShowCanvas(false);
+                if (showDocViewer) closeAllDocTabs();
+              }
+              setShowRightSidebar(next);
+            }}
             aria-pressed={showRightSidebar}
             aria-label={`Tareas (${pendingCount} pendientes)`}
             title={
@@ -6251,10 +6588,10 @@ export default function App() {
                 ? "Ocultar panel de tareas"
                 : "Mostrar panel de tareas"
             }
-            className={`shrink-0 min-h-[28px] px-2 py-1.5 rounded-lg border flex items-center gap-1.5 transition-all cursor-pointer ${
+            className={`shrink-0 min-h-[28px] px-2 py-1.5 rounded-lg border border-transparent flex items-center gap-1.5 transition-colors cursor-pointer ${
               showRightSidebar
-                ? "bg-white/[0.08] text-white border-white/[0.1]"
-                : "bg-transparent text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.05]"
+                ? "bg-white/[0.045] text-zinc-100 hover:bg-white/[0.07]"
+                : "bg-transparent text-zinc-400/85 hover:text-zinc-200 hover:bg-white/[0.04]"
             }`}
           >
             <ListTodo className="w-3.5 h-3.5" aria-hidden="true" />
@@ -6274,7 +6611,14 @@ export default function App() {
       </header>
 
       {/* 2. Cuerpo Principal en 3 Columnas: [Contexto Izq] | [Xox Centro] | [Tareas Der] */}
-      <div data-xox-main-row className="flex-1 flex overflow-hidden">
+      <div data-xox-main-row className="relative flex-1 flex overflow-hidden">
+        {hasCompactOverlayOpen && (
+          <div
+            aria-hidden="true"
+            onClick={closeAllCompactOverlays}
+            className="xook-compact-drawer-backdrop"
+          />
+        )}
         
         {/* ========================================================================= */}
         {/* COLUMNA 1: CONTEXTO DEL LADO IZQUIERDO                                    */}
@@ -6282,15 +6626,20 @@ export default function App() {
         {leftPresence.mounted && (
           <>
             <div
+              role={isCompactViewport ? "dialog" : undefined}
+              aria-modal={isCompactViewport && showLeftSidebar ? true : undefined}
+              aria-label={isCompactViewport ? "Panel de contexto y chats" : undefined}
               aria-hidden={!showLeftSidebar}
               inert={!showLeftSidebar}
-              style={{ width: leftPresence.visible ? `${leftWidth}px` : "0px" }}
+              style={{ width: leftPresence.visible ? `${effectiveLeftWidth}px` : "0px" }}
               className={`sidebar-slot flex justify-end shrink-0 overflow-hidden ${
+                isCompactViewport ? "xook-compact-drawer-surface is-left" : ""
+              } ${
                 isResizingLeft ? "is-resizing" : ""
               } ${leftPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
             >
               <aside
-                style={{ width: `${leftWidth}px` }}
+                style={{ width: `${effectiveLeftWidth}px` }}
                 className="h-full bg-[#07080b] flex flex-col shrink-0 overflow-hidden select-none"
               >
               
@@ -6748,28 +7097,32 @@ export default function App() {
             </div>
 
             {/* Separador redimensionable izquierdo (Splitter Aurora de Vidrio) */}
-            <div
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setIsResizingLeft(true);
-              }}
-              onDoubleClick={() => setLeftWidth(280)}
-              style={!leftPresence.visible ? { width: "0px" } : undefined}
-              className={`splitter-aurora-glass ${isResizingLeft ? "is-resizing" : ""} ${
-                leftPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
-              }`}
-            >
-              {/* Zona de captura ampliada invisible para fácil arrastre */}
-              <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
-            </div>
+            {!isCompactViewport && (
+              <div
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setIsResizingLeft(true);
+                }}
+                onDoubleClick={() => setLeftWidth(280)}
+                style={!leftPresence.visible ? { width: "0px" } : undefined}
+                className={`splitter-aurora-glass ${isResizingLeft ? "is-resizing" : ""} ${
+                  leftPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+                }`}
+              >
+                {/* Zona de captura ampliada invisible para fácil arrastre */}
+                <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
+              </div>
+            )}
           </>
         )}
 
         {/* COLUMNA CENTRAL: Xox + Conversación + Input Pinned al fondo */}
         <section
           data-xox-chat-section
+          data-xox-split={isEffectiveSplitLayout ? "true" : "false"}
+          inert={hasCompactOverlayOpen}
           style={getXoxCosmosVars(displayAccentPreset)}
-          className={`xook-gemini-backdrop flex-1 min-w-0 flex flex-col overflow-hidden relative ${
+          className={`xook-gemini-backdrop xook-chat-container flex-1 min-w-0 flex flex-col overflow-hidden relative ${
             showXoxStudio ? "is-studio-open" : ""
           }`}
         >
@@ -6803,8 +7156,8 @@ export default function App() {
 
           {/* Barra mínima fija de acciones de conversación (sin título truncado de mensaje) */}
           {chatMessages.length > 0 && !(showLeftSidebar && leftTab === "chats") && (
-            <div className="shrink-0 bg-[#0f0f11]/70 backdrop-blur-md px-4 sm:px-6 z-10">
-              <div className="max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto pt-2.5 pb-1 flex items-center justify-end gap-2">
+            <div className="shrink-0 bg-[#08090e]/88 backdrop-blur-md border-b border-white/[0.05] px-3 sm:px-6 z-10">
+              <div className="max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto py-1.5 flex items-center justify-end gap-2">
                 {!activeModel.is_free && accountUsage && !accountUsage.can_use_paid_models && (
                   <span className="px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[9px] font-medium shrink-0 mr-auto">
                     Requiere saldo
@@ -6840,10 +7193,10 @@ export default function App() {
           )}
 
           {/* Área de Trabajo con Scroll: Xox Hero / Chat en vivo */}
-          <div className="relative z-[1] flex-1 overflow-y-auto px-4 sm:px-6 py-6">
+          <div className="xook-chat-scroll-pad relative z-[1] flex-1 overflow-y-auto">
             <div
               className={`max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto space-y-6 transition-[padding] duration-200 ${
-                activeChecklist && !checklistCollapsed && !hasRightSplitOpen
+                activeChecklist && !checklistCollapsed && !hasRightSplitOpen && !isCompactViewport
                   ? "lg:pr-[314px]"
                   : ""
               }`}
@@ -6856,7 +7209,7 @@ export default function App() {
                 <div className="min-h-[calc(100vh-18rem)] flex flex-col items-center justify-center py-2 text-center">
                   {/* Estrella Xox: protagonista en el Home; se desliza hacia Espacio de Xox al abrirlo */}
                   <div
-                    className={`xox-hero-slot relative flex flex-col items-center justify-center select-none pointer-events-none -mt-8 -mb-10 sm:-mt-10 sm:-mb-14 lg:-mb-16 ${
+                    className={`xox-hero-slot xox-hero-slot-adaptive relative flex flex-col items-center justify-center select-none pointer-events-none ${
                       showXoxStudio && !xoxFlightPending ? "is-away" : ""
                     }`}
                   >
@@ -6883,7 +7236,7 @@ export default function App() {
                         glideTrigger={showXoxStudio || xoxInFlight ? 0 : xoxGlideSeq}
                         glideDir="left"
                         active={!showXoxStudio && !xoxFlight}
-                        className="w-[308px] h-[308px] sm:w-[384px] sm:h-[384px] lg:w-[408px] lg:h-[408px] xl:w-[456px] xl:h-[456px]"
+                        className="xox-hero-star-size"
                         summonTrigger={summonSeq}
                         onClick={handleXoxClick}
                         terminal={xoxTerminalFeed}
@@ -6925,8 +7278,8 @@ export default function App() {
                   </div>
 
                   {/* Saludo Humano Amplio y Protagonista (espacio reservado fijo para evitar saltos verticales) */}
-                  <div className="relative z-10 space-y-2.5 max-w-2xl px-4 flex flex-col items-center">
-                    <h1 className="text-2xl sm:text-3xl lg:text-[34px] font-semibold leading-tight text-white tracking-tight select-text">
+                  <div className="relative z-10 space-y-2.5 max-w-2xl px-3 sm:px-4 flex flex-col items-center">
+                    <h1 className="xox-hero-title-adaptive font-semibold text-white tracking-tight select-text">
                       {heroGreeting}
                     </h1>
 
@@ -7031,6 +7384,7 @@ export default function App() {
                     xoxTravelPhase={xoxTravelPhase}
                     glideSeq={showXoxStudio || xoxInFlight ? 0 : xoxGlideSeq}
                     xoxTerminal={xoxTerminalFeed}
+                    isSplitMode={isEffectiveSplitLayout}
                     rosterSubagents={
                       activeMode === "agent" && subagentTeamMode === "custom"
                         ? subagentRoster
@@ -7047,12 +7401,14 @@ export default function App() {
                 </div>
               )}
 
-              {/* Espaciador inferior para que el último elemento pueda scrollear sobre el input fijo */}
+              {/* Espaciador inferior para que el último elemento pueda scrollear sobre el input fijo y Xox */}
               <div
                 className={`${
                   activeClarification || permissionItems.some((p) => p.state === "pending")
                     ? "h-80 sm:h-96"
-                    : "h-44 sm:h-48"
+                    : isEffectiveSplitLayout
+                      ? "h-72 sm:h-80"
+                      : "h-56 sm:h-52"
                 } shrink-0 transition-[height]`}
               />
               <div ref={chatEndRef} />
@@ -7114,8 +7470,67 @@ export default function App() {
           {/* ========================================================================= */}
           {/* 4. INPUT / CHAT FIJO EN LA PARTE INFERIOR (PINNED DOCK)                    */}
           {/* ========================================================================= */}
-          <div className="absolute inset-x-0 bottom-0 p-4 sm:p-6 bg-gradient-to-t from-[#060709] via-[#060709]/95 to-transparent pointer-events-none z-10">
-            <div className="@container max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto pointer-events-auto">
+          <div className="xook-composer-pad absolute inset-x-0 bottom-0 py-3 sm:py-5 bg-gradient-to-t from-[#060709] via-[#060709]/95 to-transparent pointer-events-none z-10">
+            <div className="@container max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto pointer-events-auto relative">
+              {/* Xox fija en la esquina derecha sobre el input cuando la columna de chat es angosta (<560px) */}
+              {chatMessages.length > 0 && (
+                <div
+                  className={`xox-compact-dock-perch items-center justify-center select-none ${
+                    showXoxStudio || xoxFlight || showModelMenu || showContextMenu || showCommandMenu
+                      ? "opacity-0 scale-95"
+                      : "opacity-100 scale-100"
+                  }`}
+                >
+                  <XoxStar
+                    state={xoxState}
+                    responsive
+                    hitArea="star"
+                    clickBehavior="greet"
+                    accentPreset={displayAccentPreset}
+                    active={
+                      !showXoxStudio &&
+                      !xoxFlight &&
+                      (isEffectiveSplitLayout ||
+                        viewportWidth < 620 ||
+                        hasRightSplitOpen ||
+                        showLeftSidebar)
+                    }
+                    className="xox-compact-perch-star"
+                    summonTrigger={summonSeq}
+                    onClick={handleXoxClick}
+                    terminal={xoxTerminalFeed}
+                    subagents={
+                      activeMode === "agent" && subagentTeamMode === "custom" && isChatStreaming
+                        ? subagentRoster
+                            .filter((r) => r.enabled)
+                            .map((r) => ({
+                              id: r.id,
+                              name: r.name,
+                              design: r.design,
+                              status: "pending" as const,
+                            }))
+                        : undefined
+                    }
+                  />
+                  {greeting && (
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      style={getXoxBubbleVars(displayAccentPreset)}
+                      className={`xox-bubble absolute z-20 pointer-events-none ${
+                        greetingLeaving ? "is-leaving" : ""
+                      }`}
+                    >
+                      <div className="xox-bubble-body w-max px-3 py-1.5 rounded-[18px]">
+                        <p className="xox-bubble-text relative text-[11.5px] leading-snug text-white/95 font-medium">
+                          {greeting}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div
                 onDragOver={(e) => {
                   if (e.dataTransfer?.types?.includes("Files")) {
@@ -7453,8 +7868,8 @@ export default function App() {
                   </div>
 
                   {/* Barra inferior unificada: adjuntar + modos + contexto a la izquierda · modelo + atajos + enviar a la derecha */}
-                  <div className="pt-1.5 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 min-w-0">
+                  <div className="pt-1.5 flex items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1 @[460px]:gap-1.5 min-w-0 shrink-0">
                       {/* Botón + para subir archivos o imágenes */}
                       <button
                         type="button"
@@ -7467,7 +7882,7 @@ export default function App() {
                       </button>
 
                       {/* Desplegable de Modos y Comandos Especiales (/agent, /study, etc.) */}
-                      <div ref={commandMenuRef} className="relative">
+                      <div ref={commandMenuRef} className="relative shrink-0">
                         <button
                           ref={commandTriggerRef}
                           type="button"
@@ -7480,21 +7895,21 @@ export default function App() {
                           aria-expanded={showCommandMenu}
                           aria-label="Comandos y modos de Xox"
                           title="Activar modos (/agent, /study, /plan, /audit, /compact)"
-                          className={`quick-liquid-btn h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] cursor-pointer ${
+                          className={`quick-liquid-btn h-8 inline-flex items-center gap-1 @[520px]:gap-1.5 px-2 @[520px]:px-2.5 rounded-full text-[11px] cursor-pointer ${
                             activeMode || showCommandMenu
                               ? "text-white"
                               : "text-zinc-300 hover:text-white"
                           }`}
                         >
                           <Slash className="w-3 h-3 text-white/75 shrink-0" />
-                          <span className="hidden @xs:inline">Modos</span>
+                          <span className="hidden @[520px]:inline">Modos</span>
                           {activeModeSpec && (
                             <span className="text-[10px] font-medium text-zinc-300 font-mono">
                               {activeModeSpec.slash}
                             </span>
                           )}
                           <ChevronDown
-                            className={`w-3 h-3 text-white/65 transition-transform ${
+                            className={`w-3 h-3 text-white/65 transition-transform shrink-0 ${
                               showCommandMenu ? "rotate-180" : ""
                             }`}
                           />
@@ -7521,7 +7936,7 @@ export default function App() {
                       </div>
 
                       {/* Selector de Contexto */}
-                      <div ref={contextMenuRef} className="relative">
+                      <div ref={contextMenuRef} className="relative shrink-0">
                         <button
                           ref={contextTriggerRef}
                           type="button"
@@ -7533,20 +7948,20 @@ export default function App() {
                           aria-expanded={showContextMenu}
                           aria-label="Seleccionar contexto"
                           title="Adjuntar contexto al mensaje"
-                          className={`quick-liquid-btn h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] cursor-pointer ${
+                          className={`quick-liquid-btn h-8 inline-flex items-center gap-1 @[520px]:gap-1.5 px-2 @[520px]:px-2.5 rounded-full text-[11px] cursor-pointer ${
                             activeContextCount > 0 || showContextMenu
                               ? "text-white"
                               : "text-zinc-300 hover:text-white"
                           }`}
                         >
                           <AtSign className="w-3 h-3 text-white/75 shrink-0" />
-                          <span className="hidden @xs:inline">Contexto</span>
+                          <span className="hidden @[520px]:inline">Contexto</span>
                           {activeContextCount > 0 && (
                             <span className="text-[10px] font-mono text-zinc-100 tabular-nums">
                               {activeContextCount}
                             </span>
                           )}
-                          <ChevronDown className={`w-3 h-3 text-white/65 transition-transform ${showContextMenu ? "rotate-180" : ""}`} />
+                          <ChevronDown className={`w-3 h-3 text-white/65 transition-transform shrink-0 ${showContextMenu ? "rotate-180" : ""}`} />
                         </button>
 
                         {contextMenuPresence.mounted && (
@@ -7563,7 +7978,7 @@ export default function App() {
                             }
                             className={`xook-liquid-menu menu-origin-left ${
                               showContextMenu ? "menu-in" : "menu-out pointer-events-none"
-                            } absolute left-0 bottom-full mb-2 w-60 p-1.5 rounded-2xl z-30`}
+                            } absolute left-0 bottom-full mb-2 w-[min(15rem,calc(100vw-2rem))] p-1.5 rounded-2xl z-30`}
                           >
                             <LiquidGlassBackdrop variant="menu" />
 
@@ -7605,8 +8020,8 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <div className="hidden @md:flex items-center gap-1 mr-0.5">
+                    <div className="flex items-center gap-1 @[460px]:gap-1.5 min-w-0">
+                      <div className="hidden @[620px]:flex items-center gap-1 mr-0.5 shrink-0">
                         {isTauriEnv && (
                           <button
                             type="button"
@@ -7630,7 +8045,7 @@ export default function App() {
                       </div>
 
                       {/* Desplegable de modelos */}
-                      <div ref={modelMenuRef} className="relative shrink-0">
+                      <div ref={modelMenuRef} className="relative min-w-0">
                         <button
                           ref={modelTriggerRef}
                           type="button"
@@ -7640,10 +8055,10 @@ export default function App() {
                           }}
                           aria-haspopup="listbox"
                           aria-expanded={showModelMenu}
-                          className="quick-liquid-btn h-8 inline-flex items-center gap-1.5 pl-2.5 pr-2.5 rounded-full text-[11px] text-zinc-200 hover:text-white cursor-pointer"
+                          className="quick-liquid-btn h-8 max-w-full inline-flex items-center gap-1.5 px-2 @[460px]:px-2.5 rounded-full text-[11px] text-zinc-200 hover:text-white cursor-pointer"
                         >
                           <ProviderIcon provider={activeProvider} size={13} className="text-white/85 shrink-0" />
-                          <span className="truncate max-w-[84px] @xs:max-w-[118px] @sm:max-w-[160px]">{activeModel.name}</span>
+                          <span className="truncate max-w-[92px] @[410px]:max-w-[134px] @[560px]:max-w-[168px]">{activeModel.name}</span>
                           <ChevronDown className={`w-3 h-3 text-white/65 transition-transform shrink-0 ${showModelMenu ? "rotate-180" : ""}`} />
                         </button>
                         {modelMenuPresence.mounted && (
@@ -7659,7 +8074,7 @@ export default function App() {
                             }
                             className={`xook-liquid-menu ${
                               showModelMenu ? "menu-in" : "menu-out pointer-events-none"
-                            } absolute right-0 bottom-full mb-2 w-80 overflow-hidden p-1.5 rounded-2xl z-30`}
+                            } absolute right-0 bottom-full mb-2 w-[min(20rem,calc(100vw-1.25rem))] overflow-hidden p-1.5 rounded-2xl z-30`}
                           >
                             <LiquidGlassBackdrop variant="menu" />
 
@@ -7861,10 +8276,15 @@ export default function App() {
         {/* PANEL ESPACIO DE XOX (IDENTIDAD GLOBAL, VOZ, SKILLS EN BLOQUES Y PROMPT INICIAL) */}
         {studioPresence.mounted && (
           <div
+            role={isCompactViewport ? "dialog" : undefined}
+            aria-modal={isCompactViewport && showXoxStudio ? true : undefined}
+            aria-label={isCompactViewport ? `Espacio de ${effectiveAgentName}` : undefined}
             aria-hidden={!showXoxStudio}
             inert={!showXoxStudio}
             style={{ width: studioPresence.visible ? `${studioPanelWidth}px` : "0px" }}
             className={`sidebar-slot sidebar-studio-slot shrink-0 bg-[#060709] overflow-hidden ${
+              isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
+            } ${
               studioPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
             }`}
           >
@@ -7909,10 +8329,15 @@ export default function App() {
         {/* PANEL CANVAS INTERACTIVO ESTILO GEMINI (TABLAS COMPARATIVAS Y DATOS) */}
         {canvasPresence.mounted && activeCanvas && (
           <div
+            role={isCompactViewport ? "dialog" : undefined}
+            aria-modal={isCompactViewport && showCanvas ? true : undefined}
+            aria-label={isCompactViewport ? "Canvas interactivo" : undefined}
             aria-hidden={!showCanvas}
             inert={!showCanvas}
             style={{ width: canvasPresence.visible ? `${canvasPanelWidth}px` : "0px" }}
             className={`sidebar-slot shrink-0 bg-[#060709] overflow-hidden ${
+              isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
+            } ${
               canvasPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
             }`}
           >
@@ -7952,10 +8377,15 @@ export default function App() {
         {/* PANEL DEDICADO DEL VISOR Y EDITOR DE DOCUMENTOS (INDEPENDIENTE DE TAREAS) */}
         {docViewerPresence.mounted && (pdfPanelState || pdfDraftProgress) && (
           <div
+            role={isCompactViewport ? "dialog" : undefined}
+            aria-modal={isCompactViewport && showDocViewer ? true : undefined}
+            aria-label={isCompactViewport ? "Visor de documentos" : undefined}
             aria-hidden={!showDocViewer}
             inert={!showDocViewer}
             style={{ width: docViewerPresence.visible ? `${docViewerPanelWidth}px` : "0px" }}
             className={`sidebar-slot shrink-0 bg-[#060709] overflow-hidden ${
+              isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
+            } ${
               docViewerPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
             }`}
           >
@@ -8085,34 +8515,41 @@ export default function App() {
         {rightPresence.mounted && (
           <>
             {/* Separador redimensionable derecho (Splitter Aurora de Vidrio) */}
-            <div
-              data-xox-right-splitter
-              data-xox-right-open={showRightSidebar ? "true" : "false"}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setIsResizingRight(true);
-              }}
-              onDoubleClick={() => setRightWidth(340)}
-              style={!rightPresence.visible ? { width: "0px" } : undefined}
-              className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""} ${
-                rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
-              }`}
-            >
-              {/* Zona de captura ampliada invisible para fácil arrastre */}
-              <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
-            </div>
+            {!isCompactViewport && (
+              <div
+                data-xox-right-splitter
+                data-xox-right-open={showRightSidebar ? "true" : "false"}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setIsResizingRight(true);
+                }}
+                onDoubleClick={() => setRightWidth(340)}
+                style={!rightPresence.visible ? { width: "0px" } : undefined}
+                className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""} ${
+                  rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+                }`}
+              >
+                {/* Zona de captura ampliada invisible para fácil arrastre */}
+                <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
+              </div>
+            )}
 
             <div
+              role={isCompactViewport ? "dialog" : undefined}
+              aria-modal={isCompactViewport && showRightSidebar ? true : undefined}
+              aria-label={isCompactViewport ? "Panel de tareas y decisiones" : undefined}
               aria-hidden={!showRightSidebar}
               inert={!showRightSidebar}
-              style={{ width: rightPresence.visible ? `${rightWidth}px` : "0px" }}
+              style={{ width: rightPresence.visible ? `${effectiveRightWidth}px` : "0px" }}
               className={`sidebar-slot flex flex-col shrink-0 overflow-hidden bg-[#08090d] ${
+                isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
+              } ${
                 isResizingRight ? "is-resizing" : ""
               } ${rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
             >
               <div className="flex-1 min-h-0 flex">
                 <TaskDecisionsPanel
-                  width={rightWidth}
+                  width={effectiveRightWidth}
                   tasks={tasks}
                   agendaItems={agendaItems}
                   historyItems={historyItems}

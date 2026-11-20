@@ -160,7 +160,7 @@ export const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
       ref={menuRef}
       role="listbox"
       aria-label="Comandos y modos de Xox"
-      className="xook-liquid-menu menu-origin-left menu-in absolute left-0 bottom-full mb-2 w-80 sm:w-96 p-1.5 rounded-2xl z-30 shadow-2xl bg-[#090b10]/68 backdrop-blur-2xl border border-white/[0.09]"
+      className="xook-liquid-menu menu-origin-left menu-in absolute left-0 bottom-full mb-2 w-[min(24rem,calc(100vw-4.25rem))] p-1.5 rounded-2xl z-30 shadow-2xl bg-[#090b10]/68 backdrop-blur-2xl border border-white/[0.09]"
     >
       <LiquidGlassBackdrop variant="menu" />
 

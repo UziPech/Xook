@@ -195,6 +195,7 @@ interface ChatMessageListProps {
   glideSeq?: number;
   rosterSubagents?: XoxSubagentOrbitItem[];
   xoxTerminal?: XoxTerminalFeed | null;
+  isSplitMode?: boolean;
 }
 
 function FormattedReply({
@@ -202,11 +203,13 @@ function FormattedReply({
   streaming,
   onOpenCanvas,
   messageId,
+  compact = false,
 }: {
   text: string;
   streaming?: boolean;
   onOpenCanvas?: (canvas: CanvasArtifact) => void;
   messageId?: string;
+  compact?: boolean;
 }) {
   const normalizedText = cleanVisibleReply(text, { stripTables: false });
 
@@ -249,7 +252,7 @@ function FormattedReply({
         aria-label="Tabla de datos"
         className="overflow-x-auto xook-scroll"
       >
-        <table className="w-full table-auto text-left border-separate border-spacing-0 text-[12.5px]">
+        <table className="w-full table-auto text-left border-separate border-spacing-0 text-[13px] @xl:text-[13.5px]">
           <caption className="sr-only">Tabla generada</caption>
           <thead className="xook-liquid-table-head">
             <tr>
@@ -312,9 +315,14 @@ function FormattedReply({
     <MarkdownContent
       text={normalizedText}
       variant="default"
+      compact={compact}
       streaming={streaming}
-      caretClassName="inline-block w-1.5 h-3.5 ml-1 align-middle bg-sky-300/80 animate-pulse rounded-xs"
-      className="space-y-2 text-[14px] leading-relaxed text-zinc-200 select-text"
+      caretClassName="inline-block w-1.5 h-[1.05em] ml-1 align-middle bg-sky-300/80 animate-pulse rounded-xs"
+      className={
+        compact
+          ? "xox-chat-reply-text space-y-2 text-zinc-200 select-text"
+          : "xox-chat-reply-text space-y-2.5 text-zinc-200 select-text"
+      }
       renderTable={renderChatTable}
     />
   );
@@ -588,6 +596,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   glideSeq = 0,
   rosterSubagents,
   xoxTerminal,
+  isSplitMode = false,
   onOpenTasksTab,
   onRegenerateMessage,
   onRateMessage,
@@ -696,7 +705,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   };
 
   return (
-    <div className="@container space-y-6">
+    <div className={`@container ${isSplitMode ? "space-y-4" : "space-y-6"}`}>
       {messages.map((msg, idx) => {
         if (msg.isCompactionDividerOnly && msg.compactionNotice) {
           return renderCompactionBanner(msg.compactionNotice, msg.id);
@@ -715,8 +724,21 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
           );
 
           return (
-            <div key={msg.id} className="flex justify-end">
-              <div className="max-w-[86%] @lg:max-w-[70%] @6xl:max-w-[62%] rounded-2xl rounded-tr-sm px-4 py-2.5 bg-white/[0.075] border border-white/[0.1] text-[13.5px] text-zinc-100 leading-relaxed select-text space-y-2.5">
+            <div key={msg.id} className="flex justify-center">
+              <div
+                className={
+                  isSplitMode
+                    ? "xox-split-text-body flex justify-end"
+                    : "xox-split-text-body w-full @5xl:max-w-[780px] @6xl:max-w-[840px] flex justify-end"
+                }
+              >
+              <div
+                className={`xox-chat-user-text max-w-[86%] @lg:max-w-[74%] @5xl:max-w-[72%] rounded-2xl rounded-tr-sm bg-white/[0.075] border border-white/[0.1] text-zinc-100 select-text ${
+                  isSplitMode
+                    ? "px-3.5 py-2 space-y-2"
+                    : "px-4 py-2.5 space-y-2.5"
+                }`}
+              >
                 {msg.documentScopeTag && (
                   <div className="flex items-center gap-1.5">
                     <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-white/[0.06] border border-white/[0.12] text-zinc-300 max-w-full">
@@ -855,6 +877,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                   <div className="whitespace-pre-wrap break-words">{msg.content}</div>
                 )}
               </div>
+              </div>
             </div>
           );
         }
@@ -908,74 +931,93 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
         return (
           <React.Fragment key={msg.id}>
             {msg.compactionNotice && renderCompactionBanner(msg.compactionNotice, `${msg.id}_cmp`)}
-            <div className="flex items-start gap-2 @md:gap-3 @lg:gap-4 @5xl:gap-6">
-            {/* Mascota Xox: carril izquierdo responsive con deslizamiento suave hacia/desde Espacio de Xox */}
             <div
-              data-xox-lane-slot={isActiveGuideTurn ? "active" : undefined}
-              className={`xox-chat-lane-slot shrink-0 self-start sticky top-4 @md:top-5 @5xl:top-6 w-[110px] @sm:w-[130px] @md:w-[150px] @lg:w-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] flex justify-center ${
-                xoxAwayInStudio ? "is-away" : ""
+              className={`xox-turn-row-adaptive ${
+                isSplitMode ? "" : "@5xl:justify-center"
               }`}
             >
-              {isActiveGuideTurn ? (
-                <div
-                  data-xox-stage="chat-lane"
-                  className={`relative shrink-0 -my-1 @md:-my-2 @5xl:-my-3 select-none pointer-events-none ${laneTravelClass}`}
-                >
-                  <XoxStar
-                    state={xoxState}
-                    responsive
-                    hitArea="star"
-                    clickBehavior="greet"
-                    accentPreset={accentPreset}
-                    glideTrigger={xoxInFlight ? 0 : glideSeq}
-                    glideDir={xoxTravelPhase === "to-studio" ? "right" : "left"}
-                    active={!xoxAwayInStudio && !xoxInFlight}
-                    className="w-[110px] h-[110px] @sm:w-[130px] @sm:h-[130px] @md:w-[150px] @md:h-[150px] @lg:w-[174px] @lg:h-[174px] @2xl:w-[clamp(198px,19.5cqi,264px)] @2xl:h-[clamp(198px,19.5cqi,264px)]"
-                    summonTrigger={summonTrigger}
-                    onClick={onXoxClick}
-                    terminal={xoxTerminal}
-                    subagents={
-                      msg.subagents?.length
-                        ? msg.subagents
-                        : isActiveGuideTurn && msg.mode === "agent" && msg.isStreaming
-                          ? rosterSubagents
-                          : undefined
-                    }
-                  />
-                  {greeting && (
-                    <div
-                      role="status"
-                      aria-live="polite"
-                      style={getXoxBubbleVars(accentPreset)}
-                      className={`xox-bubble absolute left-[72%] bottom-[70%] z-20 pointer-events-none ${
-                        greetingLeaving ? "is-leaving" : ""
-                      }`}
-                    >
-                      <div className="xox-bubble-body w-max max-w-[180px] @sm:max-w-[210px] @5xl:max-w-[240px] px-3 @5xl:px-3.5 py-1.5 @5xl:py-2 rounded-[18px] @5xl:rounded-[20px] text-left">
-                        <p className="xox-bubble-text relative text-[11.5px] @5xl:text-[12.5px] leading-snug text-white/95 font-medium">
-                          {greeting}
-                        </p>
+            {/* Mascota Xox: en ventana normal/completa (>=580px) vive a la izquierda con espejo simétrico;
+                en pantalla dividida vive siempre abajo-derecha sobre el input creciendo con el ancho */}
+            {!isSplitMode && (
+              <div
+                data-xox-lane-slot={isActiveGuideTurn ? "active" : undefined}
+                className={`xox-chat-lane-slot xox-lane-desktop-only shrink-0 self-start sticky top-3 @md:top-4 @5xl:top-5 w-[178px] @lg:w-[204px] @2xl:w-[clamp(224px,22cqi,272px)] overflow-visible justify-center ${
+                  xoxAwayInStudio ? "is-away" : ""
+                }`}
+              >
+                {isActiveGuideTurn ? (
+                  <div
+                    data-xox-stage="chat-lane"
+                    className={`relative shrink-0 -mx-3 -my-4 @lg:-my-5 @2xl:-my-6 select-none pointer-events-none ${laneTravelClass}`}
+                  >
+                    <XoxStar
+                      state={xoxState}
+                      responsive
+                      hitArea="star"
+                      clickBehavior="greet"
+                      accentPreset={accentPreset}
+                      glideTrigger={xoxInFlight ? 0 : glideSeq}
+                      glideDir={xoxTravelPhase === "to-studio" ? "right" : "left"}
+                      active={!xoxAwayInStudio && !xoxInFlight}
+                      className="w-[228px] h-[228px] @lg:w-[264px] @lg:h-[264px] @2xl:w-[clamp(290px,28cqi,352px)] @2xl:h-[clamp(290px,28cqi,352px)]"
+                      summonTrigger={summonTrigger}
+                      onClick={onXoxClick}
+                      terminal={xoxTerminal}
+                      subagents={
+                        msg.subagents?.length
+                          ? msg.subagents
+                          : isActiveGuideTurn && msg.mode === "agent" && msg.isStreaming
+                            ? rosterSubagents
+                            : undefined
+                      }
+                    />
+                    {greeting && (
+                      <div
+                        role="status"
+                        aria-live="polite"
+                        style={getXoxBubbleVars(accentPreset)}
+                        className={`xox-bubble absolute left-[68%] bottom-[70%] z-20 pointer-events-none ${
+                          greetingLeaving ? "is-leaving" : ""
+                        }`}
+                      >
+                        <div className="xox-bubble-body w-max max-w-[180px] @sm:max-w-[210px] @5xl:max-w-[240px] px-3 @5xl:px-3.5 py-1.5 @5xl:py-2 rounded-[18px] @5xl:rounded-[20px] text-left">
+                          <p className="xox-bubble-text relative text-[11.5px] @5xl:text-[12.5px] leading-snug text-white/95 font-medium">
+                            {greeting}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div
-                  className={`w-9 h-9 @md:w-10 @md:h-10 @5xl:w-11 @5xl:h-11 rounded-full bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mt-0.5 transition-opacity duration-200 ${
-                    xoxAwayInStudio ? "opacity-0" : "opacity-100"
-                  }`}
-                >
-                  <XoxMiniGlyph accentPreset={accentPreset} />
-                </div>
-              )}
-            </div>
+                    )}
+                  </div>
+                ) : (
+                  <div
+                    className={`w-9 h-9 @md:w-10 @md:h-10 @5xl:w-11 @5xl:h-11 rounded-full bg-white/[0.04] border border-white/[0.08] flex items-center justify-center mt-0.5 transition-opacity duration-200 ${
+                      xoxAwayInStudio ? "opacity-0" : "opacity-100"
+                    }`}
+                  >
+                    <XoxMiniGlyph accentPreset={accentPreset} />
+                  </div>
+                )}
+              </div>
+            )}
 
-            {/* Contenido de la respuesta (estilo editorial limpio sin recuadro pesado) */}
-            <div className="flex-1 min-w-0 max-w-3xl @5xl:max-w-4xl @6xl:max-w-5xl space-y-2">
+            {/* Contenido de la respuesta (centrado y con márgenes limpios en todos los tamaños divididos y angostos) */}
+            <div
+              className={`min-w-0 ${
+                isSplitMode
+                  ? "xox-split-text-body space-y-1.5"
+                  : "xox-split-text-body flex-1 max-w-3xl @5xl:max-w-[780px] @6xl:max-w-[840px] space-y-2"
+              }`}
+            >
               {/* Cabecera sutil del turno */}
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-xs @md:text-[13px] font-medium text-white">{agentName}</span>
+                  {/* Sello compacto de turno en vista angosta (<560px); la estrella Xox principal acompaña fija a la derecha */}
+                  <div className="xox-badge-compact-only shrink-0 items-center">
+                    <div className="w-6 h-6 rounded-full bg-white/[0.05] border border-white/[0.09] flex items-center justify-center">
+                      <XoxMiniGlyph accentPreset={accentPreset} />
+                    </div>
+                  </div>
+                  <span className="text-[13px] @md:text-[13.5px] @2xl:text-[14px] font-medium text-white shrink-0">{agentName}</span>
                   {msg.mode && XOX_COMMAND_SPECS[msg.mode] && (
                     <span className="text-[10px] font-medium px-2 py-0.5 rounded-md inline-flex items-center gap-1 shrink-0 bg-white/[0.06] border border-white/[0.1] text-zinc-300">
                       {XOX_COMMAND_SPECS[msg.mode].badge}
@@ -1168,7 +1210,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
               {msg.content.trim() ? (
                 msg.isError ? (
                   <div className="rounded-2xl rounded-tl-sm px-4 py-3 bg-rose-500/[0.07] border border-rose-400/25">
-                    <FormattedReply text={msg.content} />
+                    <FormattedReply text={msg.content} compact={isSplitMode} />
                   </div>
                 ) : (
                   <FormattedReply
@@ -1176,6 +1218,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                     streaming={Boolean(msg.isStreaming)}
                     onOpenCanvas={onOpenCanvas}
                     messageId={msg.id}
+                    compact={isSplitMode}
                   />
                 )
               ) : msg.isStreaming && !showThinkingRow && !phaseLabel ? (
@@ -1586,6 +1629,13 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 </div>
               )}
             </div>
+            {/* Carril espejo derecho en pantalla normal/completa (>=1024px) para centrar el texto con simetría real */}
+            {!isSplitMode && (
+              <div
+                aria-hidden="true"
+                className="hidden @5xl:block shrink-0 w-[clamp(224px,22cqi,272px)]"
+              />
+            )}
             </div>
           </React.Fragment>
         );

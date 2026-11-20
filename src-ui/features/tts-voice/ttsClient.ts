@@ -1,3 +1,16 @@
+import {
+  cleanTextForSpeech,
+  detectScreenNoticeKind,
+  findSafeRawSpeechCutoff,
+  hasSpeakableContent,
+  splitSpeechSegments,
+  type CleanSpeechOptions,
+  type ScreenNoticeKind,
+} from "./speechSanitizer";
+
+export { cleanTextForSpeech };
+export type { CleanSpeechOptions };
+
 export interface TtsConfig {
   enabled: boolean;
   autoPlay: boolean;
@@ -196,91 +209,30 @@ export async function subscribeTtsEvents(handlers: {
   };
 }
 
-interface CleanSpeechOptions {
-  streaming?: boolean;
-  maxLength?: number;
-  preserveTrailingSpace?: boolean;
+function isNonSpeakableError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /no hay texto legible|no contiene contenido pronunciable/i.test(msg);
 }
 
-export function cleanTextForSpeech(raw: string, opts?: CleanSpeechOptions): string {
-  const streaming = Boolean(opts?.streaming);
-  const maxLength = opts?.maxLength ?? 1800;
-  let text = raw || "";
+type SegmentSynthOutcome =
+  | { ok: true; audio: TtsSpeechAudio }
+  | { ok: false; skipped: true }
+  | { ok: false; skipped: false; error: unknown };
 
-  // Eliminar bloques de razonamiento completos y, en streaming, bloques aún abiertos
-  text = text.replace(/<think>[\s\S]*?<\/think>/gi, " ");
-  text = text.replace(/<thought>[\s\S]*?<\/thought>/gi, " ");
-  if (streaming) {
-    text = text.replace(/<(?:think|thought)\b[\s\S]*$/gi, "");
+function synthesizeSegmentSafe(
+  segment: string,
+  voiceId?: string
+): Promise<SegmentSynthOutcome> {
+  if (!hasSpeakableContent(segment)) {
+    return Promise.resolve({ ok: false, skipped: true });
   }
-
-  // Bloques de código cerrados y, en streaming, bloques aún abiertos al final
-  text = text.replace(/```[\s\S]*?```/g, " consulta el bloque de código en pantalla. ");
-  if (streaming) {
-    text = text.replace(/```[\s\S]*$/g, "");
-  }
-
-  // Tablas markdown: evitar leer barras verticales o líneas de guiones
-  text = text.replace(/^\|?[\s:|-]+\|[\s:|-]*$/gm, " ");
-  text = text.replace(/\|+/g, " ");
-
-  // Enlaces e imágenes: esperar al cierre cuando está en streaming
-  if (streaming) {
-    text = text.replace(/!?\[[^\]]*(?:\]\([^)]*)?$/g, "");
-    text = text.replace(/https?:\/\/\S+$/g, "");
-    text = text.replace(/\n\s*(?:\d+[.)]?|[-*•#]+)\s*$/g, "\n");
-  }
-  text = text.replace(/!\[([^\]]*)\]\([^)]+\)/g, (_, alt) => alt || "");
-  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-  text = text.replace(/https?:\/\/\S+/g, "enlace en pantalla");
-
-  // Formato inline y encabezados/listas (quitar backticks sueltos para estabilidad en stream)
-  text = text.replace(/`/g, "");
-  text = text.replace(/^\s{0,3}#{1,6}\s+/gm, "");
-  text = text.replace(/^\s*>\s?/gm, "");
-  text = text.replace(/^\s*(?:[-*•]+|\d+[.)])\s+/gm, "");
-  text = text.replace(/[-_]{3,}/g, " ");
-  text = text.replace(/\*\*/g, "").replace(/__/g, "").replace(/~~/g, "");
-
-  const hadTrailingSpace = /\s$/.test(text);
-  text = text.replace(/\s+/g, " ");
-  text = opts?.preserveTrailingSpace && hadTrailingSpace ? `${text.trimStart()}` : text.trim();
-
-  if (maxLength > 0 && text.length > maxLength) {
-    const slice = text.slice(0, maxLength);
-    const punct = Math.max(slice.lastIndexOf("."), slice.lastIndexOf("!"), slice.lastIndexOf("?"));
-    text = punct > 400 ? slice.slice(0, punct + 1) : `${slice.trim()}...`;
-  }
-  return text;
-}
-
-function splitSpeechSegments(
-  cleanText: string,
-  firstMaxChars = 210,
-  nextMaxChars = 380
-): string[] {
-  const sentences = cleanText
-    .split(/(?<=[.!?…])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  if (sentences.length === 0) return [];
-  const segments: string[] = [];
-  let buf = "";
-
-  for (const s of sentences) {
-    const limit = segments.length === 0 ? firstMaxChars : nextMaxChars;
-    if (!buf) {
-      buf = s;
-    } else if (buf.length + 1 + s.length <= limit) {
-      buf = `${buf} ${s}`;
-    } else {
-      segments.push(buf);
-      buf = s;
-    }
-  }
-  if (buf) segments.push(buf);
-  return segments;
+  return synthesizeTtsSpeech(segment, voiceId).then(
+    (audio) => ({ ok: true as const, audio }),
+    (error) =>
+      isNonSpeakableError(error)
+        ? { ok: false as const, skipped: true as const }
+        : { ok: false as const, skipped: false as const, error }
+  );
 }
 
 function base64WavToObjectUrl(wavBase64: string, mimeType = "audio/wav"): string {
@@ -297,7 +249,9 @@ interface StreamSpeechSession {
   seq: number;
   messageId: string;
   voiceId?: string;
-  consumedLen: number;
+  consumedRawLen: number;
+  lastRawText: string;
+  lastNoticeKind: ScreenNoticeKind;
   pendingText: string;
   queuedSegments: string[];
   queuedCharsTotal: number;
@@ -381,7 +335,9 @@ class TtsAudioController {
       seq,
       messageId,
       voiceId: options?.voiceId,
-      consumedLen: 0,
+      consumedRawLen: 0,
+      lastRawText: "",
+      lastNoticeKind: null,
       pendingText: "",
       queuedSegments: [],
       queuedCharsTotal: 0,
@@ -390,6 +346,26 @@ class TtsAudioController {
       draining: false,
       waiters: [],
     };
+  }
+
+  private appendCleanChunkToSession(session: StreamSpeechSession, rawChunk: string): void {
+    if (!rawChunk || !rawChunk.trim()) return;
+    const cleaned = cleanTextForSpeech(rawChunk, {
+      streaming: false,
+      maxLength: 0,
+      preserveTrailingSpace: false,
+    });
+    if (!cleaned || !hasSpeakableContent(cleaned)) return;
+
+    const noticeKind = detectScreenNoticeKind(cleaned);
+    if (noticeKind && session.lastNoticeKind === noticeKind) {
+      return;
+    }
+    session.lastNoticeKind = noticeKind;
+
+    session.pendingText = session.pendingText
+      ? `${session.pendingText} ${cleaned}`
+      : cleaned;
   }
 
   pushStreamText(messageId: string, rawAccumulatedText: string): void {
@@ -406,35 +382,18 @@ class TtsAudioController {
       return;
     }
 
-    const norm = cleanTextForSpeech(rawAccumulatedText, {
-      streaming: true,
-      maxLength: 0,
-      preserveTrailingSpace: true,
-    });
-    if (norm.length < session.consumedLen) {
-      session.consumedLen = norm.length;
+    const raw = rawAccumulatedText || "";
+    // Si el texto crudo se reinició o encogió inesperadamente, alinear offset con seguridad
+    if (raw.length < session.consumedRawLen) {
+      session.consumedRawLen = raw.length;
     }
+    session.lastRawText = raw;
 
-    const tail = norm.slice(session.consumedLen);
-    const boundaryRe = /[.!?…](?=\s)/g;
-    let lastCut = 0;
-    let match: RegExpExecArray | null = null;
-    while ((match = boundaryRe.exec(tail)) !== null) {
-      const sentence = tail.slice(lastCut, match.index + 1).trim();
-      let nextPos = match.index + 1;
-      while (nextPos < tail.length && /\s/.test(tail[nextPos])) {
-        nextPos += 1;
-      }
-      lastCut = nextPos;
-      if (sentence) {
-        session.pendingText = session.pendingText
-          ? `${session.pendingText} ${sentence}`
-          : sentence;
-      }
-    }
-
-    if (lastCut > 0) {
-      session.consumedLen += lastCut;
+    const safeCutoff = findSafeRawSpeechCutoff(raw, session.consumedRawLen);
+    if (safeCutoff > session.consumedRawLen) {
+      const completedRaw = raw.slice(session.consumedRawLen, safeCutoff);
+      session.consumedRawLen = safeCutoff;
+      this.appendCleanChunkToSession(session, completedRaw);
     }
 
     const pendingTrimmed = session.pendingText.trim();
@@ -460,10 +419,10 @@ class TtsAudioController {
       this.playbackSpeed = Math.min(1.35, Math.max(0.8, options.speed));
     }
 
-    let session = this.streamSession;
+    const session = this.streamSession;
     if (!session || session.messageId !== messageId || this.playSeq !== session.seq) {
       const cleanedAll = cleanTextForSpeech(finalRawText);
-      if (!cleanedAll) {
+      if (!cleanedAll || !hasSpeakableContent(cleanedAll)) {
         return false;
       }
       void this.playMessage(messageId, finalRawText, options);
@@ -471,20 +430,34 @@ class TtsAudioController {
     }
 
     session.ended = true;
-    const cleanedFinal = cleanTextForSpeech(finalRawText, {
-      streaming: false,
-      maxLength: STREAM_SPEECH_MAX_CHARS,
-      preserveTrailingSpace: false,
-    });
+    const rawFinal = finalRawText || "";
 
-    const remainder =
-      session.consumedLen < cleanedFinal.length
-        ? cleanedFinal.slice(session.consumedLen).trim()
-        : "";
-    const finalPending = [session.pendingText.trim(), remainder]
-      .filter(Boolean)
-      .join(" ")
-      .trim();
+    // Determinar el remanente no consumido sin duplicar ni cortar palabras
+    let rawRemainder = "";
+    if (session.consumedRawLen === 0) {
+      rawRemainder = rawFinal;
+    } else {
+      const consumedPrefix = session.lastRawText.slice(0, session.consumedRawLen);
+      if (rawFinal.startsWith(consumedPrefix)) {
+        rawRemainder = rawFinal.slice(session.consumedRawLen);
+      } else {
+        const trimmedPrefix = consumedPrefix.trimStart();
+        const trimmedFinal = rawFinal.trimStart();
+        if (trimmedPrefix && trimmedFinal.startsWith(trimmedPrefix)) {
+          rawRemainder = trimmedFinal.slice(trimmedPrefix.length);
+        } else if (session.lastRawText.length > session.consumedRawLen) {
+          rawRemainder = session.lastRawText.slice(session.consumedRawLen);
+        } else if (!session.hasQueuedAny) {
+          rawRemainder = rawFinal;
+        }
+      }
+    }
+
+    if (rawRemainder.trim()) {
+      this.appendCleanChunkToSession(session, rawRemainder);
+    }
+
+    const finalPending = session.pendingText.trim();
     session.pendingText = "";
 
     if (finalPending && session.queuedCharsTotal < STREAM_SPEECH_MAX_CHARS) {
@@ -516,11 +489,11 @@ class TtsAudioController {
 
     const clipped =
       text.length > remainingBudget ? text.slice(0, remainingBudget).trim() : text.trim();
-    if (!clipped) return;
+    if (!clipped || !hasSpeakableContent(clipped)) return;
 
-    const pieces = splitSpeechSegments(clipped, session.hasQueuedAny ? 320 : 180, 320);
+    const pieces = splitSpeechSegments(clipped, session.hasQueuedAny ? 300 : 180, 300);
     for (const piece of pieces) {
-      if (!piece) continue;
+      if (!piece || !hasSpeakableContent(piece)) continue;
       session.queuedSegments.push(piece);
       session.queuedCharsTotal += piece.length;
       session.hasQueuedAny = true;
@@ -554,7 +527,7 @@ class TtsAudioController {
     const { seq, messageId, voiceId } = session;
 
     try {
-      let prefetchedNext: Promise<TtsSpeechAudio> | null = null;
+      let prefetchedNext: Promise<SegmentSynthOutcome> | null = null;
       let hasStartedAudio = false;
 
       while (this.playSeq === seq) {
@@ -566,7 +539,7 @@ class TtsAudioController {
 
         if (!isTauriTtsRuntime()) {
           const segment = session.queuedSegments.shift();
-          if (!segment) continue;
+          if (!segment || !hasSpeakableContent(segment)) continue;
           if (!hasStartedAudio) {
             this.updateSnapshot({
               loadingMessageId: messageId,
@@ -584,7 +557,7 @@ class TtsAudioController {
 
         if (!prefetchedNext) {
           const currentSeg = session.queuedSegments.shift();
-          if (!currentSeg) continue;
+          if (!currentSeg || !hasSpeakableContent(currentSeg)) continue;
           if (!hasStartedAudio) {
             this.updateSnapshot({
               loadingMessageId: messageId,
@@ -593,16 +566,25 @@ class TtsAudioController {
               isPlaying: false,
             });
           }
-          prefetchedNext = synthesizeTtsSpeech(currentSeg, voiceId);
+          prefetchedNext = synthesizeSegmentSafe(currentSeg, voiceId);
         }
 
-        const audioData = await prefetchedNext;
+        const outcome = await prefetchedNext;
         prefetchedNext = null;
         if (this.playSeq !== seq) return;
 
+        if (!outcome.ok) {
+          if (outcome.skipped) {
+            continue;
+          }
+          throw outcome.error;
+        }
+
         if (session.queuedSegments.length > 0) {
           const nextSeg = session.queuedSegments.shift()!;
-          prefetchedNext = synthesizeTtsSpeech(nextSeg, voiceId);
+          if (hasSpeakableContent(nextSeg)) {
+            prefetchedNext = synthesizeSegmentSafe(nextSeg, voiceId);
+          }
         }
 
         hasStartedAudio = true;
@@ -613,7 +595,7 @@ class TtsAudioController {
           isPlaying: true,
         });
 
-        await this.playWavSegment(seq, audioData);
+        await this.playWavSegment(seq, outcome.audio);
       }
 
       if (this.playSeq === seq) {
@@ -665,7 +647,7 @@ class TtsAudioController {
     }
 
     const cleaned = cleanTextForSpeech(rawText);
-    if (!cleaned) return;
+    if (!cleaned || !hasSpeakableContent(cleaned)) return;
 
     const seq = ++this.playSeq;
     this.updateSnapshot({
@@ -687,21 +669,28 @@ class TtsAudioController {
     }
 
     try {
-      let nextPromise: Promise<TtsSpeechAudio> | null = synthesizeTtsSpeech(
+      let nextPromise: Promise<SegmentSynthOutcome> | null = synthesizeSegmentSafe(
         segments[0],
         options?.voiceId
       );
 
       for (let i = 0; i < segments.length; i += 1) {
         if (this.playSeq !== seq) return;
-        const audioData = await nextPromise!;
+        const outcome = await nextPromise!;
         if (this.playSeq !== seq) return;
 
         // Pre-generar el siguiente fragmento mientras suena el actual
         nextPromise =
           i + 1 < segments.length
-            ? synthesizeTtsSpeech(segments[i + 1], options?.voiceId)
+            ? synthesizeSegmentSafe(segments[i + 1], options?.voiceId)
             : null;
+
+        if (!outcome.ok) {
+          if (outcome.skipped) {
+            continue;
+          }
+          throw outcome.error;
+        }
 
         this.updateSnapshot({
           loadingMessageId: null,
@@ -710,7 +699,7 @@ class TtsAudioController {
           isPlaying: true,
         });
 
-        await this.playWavSegment(seq, audioData);
+        await this.playWavSegment(seq, outcome.audio);
       }
 
       if (this.playSeq === seq) {

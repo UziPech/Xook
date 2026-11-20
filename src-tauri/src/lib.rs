@@ -11,6 +11,7 @@ pub fn run() {
         .manage(slices::command_runner::runner::CommandPermissionBroker::default())
         .manage(slices::screen_context::watcher::ScreenContextState::default())
         .manage(slices::tts_voice::worker::TtsWorkerState::default())
+        .manage(slices::window_assist::AssistDockState::default())
         .setup(|app| {
             if let Ok((_, active)) =
                 slices::workspace_manager::registry::ensure_active_workspace(app.handle())
@@ -121,7 +122,15 @@ pub fn run() {
             slices::xox_studio::commands::save_xox_skill_cmd,
             slices::xox_studio::commands::delete_xox_skill_cmd,
             slices::xox_studio::commands::discover_official_skills_cmd,
-            slices::xox_studio::commands::install_official_skill_cmd
+            slices::xox_studio::commands::install_official_skill_cmd,
+            slices::window_assist::commands::get_assist_window_state,
+            slices::window_assist::commands::list_companion_windows,
+            slices::window_assist::commands::apply_assist_layout,
+            slices::window_assist::commands::rebalance_assist_split,
+            slices::window_assist::commands::set_assist_always_on_top,
+            slices::window_assist::commands::exit_assist_layout,
+            slices::window_assist::commands::request_accessibility_permission_cmd,
+            slices::window_assist::commands::open_accessibility_settings_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -13,3 +13,8 @@
   - **Cero persistencia de screenshots crudos en disco** por defecto; conserva solo texto/contexto deduplicado e indexado en SQLite (`.xook/xook.db`) y frames temporales únicamente en memoria RAM cuando se envíen a un modelo multimodal.
   - Excluye la ventana de la `QuickBar` (`quick`) y protege campos/apps sensibles antes de capturar o indexar contexto visual.
 
+repositorios para basarnos 
+
+https://github.com/vercel-labs/agent-desktop
+
+https://github.com/pingdotgg/t3code
