@@ -277,6 +277,8 @@ pub struct XoxChatRequest {
     pub context_checkpoint: Option<serde_json::Value>,
     #[serde(default)]
     pub model_context_window: Option<u64>,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1127,6 +1129,9 @@ pub async fn run_xox_chat<R: Runtime>(
         .ok()
         .map(|p| p.to_string_lossy().to_string());
     let global_xox_profile = crate::slices::xox_studio::store::load_global_xox_profile(&app);
+    let effective_user_profile =
+        merge_effective_user_profile(&app, payload.user_profile.as_ref());
+    let user_memory_facts = crate::workspace_store::load_user_memory(&app).facts;
     let tts_config = crate::slices::tts_voice::store::load_tts_config(&app);
     let app_for_sync = app.clone();
     let eff_for_sync = effective_provider.clone();
@@ -1152,7 +1157,8 @@ pub async fn run_xox_chat<R: Runtime>(
                 "current_tasks": payload.current_tasks,
                 "agenda_items": payload.agenda_items,
                 "attached_context": payload.attached_context,
-                "user_profile": payload.user_profile,
+                "user_profile": effective_user_profile,
+                "user_memory_facts": user_memory_facts,
                 "active_canvas": payload.active_canvas,
                 "active_mode": payload.active_mode,
                 "subagent_roster": payload.subagent_roster,
@@ -1160,6 +1166,7 @@ pub async fn run_xox_chat<R: Runtime>(
                 "active_document": payload.active_document,
                 "context_checkpoint": payload.context_checkpoint,
                 "model_context_window": payload.model_context_window,
+                "session_id": payload.session_id,
                 "unified_memory": {
                     "facts": facts,
                     "screen_summary": screen_summary,
@@ -1172,6 +1179,7 @@ pub async fn run_xox_chat<R: Runtime>(
 
     sync_vault_from_sidecar_result(&app_for_sync, &result, &eff_for_sync);
     record_chat_turn_in_ledger(&app_for_sync, &result, &eff_for_sync);
+    emit_user_data_updates_if_mutated(&app_for_sync, &result);
     Ok(result)
 }
 
@@ -3603,6 +3611,173 @@ fn handle_query_screen_memory_rpc_callback<R: Runtime>(
     })
 }
 
+fn merge_effective_user_profile<R: Runtime>(
+    app: &AppHandle<R>,
+    payload_profile: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let stored = crate::workspace_store::get_local_user(app.clone());
+    match (stored, payload_profile) {
+        (Some(profile), Some(serde_json::Value::Object(incoming))) => {
+            let mut merged = match serde_json::to_value(&profile) {
+                Ok(serde_json::Value::Object(map)) => map,
+                _ => serde_json::Map::new(),
+            };
+            for (k, v) in incoming {
+                if !v.is_null() {
+                    if let Some(s) = v.as_str() {
+                        if s.trim().is_empty() {
+                            continue;
+                        }
+                    }
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+            Some(serde_json::Value::Object(merged))
+        }
+        (Some(profile), _) => serde_json::to_value(profile).ok(),
+        (None, Some(v)) => Some(v.clone()),
+        (None, None) => None,
+    }
+}
+
+fn emit_user_data_updates_if_mutated<R: Runtime>(app: &AppHandle<R>, result: &serde_json::Value) {
+    if result.get("user_profile_mutated").and_then(|v| v.as_bool()) == Some(true) {
+        if let Some(profile) = crate::workspace_store::get_local_user(app.clone()) {
+            let _ = app.emit(crate::workspace_store::LOCAL_USER_UPDATED_EVENT, &profile);
+        }
+    }
+    if result.get("user_memory_mutated").and_then(|v| v.as_bool()) == Some(true) {
+        let store = crate::workspace_store::load_user_memory(app);
+        let _ = app.emit(
+            crate::workspace_store::USER_MEMORY_UPDATED_EVENT,
+            serde_json::json!({
+                "kind": "memory",
+                "sourceWindow": result.get("source_window").and_then(|v| v.as_str()).unwrap_or("main"),
+                "updatedAt": store.updated_at,
+                "factCount": store.facts.len(),
+            }),
+        );
+    }
+}
+
+fn handle_save_user_memory_fact_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+) -> serde_json::Value {
+    let payload = crate::workspace_store::UpsertUserMemoryFactPayload {
+        value: parsed
+            .get("value")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        key: parsed.get("key").and_then(|v| v.as_str()).map(str::to_string),
+        category: parsed
+            .get("category")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        scope: parsed
+            .get("scope")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        source_window: parsed
+            .get("source_window")
+            .or_else(|| parsed.get("sourceWindow"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        pinned: parsed.get("pinned").and_then(|v| v.as_bool()),
+    };
+    match crate::workspace_store::save_user_memory_fact_sync(app, payload) {
+        Ok((saved, facts)) => serde_json::json!({
+            "ok": true,
+            "fact": saved,
+            "total": facts.len(),
+        }),
+        Err(err) => serde_json::json!({ "ok": false, "error": err }),
+    }
+}
+
+fn handle_delete_user_memory_fact_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+) -> serde_json::Value {
+    let id_or_key = parsed
+        .get("id_or_key")
+        .or_else(|| parsed.get("idOrKey"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let source_window = parsed
+        .get("source_window")
+        .or_else(|| parsed.get("sourceWindow"))
+        .and_then(|v| v.as_str());
+    match crate::workspace_store::delete_user_memory_fact_sync(app, id_or_key, source_window) {
+        Ok(facts) => serde_json::json!({
+            "ok": true,
+            "total": facts.len(),
+        }),
+        Err(err) => serde_json::json!({ "ok": false, "error": err }),
+    }
+}
+
+fn handle_update_local_user_profile_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+) -> serde_json::Value {
+    let opt_str = |k1: &str, k2: &str| -> Option<String> {
+        parsed
+            .get(k1)
+            .or_else(|| parsed.get(k2))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    let patch = crate::workspace_store::PatchLocalUserPayload {
+        name: opt_str("name", "name"),
+        store_name: opt_str("store_name", "storeName"),
+        role: opt_str("role", "role"),
+        preferred_name: opt_str("preferred_name", "preferredName"),
+        occupation: opt_str("occupation", "occupation"),
+        work_context: opt_str("work_context", "workContext"),
+        language: opt_str("language", "language"),
+        timezone: opt_str("timezone", "timezone"),
+        notes: opt_str("notes", "notes"),
+    };
+    match crate::workspace_store::patch_local_user_sync(app, patch) {
+        Ok(profile) => serde_json::json!({
+            "ok": true,
+            "profile": profile,
+        }),
+        Err(err) => serde_json::json!({ "ok": false, "error": err }),
+    }
+}
+
+fn filter_global_user_memory_for_query(
+    facts: &[crate::workspace_store::UserMemoryFact],
+    query: &str,
+    limit: usize,
+) -> Vec<crate::workspace_store::UserMemoryFact> {
+    let tokens: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.len() >= 2)
+        .collect();
+    if tokens.is_empty() {
+        return facts.iter().take(limit).cloned().collect();
+    }
+    let matched: Vec<crate::workspace_store::UserMemoryFact> = facts
+        .iter()
+        .filter(|item| {
+            let hay = format!("{} {} {}", item.key, item.category, item.value).to_lowercase();
+            tokens.iter().any(|tok| hay.contains(tok))
+        })
+        .take(limit)
+        .cloned()
+        .collect();
+    if matched.is_empty() {
+        facts.iter().take(limit.min(6)).cloned().collect()
+    } else {
+        matched
+    }
+}
+
 fn handle_memory_search_rpc_callback<R: Runtime>(
     app: &AppHandle<R>,
     parsed: &serde_json::Value,
@@ -3619,13 +3794,22 @@ fn handle_memory_search_rpc_callback<R: Runtime>(
         .get("query")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    let limit = parsed
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|n| n.clamp(1, 30) as usize)
+        .unwrap_or(12);
 
     let (facts, screen_summary) =
         store::build_unified_memory_for_workspace(root.as_deref(), query);
+    let global_store = crate::workspace_store::load_user_memory(app);
+    let global_user_facts = filter_global_user_memory_for_query(&global_store.facts, query, limit);
     serde_json::json!({
         "ok": true,
         "factsCount": facts.len(),
         "facts": facts,
+        "globalUserFactsCount": global_user_facts.len(),
+        "globalUserFacts": global_user_facts,
         "screenSummary": screen_summary,
     })
 }
@@ -4018,6 +4202,11 @@ fn call_python_sidecar_streaming<R: Runtime>(
                     Some(handle_host_fs_copy_from_workspace_rpc(app, &parsed, ws_ref))
                 }
                 "update_xox_profile" => Some(handle_update_xox_profile_rpc(app, &parsed)),
+                "save_user_memory_fact" => Some(handle_save_user_memory_fact_rpc(app, &parsed)),
+                "delete_user_memory_fact" => Some(handle_delete_user_memory_fact_rpc(app, &parsed)),
+                "update_local_user_profile" => {
+                    Some(handle_update_local_user_profile_rpc(app, &parsed))
+                }
                 "set_tts_voice_config" => Some(handle_set_tts_voice_config_rpc(app, &parsed)),
                 "save_xox_skill" => Some(handle_save_xox_skill_rpc(app, &parsed, ws_ref)),
                 "delete_xox_skill" => Some(handle_delete_xox_skill_rpc(app, &parsed, ws_ref)),
@@ -4157,6 +4346,9 @@ pub async fn run_xox_chat_stream<R: Runtime>(
         .ok()
         .map(|p| p.to_string_lossy().to_string());
     let global_xox_profile = crate::slices::xox_studio::store::load_global_xox_profile(&app);
+    let effective_user_profile =
+        merge_effective_user_profile(&app, payload.user_profile.as_ref());
+    let user_memory_facts = crate::workspace_store::load_user_memory(&app).facts;
     let tts_config = crate::slices::tts_voice::store::load_tts_config(&app);
 
     let app_clone = app.clone();
@@ -4184,7 +4376,8 @@ pub async fn run_xox_chat_stream<R: Runtime>(
                 "current_tasks": payload.current_tasks,
                 "agenda_items": payload.agenda_items,
                 "attached_context": payload.attached_context,
-                "user_profile": payload.user_profile,
+                "user_profile": effective_user_profile,
+                "user_memory_facts": user_memory_facts,
                 "active_canvas": payload.active_canvas,
                 "active_mode": payload.active_mode,
                 "subagent_roster": payload.subagent_roster,
@@ -4192,6 +4385,7 @@ pub async fn run_xox_chat_stream<R: Runtime>(
                 "active_document": payload.active_document,
                 "context_checkpoint": payload.context_checkpoint,
                 "model_context_window": payload.model_context_window,
+                "session_id": payload.session_id,
                 "unified_memory": {
                     "facts": facts,
                     "screen_summary": screen_summary,
@@ -4204,6 +4398,7 @@ pub async fn run_xox_chat_stream<R: Runtime>(
 
     sync_vault_from_sidecar_result(&app_for_sync, &result, &eff_for_sync);
     record_chat_turn_in_ledger(&app_for_sync, &result, &eff_for_sync);
+    emit_user_data_updates_if_mutated(&app_for_sync, &result);
     Ok(result)
 }
 

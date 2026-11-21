@@ -1,29 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
   <defs>
     <linearGradient id="xox-bg" x1="40" y1="25" x2="215" y2="231" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#1C2638" />
-      <stop offset="54%" stop-color="#0D121C" />
-      <stop offset="100%" stop-color="#06080E" />
+      <stop offset="0%" stop-color="#1E1C33" />
+      <stop offset="54%" stop-color="#0E111D" />
+      <stop offset="100%" stop-color="#060709" />
     </linearGradient>
     <radialGradient id="xox-sheen" cx="72" cy="58" r="140" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.18" />
-      <stop offset="44%" stop-color="#E0F2FE" stop-opacity="0.045" />
+      <stop offset="0%" stop-color="#B09EF8" stop-opacity="0.22" />
+      <stop offset="44%" stop-color="#7C96FF" stop-opacity="0.06" />
       <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
     </radialGradient>
     <radialGradient id="xox-aura" cx="128" cy="130" r="98" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#7DD3FC" stop-opacity="0.34" />
-      <stop offset="50%" stop-color="#38BDF8" stop-opacity="0.12" />
-      <stop offset="100%" stop-color="#38BDF8" stop-opacity="0" />
+      <stop offset="0%" stop-color="#846CE8" stop-opacity="0.34" />
+      <stop offset="50%" stop-color="#5C84CC" stop-opacity="0.14" />
+      <stop offset="100%" stop-color="#4E7EB0" stop-opacity="0" />
     </radialGradient>
     <linearGradient id="xox-star-fill" x1="70" y1="55" x2="185" y2="205" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#FFFFFF" />
-      <stop offset="54%" stop-color="#E6F5FF" />
-      <stop offset="100%" stop-color="#BDE3FC" />
+      <stop offset="52%" stop-color="#ECE8FF" />
+      <stop offset="100%" stop-color="#B8CCF8" />
     </linearGradient>
     <linearGradient id="xox-rim" x1="25" y1="25" x2="231" y2="231" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.48" />
-      <stop offset="48%" stop-color="#BAE6FD" stop-opacity="0.14" />
-      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.34" />
+      <stop offset="0%" stop-color="#B09EF8" stop-opacity="0.62" />
+      <stop offset="48%" stop-color="#7C96FF" stop-opacity="0.26" />
+      <stop offset="100%" stop-color="#729CE0" stop-opacity="0.42" />
     </linearGradient>
     <clipPath id="xox-squircle">
       <rect x="25" y="25" width="206" height="206" rx="47" />
@@ -61,11 +61,11 @@
 
     <g>
       <ellipse cx="114.98" cy="136" rx="5.75" ry="8.75" fill="#0F1729" fill-opacity="0.95" />
-      <ellipse cx="114.98" cy="139.75" rx="3" ry="2.5" fill="#38BDF8" fill-opacity="0.4" />
+      <ellipse cx="114.98" cy="139.75" rx="3" ry="2.5" fill="#7C96FF" fill-opacity="0.45" />
       <circle cx="117.36" cy="133" r="1.75" fill="#FFFFFF" fill-opacity="0.98" />
 
       <ellipse cx="139.98" cy="136" rx="5.75" ry="8.75" fill="#0F1729" fill-opacity="0.95" />
-      <ellipse cx="139.98" cy="139.75" rx="3" ry="2.5" fill="#38BDF8" fill-opacity="0.4" />
+      <ellipse cx="139.98" cy="139.75" rx="3" ry="2.5" fill="#7C96FF" fill-opacity="0.45" />
       <circle cx="142.36" cy="133" r="1.75" fill="#FFFFFF" fill-opacity="0.98" />
     </g>
   </g>

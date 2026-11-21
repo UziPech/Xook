@@ -1,0 +1,18 @@
+{
+  "name": "@xook/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Contratos compartidos de XOOK (contexto, política agéntica, semántica de entrega y trazas JSONL).",
+  "exports": {
+    ".": "./src/index.ts",
+    "./deliverySemantics": "./src/deliverySemantics.ts",
+    "./agentPolicy": "./src/agentPolicy.ts",
+    "./contextCheckpoint": "./src/contextCheckpoint.ts",
+    "./agentTrace": "./src/agentTrace.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test src/*.test.ts"
+  }
+}

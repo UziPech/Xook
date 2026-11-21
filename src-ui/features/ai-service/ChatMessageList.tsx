@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import type { TurnWorkingMemory } from "@xook/contracts";
 import {
   CommandPermissionCard,
   type CommandPermissionDecisionKind,
@@ -133,6 +134,7 @@ export interface UiChatMessage {
   canvas?: CanvasArtifact;
   canvases?: CanvasArtifact[];
   generatedPdfs?: GeneratedPdfArtifact[];
+  turnMemory?: TurnWorkingMemory;
   isError?: boolean;
   vaultPrompt?: VaultPromptSpec;
   compactionNotice?: UiCompactionNotice;

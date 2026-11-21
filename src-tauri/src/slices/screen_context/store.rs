@@ -511,36 +511,72 @@ pub fn build_screen_memory_summary(
     out.join("\n---\n")
 }
 
+fn is_timestamp_tag(inner: &str) -> bool {
+    let bytes = inner.trim().as_bytes();
+    bytes.len() >= 10
+        && bytes[0..4].iter().all(|b| b.is_ascii_digit())
+        && bytes[4] == b'-'
+        && bytes[5..7].iter().all(|b| b.is_ascii_digit())
+        && bytes[7] == b'-'
+}
+
+fn parse_hechos_line(line: &str) -> Option<(String, String, String)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "---" {
+        return None;
+    }
+    let mut rest = trimmed.trim_start_matches(['-', '*', '•', ' ']).trim();
+    if rest.starts_with('[') {
+        if let Some(end) = rest.find(']') {
+            let inner = &rest[1..end];
+            if is_timestamp_tag(inner) {
+                rest = rest[end + 1..].trim();
+            }
+        }
+    }
+
+    let (cat, body) = if let Some(after_open) = rest.strip_prefix('(') {
+        if let Some(end) = after_open.find(')') {
+            let candidate = after_open[..end].trim();
+            let remaining = after_open[end + 1..].trim();
+            if !candidate.is_empty() && candidate.len() <= 40 {
+                (candidate.to_string(), remaining.to_string())
+            } else {
+                ("negocio".to_string(), rest.to_string())
+            }
+        } else {
+            ("negocio".to_string(), rest.to_string())
+        }
+    } else if let Some(after_open) = rest.strip_prefix('[') {
+        if let Some(end) = after_open.find(']') {
+            let candidate = after_open[..end].trim();
+            let remaining = after_open[end + 1..].trim();
+            if !candidate.is_empty() && candidate.len() <= 40 {
+                (candidate.to_string(), remaining.to_string())
+            } else {
+                ("negocio".to_string(), rest.to_string())
+            }
+        } else {
+            ("negocio".to_string(), rest.to_string())
+        }
+    } else {
+        ("negocio".to_string(), rest.to_string())
+    };
+
+    if body.is_empty() {
+        return None;
+    }
+    let title: String = body.chars().take(72).collect();
+    Some((cat, title, body))
+}
+
 pub fn sync_business_facts_from_workspace(
     conn: &mut Connection,
     workspace_root: &Path,
 ) -> Result<usize, String> {
     let hechos_path = workspace_root.join("memoria").join("hechos.md");
     let raw = fs::read_to_string(&hechos_path).unwrap_or_default();
-    let items: Vec<(String, String, String)> = raw
-        .lines()
-        .map(str::trim)
-        .filter(|&line| !line.is_empty() && !line.starts_with('#') && line != "---")
-        .map(|line| {
-            let clean = line.trim_start_matches(['-', '*', '•', ' ']).trim();
-            // Extraer posible etiqueta [categoria] si existe
-            let (cat, body) = if clean.starts_with('[') {
-                if let Some(end) = clean.find(']') {
-                    (
-                        clean[1..end].trim().to_string(),
-                        clean[end + 1..].trim().to_string(),
-                    )
-                } else {
-                    ("negocio".to_string(), clean.to_string())
-                }
-            } else {
-                ("negocio".to_string(), clean.to_string())
-            };
-            let title: String = body.chars().take(72).collect();
-            (cat, title, body)
-        })
-        .filter(|(_, _, body)| !body.is_empty())
-        .collect();
+    let items: Vec<(String, String, String)> = raw.lines().filter_map(parse_hechos_line).collect();
 
     let source_ref = "memoria/hechos.md";
     let now_iso = Utc::now().to_rfc3339();
@@ -750,14 +786,16 @@ mod tests {
     fn syncs_and_queries_hechos_md_beyond_1500_chars() {
         let dir = temp_ws("facts_fts");
         let filler = "Dato histórico relleno del negocio sobre operaciones anteriores. ".repeat(40);
-        let hechos = format!(
-            "# Hechos del Negocio\n- [general] {filler}\n- [precios] El envío exprés en Monterrey cuesta $190 MXN con proveedor Paquetexpress.\n"
+        let facts_content = format!(
+            "# Hechos del Negocio\n- [general] {filler}\n- [2026-11-21 13:00] (proveedores) El envío exprés en Monterrey cuesta $190 MXN con proveedor Paquetexpress.\n"
         );
-        fs::write(dir.join("memoria/hechos.md"), hechos).unwrap();
+        fs::write(dir.join("memoria/hechos.md"), facts_content).unwrap();
 
         let (facts, _) = build_unified_memory_for_workspace(Some(&dir), "precio envio Monterrey Paquetexpress");
         assert!(!facts.is_empty());
-        assert!(facts.iter().any(|f| f.content.contains("Paquetexpress")));
+        let matched = facts.iter().find(|f| f.content.contains("Paquetexpress")).unwrap();
+        assert_eq!(matched.category, "proveedores");
+        assert!(!matched.content.starts_with("2026-"));
 
         let _ = fs::remove_dir_all(&dir);
     }

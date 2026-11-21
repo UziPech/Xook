@@ -226,6 +226,7 @@ import {
   getLocalUserProfile,
   listLocalConversations,
   saveLocalConversation,
+  subscribeLocalUserUpdated,
 } from "./features/workspace-store/localStore";
 import { ProviderIcon } from "./features/ai-service/ProviderIcon";
 import {
@@ -727,14 +728,16 @@ function XoxHeaderFace({
       <svg viewBox="55 52 130 126" className="block w-full h-full" aria-hidden="true">
         <defs>
           <linearGradient id={ids.body} x1="65" y1="60" x2="175" y2="170" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.34" />
-            <stop offset="45%" stopColor={colors.rim1} stopOpacity="0.18" />
-            <stop offset="100%" stopColor={colors.bodyGlow} stopOpacity="0.24" />
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.22" />
+            <stop offset="35%" stopColor={colors.rim1} stopOpacity="0.14" />
+            <stop offset="62%" stopColor="#090B14" stopOpacity="0.14" />
+            <stop offset="100%" stopColor={colors.bodyGlow} stopOpacity="0.20" />
           </linearGradient>
           <linearGradient id={ids.rim} x1="62" y1="58" x2="176" y2="172" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.92" />
-            <stop offset="50%" stopColor={colors.rim1} stopOpacity="0.62" />
-            <stop offset="100%" stopColor={colors.rim2} stopOpacity="0.42" />
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.82" />
+            <stop offset="34%" stopColor={colors.rim1} stopOpacity="0.48" />
+            <stop offset="60%" stopColor={colors.rim1} stopOpacity="0.18" />
+            <stop offset="100%" stopColor={colors.rim2} stopOpacity="0.44" />
           </linearGradient>
           <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor={isThinking || isAlert || isSuccess || isSyncing ? colors.glow : "#FFFFFF"} stopOpacity="0.55" />
@@ -1491,6 +1494,8 @@ export default function App() {
   }, []);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const composerRectRef = useRef<DOMRect | null>(null);
   const chatInputId = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -1509,6 +1514,22 @@ export default function App() {
   useEffect(() => {
     return () => {
       revokeComposerAttachments(attachmentsRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const syncRect = () => {
+      composerRectRef.current = el.getBoundingClientRect();
+    };
+    syncRect();
+    const ro = new ResizeObserver(syncRect);
+    ro.observe(el);
+    window.addEventListener("resize", syncRect, { passive: true });
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", syncRect);
     };
   }, []);
 
@@ -1721,6 +1742,7 @@ export default function App() {
   const [learningToast, setLearningToast] = useState<MemoryPattern | null>(null);
   const [inputExpanded, setInputExpanded] = useState<boolean>(false);
 
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const pendingSecretKeysRef = useRef<
     Map<string, { key: string; provider: AiProviderId; ambiguousProviders?: AiProviderId[] }>
@@ -1920,9 +1942,23 @@ export default function App() {
   }, [activeModeSpec, isChatStreaming, isDraggingOverChat, chatMessages.length, homeGreetingSlot.seed]);
   const lastMsg = chatMessages[chatMessages.length - 1];
   const lastMsgStreamLen = (lastMsg?.content?.length ?? 0) + (lastMsg?.reasoning?.length ?? 0);
+  const isXoxWorking =
+    xoxState === "thinking" ||
+    xoxState === "reading" ||
+    xoxState === "coding" ||
+    xoxState === "syncing";
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: isChatStreaming ? "auto" : "smooth", block: "end" });
-  }, [chatMessages.length, lastMsgStreamLen, xoxState, isChatStreaming]);
+    if (chatMessages.length === 0) {
+      if (chatScrollRef.current && chatScrollRef.current.scrollTop !== 0) {
+        chatScrollRef.current.scrollTop = 0;
+      }
+      return;
+    }
+    chatEndRef.current?.scrollIntoView({
+      behavior: isChatStreaming ? "auto" : "smooth",
+      block: "end",
+    });
+  }, [chatMessages.length, lastMsgStreamLen, isChatStreaming, isXoxWorking]);
 
   const activeProvider = normalizeProviderIdClient(aiConfig.provider);
   const activeSpec = getProviderSpec(activeProvider);
@@ -2344,6 +2380,50 @@ export default function App() {
     };
   }, [isTauriEnv]);
 
+  useEffect(() => {
+    let disposed = false;
+    let unsubUser: (() => void) | null = null;
+    void subscribeLocalUserUpdated((profile) => {
+      if (!disposed) {
+        setLocalUser(profile);
+      }
+    }).then((fn) => {
+      if (disposed) fn();
+      else unsubUser = fn;
+    });
+    return () => {
+      disposed = true;
+      unsubUser?.();
+    };
+  }, []);
+
+  const convPersistInFlightRef = useRef<boolean>(false);
+  const convPersistQueueRef = useRef<Map<string, ConversationThread>>(new Map());
+
+  const flushConversationQueue = async () => {
+    if (convPersistInFlightRef.current) return;
+    convPersistInFlightRef.current = true;
+    try {
+      while (convPersistQueueRef.current.size > 0) {
+        const nextEntry = convPersistQueueRef.current.entries().next();
+        if (nextEntry.done) break;
+        const [queuedId, queuedThread] = nextEntry.value;
+        convPersistQueueRef.current.delete(queuedId);
+        try {
+          const updatedList = await saveLocalConversation(queuedThread);
+          setConversations(updatedList);
+        } catch {
+          // Mantiene historial en memoria aunque falle escritura
+        }
+      }
+    } finally {
+      convPersistInFlightRef.current = false;
+      if (convPersistQueueRef.current.size > 0) {
+        void flushConversationQueue();
+      }
+    }
+  };
+
   const persistConversation = async (
     nextMessages: UiChatMessage[],
     convId = activeConvIdRef.current,
@@ -2366,12 +2446,8 @@ export default function App() {
           ? compactedUpToOverride
           : compactedUpToMsgIdRef.current,
     };
-    try {
-      const updatedList = await saveLocalConversation(thread);
-      setConversations(updatedList);
-    } catch {
-      // Mantiene historial en memoria aunque falle escritura
-    }
+    convPersistQueueRef.current.set(convId, thread);
+    await flushConversationQueue();
   };
 
   const handleStartNewChat = () => {
@@ -3924,7 +4000,11 @@ export default function App() {
 
   const applyCompactedContextEvent = (
     evt: ContextCompactedEvent,
-    opts?: { attachToAssistantMsgId?: string; insertStandaloneDivider?: boolean }
+    opts?: {
+      attachToAssistantMsgId?: string;
+      excludeUserMsgId?: string;
+      insertStandaloneDivider?: boolean;
+    }
   ) => {
     const notice = {
       auto: evt.auto,
@@ -3969,12 +4049,13 @@ export default function App() {
       chatCheckpointRef.current = evt.checkpoint;
       setChatCheckpoint(evt.checkpoint);
       const msgs = chatMessagesRef.current;
-      // Determinar el último mensaje incluido en la compactación (conservando los `keptRecentTurns` recientes)
+      // Determinar el último mensaje incluido en la compactación (excluyendo el turno en curso)
       const eligible = msgs.filter(
         (m) =>
           !m.isError &&
           !m.isCompactionDividerOnly &&
-          m.id !== opts?.attachToAssistantMsgId
+          m.id !== opts?.attachToAssistantMsgId &&
+          m.id !== opts?.excludeUserMsgId
       );
       const keep = Math.max(0, evt.keptRecentTurns);
       const boundaryIdx = eligible.length - keep - 1;
@@ -4526,7 +4607,7 @@ export default function App() {
                   Boolean(m.canvas) ||
                   (m.canvases && m.canvases.length > 0))
             )
-            .slice(-24)
+            .slice(-40)
             .map((m) => {
               const notes: string[] = [];
               if (m.attachments && m.attachments.length > 0) {
@@ -4562,6 +4643,9 @@ export default function App() {
                   .map((c) => `"${c.title || "Canvas"}" (id: ${c.id}, tipo: ${c.kind})`)
                   .join(", ");
                 notes.push(`[Canvas de este turno: ${canvasDesc}]`);
+              }
+              if (m.turnMemory?.compactNote) {
+                notes.push(`[Memoria operativa del turno: ${m.turnMemory.compactNote}]`);
               }
               const suffix = notes.length > 0 ? `\n${notes.join("\n")}` : "";
               return { role: m.role, content: `${m.content.trim()}${suffix}`.trim() };
@@ -4902,6 +4986,12 @@ export default function App() {
                 name: localUser.name,
                 storeName: localUser.storeName,
                 role: localUser.role,
+                ...(localUser.preferredName ? { preferredName: localUser.preferredName } : {}),
+                ...(localUser.occupation ? { occupation: localUser.occupation } : {}),
+                ...(localUser.workContext ? { workContext: localUser.workContext } : {}),
+                ...(localUser.language ? { language: localUser.language } : {}),
+                ...(localUser.timezone ? { timezone: localUser.timezone } : {}),
+                ...(localUser.notes ? { notes: localUser.notes } : {}),
               }
             : null,
           businessContextSnapshot,
@@ -4910,6 +5000,7 @@ export default function App() {
           activeDocument: effectiveScope === "document" ? resolvedDocTarget : null,
           contextCheckpoint: effectiveScope === "chat" ? chatCheckpointRef.current : null,
           modelContextWindow,
+          sessionId: convId,
         },
         {
           signal: turnAbortController.signal,
@@ -4918,7 +5009,10 @@ export default function App() {
           },
           onContextCompacted: (evt) => {
             turnCompactedEvt = evt;
-            applyCompactedContextEvent(evt, { attachToAssistantMsgId: assistantMsgId });
+            applyCompactedContextEvent(evt, {
+              attachToAssistantMsgId: assistantMsgId,
+              excludeUserMsgId: userMsg.id,
+            });
           },
           onProviderFailover: (evt) => {
             const toSpec = getProviderSpec(evt.toProvider);
@@ -5302,6 +5396,7 @@ export default function App() {
             for (const p of resPdfs) byPath.set(p.path, p);
             return Array.from(byPath.values());
           })(),
+          turnMemory: res.turnMemory ?? m.turnMemory,
           actionButton: nextClarification
             ? {
                 label: "Responder preguntas",
@@ -7193,9 +7288,14 @@ export default function App() {
           )}
 
           {/* Área de Trabajo con Scroll: Xox Hero / Chat en vivo */}
-          <div className="xook-chat-scroll-pad relative z-[1] flex-1 overflow-y-auto">
+          <div
+            ref={chatScrollRef}
+            className="xook-chat-scroll-pad relative z-[1] flex-1 flex flex-col overflow-y-auto"
+          >
             <div
-              className={`max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto space-y-6 transition-[padding] duration-200 ${
+              className={`w-full max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto transition-[padding] duration-200 ${
+                chatMessages.length === 0 ? "flex-[1_0_auto] flex flex-col" : "shrink-0 space-y-6"
+              } ${
                 activeChecklist && !checklistCollapsed && !hasRightSplitOpen && !isCompactViewport
                   ? "lg:pr-[314px]"
                   : ""
@@ -7206,7 +7306,7 @@ export default function App() {
               {/* 1. XOX DIGITAL COMPANION (HERO EN ESTADO VACÍO / COMPACTO EN CHAT)      */}
               {/* ========================================================================= */}
               {chatMessages.length === 0 ? (
-                <div className="min-h-[calc(100vh-18rem)] flex flex-col items-center justify-center py-2 text-center">
+                <div className="xox-hero-stage">
                   {/* Estrella Xox: protagonista en el Home; se desliza hacia Espacio de Xox al abrirlo */}
                   <div
                     className={`xox-hero-slot xox-hero-slot-adaptive relative flex flex-col items-center justify-center select-none pointer-events-none ${
@@ -7293,15 +7393,22 @@ export default function App() {
                           <span
                             className={`w-1.5 h-1.5 rounded-full ${
                               displayXoxStatus.state === "thinking" || displayXoxStatus.state === "reading"
-                                ? "bg-cyan-400 animate-ping"
+                                ? "animate-ping"
                                 : displayXoxStatus.state === "success"
                                 ? "bg-emerald-400"
                                 : displayXoxStatus.state === "syncing"
                                 ? "bg-teal-400 animate-pulse"
                                 : displayXoxStatus.state === "alert"
                                 ? "bg-red-500 animate-pulse"
-                                : "bg-cyan-400"
+                                : ""
                             }`}
+                            style={
+                              displayXoxStatus.state === "success" ||
+                              displayXoxStatus.state === "syncing" ||
+                              displayXoxStatus.state === "alert"
+                                ? undefined
+                                : { backgroundColor: XOX_ACCENT_PRESETS[displayAccentPreset].accessory }
+                            }
                           />
                           <p
                             className={
@@ -7341,77 +7448,79 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  <ChatMessageList
-                    messages={chatMessages}
-                    xoxState={xoxState}
-                    thinkingLabel={thinkingLabel}
-                    summonTrigger={summonSeq}
-                    greeting={greeting}
-                    greetingLeaving={greetingLeaving}
-                    activeCanvasId={showCanvas ? activeCanvas?.id ?? null : null}
-                    onOpenCanvas={handleOpenCanvas}
-                    onPreviewAttachment={(target) => setAttachmentPreviewTarget(target)}
-                    onPreviewPdf={(pdf) => void openPdfInRightPanel(pdf, "view")}
-                    onEditPdf={(pdf) => void openPdfInRightPanel(pdf, "edit_page")}
-                    onDownloadPdf={(pdf) => void handleDownloadPdfFromChat(pdf)}
-                    onOpenPdf={(rel) => void openWorkspaceFile(rel)}
-                    onRevealPdfFolder={(rel) => void openWorkspaceFolder(rel)}
-                    modelCatalog={catalogModels}
-                    onXoxClick={handleXoxClick}
-                    onAction={handleChatAction}
-                    onSaveInlineVaultKey={handleSaveInlineVaultKey}
-                    onOpenAiVaultModal={(pid) => openAiSettings("account", pid ?? activeProvider)}
-                    onOpenTasksTab={() => {
-                      setShowRightSidebar(true);
-                      setTaskTab("pending");
-                    }}
-                    onRegenerateMessage={(msgId) => void handleRegenerateMessage(msgId)}
-                    onRateMessage={handleRateMessage}
-                    permissionItems={permissionItems}
-                    onResolvePermission={(reqId, decision) =>
-                      void handleResolvePermission(reqId, decision)
-                    }
-                    ttsEnabled={Boolean(ttsStatus?.config.enabled)}
-                    ttsModelsInstalled={Boolean(ttsStatus?.modelsInstalled)}
-                    ttsLoadingMessageId={ttsPlayback.loadingMessageId}
-                    ttsPlayingMessageId={ttsPlayback.playingMessageId}
-                    onSpeakMessage={handleSpeakMessage}
-                    accentPreset={displayAccentPreset}
-                    agentName={effectiveAgentName}
-                    xoxAwayInStudio={showXoxStudio && !xoxExitingStage}
-                    xoxInFlight={xoxInFlight}
-                    xoxTravelPhase={xoxTravelPhase}
-                    glideSeq={showXoxStudio || xoxInFlight ? 0 : xoxGlideSeq}
-                    xoxTerminal={xoxTerminalFeed}
-                    isSplitMode={isEffectiveSplitLayout}
-                    rosterSubagents={
-                      activeMode === "agent" && subagentTeamMode === "custom"
-                        ? subagentRoster
-                            .filter((r) => r.enabled)
-                            .map((r) => ({
-                              id: r.id,
-                              name: r.name,
-                              design: r.design,
-                              status: "pending" as const,
-                            }))
-                        : undefined
-                    }
-                  />
-                </div>
-              )}
+                <>
+                  <div className="space-y-4">
+                    <ChatMessageList
+                      messages={chatMessages}
+                      xoxState={xoxState}
+                      thinkingLabel={thinkingLabel}
+                      summonTrigger={summonSeq}
+                      greeting={greeting}
+                      greetingLeaving={greetingLeaving}
+                      activeCanvasId={showCanvas ? activeCanvas?.id ?? null : null}
+                      onOpenCanvas={handleOpenCanvas}
+                      onPreviewAttachment={(target) => setAttachmentPreviewTarget(target)}
+                      onPreviewPdf={(pdf) => void openPdfInRightPanel(pdf, "view")}
+                      onEditPdf={(pdf) => void openPdfInRightPanel(pdf, "edit_page")}
+                      onDownloadPdf={(pdf) => void handleDownloadPdfFromChat(pdf)}
+                      onOpenPdf={(rel) => void openWorkspaceFile(rel)}
+                      onRevealPdfFolder={(rel) => void openWorkspaceFolder(rel)}
+                      modelCatalog={catalogModels}
+                      onXoxClick={handleXoxClick}
+                      onAction={handleChatAction}
+                      onSaveInlineVaultKey={handleSaveInlineVaultKey}
+                      onOpenAiVaultModal={(pid) => openAiSettings("account", pid ?? activeProvider)}
+                      onOpenTasksTab={() => {
+                        setShowRightSidebar(true);
+                        setTaskTab("pending");
+                      }}
+                      onRegenerateMessage={(msgId) => void handleRegenerateMessage(msgId)}
+                      onRateMessage={handleRateMessage}
+                      permissionItems={permissionItems}
+                      onResolvePermission={(reqId, decision) =>
+                        void handleResolvePermission(reqId, decision)
+                      }
+                      ttsEnabled={Boolean(ttsStatus?.config.enabled)}
+                      ttsModelsInstalled={Boolean(ttsStatus?.modelsInstalled)}
+                      ttsLoadingMessageId={ttsPlayback.loadingMessageId}
+                      ttsPlayingMessageId={ttsPlayback.playingMessageId}
+                      onSpeakMessage={handleSpeakMessage}
+                      accentPreset={displayAccentPreset}
+                      agentName={effectiveAgentName}
+                      xoxAwayInStudio={showXoxStudio && !xoxExitingStage}
+                      xoxInFlight={xoxInFlight}
+                      xoxTravelPhase={xoxTravelPhase}
+                      glideSeq={showXoxStudio || xoxInFlight ? 0 : xoxGlideSeq}
+                      xoxTerminal={xoxTerminalFeed}
+                      isSplitMode={isEffectiveSplitLayout}
+                      rosterSubagents={
+                        activeMode === "agent" && subagentTeamMode === "custom"
+                          ? subagentRoster
+                              .filter((r) => r.enabled)
+                              .map((r) => ({
+                                id: r.id,
+                                name: r.name,
+                                design: r.design,
+                                status: "pending" as const,
+                              }))
+                          : undefined
+                      }
+                    />
+                  </div>
 
-              {/* Espaciador inferior para que el último elemento pueda scrollear sobre el input fijo y Xox */}
-              <div
-                className={`${
-                  activeClarification || permissionItems.some((p) => p.state === "pending")
-                    ? "h-80 sm:h-96"
-                    : isEffectiveSplitLayout
-                      ? "h-72 sm:h-80"
-                      : "h-56 sm:h-52"
-                } shrink-0 transition-[height]`}
-              />
-              <div ref={chatEndRef} />
+                  {/* Espaciador inferior para que el último elemento pueda scrollear sobre el input fijo y Xox */}
+                  <div
+                    className={`${
+                      activeClarification || permissionItems.some((p) => p.state === "pending")
+                        ? "h-[21rem] sm:h-[25rem]"
+                        : isEffectiveSplitLayout
+                          ? "h-[19rem] sm:h-[21rem]"
+                          : "h-60 sm:h-56"
+                    } shrink-0 transition-[height]`}
+                  />
+                  <div ref={chatEndRef} />
+                </>
+              )}
 
             </div>
           </div>
@@ -7470,7 +7579,7 @@ export default function App() {
           {/* ========================================================================= */}
           {/* 4. INPUT / CHAT FIJO EN LA PARTE INFERIOR (PINNED DOCK)                    */}
           {/* ========================================================================= */}
-          <div className="xook-composer-pad absolute inset-x-0 bottom-0 py-3 sm:py-5 bg-gradient-to-t from-[#060709] via-[#060709]/95 to-transparent pointer-events-none z-10">
+          <div className="xook-composer-pad absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#060709] via-[#060709]/95 to-transparent pointer-events-none z-10">
             <div className="@container max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto pointer-events-auto relative">
               {/* Xox fija en la esquina derecha sobre el input cuando la columna de chat es angosta (<560px) */}
               {chatMessages.length > 0 && (
@@ -7532,6 +7641,23 @@ export default function App() {
               )}
 
               <div
+                ref={composerRef}
+                onPointerEnter={() => {
+                  if (composerRef.current) {
+                    composerRectRef.current = composerRef.current.getBoundingClientRect();
+                  }
+                }}
+                onPointerMove={(e) => {
+                  const el = composerRef.current;
+                  if (!el) return;
+                  const rect = composerRectRef.current ?? el.getBoundingClientRect();
+                  composerRectRef.current = rect;
+                  if (rect.width <= 0 || rect.height <= 0) return;
+                  const x = Math.min(100, Math.max(0, ((e.clientX - rect.left) / rect.width) * 100));
+                  const y = Math.min(100, Math.max(0, ((e.clientY - rect.top) / rect.height) * 100));
+                  el.style.setProperty("--stitch-mx", `${x.toFixed(2)}%`);
+                  el.style.setProperty("--stitch-my", `${y.toFixed(2)}%`);
+                }}
                 onDragOver={(e) => {
                   if (e.dataTransfer?.types?.includes("Files")) {
                     e.preventDefault();
@@ -7562,17 +7688,25 @@ export default function App() {
                   inputExpanded || attachments.length > 0 ? "is-expanded" : ""
                 } ${isDraggingOverChat ? "ring-1 ring-white/30 border-white/25" : ""}`}
               >
-                {/* Capa de recorte para los efectos de luz (los menús desplegables pueden sobresalir) */}
-                <div className="absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
+                {/* Borde iridiscente 1px estilo Stitch (esquina superior izquierda violeta -> izquierda azul/cian) */}
+                <span aria-hidden="true" className="xook-stitch-rim" />
+                <span aria-hidden="true" className="xook-stitch-pointer-rim" />
+
+                {/* Capa de recorte para los efectos de luz internos (los menús desplegables pueden sobresalir) */}
+                <div className="xook-stitch-fx absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
+                  {/* Bruma luminosa interna en la esquina y borde izquierdo */}
+                  <span aria-hidden="true" className="xook-stitch-bloom" />
+                  {/* Destello reactivo al puntero */}
+                  <span aria-hidden="true" className="xook-stitch-pointer-glow" />
                   {/* Reflejo especular superior tenue */}
-                  <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+                  <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-violet-200/12 via-white/[0.06] to-transparent" />
                   {/* Barrido de luz de encendido */}
                   <span key={summonSeq} aria-hidden="true" className="console-sweep" />
                 </div>
 
                 {/* Bandeja acoplada al input para Permisos pendientes y Preguntas abiertas (estilo Antigravity / Claude Code) */}
                 {(permissionItems.some((p) => p.state === "pending") || activeClarification) && (
-                  <div className="mb-2.5 pb-2.5 border-b border-white/[0.08] space-y-2">
+                  <div className="relative z-10 mb-2.5 pb-2.5 border-b border-white/[0.08] space-y-2">
                     {permissionItems
                       .filter((p) => p.state === "pending")
                       .map((perm) => (
@@ -7608,7 +7742,7 @@ export default function App() {
                 )}
 
                 {/* Formulario Principal de Entrada */}
-                <form onSubmit={handlePromptSubmit} className="space-y-2.5">
+                <form onSubmit={handlePromptSubmit} className="relative z-10 space-y-2.5">
                   {/* Píldora de Ventana de Contexto Aislado cuando hay un documento abierto */}
                   {showDocViewer && pdfPanelState?.path && (
                     <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-white/[0.035] border border-white/[0.09] text-[11px]">

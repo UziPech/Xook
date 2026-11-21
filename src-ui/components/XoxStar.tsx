@@ -42,6 +42,8 @@ export interface XoxAccentSpec {
   /** Borde secundario análogo (~18°–22° en OKLCH) para refracción de vidrio armónica. */
   rim2: string;
   tint: string;
+  /** Tono inferior del cuerpo translúcido (si se omite, hereda `glow`). Permite degradados bicolores como el aura del input. */
+  bodyLower?: string;
   glow: string;
   /** Tono profundo en la misma familia para el núcleo en `thinking`. */
   deep: string;
@@ -51,7 +53,7 @@ export interface XoxAccentSpec {
   accessory: string;
   /** Acento brillante de la familia (sombra interna de la boca al hablar). */
   pupil: string;
-  /** Tono de pupila/iris: azul celeste nítido y discreto (común a todas las auras). */
+  /** Tono de pupila/iris calibrado para mantener expresión nítida sobre esclerótica blanca. */
   eye: string;
   /** Aura y tono medio al celebrar (`success`), manteniendo armonía sin choques. */
   celebrateMid: string;
@@ -62,39 +64,41 @@ export interface XoxAccentSpec {
 }
 
 export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
+  // Identidad principal XOOK: aurora bicolor del input del chat (lavanda-violeta arriba-izq → azul zafiro/pizarra abajo-der)
   classic: {
     label: "Estelar",
-    mid: "#7DD3FC",
-    rim: "#BAE6FD",
-    rim2: "#A4CFFF",
-    tint: "#E0F2FE",
-    glow: "#38BDF8",
-    deep: "#0EA5E9",
-    idleCore: "#0D86C3",
-    accessory: "#61E4F0",
-    pupil: "#38BDF8",
-    eye: "#7DD3FC",
-    celebrateMid: "#BAE6FD",
-    celebrateGlow: "#4BE2F0",
-    blush: "#BAE6FD",
-    blushCore: "#E0F2FE",
+    mid: "#9488F0",
+    rim: "#B09EF8",
+    rim2: "#729CE0",
+    tint: "#A48EF4",
+    bodyLower: "#5C84CC",
+    glow: "#846CE8",
+    deep: "#4E7EB0",
+    idleCore: "#646ED6",
+    accessory: "#7C96FF",
+    pupil: "#846CE8",
+    eye: "#90AAFF",
+    celebrateMid: "#C4BAFC",
+    celebrateGlow: "#7C96FF",
+    blush: "#B8A8F8",
+    blushCore: "#E6E0FF",
   },
   violet: {
     label: "Violeta",
     mid: "#C4B5FD",
     rim: "#DDD6FE",
-    rim2: "#B8C8FF",
+    rim2: "#D8B4FE",
     tint: "#EDE9FE",
     glow: "#A78BFA",
     deep: "#7E6CDA",
     idleCore: "#7569CE",
     accessory: "#EAB7FF",
     pupil: "#C084FC",
-    eye: "#7DD3FC",
+    eye: "#90AAFF",
     celebrateMid: "#E9D5FF",
     celebrateGlow: "#D29BFF",
-    blush: "#BAE6FD",
-    blushCore: "#E0F2FE",
+    blush: "#D8B4FE",
+    blushCore: "#F3E8FF",
   },
   emerald: {
     label: "Esmeralda",
@@ -348,7 +352,7 @@ export function resolveXoxStateColors(
   if (state === "thinking") {
     return {
       bodyTint: spec.tint,
-      bodyGlow: spec.glow,
+      bodyGlow: spec.bodyLower ?? spec.glow,
       rim1: spec.rim,
       rim2: spec.rim2,
       core: spec.glow,
@@ -380,7 +384,7 @@ export function resolveXoxStateColors(
   if (state === "syncing" || state === "coding") {
     return {
       bodyTint: spec.tint,
-      bodyGlow: spec.glow,
+      bodyGlow: spec.bodyLower ?? spec.glow,
       rim1: spec.rim,
       rim2: state === "coding" ? spec.accessory : spec.rim2,
       core: spec.glow,
@@ -395,7 +399,7 @@ export function resolveXoxStateColors(
   }
   return {
     bodyTint: spec.tint,
-    bodyGlow: spec.glow,
+    bodyGlow: spec.bodyLower ?? spec.glow,
     rim1: spec.rim,
     rim2: spec.rim2,
     core: spec.idleCore,
@@ -523,6 +527,7 @@ function toOklabColorMap(colors: XoxResolvedColors): OklabColorMap {
 const STAR_PTS: number[][] = Array.from({ length: 10 }, () => [0, 0]);
 const STAR_RADII: number[] = new Array(10).fill(PEAK_ROUND);
 const PATH_SEGMENTS: string[] = new Array(11);
+const PEAK_APEXES: [number, number][] = Array.from({ length: 5 }, () => [C, C]);
 
 /** Polígono con esquinas redondeadas (curvas cuadráticas en cada vértice sin reasignar buffers). */
 function roundedPath(pts: number[][], radii: number[]): string {
@@ -542,6 +547,11 @@ function roundedPath(pts: number[][], radii: number[]): string {
     const ay = p1[1] - (d1y / l1) * r;
     const bx = p1[0] + (d2x / l2) * r;
     const by = p1[1] + (d2y / l2) * r;
+    if ((i & 1) === 0) {
+      const idx = i >> 1;
+      PEAK_APEXES[idx][0] = 0.25 * ax + 0.5 * p1[0] + 0.25 * bx;
+      PEAK_APEXES[idx][1] = 0.25 * ay + 0.5 * p1[1] + 0.25 * by;
+    }
     PATH_SEGMENTS[i] = `${i === 0 ? "M" : "L"}${ax.toFixed(2)} ${ay.toFixed(2)}Q${p1[0].toFixed(2)} ${p1[1].toFixed(2)} ${bx.toFixed(2)} ${by.toFixed(2)}`;
   }
   PATH_SEGMENTS[n] = "Z";
@@ -626,6 +636,16 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     body: `xox-body-${uid}`,
     bodyClip: `xox-body-clip-${uid}`,
     rim: `xox-rim-${uid}`,
+    peakGlint: `xox-peak-glint-${uid}`,
+    peakGlintAlt: `xox-peak-glint-alt-${uid}`,
+    meniscus: `xox-meniscus-${uid}`,
+    bevel: `xox-bevel-${uid}`,
+    bounce: `xox-bounce-${uid}`,
+    liquidA: `xox-liq-a-${uid}`,
+    liquidB: `xox-liq-b-${uid}`,
+    liquidC: `xox-liq-c-${uid}`,
+    gloss: `xox-gloss-${uid}`,
+    glossSpec: `xox-gloss-spec-${uid}`,
     core: `xox-core-${uid}`,
     glow: `xox-glow-${uid}`,
     cradle: `xox-cradle-${uid}`,
@@ -642,14 +662,24 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   // Refs a nodos SVG animados por rAF
   const wrapRef = useRef<HTMLDivElement>(null);
   const cradleRef = useRef<SVGCircleElement>(null);
-  const glowRef = useRef<SVGCircleElement>(null);
   const summonSilhouetteRef = useRef<SVGPathElement>(null);
   const ringRef = useRef<SVGEllipseElement>(null);
   const bodyRef = useRef<SVGGElement>(null);
   const yawRef = useRef<SVGGElement>(null);
   const starUnderlayRef = useRef<SVGPathElement>(null);
   const starRef = useRef<SVGPathElement>(null);
+  const starMeniscusRef = useRef<SVGPathElement>(null);
+  const starBevelRef = useRef<SVGPathElement>(null);
+  const starBounceRef = useRef<SVGPathElement>(null);
   const starClipPathRef = useRef<SVGPathElement>(null);
+  const peakGlintRefs = useRef<(SVGCircleElement | null)[]>([]);
+  const rimGradRef = useRef<SVGLinearGradientElement>(null);
+  const liquidARef = useRef<SVGEllipseElement>(null);
+  const liquidBRef = useRef<SVGEllipseElement>(null);
+  const liquidCRef = useRef<SVGEllipseElement>(null);
+  const glossTopRef = useRef<SVGEllipseElement>(null);
+  const glossSpecRef = useRef<SVGEllipseElement>(null);
+  const glossBotRef = useRef<SVGEllipseElement>(null);
   const coreRef = useRef<SVGCircleElement>(null);
   const faceRef = useRef<SVGGElement>(null);
   const eyeLRef = useRef<SVGGElement>(null);
@@ -716,7 +746,23 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     bodyTint: SVGStopElement | null;
     bodyGlow: SVGStopElement | null;
     rim1: SVGStopElement | null;
+    rimMid: SVGStopElement | null;
     rim2: SVGStopElement | null;
+    peakGlintTint: SVGStopElement | null;
+    peakGlintAltTint: SVGStopElement | null;
+    meniscus1: SVGStopElement | null;
+    meniscusMid: SVGStopElement | null;
+    meniscus2: SVGStopElement | null;
+    bevelTint: SVGStopElement | null;
+    bounceTint: SVGStopElement | null;
+    liquidA0: SVGStopElement | null;
+    liquidA1: SVGStopElement | null;
+    liquidA2: SVGStopElement | null;
+    liquidB0: SVGStopElement | null;
+    liquidB1: SVGStopElement | null;
+    liquidB2: SVGStopElement | null;
+    liquidC0: SVGStopElement | null;
+    liquidC1: SVGStopElement | null;
     core0: SVGStopElement | null;
     core1: SVGStopElement | null;
     core2: SVGStopElement | null;
@@ -731,7 +777,23 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     bodyTint: null,
     bodyGlow: null,
     rim1: null,
+    rimMid: null,
     rim2: null,
+    peakGlintTint: null,
+    peakGlintAltTint: null,
+    meniscus1: null,
+    meniscusMid: null,
+    meniscus2: null,
+    bevelTint: null,
+    bounceTint: null,
+    liquidA0: null,
+    liquidA1: null,
+    liquidA2: null,
+    liquidB0: null,
+    liquidB1: null,
+    liquidB2: null,
+    liquidC0: null,
+    liquidC1: null,
     core0: null,
     core1: null,
     core2: null,
@@ -821,10 +883,13 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     }
   }, [resolvedAccent, state]);
 
-  const initialPath = useMemo(
-    () => buildStar({ phase: 0, amp: 1, lag: 0, reach: 0, wave: -1 }),
-    []
-  );
+  const { initialPath, initialPeakApexes } = useMemo(() => {
+    const path = buildStar({ phase: 0, amp: 1, lag: 0, reach: 0, wave: -1 });
+    return {
+      initialPath: path,
+      initialPeakApexes: PEAK_APEXES.map(([x, y]) => [x, y] as [number, number]),
+    };
+  }, []);
 
   const triggerSpin = () => {
     const a = anim.current;
@@ -1435,16 +1500,97 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         wave: t - a.waveStart,
       });
       starRef.current?.setAttribute("d", starPath);
+      starMeniscusRef.current?.setAttribute("d", starPath);
+      starBevelRef.current?.setAttribute("d", starPath);
+      starBounceRef.current?.setAttribute("d", starPath);
       starUnderlayRef.current?.setAttribute("d", starPath);
       starClipPathRef.current?.setAttribute("d", starPath);
 
-      // --- Núcleo y aura (resplandor interno amplio y difuso, centrado en el corazón del cuerpo) ---
-      const coreBase = 33 + 1.8 * Math.sin(t * 2);
-      const coreThink = 38 + 3.2 * Math.sin(t * 6);
-      const coreTalk = 34.5 + 3.2 * mOpen;
-      const coreCode = 36 + 2.2 * Math.sin(t * 5.2);
+      // Puntos de luz cristalinos muy sutiles en las 5 puntas redondeadas
+      for (let i = 0; i < 5; i++) {
+        const el = peakGlintRefs.current[i];
+        if (!el) continue;
+        const px = PEAK_APEXES[i][0];
+        const py = PEAK_APEXES[i][1];
+        const dirBias = i === 0 || i === 4 ? 0.34 : i === 2 ? 0.30 : 0.22;
+        const breathe = 0.05 * Math.sin(t * 1.35 + i * 1.25) * A;
+        const op = clamp(dirBias + breathe + hover.x * 0.09 + wThink * 0.10 + wTalk * 0.05, 0.16, 0.52);
+        const rad = 6.8 + 0.9 * Math.sin(t * 1.35 + i * 1.25) * A + hover.x * 0.6;
+        el.setAttribute("cx", px.toFixed(2));
+        el.setAttribute("cy", py.toFixed(2));
+        el.setAttribute("r", rad.toFixed(2));
+        el.setAttribute("opacity", op.toFixed(3));
+      }
+
+      // Refracción líquida viva: cáusticas internas, onda periwinkle y filo especular fluyen dentro del cristal
+      if (liquidARef.current) {
+        const ax = 87 + (10.5 * Math.sin(t * 0.56) - lookX.x * 5.6) * A;
+        const ay = 83 + (8.0 * Math.cos(t * 0.44) - lookY.x * 4.5) * A;
+        const arx = 56 + 5.5 * Math.sin(t * 0.68) * A;
+        const ary = 43 + 4.4 * Math.cos(t * 0.61) * A;
+        liquidARef.current.setAttribute("cx", ax.toFixed(2));
+        liquidARef.current.setAttribute("cy", ay.toFixed(2));
+        liquidARef.current.setAttribute("rx", arx.toFixed(2));
+        liquidARef.current.setAttribute("ry", ary.toFixed(2));
+      }
+      if (liquidBRef.current) {
+        const bx = 151 + (11.0 * Math.cos(t * 0.49 + 1.3) + lookX.x * 5.2) * A;
+        const by = 154 + (8.5 * Math.sin(t * 0.41 + 0.7) + lookY.x * 4.2) * A;
+        const brx = 57 + 5.5 * Math.cos(t * 0.63) * A;
+        const bry = 45 + 4.6 * Math.sin(t * 0.57) * A;
+        liquidBRef.current.setAttribute("cx", bx.toFixed(2));
+        liquidBRef.current.setAttribute("cy", by.toFixed(2));
+        liquidBRef.current.setAttribute("rx", brx.toFixed(2));
+        liquidBRef.current.setAttribute("ry", bry.toFixed(2));
+      }
+      if (liquidCRef.current) {
+        const cx = 122 + (18.0 * Math.sin(t * 0.37 + 2.1) - lookX.x * 4.0) * A;
+        const cy = 132 + (13.0 * Math.cos(t * 0.45 + 0.5) - lookY.x * 3.2) * A;
+        const crx = 40 + 6.0 * Math.sin(t * 0.74) * A;
+        const cry = 26 + 4.0 * Math.cos(t * 0.62) * A;
+        liquidCRef.current.setAttribute("cx", cx.toFixed(2));
+        liquidCRef.current.setAttribute("cy", cy.toFixed(2));
+        liquidCRef.current.setAttribute("rx", crx.toFixed(2));
+        liquidCRef.current.setAttribute("ry", cry.toFixed(2));
+        liquidCRef.current.setAttribute("transform", `rotate(${(-22 + 12 * Math.sin(t * 0.31) * A).toFixed(1)} ${cx.toFixed(2)} ${cy.toFixed(2)})`);
+      }
+      if (rimGradRef.current) {
+        const rimDriftX = 14 * Math.sin(t * 0.65) * A;
+        const rimDriftY = 11 * Math.cos(t * 0.52) * A;
+        rimGradRef.current.setAttribute("x1", (55 + rimDriftX).toFixed(1));
+        rimGradRef.current.setAttribute("y1", (45 + rimDriftY).toFixed(1));
+        rimGradRef.current.setAttribute("x2", (185 - rimDriftX * 0.85).toFixed(1));
+        rimGradRef.current.setAttribute("y2", (195 - rimDriftY * 0.85).toFixed(1));
+      }
+      if (glossTopRef.current) {
+        const gx = 104 + (-lookX.x * 3.8 + 2.4 * Math.sin(t * 0.7)) * A;
+        const gy = 87 + (-lookY.x * 2.6 + 1.8 * Math.cos(t * 0.58)) * A;
+        glossTopRef.current.setAttribute("cx", gx.toFixed(2));
+        glossTopRef.current.setAttribute("cy", gy.toFixed(2));
+        glossTopRef.current.setAttribute("transform", `rotate(-33 ${gx.toFixed(2)} ${gy.toFixed(2)})`);
+      }
+      if (glossSpecRef.current) {
+        const sx2 = 102.5 + (-lookX.x * 4.5 + 2.8 * Math.sin(t * 0.72 + 0.2)) * A;
+        const sy2 = 85.2 + (-lookY.x * 3.0 + 2.0 * Math.cos(t * 0.6 + 0.2)) * A;
+        glossSpecRef.current.setAttribute("cx", sx2.toFixed(2));
+        glossSpecRef.current.setAttribute("cy", sy2.toFixed(2));
+        glossSpecRef.current.setAttribute("transform", `rotate(-34 ${sx2.toFixed(2)} ${sy2.toFixed(2)})`);
+      }
+      if (glossBotRef.current) {
+        const gbx = 141 + (lookX.x * 3.0 - 2.0 * Math.cos(t * 0.62)) * A;
+        const gby = 152 + (lookY.x * 2.2 + 1.5 * Math.sin(t * 0.54)) * A;
+        glossBotRef.current.setAttribute("cx", gbx.toFixed(2));
+        glossBotRef.current.setAttribute("cy", gby.toFixed(2));
+        glossBotRef.current.setAttribute("transform", `rotate(-28 ${gbx.toFixed(2)} ${gby.toFixed(2)})`);
+      }
+
+      // --- Núcleo y aura (resplandor interno amplio y difuso, suspendido dentro del cristal líquido) ---
+      const coreBase = 36 + 2.0 * Math.sin(t * 2);
+      const coreThink = 41 + 3.2 * Math.sin(t * 6);
+      const coreTalk = 37.5 + 3.2 * mOpen;
+      const coreCode = 39 + 2.2 * Math.sin(t * 5.2);
       const coreR = alerting
-        ? 35 + 3.0 * Math.sin(t * 9)
+        ? 37 + 3.0 * Math.sin(t * 9)
         : coreBase * (1 - clamp(wThink + wTalk + wCode, 0, 1)) +
         coreThink * wThink +
         coreTalk * wTalk +
@@ -1452,20 +1598,20 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       coreRef.current?.setAttribute("r", coreR.toFixed(2));
 
       const isGlassContrast = glassContrastRef.current;
-      const corePeakBase = isGlassContrast ? 0.30 : 0.21;
+      const corePeakBase = isGlassContrast ? 0.28 : 0.19;
       const corePeakOp = clamp(
         corePeakBase +
-        wThink * (0.16 + 0.05 * Math.sin(t * 6)) +
-        wTalk * 0.08 +
-        wCode * 0.08 +
-        wSucc * 0.11 +
-        wAlert * 0.15 +
+        wThink * (0.14 + 0.04 * Math.sin(t * 6)) +
+        wTalk * 0.065 +
+        wCode * 0.065 +
+        wSucc * 0.095 +
+        wAlert * 0.14 +
         hover.x * 0.03,
-        0.16,
-        isGlassContrast ? 0.52 : 0.44
+        0.15,
+        isGlassContrast ? 0.48 : 0.41
       );
-      const coreMidOp = corePeakOp * 0.56;
-      const coreOuterOp = corePeakOp * 0.16;
+      const coreMidOp = corePeakOp * 0.52;
+      const coreOuterOp = corePeakOp * 0.14;
 
       const summonPhase = (t - a.summonAt) / 0.62;
       const summonActive = summonPhase >= 0 && summonPhase <= 1 && !a.reduce;
@@ -1492,7 +1638,23 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       sr.bodyTint?.setAttribute("stop-color", cBodyTint);
       sr.bodyGlow?.setAttribute("stop-color", cBodyGlow);
       sr.rim1?.setAttribute("stop-color", cRim1);
+      sr.rimMid?.setAttribute("stop-color", cRim1);
       sr.rim2?.setAttribute("stop-color", cRim2);
+      sr.peakGlintTint?.setAttribute("stop-color", cRim1);
+      sr.peakGlintAltTint?.setAttribute("stop-color", cRim2);
+      sr.meniscus1?.setAttribute("stop-color", cRim1);
+      sr.meniscusMid?.setAttribute("stop-color", cBodyGlow);
+      sr.meniscus2?.setAttribute("stop-color", cRim2);
+      sr.bevelTint?.setAttribute("stop-color", cRim1);
+      sr.bounceTint?.setAttribute("stop-color", cRim2);
+      sr.liquidA0?.setAttribute("stop-color", cBodyTint);
+      sr.liquidA1?.setAttribute("stop-color", cGlow);
+      sr.liquidA2?.setAttribute("stop-color", cGlow);
+      sr.liquidB0?.setAttribute("stop-color", cRim2);
+      sr.liquidB1?.setAttribute("stop-color", cBodyGlow);
+      sr.liquidB2?.setAttribute("stop-color", cBodyGlow);
+      sr.liquidC0?.setAttribute("stop-color", cAccessory);
+      sr.liquidC1?.setAttribute("stop-color", cAccessory);
       sr.core0?.setAttribute("stop-color", cCore);
       sr.core0?.setAttribute("stop-opacity", corePeakOp.toFixed(3));
       sr.core1?.setAttribute("stop-color", cMid);
@@ -1533,21 +1695,6 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         cradleRef.current.setAttribute("transform", `translate(0 ${(bob + jump.x).toFixed(2)})`);
       }
 
-      if (glowRef.current) {
-        const summonBoost = summonActive ? 0.38 * (1 - summonPhase) : 0;
-        const colorBoost = colorMorphActive && !a.reduce ? 0.25 * Math.sin(colorMorphPhase * Math.PI) : 0;
-        glowRef.current.setAttribute("transform", `translate(0 ${(bob + jump.x).toFixed(2)})`);
-        const baseGlowOp =
-          0.55 +
-          0.3 * hover.x +
-          wThink * (0.3 + 0.15 * Math.sin(t * 5)) +
-          wAlert * (0.2 + 0.25 * Math.sin(t * 8)) +
-          wCode * (0.18 + 0.1 * Math.sin(t * 4));
-        glowRef.current.setAttribute(
-          "opacity",
-          clamp(baseGlowOp + summonBoost + colorBoost, 0, 1).toFixed(3)
-        );
-      }
       // --- Silueta estelar expansiva al aparecer / cambiar aura (dentro de yawRef: hereda la pose exacta) ---
       if (summonSilhouetteRef.current) {
         if (summonActive) {
@@ -2096,9 +2243,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             hoverRef.current = false;
           }
       }
-      className={`relative inline-block select-none rounded-full ${starOnlyHit
+      className={`relative inline-block select-none ${starOnlyHit
         ? "pointer-events-none"
-        : "cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/40"
+        : "rounded-full cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-indigo-300/45"
         } ${className}`}
       style={responsive ? undefined : { width: size, height: size }}
     >
@@ -2111,7 +2258,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           onPointerLeave={() => {
             hoverRef.current = false;
           }}
-          className="pointer-events-auto absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[56%] h-[56%] rounded-full cursor-pointer bg-transparent border-0 p-0 outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/45 z-10"
+          className="appearance-none pointer-events-auto absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[56%] h-[56%] rounded-full cursor-pointer bg-transparent border-0 p-0 outline-none focus-visible:ring-1 focus-visible:ring-indigo-300/45 z-10"
         />
       )}
       <svg
@@ -2122,28 +2269,90 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         aria-hidden="true"
       >
         <defs>
-          <linearGradient id={ids.body} x1="60" y1="50" x2="180" y2="190" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.44" : "0.30"} />
-            <stop ref={(el) => { stopRefs.current.bodyTint = el; }} offset="35%" stopColor={initialColors.bodyTint} stopOpacity={glassContrast ? "0.26" : "0.14"} />
-            <stop ref={(el) => { stopRefs.current.bodyGlow = el; }} offset="70%" stopColor={initialColors.bodyGlow} stopOpacity={glassContrast ? "0.18" : "0.08"} />
-            <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.30" : "0.18"} />
+          {/* Cuerpo de cristal líquido translúcido: superficie cristalina limpia manteniendo volumen visible */}
+          <linearGradient id={ids.body} x1="58" y1="48" x2="184" y2="194" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.34" : "0.21"} />
+            <stop ref={(el) => { stopRefs.current.bodyTint = el; }} offset="26%" stopColor={initialColors.bodyTint} stopOpacity={glassContrast ? "0.20" : "0.10"} />
+            <stop offset="52%" stopColor="#060812" stopOpacity={glassContrast ? "0.20" : "0.035"} />
+            <stop ref={(el) => { stopRefs.current.bodyGlow = el; }} offset="78%" stopColor={initialColors.bodyGlow} stopOpacity={glassContrast ? "0.19" : "0.095"} />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.24" : "0.125"} />
           </linearGradient>
-          <linearGradient id={ids.rim} x1="55" y1="45" x2="185" y2="195" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.98" />
-            <stop ref={(el) => { stopRefs.current.rim1 = el; }} offset="40%" stopColor={initialColors.rim1} stopOpacity={glassContrast ? "0.86" : "0.5"} />
-            <stop ref={(el) => { stopRefs.current.rim2 = el; }} offset="75%" stopColor={initialColors.rim2} stopOpacity={glassContrast ? "0.72" : "0.24"} />
-            <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.94" : "0.7"} />
+          {/* Filo fino de cristal: brilla en los puntos de luz y mantiene flancos ligeros */}
+          <linearGradient ref={rimGradRef} id={ids.rim} x1="55" y1="45" x2="185" y2="195" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.96" : "0.90"} />
+            <stop ref={(el) => { stopRefs.current.rim1 = el; }} offset="20%" stopColor={initialColors.rim1} stopOpacity={glassContrast ? "0.66" : "0.50"} />
+            <stop ref={(el) => { stopRefs.current.rimMid = el; }} offset="50%" stopColor={initialColors.rim1} stopOpacity={glassContrast ? "0.26" : "0.16"} />
+            <stop ref={(el) => { stopRefs.current.rim2 = el; }} offset="78%" stopColor={initialColors.rim2} stopOpacity={glassContrast ? "0.60" : "0.44"} />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.68" : "0.54"} />
           </linearGradient>
+          {/* Destellos de cristal mínimos en cada una de las 5 puntas redondeadas */}
+          <radialGradient id={ids.peakGlint} cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.46" />
+            <stop ref={(el) => { stopRefs.current.peakGlintTint = el; }} offset="45%" stopColor={initialColors.rim1} stopOpacity="0.22" />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id={ids.peakGlintAlt} cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.42" />
+            <stop ref={(el) => { stopRefs.current.peakGlintAltTint = el; }} offset="45%" stopColor={initialColors.rim2} stopOpacity="0.20" />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
+          </radialGradient>
+          {/* Menisco interno fino de cristal (espesor sutil de vidrio sin borde grueso) */}
+          <linearGradient id={ids.meniscus} x1="58" y1="48" x2="182" y2="192" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.68" />
+            <stop ref={(el) => { stopRefs.current.meniscus1 = el; }} offset="26%" stopColor={initialColors.rim1} stopOpacity="0.52" />
+            <stop ref={(el) => { stopRefs.current.meniscusMid = el; }} offset="54%" stopColor={initialColors.bodyGlow} stopOpacity="0.10" />
+            <stop ref={(el) => { stopRefs.current.meniscus2 = el; }} offset="82%" stopColor={initialColors.rim2} stopOpacity="0.48" />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.44" />
+          </linearGradient>
+          {/* Bisel cristalino delicado arriba-izquierda (destello puro de vidrio sin línea pesada) */}
+          <linearGradient id={ids.bevel} x1="56" y1="46" x2="146" y2="144" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.90" />
+            <stop ref={(el) => { stopRefs.current.bevelTint = el; }} offset="34%" stopColor={initialColors.rim1} stopOpacity="0.34" />
+            <stop offset="72%" stopColor="#FFFFFF" stopOpacity="0" />
+          </linearGradient>
+          {/* Reflejo interno fino abajo-derecha (rebote zafiro-cristal delicado) */}
+          <linearGradient id={ids.bounce} x1="186" y1="194" x2="96" y2="98" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.72" />
+            <stop ref={(el) => { stopRefs.current.bounceTint = el; }} offset="36%" stopColor={initialColors.rim2} stopOpacity="0.36" />
+            <stop offset="72%" stopColor="#FFFFFF" stopOpacity="0" />
+          </linearGradient>
+          {/* Cáusticas líquidas internas que fluyen suavemente dentro del cristal */}
+          <radialGradient id={ids.liquidA} cx="50%" cy="50%" r="50%">
+            <stop ref={(el) => { stopRefs.current.liquidA0 = el; }} offset="0%" stopColor={initialColors.bodyTint} stopOpacity={glassContrast ? "0.38" : "0.30"} />
+            <stop ref={(el) => { stopRefs.current.liquidA1 = el; }} offset="48%" stopColor={initialColors.glow} stopOpacity={glassContrast ? "0.15" : "0.11"} />
+            <stop ref={(el) => { stopRefs.current.liquidA2 = el; }} offset="100%" stopColor={initialColors.glow} stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id={ids.liquidB} cx="50%" cy="50%" r="50%">
+            <stop ref={(el) => { stopRefs.current.liquidB0 = el; }} offset="0%" stopColor={initialColors.rim2} stopOpacity={glassContrast ? "0.36" : "0.28"} />
+            <stop ref={(el) => { stopRefs.current.liquidB1 = el; }} offset="48%" stopColor={initialColors.bodyGlow} stopOpacity={glassContrast ? "0.145" : "0.105"} />
+            <stop ref={(el) => { stopRefs.current.liquidB2 = el; }} offset="100%" stopColor={initialColors.bodyGlow} stopOpacity="0" />
+          </radialGradient>
+          {/* Onda cáustica interna periwinkle que cruza suavemente la cúpula líquida */}
+          <radialGradient id={ids.liquidC} cx="50%" cy="50%" r="50%">
+            <stop ref={(el) => { stopRefs.current.liquidC0 = el; }} offset="0%" stopColor={initialColors.accessory} stopOpacity={glassContrast ? "0.22" : "0.15"} />
+            <stop ref={(el) => { stopRefs.current.liquidC1 = el; }} offset="100%" stopColor={initialColors.accessory} stopOpacity="0" />
+          </radialGradient>
+          {/* Brillo especular húmedo en dos etapas (velo de cúpula + destello cristalino húmedo) */}
+          <radialGradient id={ids.gloss} cx="44%" cy="34%" r="58%">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.40" />
+            <stop offset="46%" stopColor="#FFFFFF" stopOpacity="0.14" />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id={ids.glossSpec} cx="45%" cy="38%" r="56%">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.64" />
+            <stop offset="42%" stopColor="#FFFFFF" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
+          </radialGradient>
           <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
-            <stop ref={(el) => { stopRefs.current.core0 = el; }} offset="0%" stopColor={initialColors.core} stopOpacity={glassContrast ? "0.30" : "0.21"} />
-            <stop ref={(el) => { stopRefs.current.core1 = el; }} offset="42%" stopColor={initialColors.mid} stopOpacity={glassContrast ? "0.168" : "0.118"} />
-            <stop ref={(el) => { stopRefs.current.core2 = el; }} offset="76%" stopColor={initialColors.mid} stopOpacity={glassContrast ? "0.048" : "0.034"} />
+            <stop ref={(el) => { stopRefs.current.core0 = el; }} offset="0%" stopColor={initialColors.core} stopOpacity={glassContrast ? "0.28" : "0.19"} />
+            <stop ref={(el) => { stopRefs.current.core1 = el; }} offset="42%" stopColor={initialColors.mid} stopOpacity={glassContrast ? "0.146" : "0.099"} />
+            <stop ref={(el) => { stopRefs.current.core2 = el; }} offset="76%" stopColor={initialColors.mid} stopOpacity={glassContrast ? "0.039" : "0.027"} />
             <stop ref={(el) => { stopRefs.current.core3 = el; }} offset="100%" stopColor={initialColors.mid} stopOpacity="0" />
           </radialGradient>
-          {/* Aura dibujada dentro del SVG: halo íntimo sutil para no teñir de cian el fondo cósmico */}
+          {/* Aura dibujada dentro del SVG: halo atmosférico sutil para despegar a Xox del fondo */}
           <radialGradient id={ids.glow} cx="50%" cy="50%" r="50%">
             <stop ref={(el) => { stopRefs.current.glow0 = el; }} offset="0%" stopColor={initialColors.glow} stopOpacity="0.15" />
-            <stop ref={(el) => { stopRefs.current.glow1 = el; }} offset="45%" stopColor={initialColors.glow} stopOpacity="0.045" />
+            <stop ref={(el) => { stopRefs.current.glow1 = el; }} offset="45%" stopColor={initialColors.glow} stopOpacity="0.048" />
             <stop ref={(el) => { stopRefs.current.glow2 = el; }} offset="100%" stopColor={initialColors.glow} stopOpacity="0" />
           </radialGradient>
           {/* Sonrojo orgánico difuminado sin bordes duros ni exceso de rojez */}
@@ -2205,9 +2414,6 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         {glassContrast && (
           <circle ref={cradleRef} cx={C} cy={C} r="84" fill={`url(#${ids.cradle})`} />
         )}
-
-        {/* Aura */}
-        <circle ref={glowRef} cx={C} cy={C} r="84" fill={`url(#${ids.glow})`} opacity="0.55" />
 
         {/* Chispas en órbita */}
         {[0, 1, 2].map((i) => (
@@ -2344,30 +2550,122 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             <path
               ref={starRef}
               d={initialPath}
-              fill={state === "alert" ? "rgba(239,68,68,0.20)" : `url(#${ids.body})`}
+              fill={state === "alert" ? "rgba(239,68,68,0.18)" : `url(#${ids.body})`}
               stroke={state === "alert" ? "#F87171" : `url(#${ids.rim})`}
-              strokeWidth={glassContrast ? "2.05" : "1.6"}
+              strokeWidth={glassContrast ? "1.55" : "1.05"}
               strokeLinejoin="round"
             />
-            {/* Núcleo de energía interno (centrado en el corazón del cuerpo y recortado a la silueta para un brillo envolvente y suave) */}
-            <circle
-              ref={coreRef}
-              cx={C}
-              cy={C - 2.5}
-              r="33"
-              fill={`url(#${ids.core})`}
-              clipPath={`url(#${ids.bodyClip})`}
-            />
-            {/* Reflejo especular interno */}
-            <ellipse
-              cx="106"
-              cy="92"
-              rx="15"
-              ry="5"
-              transform="rotate(-32 106 92)"
-              fill="#FFFFFF"
-              opacity="0.13"
-            />
+            {/* Capas internas Liquid Glass recortadas a la silueta (cáusticas + onda + núcleo + menisco fino + bisel cristalino + puntos de luz en puntas) */}
+            <g clipPath={`url(#${ids.bodyClip})`}>
+              <ellipse
+                ref={liquidARef}
+                cx="87"
+                cy="83"
+                rx="56"
+                ry="43"
+                fill={`url(#${ids.liquidA})`}
+              />
+              <ellipse
+                ref={liquidBRef}
+                cx="151"
+                cy="154"
+                rx="57"
+                ry="45"
+                fill={`url(#${ids.liquidB})`}
+              />
+              <ellipse
+                ref={liquidCRef}
+                cx="122"
+                cy="132"
+                rx="40"
+                ry="26"
+                transform="rotate(-22 122 132)"
+                fill={`url(#${ids.liquidC})`}
+              />
+              {/* Núcleo de energía interno suspendido en el corazón del líquido */}
+              <circle
+                ref={coreRef}
+                cx={C}
+                cy={C - 2.5}
+                r="36"
+                fill={`url(#${ids.core})`}
+              />
+              {/* Menisco interno fino de cristal (espesor de vidrio sin contorno pesado) */}
+              <path
+                ref={starMeniscusRef}
+                d={initialPath}
+                fill="none"
+                stroke={`url(#${ids.meniscus})`}
+                strokeWidth="5.0"
+                strokeOpacity={glassContrast ? "0.24" : "0.15"}
+                strokeLinejoin="round"
+              />
+              {/* Bisel especular fino arriba-izquierda (destello cristalino delicado) */}
+              <path
+                ref={starBevelRef}
+                d={initialPath}
+                transform="translate(0.85 1.25)"
+                fill="none"
+                stroke={`url(#${ids.bevel})`}
+                strokeWidth="1.55"
+                strokeOpacity={glassContrast ? "0.46" : "0.36"}
+                strokeLinejoin="round"
+              />
+              {/* Rebote interno fino abajo-derecha (reflejo zafiro-cristal sutil) */}
+              <path
+                ref={starBounceRef}
+                d={initialPath}
+                transform="translate(-0.75 -1.1)"
+                fill="none"
+                stroke={`url(#${ids.bounce})`}
+                strokeWidth="1.45"
+                strokeOpacity={glassContrast ? "0.36" : "0.26"}
+                strokeLinejoin="round"
+              />
+              {/* Puntos de luz cristalinos mínimos anclados en las 5 puntas redondeadas */}
+              {initialPeakApexes.map(([px, py], i) => (
+                <circle
+                  key={i}
+                  ref={(el) => {
+                    peakGlintRefs.current[i] = el;
+                  }}
+                  cx={px}
+                  cy={py}
+                  r="6.8"
+                  fill={`url(#${i === 2 || i === 3 ? ids.peakGlintAlt : ids.peakGlint})`}
+                  opacity={i === 0 || i === 4 ? "0.34" : i === 2 ? "0.30" : "0.22"}
+                />
+              ))}
+              {/* Reflejos especulares húmedos en dos etapas (cúpula suave + destello cristalino vivo) */}
+              <ellipse
+                ref={glossTopRef}
+                cx="104"
+                cy="87"
+                rx="24"
+                ry="8.5"
+                transform="rotate(-33 104 87)"
+                fill={`url(#${ids.gloss})`}
+              />
+              <ellipse
+                ref={glossSpecRef}
+                cx="102.5"
+                cy="85.2"
+                rx="11.5"
+                ry="3.1"
+                transform="rotate(-34 102.5 85.2)"
+                fill={`url(#${ids.glossSpec})`}
+              />
+              <ellipse
+                ref={glossBotRef}
+                cx="141"
+                cy="152"
+                rx="17"
+                ry="5.4"
+                transform="rotate(-28 141 152)"
+                fill={`url(#${ids.gloss})`}
+                opacity="0.42"
+              />
+            </g>
           </g>
 
           {/* Rostro */}

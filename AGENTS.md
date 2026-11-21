@@ -13,8 +13,16 @@
   - **Cero persistencia de screenshots crudos en disco** por defecto; conserva solo texto/contexto deduplicado e indexado en SQLite (`.xook/xook.db`) y frames temporales únicamente en memoria RAM cuando se envíen a un modelo multimodal.
   - Excluye la ventana de la `QuickBar` (`quick`) y protege campos/apps sensibles antes de capturar o indexar contexto visual.
 
-repositorios para basarnos 
+## 3. Referencias Externas (`referencias/`)
 
-https://github.com/vercel-labs/agent-desktop
+- Los proyectos open source de consulta viven clonados en `referencias/` y **no son dependencias**: no se importan, no se compilan, no se despliegan. Se leen.
+- **Antes de diseñar algo que ya existe resuelto en la industria**, consulta `referencias/README.md` (índice versionado) y lee el código real del clone. No te quedes con el resumen.
+- Los clones están en `.gitignore`; solo el índice `referencias/README.md` se versiona. Nunca hagas `git add` de los clones ni los agregues a `package.json` / `Cargo.toml`.
+- Al incorporar código literal, respeta la licencia y deja nota del origen.
 
-https://github.com/pingdotgg/t3code
+Referencias activas:
+
+| Repo | Licencia | Aporta |
+|---|---|---|
+| https://github.com/vercel-labs/agent-desktop | Apache-2.0 | Lectura por árbol de accesibilidad, `command_policy` exhaustivo, catálogo MCP derivado |
+| https://github.com/pingdotgg/t3code | MIT | Escalera de autonomía, `locked` en políticas, paquete de contratos, `evals` |

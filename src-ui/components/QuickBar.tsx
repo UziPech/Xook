@@ -51,7 +51,11 @@ import {
   markdownTableToCanvasArtifact,
   sanitizeCanvasArtifact,
 } from "../features/canvas/canvasSchema";
-import { LocalUserProfile, getLocalUserProfile } from "../features/workspace-store/localStore";
+import {
+  LocalUserProfile,
+  getLocalUserProfile,
+  subscribeLocalUserUpdated,
+} from "../features/workspace-store/localStore";
 import { ProviderIcon } from "../features/ai-service/ProviderIcon";
 import {
   AiConfigStatus,
@@ -852,6 +856,23 @@ export const QuickBar: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    let unsub: (() => void) | null = null;
+    void subscribeLocalUserUpdated((profile) => {
+      if (!disposed) {
+        setLocalUser(profile);
+      }
+    }).then((fn) => {
+      if (disposed) fn();
+      else unsub = fn;
+    });
+    return () => {
+      disposed = true;
+      unsub?.();
+    };
+  }, []);
+
+  useEffect(() => {
     return subscribePermissionEvents({
       onRequest: (req) => {
         if (!activeStreamIdRef.current || req.streamId !== activeStreamIdRef.current) {
@@ -1266,10 +1287,17 @@ export const QuickBar: React.FC = () => {
                 name: localUser.name,
                 storeName: localUser.storeName,
                 role: localUser.role,
+                ...(localUser.preferredName ? { preferredName: localUser.preferredName } : {}),
+                ...(localUser.occupation ? { occupation: localUser.occupation } : {}),
+                ...(localUser.workContext ? { workContext: localUser.workContext } : {}),
+                ...(localUser.language ? { language: localUser.language } : {}),
+                ...(localUser.timezone ? { timezone: localUser.timezone } : {}),
+                ...(localUser.notes ? { notes: localUser.notes } : {}),
               }
             : null,
           businessContextSnapshot,
           activeCanvas: lastCanvasRef.current,
+          sessionId: "quick_bar",
         },
         {
           signal: quickAbortController.signal,

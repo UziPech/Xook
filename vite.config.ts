@@ -4,6 +4,8 @@ import tailwindcss from "@tailwindcss/vite";
 // @ts-expect-error type error without @types/node package
 import fs from "node:fs";
 // @ts-expect-error type error without @types/node package
+import path from "node:path";
+// @ts-expect-error type error without @types/node package
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
@@ -90,6 +92,11 @@ function staticSvgIconDataPlugin(): Plugin {
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [staticSvgIconDataPlugin(), react(), tailwindcss()],
+  resolve: {
+    alias: {
+      "@xook/contracts": path.resolve(process.cwd(), "packages/contracts/src/index.ts"),
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

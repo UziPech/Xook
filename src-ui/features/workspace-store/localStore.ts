@@ -1,5 +1,26 @@
+import {
+  DEFAULT_MAX_USER_MEMORY_FACTS,
+  normalizeMemoryKey,
+  normalizeUserMemoryCategory,
+  normalizeUserMemoryScope,
+  normalizeWindowFlowScope,
+  upsertUserMemoryFacts,
+  type UserDataSyncEvent,
+  type UserMemoryCategory,
+  type UserMemoryFact,
+  type UserMemoryScope,
+  type WindowFlowScope,
+} from "@xook/contracts";
 import type { UiChatMessage } from "../ai-service/ChatMessageList";
 import type { ContextCheckpoint } from "../ai-service/aiClient";
+
+export type {
+  UserDataSyncEvent,
+  UserMemoryCategory,
+  UserMemoryFact,
+  UserMemoryScope,
+  WindowFlowScope,
+};
 
 export interface LocalUserProfile {
   id: string;
@@ -8,12 +29,33 @@ export interface LocalUserProfile {
   role: string;
   createdAt: string;
   updatedAt: string;
+  preferredName?: string;
+  occupation?: string;
+  workContext?: string;
+  language?: string;
+  timezone?: string;
+  notes?: string;
 }
 
 export interface SaveLocalUserInput {
   name: string;
   storeName?: string;
   role?: string;
+  preferredName?: string;
+  occupation?: string;
+  workContext?: string;
+  language?: string;
+  timezone?: string;
+  notes?: string;
+}
+
+export interface SaveUserMemoryFactInput {
+  value: string;
+  key?: string;
+  category?: UserMemoryCategory | string;
+  scope?: UserMemoryScope;
+  sourceWindow?: WindowFlowScope;
+  pinned?: boolean;
 }
 
 export interface ConversationThread {
@@ -28,10 +70,23 @@ export interface ConversationThread {
 }
 
 const LOCAL_USER_KEY = "xook.local_user.v1";
+const LOCAL_USER_MEMORY_KEY = "xook.user_memory.v1";
 const LOCAL_CONVERSATIONS_KEY = "xook.conversations.v1";
+
+export const LOCAL_USER_UPDATED_EVENT = "xook-local-user-updated";
+export const USER_MEMORY_UPDATED_EVENT = "xook-user-memory-updated";
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function dispatchBrowserSyncEvent<T>(eventName: string, detail: T): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent<T>(eventName, { detail }));
+  } catch {
+    // Ignorar entorno sin CustomEvent
+  }
 }
 
 export function deriveConversationTitle(messages: UiChatMessage[]): string {
@@ -87,15 +142,28 @@ export async function saveLocalUserProfile(input: SaveLocalUserInput): Promise<L
           name: input.name,
           storeName: input.storeName,
           role: input.role,
+          preferredName: input.preferredName,
+          occupation: input.occupation,
+          workContext: input.workContext,
+          language: input.language,
+          timezone: input.timezone,
+          notes: input.notes,
         },
       });
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.message) throw err;
+      if (typeof err === "string" && err.trim()) throw new Error(err);
       // Fallback en modo navegador
     }
   }
 
   const existing = await getLocalUserProfile();
   const now = new Date().toISOString();
+  const resolveOpt = (val: string | undefined, prev: string | undefined): string | undefined => {
+    if (val === undefined) return prev;
+    const trimmed = val.trim();
+    return trimmed ? trimmed : undefined;
+  };
   const next: LocalUserProfile = {
     id: existing?.id ?? `usr_${Date.now()}`,
     name: input.name.trim(),
@@ -103,12 +171,31 @@ export async function saveLocalUserProfile(input: SaveLocalUserInput): Promise<L
     role: input.role?.trim() || existing?.role || "Administrador",
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
+    ...(resolveOpt(input.preferredName, existing?.preferredName)
+      ? { preferredName: resolveOpt(input.preferredName, existing?.preferredName) }
+      : {}),
+    ...(resolveOpt(input.occupation, existing?.occupation)
+      ? { occupation: resolveOpt(input.occupation, existing?.occupation) }
+      : {}),
+    ...(resolveOpt(input.workContext, existing?.workContext)
+      ? { workContext: resolveOpt(input.workContext, existing?.workContext) }
+      : {}),
+    ...(resolveOpt(input.language, existing?.language)
+      ? { language: resolveOpt(input.language, existing?.language) }
+      : {}),
+    ...(resolveOpt(input.timezone, existing?.timezone)
+      ? { timezone: resolveOpt(input.timezone, existing?.timezone) }
+      : {}),
+    ...(resolveOpt(input.notes, existing?.notes)
+      ? { notes: resolveOpt(input.notes, existing?.notes) }
+      : {}),
   };
   try {
     localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(next));
   } catch {
     // Ignorar error de cuota
   }
+  dispatchBrowserSyncEvent<LocalUserProfile | null>(LOCAL_USER_UPDATED_EVENT, next);
   return next;
 }
 
@@ -126,6 +213,161 @@ export async function clearLocalUserProfile(): Promise<void> {
   } catch {
     // Ignorar
   }
+  if (!isTauriRuntime()) {
+    dispatchBrowserSyncEvent<LocalUserProfile | null>(LOCAL_USER_UPDATED_EVENT, null);
+  }
+}
+
+export async function listUserMemoryFacts(): Promise<UserMemoryFact[]> {
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const res = await invoke<UserMemoryFact[]>("list_user_memory_facts");
+      if (Array.isArray(res)) return res;
+    } catch {
+      // Fallback abajo
+    }
+  }
+  try {
+    const raw = localStorage.getItem(LOCAL_USER_MEMORY_KEY);
+    const parsed = raw ? (JSON.parse(raw) as UserMemoryFact[]) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveUserMemoryFact(input: SaveUserMemoryFactInput): Promise<UserMemoryFact[]> {
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<UserMemoryFact[]>("save_user_memory_fact", {
+        payload: {
+          value: input.value,
+          key: input.key,
+          category: input.category,
+          scope: input.scope ?? "global",
+          sourceWindow: input.sourceWindow ?? "main",
+          pinned: Boolean(input.pinned),
+        },
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message) throw err;
+      if (typeof err === "string" && err.trim()) throw new Error(err);
+    }
+  }
+
+  const current = await listUserMemoryFacts();
+  const category = normalizeUserMemoryCategory(input.category);
+  const scope = normalizeUserMemoryScope(input.scope);
+  const sourceWindow = normalizeWindowFlowScope(input.sourceWindow);
+  const key = normalizeMemoryKey(input.key, category, input.value);
+  const now = new Date().toISOString();
+  const { facts } = upsertUserMemoryFacts(
+    current,
+    {
+      key,
+      category,
+      value: input.value,
+      scope,
+      sourceWindow,
+      pinned: Boolean(input.pinned),
+    },
+    now,
+    DEFAULT_MAX_USER_MEMORY_FACTS
+  );
+  try {
+    localStorage.setItem(LOCAL_USER_MEMORY_KEY, JSON.stringify(facts));
+  } catch {
+    // Ignorar error de cuota
+  }
+  dispatchBrowserSyncEvent<UserDataSyncEvent>(USER_MEMORY_UPDATED_EVENT, {
+    kind: "memory",
+    sourceWindow,
+    updatedAt: now,
+    factCount: facts.length,
+  });
+  return facts;
+}
+
+export async function deleteUserMemoryFact(
+  idOrKey: string,
+  sourceWindow: WindowFlowScope = "settings"
+): Promise<UserMemoryFact[]> {
+  if (isTauriRuntime()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<UserMemoryFact[]>("delete_user_memory_fact", {
+        idOrKey,
+        sourceWindow,
+      });
+    } catch {
+      // Fallback abajo
+    }
+  }
+
+  const target = idOrKey.trim();
+  const targetLow = target.toLowerCase();
+  const current = await listUserMemoryFacts();
+  const next = current.filter(
+    (item) => item.id !== target && item.key.trim().toLowerCase() !== targetLow
+  );
+  try {
+    localStorage.setItem(LOCAL_USER_MEMORY_KEY, JSON.stringify(next));
+  } catch {
+    // Ignorar
+  }
+  dispatchBrowserSyncEvent<UserDataSyncEvent>(USER_MEMORY_UPDATED_EVENT, {
+    kind: "memory",
+    sourceWindow,
+    updatedAt: new Date().toISOString(),
+    factCount: next.length,
+  });
+  return next;
+}
+
+export async function subscribeLocalUserUpdated(
+  handler: (profile: LocalUserProfile | null) => void
+): Promise<() => void> {
+  if (isTauriRuntime()) {
+    try {
+      const { listen } = await import("@tauri-apps/api/event");
+      return await listen<LocalUserProfile | null>(LOCAL_USER_UPDATED_EVENT, (ev) => {
+        handler(ev.payload ?? null);
+      });
+    } catch {
+      // Fallback abajo
+    }
+  }
+  if (typeof window === "undefined") return () => {};
+  const listener = (ev: Event) => {
+    const custom = ev as CustomEvent<LocalUserProfile | null>;
+    handler(custom.detail ?? null);
+  };
+  window.addEventListener(LOCAL_USER_UPDATED_EVENT, listener);
+  return () => window.removeEventListener(LOCAL_USER_UPDATED_EVENT, listener);
+}
+
+export async function subscribeUserMemoryUpdated(
+  handler: (event: UserDataSyncEvent) => void
+): Promise<() => void> {
+  if (isTauriRuntime()) {
+    try {
+      const { listen } = await import("@tauri-apps/api/event");
+      return await listen<UserDataSyncEvent>(USER_MEMORY_UPDATED_EVENT, (ev) => {
+        if (ev.payload) handler(ev.payload);
+      });
+    } catch {
+      // Fallback abajo
+    }
+  }
+  if (typeof window === "undefined") return () => {};
+  const listener = (ev: Event) => {
+    const custom = ev as CustomEvent<UserDataSyncEvent>;
+    if (custom.detail) handler(custom.detail);
+  };
+  window.addEventListener(USER_MEMORY_UPDATED_EVENT, listener);
+  return () => window.removeEventListener(USER_MEMORY_UPDATED_EVENT, listener);
 }
 
 export async function listLocalConversations(): Promise<ConversationThread[]> {
@@ -219,4 +461,3 @@ export async function deleteLocalConversation(id: string): Promise<ConversationT
   }
   return next;
 }
-

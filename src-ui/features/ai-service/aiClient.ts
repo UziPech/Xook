@@ -29,8 +29,21 @@ import type {
   SubagentProfile,
   XoxModeId,
 } from "./agentModeTypes";
-export type { ClarificationSpec, AiProviderId };
-export { normalizeProviderIdClient };
+import {
+  sanitizeContextCheckpoint as sanitizeSharedContextCheckpoint,
+  sanitizeTurnWorkingMemory,
+  type ContextCheckpoint,
+  type ContextCompactedEvent,
+  type TurnWorkingMemory,
+} from "@xook/contracts";
+export type {
+  ClarificationSpec,
+  AiProviderId,
+  ContextCheckpoint,
+  ContextCompactedEvent,
+  TurnWorkingMemory,
+};
+export { normalizeProviderIdClient, sanitizeTurnWorkingMemory };
 
 const BROWSER_CANVAS_TOOL_DEF = {
   type: "function",
@@ -1438,34 +1451,6 @@ export interface GeneratedPdfArtifact {
   previewHasMore?: boolean;
 }
 
-export interface ContextCheckpoint {
-  objective: string;
-  activeDecisions: string[];
-  supersededDiscarded: string[];
-  documentState: string;
-  pendingItems: string[];
-  summary: string;
-  compactedTurns: number;
-  tokensBefore?: number;
-  tokensAfter?: number;
-  savedPct?: number;
-  auto?: boolean;
-  updatedAt?: string;
-}
-
-export interface ContextCompactedEvent {
-  auto: boolean;
-  scope: "chat" | "document";
-  documentPath?: string;
-  documentTitle?: string;
-  compactedTurnsThisPass: number;
-  keptRecentTurns: number;
-  tokensBefore: number;
-  tokensAfter: number;
-  savedPct: number;
-  checkpoint: ContextCheckpoint;
-}
-
 export interface DocumentContextSnapshot {
   path: string;
   title: string;
@@ -1489,40 +1474,7 @@ export interface DocumentContextSnapshot {
 }
 
 export function sanitizeContextCheckpoint(raw: unknown): ContextCheckpoint | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
-  const asStrList = (v: unknown): string[] =>
-    Array.isArray(v) ? v.map((x) => String(x ?? "").trim()).filter(Boolean) : [];
-  const objective = String(o.objective ?? "").trim();
-  const activeDecisions = asStrList(o.activeDecisions ?? o.active_decisions);
-  const supersededDiscarded = asStrList(o.supersededDiscarded ?? o.superseded_discarded);
-  const documentState = String(o.documentState ?? o.document_state ?? "").trim();
-  const pendingItems = asStrList(o.pendingItems ?? o.pending_items);
-  const summary = String(o.summary ?? "").trim();
-  if (!objective && !summary && activeDecisions.length === 0 && !documentState) return null;
-  return {
-    objective,
-    activeDecisions,
-    supersededDiscarded,
-    documentState,
-    pendingItems,
-    summary: summary || objective || "Contexto anterior compactado.",
-    compactedTurns: Number(o.compactedTurns ?? o.compacted_turns ?? 0) || 0,
-    tokensBefore:
-      typeof (o.tokensBefore ?? o.tokens_before) === "number"
-        ? Number(o.tokensBefore ?? o.tokens_before)
-        : undefined,
-    tokensAfter:
-      typeof (o.tokensAfter ?? o.tokens_after) === "number"
-        ? Number(o.tokensAfter ?? o.tokens_after)
-        : undefined,
-    savedPct:
-      typeof (o.savedPct ?? o.saved_pct) === "number"
-        ? Number(o.savedPct ?? o.saved_pct)
-        : undefined,
-    auto: typeof o.auto === "boolean" ? o.auto : undefined,
-    updatedAt: typeof (o.updatedAt ?? o.updated_at) === "string" ? String(o.updatedAt ?? o.updated_at) : undefined,
-  };
+  return sanitizeSharedContextCheckpoint(raw);
 }
 
 export function sanitizeContextCompactedEvent(raw: unknown): ContextCompactedEvent | null {
@@ -1531,6 +1483,10 @@ export function sanitizeContextCompactedEvent(raw: unknown): ContextCompactedEve
   const ckpt = sanitizeContextCheckpoint(o.checkpoint);
   if (!ckpt) return null;
   const scopeRaw = String(o.scope ?? "chat").toLowerCase();
+  const rawMethod = String(o.compactionMethod ?? o.compaction_method ?? ckpt.compactionMethod ?? "").trim();
+  const compactionMethod =
+    rawMethod === "llm" || rawMethod === "deterministic_fallback" ? rawMethod : undefined;
+  const fallbackReason = String(o.fallbackReason ?? o.fallback_reason ?? ckpt.fallbackReason ?? "").trim();
   return {
     auto: Boolean(o.auto ?? ckpt.auto ?? true),
     scope: scopeRaw === "document" ? "document" : "chat",
@@ -1547,6 +1503,8 @@ export function sanitizeContextCompactedEvent(raw: unknown): ContextCompactedEve
     tokensBefore: Number(o.tokensBefore ?? o.tokens_before ?? ckpt.tokensBefore ?? 0) || 0,
     tokensAfter: Number(o.tokensAfter ?? o.tokens_after ?? ckpt.tokensAfter ?? 0) || 0,
     savedPct: Number(o.savedPct ?? o.saved_pct ?? ckpt.savedPct ?? 0) || 0,
+    ...(compactionMethod ? { compactionMethod } : {}),
+    ...(fallbackReason ? { fallbackReason } : {}),
     checkpoint: ckpt,
   };
 }
@@ -1731,7 +1689,17 @@ export interface XoxAiChatRequest {
   activeMode?: XoxModeId | null;
   subagentRoster?: SubagentProfile[];
   /** Perfil local activo para contextualizar el saludo y rol */
-  userProfile?: { name: string; storeName?: string; role?: string } | null;
+  userProfile?: {
+    name: string;
+    storeName?: string;
+    role?: string;
+    preferredName?: string;
+    occupation?: string;
+    workContext?: string;
+    language?: string;
+    timezone?: string;
+    notes?: string;
+  } | null;
   /** En modo browser preview, permite leer contexto de negocio en vivo */
   businessContextSnapshot?: string;
   /** Canvas activo abierto para ediciones incrementales desde el chat */
@@ -1752,6 +1720,8 @@ export interface XoxAiChatRequest {
   contextCheckpoint?: ContextCheckpoint | null;
   /** Ventana real de tokens del modelo activo para calcular umbrales de auto-compactación */
   modelContextWindow?: number;
+  /** Identificador de sesión/conversación para correlacionar trazas JSONL del agente */
+  sessionId?: string;
 }
 
 export interface XoxTokenUsage {
@@ -1812,6 +1782,8 @@ export interface XoxAiChatResponse {
   failoverEvents?: ProviderFailoverEvent[];
   contextCompacted?: ContextCompactedEvent;
   documentContext?: DocumentContextSnapshot;
+  turnMemory?: TurnWorkingMemory;
+  traceFile?: string;
 }
 
 /** Actividad de código/terminal que Xox muestra en la pantalla de su laptop. */
@@ -5812,6 +5784,8 @@ export async function runXoxAiChatStream(
         rate_limits?: Record<string, unknown>;
         context_compacted?: unknown;
         document_context?: unknown;
+        turn_memory?: unknown;
+        trace_file?: string;
       }>("run_xox_chat_stream", {
         payload: {
           message: req.message,
@@ -5832,6 +5806,7 @@ export async function runXoxAiChatStream(
             ? serializeCheckpointForSidecar(req.contextCheckpoint)
             : null,
           modelContextWindow: req.modelContextWindow ?? null,
+          sessionId: req.sessionId ?? null,
         },
       });
 
@@ -5936,6 +5911,8 @@ export async function runXoxAiChatStream(
         })),
         contextCompacted: sanitizeContextCompactedEvent(res.context_compacted) ?? undefined,
         documentContext: sanitizeDocumentContextSnapshot(res.document_context) ?? undefined,
+        turnMemory: sanitizeTurnWorkingMemory(res.turn_memory) ?? undefined,
+        traceFile: typeof res.trace_file === "string" ? res.trace_file : undefined,
       };
     } finally {
       callbacks?.signal?.removeEventListener("abort", onSignalAbort);
@@ -6920,6 +6897,7 @@ function serializeCheckpointForSidecar(ckpt: ContextCheckpoint): Record<string, 
     objective: ckpt.objective,
     active_decisions: ckpt.activeDecisions,
     superseded_discarded: ckpt.supersededDiscarded,
+    active_artifacts: ckpt.activeArtifacts ?? [],
     document_state: ckpt.documentState,
     pending_items: ckpt.pendingItems,
     summary: ckpt.summary,
@@ -6928,6 +6906,8 @@ function serializeCheckpointForSidecar(ckpt: ContextCheckpoint): Record<string, 
     tokens_after: ckpt.tokensAfter,
     saved_pct: ckpt.savedPct,
     auto: ckpt.auto,
+    compaction_method: ckpt.compactionMethod,
+    fallback_reason: ckpt.fallbackReason,
     updated_at: ckpt.updatedAt,
   };
 }

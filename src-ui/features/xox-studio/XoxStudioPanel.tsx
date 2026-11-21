@@ -1119,7 +1119,10 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                         selected ? "ring-[1.5px] ring-white/90 ring-offset-1 ring-offset-[#0a0e1a]" : ""
                       }`}
                       style={{
-                        backgroundColor: preset.glow,
+                        background:
+                          key === "classic"
+                            ? `linear-gradient(135deg, ${preset.rim} 0%, ${preset.glow} 52%, ${preset.rim2} 100%)`
+                            : preset.glow,
                         boxShadow: selected ? `0 0 10px ${preset.glow}` : undefined,
                       }}
                       aria-hidden="true"

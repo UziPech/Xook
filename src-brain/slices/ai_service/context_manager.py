@@ -23,15 +23,24 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
-# Umbrales de auto-compactación preventiva
-DOC_AUTO_COMPACT_MIN_TURNS = 8          # 4 rondas de feedback usuario+Xox en un documento
-DOC_AUTO_COMPACT_KEEP_RECENT = 4        # conservar últimos 2 intercambios literales
-DOC_AUTO_COMPACT_TOKEN_TRIGGER = 4200   # o cuando el historial del doc supere ~4.2k tokens
+# Umbrales de auto-compactación preventiva (calibrados según ventana real del modelo)
+DOC_AUTO_COMPACT_MIN_TURNS = 12         # 6 rondas de feedback usuario+Xox en un documento
+DOC_AUTO_COMPACT_KEEP_RECENT = 6        # conservar últimos 3 intercambios literales
+DOC_AUTO_COMPACT_TOKEN_TRIGGER = 8500   # o cuando el historial del doc supere ~8.5k tokens
 
-CHAT_AUTO_COMPACT_MIN_TURNS = 14        # 7 rondas en chat general
-CHAT_AUTO_COMPACT_KEEP_RECENT = 6       # conservar últimos 3 intercambios literales
-CHAT_AUTO_COMPACT_CONTEXT_RATIO = 0.58  # o al superar 58% de la ventana efectiva del modelo
-CHAT_AUTO_COMPACT_TOKEN_CAP = 28000     # tope práctico antes de degradación "lost in the middle"
+CHAT_AUTO_COMPACT_MIN_TURNS = 24        # 12 rondas en chat general (modelos >= 100k ctx)
+CHAT_AUTO_COMPACT_KEEP_RECENT = 10      # conservar últimos 5 intercambios literales
+CHAT_AUTO_COMPACT_CONTEXT_RATIO = 0.55  # o al superar 55% de la ventana efectiva del modelo
+CHAT_AUTO_COMPACT_TOKEN_CAP = 64000     # tope práctico antes de degradación "lost in the middle"
+
+# Presupuesto para poda de salidas de herramientas dentro de un mismo turno multi-paso
+TOOL_LOOP_PROTECT_RECENT = 4            # nunca podar las últimas 4 salidas (permite cruzar 3-4 archivos)
+TOOL_LOOP_HEAVY_READ_CHARS = 9000       # solo podar lecturas grandes reales (> 9 KB)
+TOOL_LOOP_TOTAL_BUDGET_CHARS = 24000    # no podar lecturas si el total acumulado del loop es moderado
+
+_ARTIFACT_PATH_RE = re.compile(
+    r"(?:^|[\s`\"'(])((?:[A-Za-z0-9._-]+/)+[A-Za-z0-9._-]+\.[A-Za-z0-9]{1,8})\b"
+)
 
 
 def _utc_now_iso() -> str:
@@ -523,6 +532,12 @@ def format_checkpoint_for_prompt(checkpoint: Optional[Dict[str, Any]], *, scope:
         for x in discarded[:10]:
             lines.append(f"  * {x}")
 
+    artifacts = [str(x).strip() for x in (checkpoint.get("active_artifacts") or []) if str(x).strip()]
+    if artifacts:
+        lines.append("- Archivos, rutas y artefactos clave referenciados:")
+        for art in artifacts[:14]:
+            lines.append(f"  * {art}")
+
     doc_state = str(checkpoint.get("document_state") or "").strip()
     if doc_state:
         lines.append(f"- Estado alcanzado: {doc_state}")
@@ -641,6 +656,31 @@ def _extract_json_object(raw_text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _extract_mentioned_artifacts(turns: List[Dict[str, Any]], prev_artifacts: Optional[List[str]] = None) -> List[str]:
+    found: List[str] = []
+    seen: set[str] = set()
+    for p in (prev_artifacts or []):
+        s = str(p or "").strip()
+        if s and s.lower() not in seen:
+            seen.add(s.lower())
+            found.append(s[:180])
+    for msg in turns or []:
+        if not isinstance(msg, dict):
+            continue
+        body = str(msg.get("content") or "")
+        for m in _ARTIFACT_PATH_RE.finditer(body):
+            cand = m.group(1).strip().lstrip("./")
+            if not cand or cand.startswith("http"):
+                continue
+            low = cand.lower()
+            if low not in seen:
+                seen.add(low)
+                found.append(cand[:180])
+            if len(found) >= 16:
+                return found
+    return found
+
+
 def _normalize_checkpoint_obj(
     raw: Dict[str, Any],
     *,
@@ -648,8 +688,10 @@ def _normalize_checkpoint_obj(
     compacted_count: int,
     tokens_before: int,
     auto: bool,
+    compaction_method: str = "llm",
+    fallback_reason: str = "",
 ) -> Dict[str, Any]:
-    def _clean_list(val: Any, limit: int = 12) -> List[str]:
+    def _clean_list(val: Any, limit: int = 12, max_item_len: int = 320) -> List[str]:
         if not isinstance(val, list):
             return []
         out: List[str] = []
@@ -658,30 +700,34 @@ def _normalize_checkpoint_obj(
             s = " ".join(str(item or "").split()).strip()
             if s and s.lower() not in seen:
                 seen.add(s.lower())
-                out.append(s[:240])
+                out.append(s[:max_item_len])
             if len(out) >= limit:
                 break
         return out
 
     prev_total = int((prev_checkpoint or {}).get("compacted_turns") or 0)
     ckpt: Dict[str, Any] = {
-        "objective": " ".join(str(raw.get("objective") or "").split()).strip()[:360],
-        "active_decisions": _clean_list(raw.get("active_decisions"), 14),
-        "superseded_discarded": _clean_list(raw.get("superseded_discarded"), 10),
-        "document_state": " ".join(str(raw.get("document_state") or "").split()).strip()[:420],
-        "pending_items": _clean_list(raw.get("pending_items"), 8),
-        "summary": " ".join(str(raw.get("summary") or "").split()).strip()[:480],
+        "objective": " ".join(str(raw.get("objective") or "").split()).strip()[:420],
+        "active_decisions": _clean_list(raw.get("active_decisions"), 16, 320),
+        "superseded_discarded": _clean_list(raw.get("superseded_discarded"), 10, 260),
+        "active_artifacts": _clean_list(raw.get("active_artifacts"), 16, 180),
+        "document_state": " ".join(str(raw.get("document_state") or "").split()).strip()[:560],
+        "pending_items": _clean_list(raw.get("pending_items"), 10, 260),
+        "summary": " ".join(str(raw.get("summary") or "").split()).strip()[:600],
         "compacted_turns": prev_total + max(0, compacted_count),
         "auto": bool(auto),
+        "compaction_method": "llm" if compaction_method == "llm" else "deterministic_fallback",
         "updated_at": _utc_now_iso(),
     }
+    if fallback_reason.strip():
+        ckpt["fallback_reason"] = " ".join(fallback_reason.split()).strip()[:240]
     if not ckpt["summary"]:
         summary_parts = []
         if ckpt["objective"]:
             summary_parts.append(ckpt["objective"])
         if ckpt["active_decisions"]:
             summary_parts.append("Acuerdos vigentes: " + "; ".join(ckpt["active_decisions"][:3]))
-        ckpt["summary"] = " · ".join(summary_parts)[:420] or "Contexto anterior compactado."
+        ckpt["summary"] = " · ".join(summary_parts)[:520] or "Contexto anterior compactado."
 
     tokens_after = estimate_tokens(format_checkpoint_for_prompt(ckpt))
     saved_pct = (
@@ -703,8 +749,9 @@ def _deterministic_compact(
     doc_title: str = "",
     focus_hint: str = "",
     auto: bool = True,
+    fallback_reason: str = "no_llm_caller",
 ) -> Dict[str, Any]:
-    """Fallback instantáneo sin red que produce un Checkpoint limpio y estructurado."""
+    """Fallback instantáneo sin red que produce un Checkpoint estructurado preservando rutas y conclusiones."""
     tokens_before = estimate_turns_tokens(turns_to_compact) + (
         estimate_tokens(format_checkpoint_for_prompt(prev_checkpoint, scope=scope))
         if prev_checkpoint
@@ -724,30 +771,40 @@ def _deterministic_compact(
     objective = (
         str((prev_checkpoint or {}).get("objective") or "").strip()
         or (f"Iterar y perfeccionar el documento \"{doc_title}\"." if scope == "document" and doc_title else "")
-        or (user_msgs[0][:220] if user_msgs else "Continuar trabajo en curso.")
+        or (user_msgs[0][:340] if user_msgs else "Continuar trabajo en curso.")
     )
     if focus_hint:
-        objective = f"{objective} (Foco: {focus_hint[:140]})".strip()
+        objective = f"{objective} (Foco: {focus_hint[:160]})".strip()
 
-    # Conservar las instrucciones de usuario más recientes como decisiones activas (las más nuevas ganan)
-    decisions: List[str] = list((prev_checkpoint or {}).get("active_decisions") or [])[-4:]
-    for um in user_msgs[-6:]:
-        short_u = um[:200] + ("…" if len(um) > 200 else "")
+    # Conservar instrucciones recientes del usuario con suficiente longitud para no truncar requisitos
+    decisions: List[str] = list((prev_checkpoint or {}).get("active_decisions") or [])[-5:]
+    for um in user_msgs[-8:]:
+        short_u = um[:300] + ("…" if len(um) > 300 else "")
         if short_u not in decisions:
             decisions.append(short_u)
 
     doc_state = ""
     if asst_msgs:
-        doc_state = asst_msgs[-1][:320] + ("…" if len(asst_msgs[-1]) > 320 else "")
+        recent_conclusions = [
+            (am[:260] + ("…" if len(am) > 260 else ""))
+            for am in asst_msgs[-2:]
+        ]
+        doc_state = " | ".join(recent_conclusions)[:540]
     elif prev_checkpoint and prev_checkpoint.get("document_state"):
         doc_state = str(prev_checkpoint["document_state"])
 
+    artifacts = _extract_mentioned_artifacts(
+        turns_to_compact,
+        prev_artifacts=list((prev_checkpoint or {}).get("active_artifacts") or []),
+    )
+
     raw = {
         "objective": objective,
-        "active_decisions": decisions[-10:],
+        "active_decisions": decisions[-12:],
         "superseded_discarded": list((prev_checkpoint or {}).get("superseded_discarded") or [])[-6:],
+        "active_artifacts": artifacts,
         "document_state": doc_state,
-        "pending_items": list((prev_checkpoint or {}).get("pending_items") or [])[-5:],
+        "pending_items": list((prev_checkpoint or {}).get("pending_items") or [])[-6:],
         "summary": f"Compactados {len(turns_to_compact)} mensajes previos" + (f" sobre {doc_title}" if doc_title else "") + ".",
     }
     return _normalize_checkpoint_obj(
@@ -756,6 +813,8 @@ def _deterministic_compact(
         compacted_count=len(turns_to_compact),
         tokens_before=tokens_before,
         auto=auto,
+        compaction_method="deterministic_fallback",
+        fallback_reason=fallback_reason,
     )
 
 
@@ -773,7 +832,8 @@ def compact_turns_to_checkpoint(
 ) -> Dict[str, Any]:
     """
     Condensa una lista de turnos históricos + checkpoint previo en un nuevo Checkpoint estructurado.
-    Usa el LLM activo cuando `call_llm_fn` está disponible, con fallback determinístico instantáneo.
+    Usa el LLM activo cuando `call_llm_fn` está disponible, registrando explícitamente si cayó
+    a fallback determinístico y el motivo exacto.
     """
     clean_turns = [
         {"role": str(m.get("role") or ""), "content": str(m.get("content") or "").strip()}
@@ -799,6 +859,7 @@ def compact_turns_to_checkpoint(
             doc_title=doc_title,
             focus_hint=focus_hint,
             auto=auto,
+            fallback_reason="no_llm_caller",
         )
 
     transcript_lines: List[str] = []
@@ -817,10 +878,10 @@ def compact_turns_to_checkpoint(
     for idx, t in enumerate(clean_turns, start=1):
         who = "USUARIO" if t["role"] == "user" else "XOX"
         body = t["content"]
-        if len(body) > 1400:
-            body = body[:1100].rstrip() + " … " + body[-220:].lstrip()
+        if len(body) > 1800:
+            body = body[:1400].rstrip() + " … " + body[-300:].lstrip()
         line = f"[{idx}] {who}: {body}"
-        if total_chars + len(line) > 16000:
+        if total_chars + len(line) > 22000:
             transcript_lines.append("[… turnos intermedios resumidos por límite de longitud …]")
             break
         transcript_lines.append(line)
@@ -831,17 +892,18 @@ def compact_turns_to_checkpoint(
 
     sys_msg = (
         "Eres el motor de compactación de memoria de XOOK. Tu trabajo es comprimir el historial de "
-        f"{scope_label} en un Checkpoint JSON ultra-claro para evitar que el agente se confunda tras muchas rondas de feedback.\n"
+        f"{scope_label} en un Checkpoint JSON ultra-claro para evitar que el agente pierda contexto.\n"
         "REGLAS ESTRICTAS:\n"
         "1. Si el usuario dio instrucciones contradictorias en distintos turnos (ej. primero pidió algo y luego cambió de opinión), "
         "conserva ÚNICAMENTE la decisión MÁS RECIENTE en `active_decisions` y anota la anterior en `superseded_discarded`.\n"
         "2. Elimina charla redundante, saludos, disculpas y borradores viejos.\n"
-        "3. Conserva rutas de archivo, títulos, métricas, secciones y criterios de estilo que sigan vigentes.\n"
+        "3. Conserva SIEMPRE rutas de archivos, módulos, funciones, títulos, métricas, hallazgos verificados de herramientas/sub-agentes y criterios de estilo en `active_artifacts` y `active_decisions`.\n"
         "4. Responde ÚNICAMENTE con un objeto JSON válido con estas claves exactas:\n"
-        '{"objective":"...", "active_decisions":["..."], "superseded_discarded":["..."], "document_state":"...", "pending_items":["..."], "summary":"..."}'
+        '{"objective":"...", "active_decisions":["..."], "superseded_discarded":["..."], "active_artifacts":["..."], "document_state":"...", "pending_items":["..."], "summary":"..."}'
     )
     user_prompt = "\n".join(transcript_lines) + focus_clause
 
+    fallback_reason = ""
     try:
         raw_out = call_llm_fn([
             {"role": "system", "content": sys_msg},
@@ -851,15 +913,26 @@ def compact_turns_to_checkpoint(
         if isinstance(parsed, dict) and any(
             parsed.get(k) for k in ("objective", "active_decisions", "document_state", "summary")
         ):
+            # Asegurar que las rutas mencionadas en los turnos no se pierdan si el LLM omitió alguna
+            merged_artifacts = list(parsed.get("active_artifacts") or [])
+            for detected in _extract_mentioned_artifacts(
+                clean_turns,
+                prev_artifacts=list((prev_checkpoint or {}).get("active_artifacts") or []),
+            ):
+                if detected not in merged_artifacts:
+                    merged_artifacts.append(detected)
+            parsed["active_artifacts"] = merged_artifacts[:16]
             return _normalize_checkpoint_obj(
                 parsed,
                 prev_checkpoint=prev_checkpoint,
                 compacted_count=len(clean_turns),
                 tokens_before=tokens_before,
                 auto=auto,
+                compaction_method="llm",
             )
-    except Exception:
-        pass
+        fallback_reason = "llm_invalid_json_checkpoint"
+    except Exception as exc:
+        fallback_reason = f"{type(exc).__name__}: {str(exc)[:180]}"
 
     return _deterministic_compact(
         clean_turns,
@@ -868,7 +941,27 @@ def compact_turns_to_checkpoint(
         doc_title=doc_title,
         focus_hint=focus_hint,
         auto=auto,
+        fallback_reason=fallback_reason or "llm_compaction_failed",
     )
+
+
+def _chat_compaction_thresholds(model_context_window: int) -> Tuple[int, int, int]:
+    """Escala (min_turns, keep_recent, tok_trigger) según la ventana real del modelo."""
+    eff_window = max(8192, int(model_context_window or 128000))
+    if eff_window >= 100_000:
+        min_turns = CHAT_AUTO_COMPACT_MIN_TURNS
+        keep_recent = CHAT_AUTO_COMPACT_KEEP_RECENT
+        token_cap = CHAT_AUTO_COMPACT_TOKEN_CAP
+    elif eff_window >= 48_000:
+        min_turns = 18
+        keep_recent = 8
+        token_cap = 32_000
+    else:
+        min_turns = 14
+        keep_recent = 6
+        token_cap = 18_000
+    tok_trigger = min(token_cap, int(eff_window * CHAT_AUTO_COMPACT_CONTEXT_RATIO))
+    return min_turns, keep_recent, tok_trigger
 
 
 def maybe_auto_compact_turns(
@@ -903,12 +996,9 @@ def maybe_auto_compact_turns(
             or (len(clean_turns) > keep_recent and turns_tok >= DOC_AUTO_COMPACT_TOKEN_TRIGGER)
         )
     else:
-        min_turns = CHAT_AUTO_COMPACT_MIN_TURNS
-        keep_recent = CHAT_AUTO_COMPACT_KEEP_RECENT
+        min_turns, keep_recent, tok_trigger = _chat_compaction_thresholds(model_context_window)
         turns_tok = estimate_turns_tokens(clean_turns)
         ckpt_tok = estimate_tokens(format_checkpoint_for_prompt(prev_checkpoint, scope="chat")) if prev_checkpoint else 0
-        eff_window = max(8192, int(model_context_window or 128000))
-        tok_trigger = min(CHAT_AUTO_COMPACT_TOKEN_CAP, int(eff_window * CHAT_AUTO_COMPACT_CONTEXT_RATIO))
         should_compact = (
             len(clean_turns) >= min_turns
             or (len(clean_turns) > keep_recent and (system_prompt_tokens + ckpt_tok + turns_tok) >= tok_trigger)
@@ -929,7 +1019,7 @@ def maybe_auto_compact_turns(
         auto=True,
         call_llm_fn=call_llm_fn,
     )
-    compaction_event = {
+    compaction_event: Dict[str, Any] = {
         "auto": True,
         "scope": scope,
         "document_path": doc_path or None,
@@ -939,21 +1029,88 @@ def maybe_auto_compact_turns(
         "tokens_before": new_ckpt.get("tokens_before", 0),
         "tokens_after": new_ckpt.get("tokens_after", 0),
         "saved_pct": new_ckpt.get("saved_pct", 0),
+        "compaction_method": new_ckpt.get("compaction_method", "deterministic_fallback"),
         "checkpoint": new_ckpt,
     }
+    if new_ckpt.get("fallback_reason"):
+        compaction_event["fallback_reason"] = new_ckpt["fallback_reason"]
     return kept, new_ckpt, compaction_event
 
 
 # ---------------------------------------------------------------------------
-# Poda de salidas viejas de herramientas dentro de un mismo turno multi-paso
+# Poda inteligente de salidas viejas de herramientas (preservando resumen semántico)
 # ---------------------------------------------------------------------------
 
-def prune_tool_loop_messages(loop_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _build_pruned_tool_digest(fn_name: str, arg_path: str, raw_content: str, superseded: bool) -> Dict[str, Any]:
+    """Extrae metadatos y un digest legible en lugar de borrar a ciegas una salida previa."""
+    stub: Dict[str, Any] = {
+        "ok": True,
+        "tool": fn_name or "tool",
+        "path": arg_path or None,
+        "original_chars": len(raw_content),
+    }
+    try:
+        parsed = json.loads(raw_content)
+    except Exception:
+        parsed = None
+
+    if isinstance(parsed, dict):
+        if "ok" in parsed:
+            stub["ok"] = bool(parsed["ok"])
+        if parsed.get("error"):
+            stub["error"] = str(parsed["error"])[:220]
+        if isinstance(parsed.get("disposition"), dict):
+            stub["disposition"] = parsed["disposition"]
+        if parsed.get("exit_code") is not None:
+            stub["exit_code"] = parsed["exit_code"]
+        if parsed.get("page_count") is not None:
+            stub["page_count"] = parsed["page_count"]
+        if parsed.get("total_matches") is not None:
+            stub["total_matches"] = parsed["total_matches"]
+
+        text_body = (
+            parsed.get("content")
+            or parsed.get("text")
+            or parsed.get("markdown")
+            or parsed.get("stdout")
+            or ""
+        )
+        if isinstance(text_body, str) and text_body.strip():
+            lines = text_body.splitlines()
+            stub["line_count"] = len(lines)
+            headings = [
+                ln.strip()[:100]
+                for ln in lines
+                if re.match(r"^(?:#{1,4}\s+|(?:export\s+)?(?:async\s+)?(?:def|class|function|interface|type|pub\s+fn|fn|struct|enum)\s+)", ln.strip())
+            ]
+            if headings:
+                stub["key_symbols_or_headings"] = headings[:12]
+            head = text_body[:300].strip()
+            tail = text_body[-160:].strip() if len(text_body) > 520 else ""
+            stub["preview"] = f"{head}\n…\n{tail}" if tail else head
+        elif isinstance(parsed.get("matches"), list):
+            stub["matches_preview"] = [
+                str(m.get("path") or m.get("file") or m)[:100]
+                for m in parsed["matches"][:8]
+                if m
+            ]
+
+    stub["_compacted_prev_tool_output"] = (
+        "Salida anterior condensada porque este archivo fue releído o modificado en un paso posterior del mismo turno."
+        if superseded
+        else f"Salida extensa previa ({len(raw_content)} chars) condensada a digest para preservar la ventana de contexto; usa la herramienta de nuevo si necesitas una línea literal."
+    )
+    return stub
+
+
+def prune_tool_loop_messages_with_stats(
+    loop_messages: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """
-    Limpia salidas voluminosas y ya superadas de `pdf_read` / `workspace_read` / `pdf_generate`
-    en rondas anteriores del mismo turno, manteniendo intactos los resultados de la última ronda.
+    Condensa salidas voluminosas o superadas en rondas anteriores del mismo turno,
+    protegiendo siempre las últimas `TOOL_LOOP_PROTECT_RECENT` salidas y conservando
+    un digest estructurado en vez de un stub vacío.
     """
-    # Mapear tool_call_id -> (fn_name, path, msg_idx)
     tc_meta: Dict[str, Tuple[str, str]] = {}
     tool_indices: List[Tuple[int, str, str, str]] = []  # (idx, tc_id, fn_name, path)
 
@@ -986,36 +1143,179 @@ def prune_tool_loop_messages(loop_messages: List[Dict[str, Any]]) -> List[Dict[s
             fn_name, arg_path = tc_meta.get(tc_id, ("", ""))
             tool_indices.append((idx, tc_id, fn_name, arg_path))
 
-    if len(tool_indices) <= 2:
-        return loop_messages
+    stats = {"pruned_count": 0, "chars_before": 0, "chars_after": 0}
+    if len(tool_indices) <= TOOL_LOOP_PROTECT_RECENT:
+        return loop_messages, stats
 
-    # Identificar el último índice por (path) y la última ronda de herramientas
-    last_tool_msg_idx = tool_indices[-1][0]
+    protected_positions = {item[0] for item in tool_indices[-TOOL_LOOP_PROTECT_RECENT:]}
     latest_by_path: Dict[str, int] = {}
+    total_tool_chars = 0
     for idx, _, fn_name, arg_path in tool_indices:
+        total_tool_chars += len(str(loop_messages[idx].get("content") or ""))
         if arg_path:
             latest_by_path[arg_path] = idx
 
     out = list(loop_messages)
+    exceeds_budget = total_tool_chars > TOOL_LOOP_TOTAL_BUDGET_CHARS
     for idx, _, fn_name, arg_path in tool_indices:
-        # Nunca podar las 2 salidas de herramienta más recientes
-        if idx >= last_tool_msg_idx - 1:
+        if idx in protected_positions:
             continue
         raw_content = str(out[idx].get("content") or "")
-        if len(raw_content) < 900:
+        if len(raw_content) < 1200 or "_compacted_prev_tool_output" in raw_content:
             continue
         superseded_same_path = bool(arg_path and latest_by_path.get(arg_path, -1) > idx)
-        is_heavy_read = fn_name in ("pdf_read", "workspace_read", "workspace_search") and len(raw_content) > 3500
-        if superseded_same_path or is_heavy_read:
-            stub: Dict[str, Any] = {
-                "ok": True,
-                "tool": fn_name or "tool",
-                "path": arg_path or None,
-                "_compacted_prev_tool_output": (
-                    "Salida anterior compactada automáticamente porque este archivo ya fue leído/modificado en un paso posterior de este mismo turno."
-                    if superseded_same_path
-                    else f"Salida extensa previa ({len(raw_content)} chars) compactada para preservar la ventana de contexto."
-                ),
-            }
-            out[idx] = {**out[idx], "content": json.dumps(stub, ensure_ascii=False)}
-    return out
+        is_heavy_output = (
+            exceeds_budget
+            and fn_name in ("pdf_read", "workspace_read", "workspace_search", "run_workspace_command", "run_custom_script")
+            and len(raw_content) > TOOL_LOOP_HEAVY_READ_CHARS
+        )
+        if superseded_same_path or is_heavy_output:
+            digest = _build_pruned_tool_digest(fn_name, arg_path, raw_content, superseded_same_path)
+            serialized = json.dumps(digest, ensure_ascii=False)
+            if len(serialized) < len(raw_content):
+                stats["pruned_count"] += 1
+                stats["chars_before"] += len(raw_content)
+                stats["chars_after"] += len(serialized)
+                out[idx] = {**out[idx], "content": serialized}
+    return out, stats
+
+
+def prune_tool_loop_messages(loop_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    pruned, _ = prune_tool_loop_messages_with_stats(loop_messages)
+    return pruned
+
+
+# ---------------------------------------------------------------------------
+# Memoria operativa por turno y Context Handoff para Sub-agentes
+# ---------------------------------------------------------------------------
+
+def build_turn_working_memory(
+    tool_records: List[Dict[str, Any]],
+    subagent_records: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Construye un resumen operativo compacto del turno (archivos leídos/modificados,
+    comandos ejecutados y conclusiones de sub-agentes) para preservar continuidad entre turnos.
+    """
+    files_read: List[str] = []
+    files_modified: List[str] = []
+    commands_run: List[str] = []
+    actions: List[Dict[str, Any]] = []
+
+    def _add_unique(lst: List[str], item: str, limit: int = 16) -> None:
+        clean = str(item or "").strip()
+        if clean and clean not in lst and len(lst) < limit:
+            lst.append(clean)
+
+    for rec in tool_records or []:
+        if not isinstance(rec, dict):
+            continue
+        tool = str(rec.get("tool") or "").strip()
+        target = str(rec.get("target") or "").strip()
+        ok = bool(rec.get("ok"))
+        summary = str(rec.get("summary") or "").strip()
+        if not tool:
+            continue
+
+        if tool in ("workspace_read", "pdf_read", "workspace_search") and target:
+            _add_unique(files_read, target)
+        elif tool in ("workspace_write_file", "workspace_edit_file", "pdf_generate", "propose_company_file_edit", "workspace_mkdir") and target:
+            if ok:
+                _add_unique(files_modified, target)
+        elif tool in ("run_workspace_command", "run_custom_script"):
+            cmd_desc = summary or target or tool
+            _add_unique(commands_run, cmd_desc[:140], limit=10)
+
+        action_entry: Dict[str, Any] = {
+            "tool": tool,
+            "ok": ok,
+            "summary": (summary or target or ("ok" if ok else "error"))[:200],
+        }
+        if target:
+            action_entry["target"] = target[:180]
+        if isinstance(rec.get("disposition"), dict):
+            action_entry["disposition"] = rec["disposition"]
+        if len(actions) < 16:
+            actions.append(action_entry)
+
+    subagents: List[Dict[str, Any]] = []
+    for sub in (subagent_records or [])[:8]:
+        if not isinstance(sub, dict):
+            continue
+        name = str(sub.get("name") or "").strip()
+        if not name:
+            continue
+        subagents.append({
+            "name": name[:80],
+            "role": str(sub.get("role") or "")[:100],
+            "ok": bool(sub.get("ok")),
+            "summary": " ".join(str(sub.get("summary") or "").split()).strip()[:260],
+        })
+
+    if not (files_read or files_modified or commands_run or subagents or actions):
+        return None
+
+    note_parts: List[str] = []
+    if files_modified:
+        note_parts.append("Modificados: " + ", ".join(files_modified[:6]))
+    if files_read:
+        note_parts.append("Leídos: " + ", ".join(files_read[:6]))
+    if commands_run:
+        note_parts.append("Comandos: " + "; ".join(commands_run[:4]))
+    if subagents:
+        sub_bits = [f"{s['name']} ({'ok' if s['ok'] else 'err'}): {s['summary'][:120]}" for s in subagents[:4]]
+        note_parts.append("Sub-agentes: " + " | ".join(sub_bits))
+    if not note_parts and actions:
+        act_bits = [f"{a['tool']}({a.get('target') or ('ok' if a['ok'] else 'err')})" for a in actions[:5]]
+        note_parts.append("Acciones: " + ", ".join(act_bits))
+
+    compact_note = " · ".join(note_parts)[:1100]
+    return {
+        "files_read": files_read,
+        "files_modified": files_modified,
+        "commands_run": commands_run,
+        "subagents": subagents,
+        "actions": actions,
+        "compact_note": compact_note,
+    }
+
+
+def format_subagent_handoff(
+    *,
+    checkpoint_block: str = "",
+    recent_history: Optional[List[Dict[str, Any]]] = None,
+    turn_tool_records: Optional[List[Dict[str, Any]]] = None,
+    max_chars: int = 2800,
+) -> str:
+    """
+    Construye un paquete compacto de Context Handoff para sub-agentes (/agent),
+    evitando que trabajen a ciegas sin acuerdos ni hallazgos previos de la sesión.
+    """
+    sections: List[str] = []
+    if checkpoint_block and checkpoint_block.strip():
+        sections.append(checkpoint_block.strip()[:1100])
+
+    clean_hist = [
+        m for m in (recent_history or [])
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()
+    ]
+    if clean_hist:
+        hist_lines: List[str] = ["CONTEXTO RECIENTE DE LA CONVERSACIÓN:"]
+        for m in clean_hist[-4:]:
+            who = "USUARIO" if m["role"] == "user" else "XOX"
+            snippet = " ".join(str(m["content"]).split()).strip()
+            if len(snippet) > 320:
+                snippet = snippet[:319].rstrip() + "…"
+            hist_lines.append(f"- {who}: {snippet}")
+        sections.append("\n".join(hist_lines))
+
+    wm = build_turn_working_memory(turn_tool_records or [])
+    if wm and wm.get("compact_note"):
+        sections.append(f"TRABAJO YA REALIZADO EN ESTE TURNO:\n{wm['compact_note']}")
+
+    if not sections:
+        return ""
+    joined = "\n\n".join(sections).strip()
+    if len(joined) > max_chars:
+        joined = joined[: max_chars - 1].rstrip() + "…"
+    return joined

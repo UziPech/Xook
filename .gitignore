@@ -35,6 +35,8 @@ __pycache__/
 .venv/
 env/
 
-# Repos de referencia / investigación local (no se versionan)
-referencias/
+# Referencias externas: clones de solo lectura para consulta, nunca dependencias.
+# El índice SI se versiona (referencias/README.md); los clones NO.
+referencias/*
+!referencias/README.md
 repos-ideas/

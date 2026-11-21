@@ -3,11 +3,18 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspaces --if-present",
+    "test:packages": "npm run test --workspaces --if-present",
+    "test:brain": "src-brain/.venv/bin/python3 -m unittest discover -s src-brain/slices -t src-brain -p '*_tests.py' -v",
+    "agent:inspect": "node packages/agent-inspector/src/cli.ts",
     "clean:rust": "cargo clean --manifest-path src-tauri/Cargo.toml",
     "clean:workspace": "bash scripts/clean-workspace.sh",
     "clean:all": "bash scripts/clean-workspace.sh --all"

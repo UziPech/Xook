@@ -3,6 +3,8 @@ from .toolkit import (
     CHECKLIST_TOOL_DEF,
     SPAWN_SUBAGENT_TOOL_DEF,
     STUDY_DECK_TOOL_DEF,
+    USER_MEMORY_TOOL_DEFS,
+    USER_MEMORY_TOOL_NAMES,
     WorkspaceToolExecutor,
 )
 
@@ -11,5 +13,7 @@ __all__ = [
     "CHECKLIST_TOOL_DEF",
     "SPAWN_SUBAGENT_TOOL_DEF",
     "STUDY_DECK_TOOL_DEF",
+    "USER_MEMORY_TOOL_DEFS",
+    "USER_MEMORY_TOOL_NAMES",
     "WorkspaceToolExecutor",
 ]

@@ -234,6 +234,7 @@ def handle_rpc_request(request_line):
                 agenda_items=params.get("agenda_items", []),
                 attached_context=params.get("attached_context", []),
                 user_profile=params.get("user_profile"),
+                user_memory_facts=params.get("user_memory_facts"),
                 active_canvas=params.get("active_canvas"),
                 workspace_root=ws_root,
                 unified_memory=params.get("unified_memory"),
@@ -252,6 +253,7 @@ def handle_rpc_request(request_line):
                 active_document=params.get("active_document"),
                 context_checkpoint=params.get("context_checkpoint"),
                 model_context_window=params.get("model_context_window"),
+                session_id=params.get("session_id"),
             )
         elif method == "ai_chat_stream":
             stream_id = params.get("stream_id")
@@ -287,6 +289,7 @@ def handle_rpc_request(request_line):
                 agenda_items=params.get("agenda_items", []),
                 attached_context=params.get("attached_context", []),
                 user_profile=params.get("user_profile"),
+                user_memory_facts=params.get("user_memory_facts"),
                 active_canvas=params.get("active_canvas"),
                 workspace_root=ws_root,
                 unified_memory=params.get("unified_memory"),
@@ -305,6 +308,7 @@ def handle_rpc_request(request_line):
                 active_document=params.get("active_document"),
                 context_checkpoint=params.get("context_checkpoint"),
                 model_context_window=params.get("model_context_window"),
+                session_id=params.get("session_id"),
             )
         elif method == "test_ai_key":
             prov = str(params.get("provider") or "openrouter")
