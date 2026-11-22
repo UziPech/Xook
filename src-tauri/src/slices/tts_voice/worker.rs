@@ -203,7 +203,7 @@ impl TtsWorkerState {
         }
 
         if guard.is_none() {
-            let mut cmd = Command::new(&py_bin);
+            let mut cmd = crate::ai_vault::python_command(&py_bin);
             cmd.arg(&worker_script)
                 .arg("--serve")
                 .arg(models_dir)
@@ -313,7 +313,7 @@ impl TtsWorkerState {
         }
 
         let (py_bin, worker_script) = resolve_tts_python_and_worker(app)?;
-        let mut cmd = Command::new(&py_bin);
+        let mut cmd = crate::ai_vault::python_command(&py_bin);
         cmd.arg(&worker_script).arg("--download").arg(models_dir);
         if let Some(list) = voices {
             let joined = list.join(",");

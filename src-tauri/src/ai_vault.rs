@@ -870,6 +870,17 @@ pub(crate) fn find_sidecar_script<R: Runtime>(app: &AppHandle<R>) -> Result<Path
         .ok_or_else(|| "No se encontró src-brain/main_sidecar.py".to_string())
 }
 
+/// Comando para lanzar el Python de XOOK en modo UTF-8 en todos los sistemas.
+///
+/// Sin esto, en Windows stdin/stdout por pipe usan la página de códigos local (cp1252): el texto
+/// en español llega corrompido y caracteres como "Á" o "Í" hacen fallar la lectura.
+/// `PYTHONIOENCODING` va explícito porque, si el usuario lo tiene definido, gana sobre `PYTHONUTF8`.
+pub(crate) fn python_command(py_bin: &std::path::Path) -> Command {
+    let mut cmd = Command::new(py_bin);
+    cmd.env("PYTHONUTF8", "1").env("PYTHONIOENCODING", "utf-8");
+    cmd
+}
+
 pub(crate) fn resolve_python_executable(script_path: &PathBuf) -> PathBuf {
     if let Ok(explicit) = std::env::var("XOOK_PYTHON") {
         let trimmed = explicit.trim();
@@ -924,7 +935,7 @@ pub(crate) fn call_python_sidecar(
     let line = format!("{request}\n");
 
     let py_bin = resolve_python_executable(script_path);
-    let mut child = Command::new(&py_bin)
+    let mut child = python_command(&py_bin)
         .arg(script_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -4524,7 +4535,7 @@ fn call_python_sidecar_streaming<R: Runtime>(
     let line = format!("{request}\n");
 
     let py_bin = resolve_python_executable(script_path);
-    let mut child = Command::new(&py_bin)
+    let mut child = python_command(&py_bin)
         .arg(script_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -5476,6 +5487,38 @@ mod tests {
         let kept = legacy_secrets_to_keep(on_disk, &current);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept.get("openrouter").map(String::as_str), Some("sk-or-vieja"));
+    }
+
+    #[test]
+    fn python_is_always_launched_in_utf8_mode() {
+        let cmd = python_command(std::path::Path::new("python3"));
+        let env: HashMap<_, _> = cmd.get_envs().collect();
+        assert_eq!(env.get(std::ffi::OsStr::new("PYTHONUTF8")).copied().flatten(), Some(std::ffi::OsStr::new("1")));
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("PYTHONIOENCODING")).copied().flatten(),
+            Some(std::ffi::OsStr::new("utf-8"))
+        );
+    }
+
+    /// Viaje real por el pipe. En Windows (cp1252), sin modo UTF-8 la "Á" hace fallar a Python.
+    #[test]
+    fn spanish_text_survives_the_python_pipe() {
+        let bin = if cfg!(windows) { "python" } else { "python3" };
+        let text = "¿Qué hora es? Ágil, Índice, año, ü — ✓";
+        let child = python_command(std::path::Path::new(bin))
+            .args(["-c", "import sys; sys.stdout.write(sys.stdin.read())"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        let Ok(mut child) = child else {
+            eprintln!("sin `{bin}` en este equipo: se omite la prueba del pipe");
+            return;
+        };
+        child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "Python falló: {}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), text);
     }
 
     #[test]
