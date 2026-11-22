@@ -25,6 +25,7 @@ import { LiquidGlassBackdrop } from "../../components/LiquidGlassBackdrop";
 import { JellyPillTrack } from "../../components/JellyPillTrack";
 import { waitTopLayerAnimations } from "../../utils/topLayerDialog";
 import { ProviderIcon, normalizeProviderIdClient } from "./ProviderIcon";
+import { SecretStorageNote } from "./SecretStorageNote";
 import {
   AI_PROVIDERS,
   AI_PROVIDER_LIST,
@@ -1914,7 +1915,7 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
 
           {/* Pie */}
           <footer className="relative z-[1] shrink-0 px-5 py-3 border-t border-white/[0.06] flex items-center justify-between gap-3 text-[11px] text-zinc-500">
-            <span>Las claves nunca se envían en prompts ni al historial.</span>
+            <SecretStorageNote />
             <button
               type="button"
               onClick={onClose}
