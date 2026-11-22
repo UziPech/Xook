@@ -41,8 +41,12 @@ PROVIDERS = {
     "openrouter": ("sk-or-v1-test1234567890", "openrouter/free", None, OPENROUTER_URL),
     "deepseek": ("sk-deepseektest1234567890", "deepseek-chat", None, "https://api.deepseek.com/chat/completions"),
     "kimi": ("sk-kimitest12345678901234", "kimi-k3.1-pro", "cn", "https://api.moonshot.cn/v1/chat/completions"),
+    "gemini": ("AIzaSyTEST0123456789012345678901234567", "gemini-2.5-flash-lite", None,
+               "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
+    "groq": ("gsk_test1234567890123456789012", "openai/gpt-oss-120b", None, "https://api.groq.com/openai/v1/chat/completions"),
     "anthropic": ("sk-ant-test12345678901234", "claude-sonnet-4-6", None, "https://api.anthropic.com/v1/messages"),
 }
+REASONING = "Voy a listar el workspace."
 
 
 class _FakeResponse:
@@ -92,9 +96,17 @@ def _anthropic_sse(model: str) -> List[bytes]:
 class _FakeNetwork:
     """Reemplaza a `urllib.request.urlopen`: registra cada petición y responde en el formato del proveedor."""
 
-    def __init__(self, spawn_subagent: bool = False) -> None:
+    def __init__(
+        self,
+        spawn_subagent: bool = False,
+        spawn_model: Optional[str] = None,
+        reasoning_tool_round: bool = False,
+    ) -> None:
         self.requests: List[Dict[str, Any]] = []
         self._pending_spawn = spawn_subagent
+        self._spawn_model = spawn_model
+        # Primera ronda: razonamiento nativo (`reasoning_content`) y una llamada a workspace_list.
+        self._pending_reasoning_round = reasoning_tool_round
 
     def __call__(self, req: urllib.request.Request, timeout: Any = None, context: Any = None) -> _FakeResponse:
         body = json.loads(req.data.decode("utf-8")) if req.data else {}
@@ -106,10 +118,19 @@ class _FakeNetwork:
                 return _FakeResponse(lines=_anthropic_sse(body.get("model", "")))
             if self._pending_spawn:
                 self._pending_spawn = False
-                args = json.dumps({"name": "Analista", "role": "Analista", "task": "Resume las ventas del mes."})
+                args = {"name": "Analista", "role": "Analista", "task": "Resume las ventas del mes."}
+                if self._spawn_model:
+                    args["model"] = self._spawn_model
                 call = {"index": 0, "id": "call_sub_1", "type": "function",
-                        "function": {"name": "spawn_subagent", "arguments": args}}
+                        "function": {"name": "spawn_subagent", "arguments": json.dumps(args)}}
                 return _FakeResponse(lines=_openai_sse(
+                    {"choices": [{"delta": {"tool_calls": [call]}, "finish_reason": "tool_calls"}]}))
+            if self._pending_reasoning_round:
+                self._pending_reasoning_round = False
+                call = {"index": 0, "id": "call_ls_1", "type": "function",
+                        "function": {"name": "workspace_list", "arguments": "{}"}}
+                return _FakeResponse(lines=_openai_sse(
+                    {"choices": [{"delta": {"reasoning_content": REASONING}}]},
                     {"choices": [{"delta": {"tool_calls": [call]}, "finish_reason": "tool_calls"}]}))
             return _FakeResponse(lines=_openai_sse({"choices": [{"delta": {"content": FINAL}, "finish_reason": "stop"}]}))
         if is_anthropic:
@@ -134,10 +155,18 @@ class ProviderRequestsTests(unittest.TestCase):
         clear_router_runtime_state()
         self._tmp.cleanup()
 
-    def _capture(self, path: str, provider: str, region: Optional[str] = None) -> List[Dict[str, Any]]:
-        key, model, default_region, _ = PROVIDERS[provider]
+    def _capture(
+        self,
+        path: str,
+        provider: str,
+        region: Optional[str] = None,
+        model: Optional[str] = None,
+        **network_options: Any,
+    ) -> List[Dict[str, Any]]:
+        key, default_model, default_region, _ = PROVIDERS[provider]
+        model = model or default_model
         region = region if region is not None else default_region
-        network = _FakeNetwork(spawn_subagent=(path == "subagent"))
+        network = _FakeNetwork(spawn_subagent=(path == "subagent"), **network_options)
         with patch.object(urllib.request, "urlopen", side_effect=network), \
                 patch.object(oc, "list_openrouter_models", return_value=CATALOG):
             if path == "compaction":
@@ -184,7 +213,9 @@ class ProviderRequestsTests(unittest.TestCase):
                     self.assertNotIn("stream", body)
 
     def test_stream(self) -> None:
-        expected_max_tokens = {"openrouter": 16384, "deepseek": 8192, "kimi": 8192, "anthropic": 16384}
+        expected_max_tokens = {
+            "openrouter": 16384, "deepseek": 8192, "kimi": 8192, "gemini": 16384, "groq": 8192, "anthropic": 16384,
+        }
         for provider in PROVIDERS:
             with self.subTest(provider=provider):
                 req = self._capture("stream", provider)[0]
@@ -210,6 +241,35 @@ class ProviderRequestsTests(unittest.TestCase):
                 self.assertEqual(body["tool_choice"], "auto")
                 self.assertNotIn("response_format", body)
                 self.assertNotIn("stream", body)
+
+    def test_stream_reasoning_model_gets_long_output_without_temperature(self) -> None:
+        body = self._capture("stream", "deepseek", model="deepseek-reasoner")[0]["body"]
+        self.assertEqual(body["max_tokens"], 16384)
+        self.assertNotIn("temperature", body)
+
+    def test_subagent_vendor_model_only_on_openrouter(self) -> None:
+        # Los ids "proveedor/modelo" solo existen en OpenRouter; fuera de ahí se usa el modelo de la conversación.
+        expected = {"openrouter": "openai/gpt-4o", "deepseek": "deepseek-chat"}
+        for provider, model in expected.items():
+            with self.subTest(provider=provider):
+                reqs = self._capture("subagent", provider, spawn_model="openai/gpt-4o")
+                self.assertEqual([r["body"]["model"] for r in reqs if r["body"].get("max_tokens") == 2400], [model])
+
+    def test_native_reasoning_replay_in_tool_loop(self) -> None:
+        # Hoy el razonamiento nativo (`reasoning_content`) se reenvía vacío.
+        cases = {
+            ("deepseek", "deepseek-chat"): "",
+            ("openrouter", "openrouter/free"): None,
+            ("openrouter", "deepseek/deepseek-r1"): "",
+        }
+        for (provider, model), expected in cases.items():
+            with self.subTest(provider=provider, model=model):
+                reqs = self._capture("stream", provider, model=model, reasoning_tool_round=True)
+                streams = [r for r in reqs if r["body"].get("stream")]
+                self.assertGreaterEqual(len(streams), 2)
+                turns = [m for m in streams[1]["body"]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")]
+                self.assertEqual(len(turns), 1)
+                self.assertEqual(turns[0].get("reasoning_content"), expected)
 
     def test_openrouter_custom_base_url_is_used_by_every_path(self) -> None:
         # Con una URL propia configurada, la clave nunca debe viajar a openrouter.ai.
