@@ -1704,7 +1704,9 @@ AGENT_TOOL_DEFS: List[Dict[str, Any]] = [
                                     "description": "Filas de datos (números, textos o fórmulas que inicien con '=').",
                                     "items": {
                                         "type": "array",
-                                        "items": {},
+                                        "items": {
+                                            "description": "Celda: número, texto o fórmula que inicie con '='.",
+                                        },
                                     },
                                 },
                                 "totals_row": {
