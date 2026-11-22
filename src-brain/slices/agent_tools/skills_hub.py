@@ -36,6 +36,19 @@ SKILLS_SH_SEARCH_URL = "https://skills.sh/api/search"
 USER_PROFILE_REL = "habilidades/perfil-usuario.md"
 SKILLS_AUDIT_LOG_REL = "agente/logs/skills-audit.jsonl"
 MAX_SKILL_BYTES = 240_000
+PRESERVED_EXTRA_FRONTMATTER_KEYS: Tuple[str, ...] = (
+    "kind",
+    "design_spec",
+    "source_pdf",
+    "source_file",
+    "source_format",
+    "supported_outputs",
+    "palette_preview",
+    "document_type",
+)
+_CORE_FRONTMATTER_KEYS: frozenset[str] = frozenset(
+    {"name", "title", "description", "role", "domain", "enabled", "source", "updated_at"}
+)
 
 _SLUG_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 _SLUG_PART_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -479,6 +492,34 @@ def update_user_preferences_doc(
     }
 
 
+def _stringify_extra_frontmatter_value(raw_v: Any) -> str:
+    if raw_v is None:
+        return ""
+    if isinstance(raw_v, (list, tuple)):
+        parts = [re.sub(r"\s+", " ", str(item).strip()).replace('"', "'") for item in raw_v]
+        return ",".join(p for p in parts if p)
+    return re.sub(r"\s+", " ", str(raw_v).strip()).replace('"', "'")
+
+
+def _parse_supported_outputs(raw_val: Any) -> List[str]:
+    if isinstance(raw_val, (list, tuple)):
+        raw_items = [str(x) for x in raw_val]
+    else:
+        cleaned = str(raw_val or "").strip().strip("[]").replace('"', "").replace("'", "")
+        if not cleaned:
+            return []
+        raw_items = re.split(r"[,\s]+", cleaned)
+    seen = set()
+    out: List[str] = []
+    for item in raw_items:
+        tok = item.strip().lower().lstrip(".")
+        if not tok or tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+    return out
+
+
 def build_skill_markdown(
     *,
     slug: str,
@@ -492,6 +533,7 @@ def build_skill_markdown(
     do_not_do: Optional[List[str]] = None,
     source: str = "learned-from-user",
     enabled: bool = True,
+    extra_frontmatter: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Construye un documento `SKILL.md` estructurado y legible a partir de bloques simples."""
     now_iso = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
@@ -509,6 +551,15 @@ def build_skill_markdown(
         fm_lines.append(f'role: "{role.strip().replace(chr(34), chr(39))}"')
     if domain.strip():
         fm_lines.append(f'domain: "{domain.strip().replace(chr(34), chr(39))}"')
+    if isinstance(extra_frontmatter, dict):
+        for raw_k, raw_v in extra_frontmatter.items():
+            safe_k = re.sub(r"[^a-z0-9_-]+", "_", str(raw_k or "").strip().lower()).strip("_")
+            if not safe_k or safe_k in _CORE_FRONTMATTER_KEYS:
+                continue
+            safe_v = _stringify_extra_frontmatter_value(raw_v)
+            if not safe_v:
+                continue
+            fm_lines.append(f'{safe_k}: "{safe_v}"')
     fm_lines.extend(
         [
             f"enabled: {'true' if enabled else 'false'}",
@@ -612,6 +663,7 @@ def save_learned_skill(
     enabled: bool = True,
     slug_override: str = "",
     audit_root: Optional[Path] = None,
+    extra_frontmatter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Guarda o actualiza una skill aprendida en `xox-skills/<slug>/SKILL.md` o `habilidades/<slug>/SKILL.md`."""
     clean_name = re.sub(r"\s+", " ", (name or "").strip())
@@ -644,6 +696,7 @@ def save_learned_skill(
         do_not_do=do_not_do,
         source=source,
         enabled=enabled,
+        extra_frontmatter=extra_frontmatter,
     )
     findings = scan_skill_security(rendered)
     if findings:
@@ -692,6 +745,7 @@ def update_existing_skill(
     enabled: Optional[bool] = None,
     audit_root: Optional[Path] = None,
     is_config_dir: bool = False,
+    extra_frontmatter: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Actualiza campos puntuales o el estado (`enabled`) de una skill existente sin perder el resto."""
     if not target_path.is_file():
@@ -712,6 +766,22 @@ def update_existing_skill(
     cur_enabled = cur_enabled_str not in ("false", "0", "no", "off")
     next_enabled = cur_enabled if enabled is None else bool(enabled)
 
+    merged_extra: Dict[str, str] = {}
+    for ek in PRESERVED_EXTRA_FRONTMATTER_KEYS:
+        ev = str(meta.get(ek) or "").strip()
+        if ev:
+            merged_extra[ek] = ev
+    if isinstance(extra_frontmatter, dict):
+        for raw_k, raw_v in extra_frontmatter.items():
+            clean_k = str(raw_k or "").strip().lower()
+            if not clean_k or clean_k in _CORE_FRONTMATTER_KEYS:
+                continue
+            formatted_v = _stringify_extra_frontmatter_value(raw_v)
+            if not formatted_v:
+                merged_extra.pop(clean_k, None)
+            else:
+                merged_extra[clean_k] = formatted_v
+
     rendered = build_skill_markdown(
         slug=slugify_skill_name(slug),
         title=next_title,
@@ -724,6 +794,7 @@ def update_existing_skill(
         do_not_do=next_donts,
         source=meta.get("source") or "learned-from-user",
         enabled=next_enabled,
+        extra_frontmatter=merged_extra or None,
     )
     findings = scan_skill_security(rendered)
     if findings:
@@ -793,6 +864,35 @@ def index_workspace_skills(
                     break
         role_val = meta.get("role", "")
         domain_val = meta.get("domain", "")
+        kind_val = str(meta.get("kind") or "").strip()
+        design_spec_rel = str(meta.get("design_spec") or "").strip()
+        palette_preview = str(meta.get("palette_preview") or "").strip()
+        document_type = str(meta.get("document_type") or "").strip()
+        spec_rel_check = design_spec_rel or ("design-spec.json" if path.name.upper() == "SKILL.MD" else "")
+        has_design_spec = False
+        if spec_rel_check:
+            try:
+                skill_parent = path.parent.resolve()
+                spec_candidate = (skill_parent / spec_rel_check).resolve()
+                has_design_spec = spec_candidate.is_file() and (
+                    spec_candidate.parent == skill_parent or skill_parent in spec_candidate.parents
+                )
+            except Exception:
+                has_design_spec = False
+        effective_kind = kind_val or ("pdf-design" if has_design_spec else "")
+        effective_kind_low = effective_kind.lower()
+        is_design_skill = bool(effective_kind_low in ("document-design", "pdf-design") or has_design_spec)
+        raw_source_format = str(meta.get("source_format") or "").strip().lower()
+        source_format = raw_source_format or ("pdf" if effective_kind_low == "pdf-design" else "")
+        supported_outputs = _parse_supported_outputs(meta.get("supported_outputs", ""))
+        if not supported_outputs and is_design_skill:
+            if source_format in ("docx", "xlsx"):
+                supported_outputs = [source_format, "pdf"]
+            elif source_format == "pptx":
+                supported_outputs = ["pdf", "docx"]
+            elif source_format == "pdf" or effective_kind_low == "pdf-design":
+                supported_outputs = ["pdf"]
+        source_file = str(meta.get("source_file") or meta.get("source_pdf") or "").strip()
         is_active = bool(
             is_enabled
             and active_low
@@ -810,6 +910,15 @@ def index_workspace_skills(
                 "description": desc[:200],
                 "role": role_val,
                 "domain": domain_val,
+                "kind": effective_kind,
+                "is_design_skill": is_design_skill,
+                "source_format": source_format,
+                "supported_outputs": supported_outputs,
+                "source_file": source_file,
+                "has_design_spec": has_design_spec,
+                "design_spec": design_spec_rel or ("design-spec.json" if has_design_spec else ""),
+                "palette_preview": palette_preview,
+                "document_type": document_type,
                 "scope": scope,
                 "source": meta.get("source", scope),
                 "rel_path": rel_str,

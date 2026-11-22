@@ -87,6 +87,8 @@ pub fn run() {
             ai_vault::run_xox_chat_stream,
             ai_vault::cancel_xox_chat_stream,
             ai_vault::compact_xox_context,
+            ai_vault::get_secret_storage_status,
+            slices::provider_evals::run_provider_evals,
             ai_vault::manage_document_context,
             workspace_store::get_local_user,
             workspace_store::save_local_user,

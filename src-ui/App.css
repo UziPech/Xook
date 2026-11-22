@@ -4046,4 +4046,231 @@ progress.xook-usage-progress::-moz-progress-bar {
     animation: none;
     opacity: 1;
   }
+
+  .xook-term-cursor-blink {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
+/* ==========================================================================
+   MINI TERMINAL MACOS (SVG CONSOLA INLINE ESTILO CLAUDE CODE / TERMINAL.APP)
+   ========================================================================== */
+@keyframes xook-term-blink {
+  0%, 49% {
+    opacity: 0.92;
+  }
+  50%, 100% {
+    opacity: 0.2;
+  }
+}
+
+.xook-term-cursor-blink {
+  animation: xook-term-blink 1.05s steps(2, end) infinite;
+}
+
+.xook-mac-terminal {
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+/* ==========================================================================
+   MEMORY GRAPH SVG MOTION, ORBITAL HALO, ENERGY FLOW & LIVE RIPPLES
+   ========================================================================== */
+@keyframes xook-orbit-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes xook-hub-breathe {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scale(1.09);
+    opacity: 1;
+  }
+}
+
+@keyframes xook-node-float {
+  0%, 100% {
+    transform: translate3d(0, 0, 0);
+  }
+  33% {
+    transform: translate3d(1.1px, -2.2px, 0);
+  }
+  66% {
+    transform: translate3d(-1.1px, 1.8px, 0);
+  }
+}
+
+@keyframes xook-edge-flow {
+  from {
+    stroke-dashoffset: 28;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes xook-node-ripple {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.88;
+  }
+  100% {
+    transform: scale(2.45);
+    opacity: 0;
+  }
+}
+
+@keyframes xook-node-dissolve {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  65% {
+    transform: scale(1.65);
+    opacity: 0.28;
+  }
+  100% {
+    transform: scale(2.1);
+    opacity: 0;
+  }
+}
+
+@keyframes xook-live-pill-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes xook-live-dot-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.45);
+    opacity: 0.5;
+  }
+}
+
+@keyframes xook-l1-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.72;
+  }
+  50% {
+    transform: scale(1.42);
+    opacity: 0.14;
+  }
+}
+
+.xook-graph-node {
+  transition: opacity 220ms ease;
+  will-change: transform, opacity;
+}
+
+.xook-graph-node[data-dragging="true"] {
+  transition: opacity 140ms ease !important;
+}
+
+.xook-graph-edge {
+  transition: opacity 220ms ease, stroke 200ms ease, stroke-width 200ms ease;
+}
+
+.xook-l1-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: xook-l1-pulse 2.2s ease-in-out infinite;
+}
+
+.xook-orbit-spin {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: xook-orbit-spin 28s linear infinite;
+}
+
+.xook-orbit-spin-reverse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: xook-orbit-spin 42s linear infinite reverse;
+}
+
+.xook-hub-breathe {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: xook-hub-breathe 4.4s ease-in-out infinite;
+}
+
+.xook-node-float {
+  animation: xook-node-float var(--xook-float-dur, 6.4s) ease-in-out var(--xook-float-delay, 0s) infinite;
+  will-change: transform;
+}
+
+.xook-graph-node:hover .xook-node-float,
+.xook-graph-node[data-selected="true"] .xook-node-float,
+.xook-graph-node[data-dragging="true"] .xook-node-float {
+  animation-play-state: paused;
+}
+
+.xook-edge-flow {
+  animation: xook-edge-flow 1.8s linear infinite;
+}
+
+.xook-node-ripple {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: xook-node-ripple 1.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.xook-node-ripple-delayed {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: xook-node-ripple 1.45s cubic-bezier(0.16, 1, 0.3, 1) 0.22s forwards;
+}
+
+.xook-node-dissolve {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: xook-node-dissolve 700ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.xook-live-pill {
+  animation: xook-live-pill-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.xook-live-dot {
+  animation: xook-live-dot-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xook-orbit-spin,
+  .xook-orbit-spin-reverse,
+  .xook-hub-breathe,
+  .xook-node-float,
+  .xook-edge-flow,
+  .xook-l1-pulse,
+  .xook-node-ripple,
+  .xook-node-ripple-delayed,
+  .xook-node-dissolve,
+  .xook-live-pill,
+  .xook-live-dot {
+    animation: none !important;
+  }
+
+  .xook-graph-node,
+  .xook-graph-edge {
+    transition: none !important;
+  }
 }

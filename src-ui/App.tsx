@@ -23,6 +23,7 @@ import {
   UserCircle2,
   Settings,
   Slash,
+  ScanSearch,
   Users,
   Layers,
   Sparkles,
@@ -93,12 +94,14 @@ import {
 } from "./components/XoxFlightOverlay";
 import {
   XoxStudioPanel,
+  type MemoryLivePulse,
   type XoxStudioTabId,
 } from "./features/xox-studio/XoxStudioPanel";
 import {
   DEFAULT_GLOBAL_XOX_PROFILE,
   getGlobalXoxProfile,
   listXoxSkills,
+  saveGlobalXoxProfile,
   subscribeGlobalXoxProfile,
   type GlobalXoxProfile,
   type XoxSkillEntry,
@@ -194,6 +197,10 @@ import {
   subscribePermissionEvents,
   subscribeWorkspaceUpdated,
   switchWorkspace,
+  type PdfEditableBlock,
+  type UniversalDocumentPayload,
+  type UniversalDocumentSheet,
+  type UniversalDocumentSlide,
 } from "./features/workspace-store/workspaceApi";
 import {
   SelectedWorkspaceFile,
@@ -213,6 +220,16 @@ import {
   type CommandPermissionUiItem,
 } from "./features/ai-service/CommandPermissionCard";
 import {
+  appendReplyDeltaToTimeline,
+  applyCommandFinishedInTimeline,
+  finalizeChatTimeline,
+  markPermissionErrorInTimeline,
+  resolvePermissionInTimeline,
+  timelineHasRequestId,
+  upsertPermissionRequestInTimeline,
+  type ChatTimelineSegment,
+} from "@xook/contracts";
+import {
   OpenRouterSettingsModal,
   type OpenRouterSettingsTab,
 } from "./features/ai-service/OpenRouterSettingsModal";
@@ -222,11 +239,17 @@ import {
   ConversationThread,
   LocalUserProfile,
   deleteLocalConversation,
+  deleteUserMemoryFact,
   deriveConversationTitle,
   getLocalUserProfile,
   listLocalConversations,
+  listUserMemoryFacts,
   saveLocalConversation,
+  saveUserMemoryFact,
   subscribeLocalUserUpdated,
+  subscribeUserMemoryUpdated,
+  type UserMemoryCategory,
+  type UserMemoryFact,
 } from "./features/workspace-store/localStore";
 import { ProviderIcon } from "./features/ai-service/ProviderIcon";
 import {
@@ -239,6 +262,7 @@ import {
   type ContextCheckpoint,
   type ContextCompactedEvent,
   type DocumentContextSnapshot,
+  type GeneratedOfficeDocumentEvent,
   type GeneratedPdfArtifact,
   type PdfDraftProgressEvent,
   OPENROUTER_PRESET_MODELS,
@@ -335,6 +359,120 @@ async function fileToBase64Payload(file: File): Promise<string> {
     parts.push(String.fromCharCode(...slice));
   }
   return btoa(parts.join(""));
+}
+
+function normalizeUniversalDocFromEvent(
+  raw: Record<string, unknown> | null | undefined,
+  fallback: {
+    path: string;
+    filename: string;
+    title: string;
+    format: string;
+    sizeBytes?: number;
+    pageCount?: number;
+  }
+): UniversalDocumentPayload | null {
+  if (!raw || typeof raw !== "object" || raw.ok === false) return null;
+
+  const rawBlocks = Array.isArray(raw.blocks) ? raw.blocks : [];
+  const blocks: PdfEditableBlock[] = rawBlocks
+    .filter((b): b is Record<string, unknown> => Boolean(b && typeof b === "object"))
+    .map((b) => ({
+      type: String(b.type ?? "paragraph"),
+      level: typeof b.level === "number" ? b.level : undefined,
+      text:
+        typeof b.text === "string"
+          ? b.text
+          : typeof b.content === "string"
+            ? b.content
+            : undefined,
+      title: typeof b.title === "string" ? b.title : undefined,
+      items: Array.isArray(b.items) ? b.items.map((x) => String(x ?? "")) : undefined,
+      headers: Array.isArray(b.headers) ? b.headers.map((x) => String(x ?? "")) : undefined,
+      rows: Array.isArray(b.rows)
+        ? b.rows
+            .filter((r): r is unknown[] => Array.isArray(r))
+            .map((r) => r.map((c) => String(c ?? "")))
+        : undefined,
+    }));
+
+  const slides: UniversalDocumentSlide[] = Array.isArray(raw.slides)
+    ? raw.slides
+        .filter((s): s is Record<string, unknown> => Boolean(s && typeof s === "object"))
+        .map((s, idx) => ({
+          slide_number: Number(s.slide_number ?? idx + 1),
+          title: String(s.title ?? `Diapositiva ${idx + 1}`),
+          bullets: Array.isArray(s.bullets) ? s.bullets.map((x) => String(x ?? "")) : [],
+          tables: Array.isArray(s.tables)
+            ? s.tables
+                .filter((t): t is Record<string, unknown> => Boolean(t && typeof t === "object"))
+                .map((t) => ({
+                  headers: Array.isArray(t.headers) ? t.headers.map((x) => String(x ?? "")) : [],
+                  rows: Array.isArray(t.rows)
+                    ? t.rows
+                        .filter((r): r is unknown[] => Array.isArray(r))
+                        .map((r) => r.map((c) => String(c ?? "")))
+                    : [],
+                }))
+            : [],
+          notes: typeof s.notes === "string" ? s.notes : "",
+        }))
+    : [];
+
+  const sheets: UniversalDocumentSheet[] = Array.isArray(raw.sheets)
+    ? raw.sheets
+        .filter((s): s is Record<string, unknown> => Boolean(s && typeof s === "object"))
+        .map((s, idx) => ({
+          name: String(s.name ?? `Hoja ${idx + 1}`),
+          headers: Array.isArray(s.headers) ? s.headers.map((x) => String(x ?? "")) : [],
+          rows: Array.isArray(s.rows)
+            ? s.rows
+                .filter((r): r is unknown[] => Array.isArray(r))
+                .map((r) => r.map((c) => String(c ?? "")))
+            : [],
+          total_rows: typeof s.total_rows === "number" ? s.total_rows : undefined,
+          truncated: Boolean(s.truncated),
+        }))
+    : [];
+
+  const fmt = (fallback.format || "").toLowerCase().replace(/^\./, "");
+  const fallbackKind: UniversalDocumentPayload["docKind"] =
+    fmt === "xlsx" || fmt === "xls" || fmt === "ods" || fmt === "csv" || fmt === "tsv"
+      ? "spreadsheet"
+      : fmt === "pptx" || fmt === "ppt" || fmt === "odp"
+        ? "presentation"
+        : fmt === "docx" || fmt === "doc" || fmt === "rtf" || fmt === "odt"
+          ? "word"
+          : "text";
+
+  const rawKind = String(raw.docKind ?? raw.doc_kind ?? "").trim().toLowerCase();
+  const docKind: UniversalDocumentPayload["docKind"] =
+    rawKind === "word" ||
+    rawKind === "presentation" ||
+    rawKind === "spreadsheet" ||
+    rawKind === "markdown" ||
+    rawKind === "code" ||
+    rawKind === "text"
+      ? rawKind
+      : fallbackKind;
+
+  return {
+    ok: true,
+    path: String(raw.path ?? fallback.path),
+    filename: String(raw.filename ?? fallback.filename),
+    title: String(raw.title ?? fallback.title),
+    sizeBytes: Number(raw.sizeBytes ?? raw.size_bytes ?? fallback.sizeBytes ?? 0),
+    pageCount: Number(raw.pageCount ?? raw.page_count ?? fallback.pageCount ?? 1),
+    docKind,
+    formatLabel: String(
+      raw.formatLabel ?? raw.format_label ?? (fmt ? fmt.toUpperCase() : "DOC")
+    ),
+    blocks,
+    slides,
+    sheets,
+    markdown: typeof raw.markdown === "string" ? raw.markdown : "",
+    text: typeof raw.text === "string" ? raw.text : "",
+  };
 }
 
 function mergeCanvasWithVersionHistory(
@@ -835,6 +973,15 @@ export default function App() {
   const [isReviewRunning, setIsReviewRunning] = useState<boolean>(false);
   const [permissionItems, setPermissionItems] = useState<CommandPermissionUiItem[]>([]);
   const activeStreamIdRef = useRef<string | null>(null);
+  const activeAssistantMsgIdRef = useRef<string | null>(null);
+  const activeTimelineRef = useRef<ChatTimelineSegment[]>([]);
+  const permissionEventHandlersRef = useRef<{
+    onRequest: (req: Parameters<typeof applyPermissionRequestItem>[1]) => void;
+    onFinished: (ev: Parameters<typeof applyCommandFinishedEvent>[1]) => void;
+  }>({
+    onRequest: () => {},
+    onFinished: () => {},
+  });
   const chatAbortControllerRef = useRef<AbortController | null>(null);
   const [workspaceOverview, setWorkspaceOverview] = useState<WorkspaceOverview | null>(null);
   const [workspaceLoading, setWorkspaceLoading] = useState<boolean>(false);
@@ -842,7 +989,7 @@ export default function App() {
   const selectedWorkspacePathRef = useRef<string | null>(null);
   selectedWorkspacePathRef.current = selectedWorkspaceFile?.relativePath ?? null;
   const [pinnedWorkspacePaths, setPinnedWorkspacePaths] = useState<Set<string>>(
-    () => new Set(["empresa/perfil.json", "empresa/reglas/operacion.md", "memoria/hechos.md"])
+    () => new Set(["empresa/perfil.json", "empresa/reglas/operacion.md"])
   );
   const [highlightedWorkspacePath, setHighlightedWorkspacePath] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -856,9 +1003,31 @@ export default function App() {
   const [globalXoxProfile, setGlobalXoxProfile] = useState<GlobalXoxProfile>(
     DEFAULT_GLOBAL_XOX_PROFILE
   );
+  const globalXoxProfileRef = useRef<GlobalXoxProfile>(globalXoxProfile);
+  globalXoxProfileRef.current = globalXoxProfile;
   const [xoxSkills, setXoxSkills] = useState<XoxSkillEntry[]>([]);
   const [showXoxStudio, setShowXoxStudio] = useState<boolean>(false);
+  const showXoxStudioRef = useRef<boolean>(showXoxStudio);
+  showXoxStudioRef.current = showXoxStudio;
   const [xoxStudioTab, setXoxStudioTab] = useState<XoxStudioTabId>("identity");
+  const [isMemoryWideMode, setIsMemoryWideMode] = useState<boolean>(false);
+  const [memoryLivePulse, setMemoryLivePulse] = useState<MemoryLivePulse | null>(null);
+  const suppressMemorySyncPulseUntilRef = useRef<number>(0);
+  const triggerMemoryLivePulse = useCallback(
+    (
+      action: MemoryLivePulse["action"],
+      source: MemoryLivePulse["source"],
+      label?: string
+    ) => {
+      setMemoryLivePulse((prev) => ({
+        seq: (prev?.seq ?? 0) + 1,
+        action,
+        source,
+        label: label?.trim() ? label.trim() : undefined,
+      }));
+    },
+    []
+  );
   const [highlightedSkillSlug, setHighlightedSkillSlug] = useState<string | null>(null);
   const [previewAccentPreset, setPreviewAccentPreset] = useState<XoxAccentPreset | null>(null);
   const [xoxTravelPhase, setXoxTravelPhase] = useState<"idle" | "to-studio" | "from-studio">("idle");
@@ -1290,6 +1459,8 @@ export default function App() {
   }, [hasMacOverlayChrome]);
 
   const isCompactViewport = viewportWidth < 740;
+  const isCompactViewportRef = useRef<boolean>(isCompactViewport);
+  isCompactViewportRef.current = isCompactViewport;
   const effectiveLeftWidth = isCompactViewport
     ? Math.min(300, Math.max(248, viewportWidth - 44))
     : leftWidth;
@@ -1297,13 +1468,23 @@ export default function App() {
     ? Math.min(340, Math.max(280, viewportWidth - 28))
     : rightWidth;
 
+  const isMemoryWideStudio =
+    showXoxStudio && xoxStudioTab === "memory" && isMemoryWideMode;
   const studioPanelWidth = isCompactViewport
     ? viewportWidth
-    : Math.min(
-        860,
-        Math.max(440, Math.round(viewportWidth * 0.54)),
-        Math.max(360, viewportWidth - 260)
-      );
+    : isMemoryWideStudio
+      ? viewportWidth >= 1100
+        ? Math.min(
+            1440,
+            Math.max(760, Math.round(viewportWidth * 0.72)),
+            Math.max(540, viewportWidth - 320)
+          )
+        : Math.max(540, viewportWidth - 280)
+      : Math.min(
+          860,
+          Math.max(440, Math.round(viewportWidth * 0.54)),
+          Math.max(360, viewportWidth - 260)
+        );
   const docViewerPanelWidth = isCompactViewport
     ? viewportWidth
     : Math.min(
@@ -1727,6 +1908,7 @@ export default function App() {
   }, [hasRightSplitOpen, isCompactViewport]);
   const [isChatStreaming, setIsChatStreaming] = useState<boolean>(false);
   const [localUser, setLocalUser] = useState<LocalUserProfile | null>(null);
+  const [userMemoryFacts, setUserMemoryFacts] = useState<UserMemoryFact[]>([]);
   const [showLocalAuth, setShowLocalAuth] = useState<boolean>(false);
   const [conversations, setConversations] = useState<ConversationThread[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string>(() => `conv_${Date.now()}`);
@@ -1984,6 +2166,38 @@ export default function App() {
   // Lista de elementos reales en la Ventana de Contexto
   const [contextItems, setContextItems] = useState<ContextItem[]>([]);
 
+  const workspaceMemoryFacts = useMemo<string[]>(() => {
+    const memoryItems = contextItems.filter(
+      (c) =>
+        c.type === "memory" ||
+        c.path === "memoria/hechos.md" ||
+        c.path.startsWith("memoria/")
+    );
+    const facts: string[] = [];
+    for (const item of memoryItems) {
+      for (const rawLine of item.content.split(/\r?\n/)) {
+        const trimmed = rawLine.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const bulletMatch = trimmed.match(/^(?:[-*•]|\d+\.)\s+(.+)$/);
+        const candidate = (bulletMatch ? bulletMatch[1] : trimmed).trim();
+        if (candidate && !facts.includes(candidate)) {
+          facts.push(candidate);
+        }
+      }
+    }
+    return facts;
+  }, [contextItems]);
+
+  const studioMemoryPatterns = useMemo(
+    () =>
+      patterns.map((p) => ({
+        id: p.pattern_id,
+        description: p.description,
+        confidence: p.confidence,
+      })),
+    [patterns]
+  );
+
   const activeContextItems = contextItems.filter(
     (c) => c.pinned || selectedContext?.id === c.id
   );
@@ -2191,7 +2405,9 @@ export default function App() {
     const fileEntries = overview.entries.filter((e) => e.kind === "file" && e.editable);
     const availableSet = new Set(fileEntries.map((e) => e.relativePath));
 
-    const toLoad = Array.from(activePinned).filter((p) => availableSet.has(p));
+    const toLoad = Array.from(new Set([...activePinned, "memoria/hechos.md"])).filter((p) =>
+      availableSet.has(p)
+    );
     const loadedSnippets = await Promise.all(
       toLoad.map(async (relPath): Promise<ContextItem | null> => {
         try {
@@ -2209,7 +2425,7 @@ export default function App() {
             name: f.name,
             type: ctxType,
             path: f.relativePath,
-            pinned: true,
+            pinned: activePinned.has(f.relativePath),
             content: f.content,
           };
         } catch {
@@ -2295,12 +2511,14 @@ export default function App() {
       }
 
       try {
-        const [savedUser, savedConvs] = await Promise.all([
+        const [savedUser, savedConvs, savedFacts] = await Promise.all([
           getLocalUserProfile(),
           listLocalConversations(),
+          listUserMemoryFacts(),
         ]);
         setLocalUser(savedUser);
         setConversations(savedConvs);
+        setUserMemoryFacts(savedFacts);
       } catch {
         // Sin datos previos locales
       }
@@ -2383,6 +2601,7 @@ export default function App() {
   useEffect(() => {
     let disposed = false;
     let unsubUser: (() => void) | null = null;
+    let unsubMemory: (() => void) | null = null;
     void subscribeLocalUserUpdated((profile) => {
       if (!disposed) {
         setLocalUser(profile);
@@ -2391,9 +2610,30 @@ export default function App() {
       if (disposed) fn();
       else unsubUser = fn;
     });
+    void subscribeUserMemoryUpdated((syncEvt) => {
+      if (!disposed) {
+        void listUserMemoryFacts()
+          .then((facts) => {
+            if (!disposed) {
+              setUserMemoryFacts(facts);
+              if (
+                syncEvt.sourceWindow !== "main" ||
+                Date.now() >= suppressMemorySyncPulseUntilRef.current
+              ) {
+                triggerMemoryLivePulse("synced", "xox");
+              }
+            }
+          })
+          .catch(() => {});
+      }
+    }).then((fn) => {
+      if (disposed) fn();
+      else unsubMemory = fn;
+    });
     return () => {
       disposed = true;
       unsubUser?.();
+      unsubMemory?.();
     };
   }, []);
 
@@ -2456,6 +2696,7 @@ export default function App() {
     activeConvCreatedAtRef.current = new Date().toISOString();
     setActiveConversationId(nextId);
     setChatMessages([]);
+    setPermissionItems([]);
     setChatCheckpoint(null);
     setCompactedUpToMessageId(null);
     setActiveCanvas(null);
@@ -2478,6 +2719,7 @@ export default function App() {
     setActiveConversationId(thread.id);
     const msgs = thread.messages ?? [];
     setChatMessages(msgs);
+    setPermissionItems([]);
     setChatCheckpoint(thread.checkpoint ?? null);
     setCompactedUpToMessageId(thread.compactedUpToMessageId ?? null);
     let restoredCanvas: CanvasArtifact | null = null;
@@ -2531,6 +2773,77 @@ export default function App() {
       clearTimeout(hideT);
     };
   }, [patterns]);
+
+  permissionEventHandlersRef.current = {
+    onRequest: (req) => {
+      if (
+        req.streamId &&
+        activeStreamIdRef.current &&
+        req.streamId !== activeStreamIdRef.current
+      ) {
+        return;
+      }
+      if (!activeStreamIdRef.current && req.streamId) {
+        return;
+      }
+      setPermissionItems((prev) => applyPermissionRequestItem(prev, req));
+      const targetMsgId = activeAssistantMsgIdRef.current;
+      if (targetMsgId) {
+        const nextTimeline = upsertPermissionRequestInTimeline(
+          activeTimelineRef.current,
+          req
+        );
+        activeTimelineRef.current = nextTimeline;
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === targetMsgId ? { ...m, timeline: nextTimeline } : m
+          )
+        );
+      }
+    },
+    onFinished: (ev) => {
+      const matchesActiveStream = Boolean(
+        ev.streamId &&
+          activeStreamIdRef.current &&
+          ev.streamId === activeStreamIdRef.current
+      );
+      const belongsToOtherStream = Boolean(
+        ev.streamId &&
+          (!activeStreamIdRef.current || ev.streamId !== activeStreamIdRef.current)
+      );
+      if (belongsToOtherStream) {
+        setPermissionItems((prev) => applyCommandFinishedEvent(prev, ev));
+        setChatMessages((prev) => {
+          if (!prev.some((m) => timelineHasRequestId(m.timeline, ev.requestId))) {
+            return prev;
+          }
+          return prev.map((m) =>
+            timelineHasRequestId(m.timeline, ev.requestId)
+              ? { ...m, timeline: applyCommandFinishedInTimeline(m.timeline, ev) }
+              : m
+          );
+        });
+        return;
+      }
+      setPermissionItems((prev) =>
+        applyCommandFinishedEvent(prev, ev, { allowInsert: matchesActiveStream })
+      );
+      const targetMsgId = activeAssistantMsgIdRef.current;
+      if (targetMsgId) {
+        const nextTimeline = applyCommandFinishedInTimeline(
+          activeTimelineRef.current,
+          ev,
+          { allowInsert: matchesActiveStream }
+        );
+        activeTimelineRef.current = nextTimeline;
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === targetMsgId ? { ...m, timeline: nextTimeline } : m
+          )
+        );
+      }
+    },
+  };
 
   useEffect(() => {
     if (!isTauriEnv) return;
@@ -2604,22 +2917,8 @@ export default function App() {
     });
 
     const unsubPermissions = subscribePermissionEvents({
-      onRequest: (req) => {
-        if (
-          req.streamId &&
-          activeStreamIdRef.current &&
-          req.streamId !== activeStreamIdRef.current
-        ) {
-          return;
-        }
-        if (!activeStreamIdRef.current && req.streamId) {
-          return;
-        }
-        setPermissionItems((prev) => applyPermissionRequestItem(prev, req));
-      },
-      onFinished: (ev) => {
-        setPermissionItems((prev) => applyCommandFinishedEvent(prev, ev));
-      },
+      onRequest: (req) => permissionEventHandlersRef.current.onRequest(req),
+      onFinished: (ev) => permissionEventHandlersRef.current.onFinished(ev),
     });
 
     return () => {
@@ -3527,6 +3826,178 @@ export default function App() {
     }
   };
 
+  const extractWorkspaceFactBody = (line: string): string => {
+    const trimmed = line.trim();
+    const bulletMatch = trimmed.match(/^(?:[-*•]|\d+\.)\s+(.+)$/);
+    return (bulletMatch ? bulletMatch[1] : trimmed).trim();
+  };
+
+  const formatWorkspaceFactTimestamp = (date = new Date()): string => {
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    const hh = String(date.getHours()).padStart(2, "0");
+    const min = String(date.getMinutes()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+  };
+
+  const readWorkspaceHechosMarkdown = async (): Promise<string> => {
+    if (isTauriEnv) {
+      try {
+        const file = await readWorkspaceFile("memoria/hechos.md");
+        return file.content;
+      } catch {
+        // Archivo todavía no existe en disco
+      }
+    }
+    const cached = contextItems.find((c) => c.path === "memoria/hechos.md");
+    return cached?.content ?? "# Hechos del negocio\n\n";
+  };
+
+  const persistWorkspaceHechosMarkdown = async (updatedContent: string): Promise<void> => {
+    if (isTauriEnv) {
+      await saveWorkspaceFile("memoria/hechos.md", updatedContent);
+      await handleRefreshWorkspace();
+      return;
+    }
+    setContextItems((prev) => {
+      const exists = prev.some((c) => c.path === "memoria/hechos.md");
+      if (exists) {
+        return prev.map((c) =>
+          c.path === "memoria/hechos.md" ? { ...c, content: updatedContent } : c
+        );
+      }
+      return [
+        ...prev,
+        {
+          id: "ws_memoria/hechos.md",
+          name: "hechos.md",
+          type: "memory",
+          path: "memoria/hechos.md",
+          pinned: false,
+          content: updatedContent,
+        },
+      ];
+    });
+  };
+
+  const findWorkspaceFactLineIndex = (lines: string[], rawLine: string): number => {
+    const targetRaw = rawLine.trim();
+    const targetBody = extractWorkspaceFactBody(rawLine);
+    if (!targetRaw && !targetBody) return -1;
+    const exactIdx = lines.findIndex((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) return false;
+      return trimmed === targetRaw || extractWorkspaceFactBody(line) === targetBody;
+    });
+    if (exactIdx >= 0) return exactIdx;
+    const normTarget = targetBody.replace(/\s+/g, " ");
+    return lines.findIndex((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) return false;
+      return extractWorkspaceFactBody(line).replace(/\s+/g, " ") === normTarget;
+    });
+  };
+
+  const handleUpdateWorkspaceFact = async (rawOldLine: string, nextText: string) => {
+    const cleanNext = nextText.trim().replace(/\s*\r?\n+\s*/g, " ");
+    if (!cleanNext) return;
+    const existing = await readWorkspaceHechosMarkdown();
+    const lines = existing.split(/\r?\n/);
+    const matchIdx = findWorkspaceFactLineIndex(lines, rawOldLine);
+    const buildReplacement = (oldLine?: string): string => {
+      if (/^[-*•]\s+/.test(cleanNext)) return cleanNext;
+      if (/^\[\d{4}-\d{2}-\d{2}/.test(cleanNext)) return `- ${cleanNext}`;
+      const existingBody = oldLine ? extractWorkspaceFactBody(oldLine) : "";
+      const metaMatch = existingBody.match(
+        /^(?:\[\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2})?\]\s*)?(?:(\([^)]+\))\s*)?(?:(\[key:[^\]]+\])\s*)?/
+      );
+      const catTag = metaMatch?.[1] ?? "(espacio)";
+      const keyTag = metaMatch?.[2] ? `${metaMatch[2]} ` : "";
+      return `- [${formatWorkspaceFactTimestamp()}] ${catTag} ${keyTag}${cleanNext}`;
+    };
+    if (matchIdx >= 0) {
+      lines[matchIdx] = buildReplacement(lines[matchIdx]);
+    } else {
+      if (lines.length === 0 || (lines.length === 1 && !lines[0].trim())) {
+        lines.splice(0, lines.length, "# Hechos del negocio", "");
+      }
+      lines.push(buildReplacement());
+    }
+    const updatedContent = `${lines.join("\n").trimEnd()}\n`;
+    await persistWorkspaceHechosMarkdown(updatedContent);
+    triggerMemoryLivePulse("updated", "user", cleanNext);
+  };
+
+  const handleDeleteWorkspaceFact = async (rawLine: string) => {
+    const existing = await readWorkspaceHechosMarkdown();
+    const lines = existing.split(/\r?\n/);
+    const matchIdx = findWorkspaceFactLineIndex(lines, rawLine);
+    if (matchIdx < 0) return;
+    lines.splice(matchIdx, 1);
+    const updatedContent = `${lines.join("\n").trimEnd()}\n`;
+    await persistWorkspaceHechosMarkdown(updatedContent);
+    triggerMemoryLivePulse("removed", "user");
+  };
+
+  const handleAddWorkspaceFact = async (text: string) => {
+    const cleanText = text.trim().replace(/\s*\r?\n+\s*/g, " ");
+    if (!cleanText) return;
+    const existing = await readWorkspaceHechosMarkdown();
+    const base = existing.trimEnd();
+    const timestamp = formatWorkspaceFactTimestamp();
+    const updatedContent = `${
+      base ? `${base}\n` : "# Hechos del negocio\n\n"
+    }- [${timestamp}] (espacio) ${cleanText}\n`;
+    await persistWorkspaceHechosMarkdown(updatedContent);
+    triggerMemoryLivePulse("added", "user", cleanText);
+  };
+
+  const handleUpdatePreference = async (
+    bucket: "likes" | "workflows" | "donts",
+    index: number,
+    nextText: string
+  ) => {
+    const cleanText = nextText.trim();
+    if (!cleanText) return;
+    const current = globalXoxProfileRef.current;
+    const currentList = Array.isArray(current[bucket]) ? [...current[bucket]] : [];
+    if (index < 0 || index >= currentList.length) return;
+    currentList[index] = cleanText;
+    const { updatedAt: _ignoredUpdatedAt, ...restProfile } = current;
+    const saved = await saveGlobalXoxProfile({
+      ...restProfile,
+      [bucket]: currentList,
+    });
+    setGlobalXoxProfile(saved);
+    triggerMemoryLivePulse("updated", "user", cleanText);
+  };
+
+  const handleDeletePreference = async (
+    bucket: "likes" | "workflows" | "donts",
+    index: number
+  ) => {
+    const current = globalXoxProfileRef.current;
+    const currentList = Array.isArray(current[bucket]) ? [...current[bucket]] : [];
+    if (index < 0 || index >= currentList.length) return;
+    const nextList = currentList.filter((_, idx) => idx !== index);
+    const { updatedAt: _ignoredUpdatedAt, ...restProfile } = current;
+    const saved = await saveGlobalXoxProfile({
+      ...restProfile,
+      [bucket]: nextList,
+    });
+    setGlobalXoxProfile(saved);
+    triggerMemoryLivePulse("removed", "user");
+  };
+
+  const handleAskXoxEditMemory = (prefillPrompt: string) => {
+    setInputPrompt(prefillPrompt);
+    if (isCompactViewportRef.current && showXoxStudioRef.current) {
+      closeXoxStudio();
+    }
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
   const handleSelectWorkspaceFile = async (entry: WorkspaceNodeEntry) => {
     if (!isTauriEnv || entry.kind !== "file") return;
     try {
@@ -3767,20 +4238,51 @@ export default function App() {
     setPermissionItems((prev) =>
       applyPermissionResolution(prev, requestId, decision)
     );
+    if (timelineHasRequestId(activeTimelineRef.current, requestId)) {
+      activeTimelineRef.current = resolvePermissionInTimeline(
+        activeTimelineRef.current,
+        requestId,
+        decision
+      );
+    }
+    setChatMessages((prev) => {
+      if (!prev.some((m) => timelineHasRequestId(m.timeline, requestId))) return prev;
+      return prev.map((m) =>
+        timelineHasRequestId(m.timeline, requestId)
+          ? { ...m, timeline: resolvePermissionInTimeline(m.timeline, requestId, decision) }
+          : m
+      );
+    });
     try {
       await resolveCommandPermission(requestId, decision);
     } catch (err) {
+      const errText = extractErrorMessage(err, "No se pudo entregar tu decisión.");
       setPermissionItems((prev) =>
         prev.map((item) =>
           item.requestId === requestId
             ? {
                 ...item,
                 state: "error",
-                error: extractErrorMessage(err, "No se pudo entregar tu decisión."),
+                error: errText,
               }
             : item
         )
       );
+      if (timelineHasRequestId(activeTimelineRef.current, requestId)) {
+        activeTimelineRef.current = markPermissionErrorInTimeline(
+          activeTimelineRef.current,
+          requestId,
+          errText
+        );
+      }
+      setChatMessages((prev) => {
+        if (!prev.some((m) => timelineHasRequestId(m.timeline, requestId))) return prev;
+        return prev.map((m) =>
+          timelineHasRequestId(m.timeline, requestId)
+            ? { ...m, timeline: markPermissionErrorInTimeline(m.timeline, requestId, errText) }
+            : m
+        );
+      });
     }
   };
 
@@ -4799,7 +5301,9 @@ export default function App() {
                 mimeType: "application/pdf",
                 sizeBytes: file.size,
                 content: stagedPath
-                  ? `PDF adjunto guardado en '${stagedPath}' (${Math.max(1, Math.round(file.size / 1024))} KB). Usa SIEMPRE la herramienta 'pdf_read' con path='${stagedPath}' para extraer su texto, tablas y OCR.`
+                  ? effectiveMode === "inspector"
+                    ? `PDF adjunto guardado en '${stagedPath}' (${Math.max(1, Math.round(file.size / 1024))} KB). Estás en modo /inspector: usa 'document_inspect_design' con path='${stagedPath}' para analizar su diseño visual y guardarlo con 'document_save_design_skill'.`
+                    : `PDF adjunto guardado en '${stagedPath}' (${Math.max(1, Math.round(file.size / 1024))} KB). Usa SIEMPRE la herramienta 'pdf_read' con path='${stagedPath}' para extraer su texto, tablas y OCR.`
                   : `Archivo PDF adjunto '${item.name}' (${Math.max(1, Math.round(file.size / 1024))} KB).`,
               };
             }
@@ -4820,7 +5324,10 @@ export default function App() {
                 workspacePath: stagedPath,
                 mimeType: stagedMime,
                 sizeBytes: file.size,
-                content: `Documento Office adjunto guardado en '${stagedPath}' (${Math.max(1, Math.round(file.size / 1024))} KB). Usa SIEMPRE la herramienta 'workspace_read' con path='${stagedPath}' para leer su texto, diapositivas o tablas completas.`,
+                content:
+                  effectiveMode === "inspector"
+                    ? `Documento Office (.${ext}) adjunto guardado en '${stagedPath}' (${Math.max(1, Math.round(file.size / 1024))} KB). Estás en modo /inspector: usa 'document_inspect_design' con path='${stagedPath}' para analizar su diseño visual y estructural, y guárdalo como habilidad reutilizable con 'document_save_design_skill'.`
+                    : `Documento Office adjunto guardado en '${stagedPath}' (${Math.max(1, Math.round(file.size / 1024))} KB). Usa SIEMPRE la herramienta 'workspace_read' con path='${stagedPath}' para leer su texto, diapositivas o tablas completas.`,
               };
             }
 
@@ -4920,16 +5427,27 @@ export default function App() {
             workspacePath: pdfPanelState.path,
             content:
               `DOCUMENTO ACTIVO EN EL VISOR: '${pdfPanelState.path}' (título: '${pdfPanelState.title}', estilo/theme: '${pdfPanelState.theme || "executive"}', páginas actuales: ${pdfPanelState.pageCount || pdfPanelState.pages.length || 1}). ` +
+              (effectiveMode === "inspector"
+                ? `Estás en modo /inspector: usa 'document_inspect_design' con path='${pdfPanelState.path}' para analizar su diseño visual (colores, tipografía, márgenes, encabezados, tablas y estructura) y guardarlo como habilidad reutilizable con 'document_save_design_skill'. `
+                : "") +
               `Si el usuario comenta o da feedback negativo/de ajuste sobre este documento, PRIMERO inspecciónalo con 'pdf_read' (si aún no conoces sus encabezados/texto exacto) y luego aplica el cambio REAL sobre '${pdfPanelState.path}' llamando a 'pdf_generate' con source_pdf_path='${pdfPanelState.path}', edit_action='modify' (usando 'section_updates' para cambios por sección sin borrar lo demás, o 'replacements' para reemplazos puntuales, o 'markdown'/'blocks' completos). ` +
               `Si pide agregar más páginas, usa source_pdf_path='${pdfPanelState.path}', edit_action='append_pages' y theme='${pdfPanelState.theme || "executive"}'. NO añadas marca de agua XOOK salvo que se pida explícitamente.`,
           });
         } else {
+          const isOfficeOrCsv =
+            viewerKind === "office" ||
+            pdfPanelState.fileExtension === "csv" ||
+            pdfPanelState.fileExtension === "tsv";
           activeContextSnippets.unshift({
             name: activeDocName,
             type: "document",
             workspacePath: pdfPanelState.path,
             content:
-              `DOCUMENTO ACTIVO EN EL VISOR: '${pdfPanelState.path}' (${viewerKind}, título: '${pdfPanelState.title}'). Usa 'workspace_read' con path='${pdfPanelState.path}' si necesitas ver su contenido completo; si pide modificarlo, edítalo directamente ('workspace_edit_file' para texto/Markdown, o 'run_custom_script' para .docx/.xlsx/.pptx).`,
+              `DOCUMENTO ACTIVO EN EL VISOR: '${pdfPanelState.path}' (${viewerKind}, título: '${pdfPanelState.title}'). ` +
+              (effectiveMode === "inspector" && isOfficeOrCsv
+                ? `Estás en modo /inspector: usa 'document_inspect_design' con path='${pdfPanelState.path}' para analizar su diseño visual/estructural y guardarlo como habilidad reutilizable con 'document_save_design_skill'. `
+                : "") +
+              `Usa 'workspace_read' con path='${pdfPanelState.path}' si necesitas ver su contenido completo; si pide modificarlo, edítalo directamente ('office_generate' con source_path='${pdfPanelState.path}' y edit_action='modify' para .docx/.xlsx, o 'workspace_edit_file' para texto/Markdown).`,
           });
         }
       } else if (selectedWorkspaceFile?.relativePath) {
@@ -4942,7 +5460,15 @@ export default function App() {
       }
 
       const businessContextSnapshot = [
-        ...contextItems.map((c) => `- ${c.name} (${c.type}): ${c.content.slice(0, 700)}`),
+        ...contextItems
+          .filter(
+            (c) =>
+              !(
+                isTauriEnv &&
+                (c.path === "memoria/hechos.md" || c.type === "memory")
+              )
+          )
+          .map((c) => `- ${c.name} (${c.type}): ${c.content.slice(0, 700)}`),
         ...patterns.map(
           (p) => `- Patrón aprendido (${Math.round(p.confidence * 100)}%): ${p.description}`
         ),
@@ -4966,7 +5492,11 @@ export default function App() {
           : null;
 
       setPermissionItems([]);
+      activeAssistantMsgIdRef.current = assistantMsgId;
+      activeTimelineRef.current = [];
       let turnCompactedEvt: ContextCompactedEvent | null = null;
+      let turnMemoryMutated = false;
+      let turnOpenedOfficePath: string | null = null;
       if (turnAbortController.signal.aborted) {
         throw new Error(XOOK_STREAM_CANCELLED_CODE);
       }
@@ -5027,7 +5557,12 @@ export default function App() {
             }
           },
           onPhase: (state, label) => {
-            if (hasEnteredTalking && (state === "reading" || state === "thinking" || state === "coding")) {
+            const afterCommand =
+              activeTimelineRef.current[activeTimelineRef.current.length - 1]?.kind === "command";
+            if (state === "coding" || (afterCommand && (state === "reading" || state === "thinking"))) {
+              clearXoxPhaseTimers();
+              hasEnteredTalking = false;
+            } else if (hasEnteredTalking && (state === "reading" || state === "thinking")) {
               return;
             }
             if (state === "talking") {
@@ -5156,12 +5691,18 @@ export default function App() {
                 ttsPlayer.pushStreamText(assistantMsgId, visibleSoFar);
               }
             }
+            const nextTimeline = appendReplyDeltaToTimeline(
+              activeTimelineRef.current,
+              delta
+            );
+            activeTimelineRef.current = nextTimeline;
             setChatMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantMsgId
                   ? {
                       ...m,
                       content: m.content + delta,
+                      timeline: nextTimeline,
                       isReasoningStreaming: false,
                     }
                   : m
@@ -5212,6 +5753,41 @@ export default function App() {
             if (evt.slug) {
               setHighlightedSkillSlug(evt.slug);
             }
+            if (
+              evt.changed?.some(
+                (field) =>
+                  field === "likes" ||
+                  field === "workflows" ||
+                  field === "donts" ||
+                  field === "global_rules"
+              )
+            ) {
+              triggerMemoryLivePulse("updated", "xox", evt.summary);
+            }
+          },
+          onUserMemoryUpdated: (evt) => {
+            turnMemoryMutated = true;
+            suppressMemorySyncPulseUntilRef.current = Date.now() + 500;
+            void listUserMemoryFacts().then(setUserMemoryFacts).catch(() => {});
+            if (evt.profileUpdated) {
+              void getLocalUserProfile().then(setLocalUser).catch(() => {});
+            }
+            if (evt.scope === "workspace" || evt.path === "memoria/hechos.md") {
+              void handleRefreshWorkspace();
+            }
+            triggerMemoryLivePulse(
+              evt.action === "forget_user_info" ? "removed" : "updated",
+              "xox",
+              evt.key || (evt.scope === "workspace" ? "memoria/hechos.md" : undefined)
+            );
+            if (!isCompactViewportRef.current) {
+              if (!showXoxStudioRef.current) {
+                showXoxStudioRef.current = true;
+                openXoxStudio("memory");
+              } else {
+                setXoxStudioTab("memory");
+              }
+            }
           },
           onVaultAction: (vaultAction) => {
             setChatMessages((prev) =>
@@ -5245,6 +5821,10 @@ export default function App() {
             );
             void openPdfInRightPanel(stampedPdf);
           },
+          onDocumentGenerated: (doc) => {
+            turnOpenedOfficePath = doc.path;
+            void openGeneratedOfficeDocInRightPanel(doc);
+          },
         }
       );
 
@@ -5252,7 +5832,11 @@ export default function App() {
       if (chatAbortControllerRef.current === turnAbortController) {
         chatAbortControllerRef.current = null;
       }
+      const rawTurnTimeline = activeTimelineRef.current;
       activeStreamIdRef.current = null;
+      activeAssistantMsgIdRef.current = null;
+      activeTimelineRef.current = [];
+      setPermissionItems([]);
       setPdfDraftProgress(null);
       const generatedCount = res.tasks.length;
       const rawResCanvases =
@@ -5362,6 +5946,14 @@ export default function App() {
           void openPdfInRightPanel({ ...latestPdf, revision: freshRev }, "view");
         }
       }
+      const resOfficeDocs = res.generatedDocuments ?? [];
+      if (resOfficeDocs.length > 0) {
+        const latestOffice = resOfficeDocs[resOfficeDocs.length - 1];
+        if (turnOpenedOfficePath !== latestOffice.path) {
+          turnOpenedOfficePath = latestOffice.path;
+          void openGeneratedOfficeDocInRightPanel(latestOffice);
+        }
+      }
       const replyWithFailover =
         res.failoverNotice && res.reply && !res.reply.includes(res.failoverNotice)
           ? `> *Nota de respaldo automático:* ${res.failoverNotice}\n\n${res.reply}`
@@ -5370,12 +5962,20 @@ export default function App() {
         res.xoxCustomizations && res.xoxCustomizations.length > 0
           ? res.xoxCustomizations[res.xoxCustomizations.length - 1]
           : undefined;
+      const hasTabularCanvas = finalCanvases.some(
+        (c) => c.columns.length > 0 && c.rows.length > 0
+      );
+      const finalizedTimeline = finalizeChatTimeline(rawTurnTimeline, replyWithFailover, {
+        failoverNotice: res.failoverNotice,
+        cleanText: (raw) => cleanVisibleReply(raw, { stripTables: hasTabularCanvas }),
+      });
       const finalMessages = chatMessagesRef.current.map((m) => {
         if (m.id !== assistantMsgId) return m;
         const resolvedVault = nextVaultAction ?? m.vaultPrompt;
         return {
           ...m,
           content: replyWithFailover,
+          timeline: finalizedTimeline,
           reasoning: res.reasoning || m.reasoning,
           reasoningDurationMs: res.reasoningDurationMs,
           thinkingSteps: res.steps ?? m.thinkingSteps,
@@ -5409,14 +6009,20 @@ export default function App() {
                   kind: "open_settings" as const,
                   provider: resolvedVault.provider,
                 }
-              : lastCust
+              : turnMemoryMutated
                 ? {
-                    label: `Ver cambio en Espacio de ${effectiveAgentName}`,
+                    label: "Ver en Grafo de Memoria",
                     kind: "open_xox_studio" as const,
-                    studioTab: lastCust.section,
-                    skillSlug: lastCust.slug,
+                    studioTab: "memory" as const,
                   }
-                : m.actionButton,
+                : lastCust
+                  ? {
+                      label: `Ver cambio en Espacio de ${effectiveAgentName}`,
+                      kind: "open_xox_studio" as const,
+                      studioTab: lastCust.section,
+                      skillSlug: lastCust.slug,
+                    }
+                  : m.actionButton,
         };
       });
       setChatMessages(finalMessages);
@@ -5528,8 +6134,12 @@ export default function App() {
       clearXoxPhaseTimers();
       const wasCancelled =
         isStreamCancelledError(err) || Boolean(chatAbortControllerRef.current?.signal.aborted);
+      const rawTurnTimeline = activeTimelineRef.current;
       chatAbortControllerRef.current = null;
       activeStreamIdRef.current = null;
+      activeAssistantMsgIdRef.current = null;
+      activeTimelineRef.current = [];
+      setPermissionItems([]);
       if (startedStreamSpeech) {
         ttsPlayer.stop();
       }
@@ -5546,6 +6156,14 @@ export default function App() {
             ? {
                 ...m,
                 content: m.content.trim() ? m.content : "*Respuesta detenida.*",
+                timeline: finalizeChatTimeline(
+                  rawTurnTimeline,
+                  m.content.trim() ? m.content : "*Respuesta detenida.*",
+                  {
+                    cancelled: true,
+                    cleanText: (raw) => cleanVisibleReply(raw, { stripTables: false }),
+                  }
+                ),
                 thinkingSteps: m.thinkingSteps?.map((s) =>
                   s.status === "running" ? { ...s, status: "done" as const } : s
                 ),
@@ -5599,6 +6217,10 @@ export default function App() {
           ? {
               ...m,
               content: `Error al consultar ${activeSpec.name}: ${message}`,
+              timeline: finalizeChatTimeline(rawTurnTimeline, "", {
+                cancelled: true,
+                cleanText: (raw) => cleanVisibleReply(raw, { stripTables: false }),
+              }),
               thinkingSteps: m.thinkingSteps?.map((s) =>
                 s.status === "running" ? { ...s, status: "error" as const } : s
               ),
@@ -5667,6 +6289,54 @@ export default function App() {
   const handlePromptSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
     runPromptQuery(inputPrompt);
+  };
+
+  const handleInspectPdfDesign = (
+    relativePath: string,
+    title: string,
+    formatLabel?: string
+  ) => {
+    const ext = relativePath.split(".").pop()?.toLowerCase() || "";
+    const friendlyFormat =
+      formatLabel?.trim() ||
+      (ext === "docx" || ext === "doc" || ext === "rtf" || ext === "odt"
+        ? "Word"
+        : ext === "xlsx" || ext === "xls" || ext === "ods"
+          ? "Excel"
+          : ext === "pptx" || ext === "ppt" || ext === "odp"
+            ? "PowerPoint"
+            : ext === "csv" || ext === "tsv"
+              ? "CSV"
+              : "PDF");
+    const cleanTitle = (
+      title ||
+      relativePath.split("/").pop() ||
+      `este documento ${friendlyFormat}`
+    ).trim();
+    const isSpreadsheetDoc =
+      ext === "xlsx" || ext === "xls" || ext === "ods" || ext === "csv" || ext === "tsv";
+    const styleChecklist = isSpreadsheetDoc
+      ? "hojas, columnas, paleta de colores, estilos de cabecera/cebra/totales, fórmulas y formatos numéricos"
+      : "tipografía, colores, márgenes, encabezados/pies, tablas y estructura";
+    setActiveMode("inspector");
+    setShowCommandMenu(false);
+    setCommandMenuFilter("");
+    setShowRosterPopover(false);
+    setShowXoxStudio(false);
+    if (isCompactViewport) {
+      setShowDocViewer(false);
+    }
+    requestAnimationFrame(() => inputRef.current?.focus());
+    if (isChatStreaming) {
+      setStatusMessage("Modo /inspector activado. Espera a que termine la respuesta actual.");
+      setTimeout(() => setStatusMessage(null), 3200);
+      return;
+    }
+    void runPromptQuery(
+      `Analiza el diseño visual y estructural del documento ${friendlyFormat} "${cleanTitle}" (${relativePath}) usando document_inspect_design, resume su estilo detectado (${styleChecklist}) sin datos sensibles y guárdalo como habilidad reutilizable con document_save_design_skill.`,
+      undefined,
+      { overrideMode: "inspector", forceScope: "chat" }
+    );
   };
 
   type MainSummonEventPayload = {
@@ -6249,6 +6919,58 @@ export default function App() {
     }
   };
 
+  const openGeneratedOfficeDocInRightPanel = async (
+    doc: GeneratedOfficeDocumentEvent
+  ) => {
+    const ext = (
+      doc.format ||
+      doc.filename.split(".").pop() ||
+      doc.path.split(".").pop() ||
+      "docx"
+    )
+      .toLowerCase()
+      .replace(/^\./, "");
+    const cleanFilename = doc.filename || doc.path.split("/").pop() || `documento.${ext}`;
+    const cleanTitle = doc.title || cleanFilename;
+    const normalizedUniDoc = normalizeUniversalDocFromEvent(doc.universal_doc, {
+      path: doc.path,
+      filename: cleanFilename,
+      title: cleanTitle,
+      format: ext,
+      sizeBytes: doc.size_bytes,
+      pageCount: doc.page_count,
+    });
+
+    if (normalizedUniDoc) {
+      const freshRev = doc.revision || Date.now();
+      setPdfDraftProgress(null);
+      upsertDocTab({
+        path: doc.path,
+        filename: cleanFilename,
+        title: normalizedUniDoc.title || cleanTitle,
+        sizeBytes: doc.size_bytes ?? normalizedUniDoc.sizeBytes,
+        pageCount: doc.page_count ?? normalizedUniDoc.pageCount,
+        pages: [],
+        isLoadingPages: false,
+        fileKind: "office",
+        fileExtension: ext,
+        universalDoc: normalizedUniDoc,
+        textContent: normalizedUniDoc.markdown || normalizedUniDoc.text || "",
+        initialMode: "view",
+        revision: freshRev,
+      });
+      setShowDocViewer(true);
+      return;
+    }
+
+    await openUniversalDocInRightPanel({
+      path: doc.path,
+      filename: cleanFilename,
+      sizeBytes: doc.size_bytes,
+      ext,
+    });
+  };
+
   const handleOpenWorkspaceFileInViewer = (
     file: SelectedWorkspaceFile,
     editMode = false
@@ -6706,7 +7428,7 @@ export default function App() {
       </header>
 
       {/* 2. Cuerpo Principal en 3 Columnas: [Contexto Izq] | [Xox Centro] | [Tareas Der] */}
-      <div data-xox-main-row className="relative flex-1 flex overflow-hidden">
+      <div data-xox-main-row className="relative flex-1 min-h-0 flex overflow-hidden">
         {hasCompactOverlayOpen && (
           <div
             aria-hidden="true"
@@ -7843,6 +8565,30 @@ export default function App() {
                                   : `Equipo (${subagentRoster.filter((r) => r.enabled).length})`}
                               </span>
                             </button>
+                          ) : activeMode === "inspector" &&
+                            showDocViewer &&
+                            pdfPanelState?.path &&
+                            ((pdfPanelState.fileKind ?? "pdf") === "pdf" ||
+                              pdfPanelState.fileKind === "office" ||
+                              pdfPanelState.fileExtension === "csv" ||
+                              pdfPanelState.fileExtension === "tsv") ? (
+                            <button
+                              type="button"
+                              disabled={isChatStreaming}
+                              onClick={() =>
+                                handleInspectPdfDesign(
+                                  pdfPanelState.path,
+                                  pdfPanelState.title || pdfPanelState.filename || "Documento",
+                                  pdfPanelState.universalDoc?.formatLabel ||
+                                    pdfPanelState.fileExtension?.toUpperCase()
+                                )
+                              }
+                              title={`Analizar el diseño de "${pdfPanelState.title || pdfPanelState.path}"`}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg text-[10px] font-medium bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.1] text-zinc-200 hover:text-white transition-colors cursor-pointer disabled:opacity-45"
+                            >
+                              <ScanSearch className="w-2.5 h-2.5" />
+                              <span>Analizar abierto</span>
+                            </button>
                           ) : undefined
                         }
                       />
@@ -8028,7 +8774,7 @@ export default function App() {
                           aria-haspopup="listbox"
                           aria-expanded={showCommandMenu}
                           aria-label="Comandos y modos de Xox"
-                          title="Activar modos (/agent, /study, /plan, /audit, /compact)"
+                          title="Activar modos (/agent, /study, /plan, /audit, /inspector, /compact)"
                           className={`quick-liquid-btn h-8 inline-flex items-center gap-1 @[520px]:gap-1.5 px-2 @[520px]:px-2.5 rounded-full text-[11px] cursor-pointer ${
                             activeMode || showCommandMenu
                               ? "text-white"
@@ -8416,7 +9162,7 @@ export default function App() {
             aria-hidden={!showXoxStudio}
             inert={!showXoxStudio}
             style={{ width: studioPresence.visible ? `${studioPanelWidth}px` : "0px" }}
-            className={`sidebar-slot sidebar-studio-slot shrink-0 bg-[#060709] overflow-hidden ${
+            className={`sidebar-slot sidebar-studio-slot h-full flex flex-col min-h-0 shrink-0 bg-[#060709] overflow-hidden ${
               isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
             } ${
               studioPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
@@ -8425,20 +9171,80 @@ export default function App() {
             <div
               data-xox-studio-inner
               style={{ width: `${studioPanelWidth}px` }}
-              className="h-full border-l border-white/[0.07] p-2.5 shrink-0"
+              className={`flex-1 h-full flex flex-col min-h-0 border-l border-white/[0.07] shrink-0 transition-[width] duration-300 ease-out ${
+                isMemoryWideStudio ? "p-1.5" : "p-2.5"
+              }`}
             >
               <XoxStudioPanel
                 visible={studioPresence.visible}
                 hideStar={xoxInFlight}
                 initialTab={xoxStudioTab}
+                onTabChange={(tab) => setXoxStudioTab(tab)}
+                isMemoryWideMode={isMemoryWideMode}
+                onToggleMemoryWideMode={() => {
+                  const next = !isMemoryWideMode;
+                  setIsMemoryWideMode(next);
+                  if (next && !isCompactViewport) {
+                    setShowLeftSidebar(false);
+                    setShowRightSidebar(false);
+                  }
+                }}
                 highlightedSkillSlug={highlightedSkillSlug}
                 glideSeq={xoxGlideSeq}
+                memoryLivePulse={memoryLivePulse}
                 profile={globalXoxProfile}
                 skills={xoxSkills}
                 ttsStatus={ttsStatus}
                 xoxState={xoxState}
                 hasActiveWorkspace={Boolean(workspaceOverview?.active)}
                 activeWorkspaceName={workspaceOverview?.active.name ?? null}
+                localUser={localUser}
+                userMemoryFacts={userMemoryFacts}
+                workspaceFacts={workspaceMemoryFacts}
+                patterns={studioMemoryPatterns}
+                onSaveMemoryFact={async (input: {
+                  value: string;
+                  key?: string;
+                  category?: UserMemoryCategory;
+                  pinned?: boolean;
+                }) => {
+                  suppressMemorySyncPulseUntilRef.current = Date.now() + 500;
+                  const next = await saveUserMemoryFact({
+                    value: input.value,
+                    key: input.key,
+                    category: input.category,
+                    pinned: input.pinned,
+                    scope: "global",
+                    sourceWindow: "main",
+                  });
+                  setUserMemoryFacts(next);
+                  triggerMemoryLivePulse("updated", "user", input.key || input.value);
+                }}
+                onTogglePinMemoryFact={async (fact: UserMemoryFact) => {
+                  suppressMemorySyncPulseUntilRef.current = Date.now() + 500;
+                  const next = await saveUserMemoryFact({
+                    value: fact.value,
+                    key: fact.key,
+                    category: fact.category,
+                    scope: fact.scope,
+                    sourceWindow: "main",
+                    pinned: !fact.pinned,
+                  });
+                  setUserMemoryFacts(next);
+                  triggerMemoryLivePulse("updated", "user", fact.key || fact.value);
+                }}
+                onDeleteMemoryFact={async (idOrKey: string) => {
+                  suppressMemorySyncPulseUntilRef.current = Date.now() + 500;
+                  const next = await deleteUserMemoryFact(idOrKey, "main");
+                  setUserMemoryFacts(next);
+                  triggerMemoryLivePulse("removed", "user", idOrKey);
+                }}
+                onUpdateWorkspaceFact={handleUpdateWorkspaceFact}
+                onDeleteWorkspaceFact={handleDeleteWorkspaceFact}
+                onAddWorkspaceFact={handleAddWorkspaceFact}
+                onUpdatePreference={handleUpdatePreference}
+                onDeletePreference={handleDeletePreference}
+                onAskXoxEditMemory={handleAskXoxEditMemory}
                 onProfileChanged={(nextProf) => {
                   setGlobalXoxProfile(nextProf);
                   setPreviewAccentPreset(null);
@@ -8589,6 +9395,8 @@ export default function App() {
                 );
                 requestAnimationFrame(() => inputRef.current?.focus());
               }}
+              onInspectDocumentDesign={handleInspectPdfDesign}
+              onInspectPdfDesign={handleInspectPdfDesign}
               onSendXoxDocumentInstruction={(payload) => {
                 setDocContextScopeEnabled(true);
                 const prefix =

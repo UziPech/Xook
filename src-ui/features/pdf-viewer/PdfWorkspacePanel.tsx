@@ -29,6 +29,7 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  ScanSearch,
   Send,
   Sparkles,
   Trash2,
@@ -94,6 +95,12 @@ interface PdfWorkspacePanelProps {
   onLoadMorePages?: (relativePath: string, nextStartPage: number) => void;
   onReloadPreview?: (relativePath: string) => void;
   onAskXoxAboutPdf?: (relativePath: string, title: string) => void;
+  onInspectDocumentDesign?: (
+    relativePath: string,
+    title: string,
+    formatLabel?: string
+  ) => void;
+  onInspectPdfDesign?: (relativePath: string, title: string) => void;
   onSendXoxDocumentInstruction?: (payload: {
     path: string;
     title: string;
@@ -168,6 +175,8 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
   onLoadMorePages,
   onReloadPreview,
   onAskXoxAboutPdf,
+  onInspectDocumentDesign,
+  onInspectPdfDesign,
   onSendXoxDocumentInstruction,
   onPdfUpdated,
   onSaveTextFile,
@@ -1131,6 +1140,36 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
                   : ""}
               </span>
             </button>
+
+            {(isPdfDocument ||
+              isOfficeDocument ||
+              state.fileExtension === "csv" ||
+              state.fileExtension === "tsv") &&
+              (onInspectDocumentDesign || onInspectPdfDesign) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowXoxBar(false);
+                    setShowContextDrawer(false);
+                    const inspectTitle =
+                      docTitle || state.title || state.filename || "Documento";
+                    if (onInspectDocumentDesign) {
+                      onInspectDocumentDesign(
+                        state.path,
+                        inspectTitle,
+                        formatBadgeLabel
+                      );
+                    } else {
+                      onInspectPdfDesign?.(state.path, inspectTitle);
+                    }
+                  }}
+                  title="Analizar el diseño de este documento y guardarlo como habilidad reutilizable"
+                  className="quick-liquid-btn px-2 py-1 rounded-xl text-[10.5px] font-medium text-zinc-100 hover:text-white border border-white/[0.12] inline-flex items-center gap-1 transition-all cursor-pointer"
+                >
+                  <ScanSearch className="w-3 h-3" aria-hidden="true" />
+                  <span>Inspector</span>
+                </button>
+              )}
 
             <button
               type="button"

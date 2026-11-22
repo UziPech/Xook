@@ -49,3 +49,15 @@ tauri-plugin-global-shortcut = "2.4.1"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSImage", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSString", "NSUserDefaults"] }
+# Llavero de macOS para las claves de la bóveda (MIT OR Apache-2.0).
+security-framework = "3.7"
+
+# Almacén seguro de claves en Windows y Linux (todas MIT OR Apache-2.0). Ver slices/secret_store.
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+keyring-core = "1.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "1.0", features = ["crypto-rust"] }

@@ -23,7 +23,8 @@ TOOL_SEARCH_TOOL_DEF: Dict[str, Any] = {
         "description": (
             "Busca y carga herramientas adicionales de XOOK que aún no están activas en este turno "
             "(por ejemplo: control de ventanas/UI de otras apps `desktop_*`, Notas/Calendario de Mac `os_*`, "
-            "PDFs `pdf_*`, comandos/scripts `run_*`, limpieza/revisión de negocio, Canvas visual o perfil/skills). "
+            "documentos PDF/Word/Excel `pdf_*` / `office_generate` / `document_*`, comandos/scripts `run_*`, "
+            "limpieza/revisión de negocio, Canvas visual o perfil/skills). "
             "Una vez encontradas, quedan cargadas de inmediato para usarlas en la siguiente ronda."
         ),
         "parameters": {
@@ -109,15 +110,24 @@ TOOLKIT_SPECS: Dict[str, Dict[str, Any]] = {
         },
     },
     "documents_pdf": {
-        "label": "Lectura y generación de documentos PDF",
+        "label": "Lectura, inspección de diseño y generación de documentos (PDF, Word, Excel)",
         "risk": "write_local",
         "tools": {
             "pdf_read",
+            "pdf_inspect_design",
+            "pdf_save_design_skill",
+            "document_inspect_design",
+            "document_save_design_skill",
             "pdf_generate",
+            "office_generate",
         },
         "keywords": {
-            "pdf", "documento", "reporte", "informe", "portada", "pagina", "paginas",
-            "contrato", "factura", "propuesta", "exporta", "exportar", "imprime", "acta",
+            "pdf", "docx", "word", "xlsx", "excel", "hoja de calculo", "libro", "pptx",
+            "powerpoint", "presentacion", "csv", "tsv", "ofimatica", "presupuesto",
+            "cotizacion", "tablas", "documento", "reporte", "informe", "portada", "pagina",
+            "paginas", "contrato", "factura", "propuesta", "exporta", "exportar", "imprime",
+            "acta", "inspector", "inspeccionar", "inspecciona", "replicar", "replica",
+            "formato", "diseno", "plantilla", "membrete", "estilo", "maquetacion", "copiar diseno",
         },
     },
     "shell_scripts": {
@@ -237,8 +247,12 @@ def detect_initial_toolkits(
         selected.add("canvas_ui")
     if has_active_document:
         selected.add("documents_pdf")
-    if (active_mode or "").strip().lower() in ("plan", "study"):
+    mode_low = (active_mode or "").strip().lower()
+    if mode_low in ("plan", "study"):
         selected.add("canvas_ui")
+    elif mode_low == "inspector":
+        selected.add("documents_pdf")
+        selected.add("skills_profile")
 
     for tk_name, spec in TOOLKIT_SPECS.items():
         for kw in spec["keywords"]:

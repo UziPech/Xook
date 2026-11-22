@@ -1451,6 +1451,18 @@ export interface GeneratedPdfArtifact {
   previewHasMore?: boolean;
 }
 
+export interface GeneratedOfficeDocumentEvent {
+  path: string;
+  filename: string;
+  title: string;
+  format: "docx" | "xlsx" | string;
+  size_bytes?: number;
+  page_count?: number;
+  sheets_count?: number;
+  revision?: number;
+  universal_doc?: Record<string, unknown> | null;
+}
+
 export interface DocumentContextSnapshot {
   path: string;
   title: string;
@@ -1678,6 +1690,63 @@ export function sanitizeGeneratedPdfList(raw: unknown): GeneratedPdfArtifact[] {
     .filter((item): item is GeneratedPdfArtifact => item !== null);
 }
 
+export function sanitizeGeneratedOfficeDocumentEvent(
+  raw: unknown
+): GeneratedOfficeDocumentEvent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const path = typeof obj.path === "string" ? obj.path.trim() : "";
+  if (!path) return null;
+  const filename =
+    typeof obj.filename === "string" && obj.filename.trim()
+      ? obj.filename.trim()
+      : path.split("/").pop() || "documento";
+  const title =
+    typeof obj.title === "string" && obj.title.trim() ? obj.title.trim() : filename;
+  const inferredExt = (filename.includes(".") ? filename.split(".").pop() : path.split(".").pop()) || "";
+  const format =
+    typeof obj.format === "string" && obj.format.trim()
+      ? obj.format.trim().toLowerCase().replace(/^\./, "")
+      : inferredExt.toLowerCase() || "docx";
+  const sizeBytesRaw = obj.size_bytes ?? obj.sizeBytes;
+  const pageCountRaw = obj.page_count ?? obj.pageCount;
+  const sheetsCountRaw = obj.sheets_count ?? obj.sheetsCount;
+  const rawUniDoc = obj.universal_doc ?? obj.universalDoc;
+  const universal_doc =
+    rawUniDoc && typeof rawUniDoc === "object"
+      ? (rawUniDoc as Record<string, unknown>)
+      : null;
+
+  return {
+    path,
+    filename,
+    title,
+    format,
+    ...(typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw)
+      ? { size_bytes: sizeBytesRaw }
+      : {}),
+    ...(typeof pageCountRaw === "number" && Number.isFinite(pageCountRaw)
+      ? { page_count: pageCountRaw }
+      : {}),
+    ...(typeof sheetsCountRaw === "number" && Number.isFinite(sheetsCountRaw)
+      ? { sheets_count: sheetsCountRaw }
+      : {}),
+    ...(typeof obj.revision === "number" && Number.isFinite(obj.revision)
+      ? { revision: obj.revision }
+      : {}),
+    ...(universal_doc ? { universal_doc } : {}),
+  };
+}
+
+export function sanitizeGeneratedOfficeDocumentList(
+  raw: unknown
+): GeneratedOfficeDocumentEvent[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map(sanitizeGeneratedOfficeDocumentEvent)
+    .filter((item): item is GeneratedOfficeDocumentEvent => item !== null);
+}
+
 export interface XoxAiChatRequest {
   message: string;
   history: ChatTurnMessage[];
@@ -1770,6 +1839,7 @@ export interface XoxAiChatResponse {
   clarification?: ClarificationSpec;
   vaultAction?: VaultPromptSpec;
   generatedPdfs?: GeneratedPdfArtifact[];
+  generatedDocuments?: GeneratedOfficeDocumentEvent[];
   providerUsed?: string;
   modelUsed: string;
   latencyMs: number;
@@ -1795,6 +1865,16 @@ export interface XoxTerminalEvent {
   outputLines?: string[];
 }
 
+/** Evento en tiempo real cuando Xox guarda, actualiza u olvida memoria del usuario o del espacio. */
+export interface UserMemoryUpdatedEvent {
+  action: string;
+  key?: string;
+  scope?: string;
+  profileUpdated?: boolean;
+  memoryUpdated?: boolean;
+  path?: string;
+}
+
 export interface XoxStreamCallbacks {
   signal?: AbortSignal;
   onStreamStart?: (streamId: string) => void;
@@ -1812,7 +1892,9 @@ export interface XoxStreamCallbacks {
   onCanvas?: (canvas: CanvasArtifact) => void;
   onPdfDraftProgress?: (draft: PdfDraftProgressEvent) => void;
   onPdfGenerated?: (pdf: GeneratedPdfArtifact) => void;
+  onDocumentGenerated?: (doc: GeneratedOfficeDocumentEvent) => void;
   onXoxCustomized?: (event: XoxCustomizationEvent) => void;
+  onUserMemoryUpdated?: (event: UserMemoryUpdatedEvent) => void;
   onChecklistUpdate?: (checklist: ChecklistState) => void;
   onSubagentEvent?: (subagent: SubagentActivity) => void;
   onStudyDeck?: (deck: StudyDeckArtifact) => void;
@@ -5581,6 +5663,7 @@ export async function runXoxAiChatStream(
         delta?: string;
         canvas?: unknown;
         pdf?: unknown;
+        document?: unknown;
         from_provider?: string;
         to_provider?: string;
         model_used?: string;
@@ -5717,6 +5800,11 @@ export async function runXoxAiChatStream(
       } else if (evt.type === "pdf_generated" && evt.pdf) {
         const parsedPdf = sanitizeGeneratedPdfArtifact(evt.pdf);
         if (parsedPdf) callbacks?.onPdfGenerated?.(parsedPdf);
+      } else if (evt.type === "document_generated") {
+        const rawDoc =
+          evt.document && typeof evt.document === "object" ? evt.document : evt;
+        const parsedDoc = sanitizeGeneratedOfficeDocumentEvent(rawDoc);
+        if (parsedDoc) callbacks?.onDocumentGenerated?.(parsedDoc);
       } else if (evt.type === "xox_customized") {
         const rawSec = String(evt.section ?? "identity").toLowerCase();
         const section: XoxCustomizationEvent["section"] =
@@ -5726,6 +5814,25 @@ export async function runXoxAiChatStream(
           summary: typeof evt.summary === "string" ? evt.summary : "Configuración actualizada",
           slug: typeof evt.slug === "string" ? evt.slug : undefined,
           changed: Array.isArray(evt.changed) ? evt.changed.map(String) : undefined,
+        });
+      } else if (evt.type === "user_memory_updated") {
+        callbacks?.onUserMemoryUpdated?.({
+          action: String(evt.action ?? "save_user_info"),
+          key: typeof evt.key === "string" ? evt.key : undefined,
+          scope: typeof evt.scope === "string" ? evt.scope : undefined,
+          profileUpdated: Boolean(evt.profile_updated),
+          memoryUpdated: Boolean(evt.memory_updated),
+        });
+      } else if (
+        evt.type === "workspace_changed" &&
+        typeof evt.path === "string" &&
+        evt.path.replace(/\\/g, "/").replace(/^\.\//, "") === "memoria/hechos.md"
+      ) {
+        callbacks?.onUserMemoryUpdated?.({
+          action: String(evt.action ?? "memory_record_fact"),
+          scope: "workspace",
+          path: "memoria/hechos.md",
+          memoryUpdated: true,
         });
       } else if (evt.type === "checklist_update" && evt.checklist && typeof evt.checklist === "object") {
         callbacks?.onChecklistUpdate?.(evt.checklist as ChecklistState);
@@ -5752,6 +5859,7 @@ export async function runXoxAiChatStream(
         canvases?: unknown[];
         clarification?: unknown;
         generated_pdfs?: unknown[];
+        generated_documents?: unknown[];
         vault_action?: { provider?: string; intent?: string; note?: string };
         provider_used?: string;
         model_used?: string;
@@ -5879,6 +5987,9 @@ export async function runXoxAiChatStream(
         clarification: safeClarification,
         vaultAction: safeVaultAction,
         generatedPdfs: sanitizeGeneratedPdfList(res.generated_pdfs),
+        ...(Array.isArray(res.generated_documents)
+          ? { generatedDocuments: sanitizeGeneratedOfficeDocumentList(res.generated_documents) }
+          : {}),
         providerUsed: res.provider_used,
         modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
         latencyMs: res.latency_ms ?? 0,

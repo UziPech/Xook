@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  Brain,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -13,6 +14,7 @@ import {
   Plus,
   RotateCcw,
   Save,
+  ScanSearch,
   Search,
   Sparkles,
   Square,
@@ -24,10 +26,14 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import type { UserMemoryCategory, UserMemoryFact } from "@xook/contracts";
+import type { LocalUserProfile } from "../workspace-store/localStore";
+import { MemoryGraphView, type MemoryLivePulse } from "./MemoryGraphView";
 import { JellyPillTrack } from "../../components/JellyPillTrack";
 import {
   XOX_ACCENT_PRESETS,
   XoxAccentPreset,
+  XoxSilhouetteIcon,
   XoxStar,
   XoxState,
   getXoxCosmosVars,
@@ -60,17 +66,30 @@ import {
   SKILL_DOMAIN_OPTIONS,
   SKILL_STARTER_TEMPLATES,
   type SkillBlockModel,
+  extractSkillDesignMeta,
+  getDesignSkillBadgeLabel,
   parseSkillToBlocks,
   serializeBlocksToSkillMarkdown,
   slugifySkillName,
 } from "./skillBlockSchema";
 
-export type XoxStudioTabId = "identity" | "voice" | "skills" | "rules";
+export type { MemoryLivePulse } from "./MemoryGraphView";
+export type XoxStudioTabId = "identity" | "voice" | "skills" | "rules" | "memory";
+
+declare module "./MemoryGraphView" {
+  interface MemoryGraphViewProps {
+    isWideMode?: boolean;
+    onToggleWideMode?: () => void;
+  }
+}
 
 interface XoxStudioPanelProps {
   visible?: boolean;
   hideStar?: boolean;
   initialTab?: XoxStudioTabId;
+  onTabChange?: (tab: XoxStudioTabId) => void;
+  isMemoryWideMode?: boolean;
+  onToggleMemoryWideMode?: () => void;
   highlightedSkillSlug?: string | null;
   glideSeq?: number;
   profile: GlobalXoxProfile;
@@ -79,6 +98,32 @@ interface XoxStudioPanelProps {
   xoxState: XoxState;
   hasActiveWorkspace: boolean;
   activeWorkspaceName?: string | null;
+  localUser?: LocalUserProfile | null;
+  userMemoryFacts?: UserMemoryFact[];
+  workspaceFacts?: string[];
+  patterns?: Array<{ id?: string; description: string; confidence?: number }>;
+  memoryLivePulse?: MemoryLivePulse | null;
+  onSaveMemoryFact?: (input: {
+    value: string;
+    key?: string;
+    category?: UserMemoryCategory;
+    pinned?: boolean;
+  }) => Promise<void>;
+  onTogglePinMemoryFact?: (fact: UserMemoryFact) => Promise<void>;
+  onDeleteMemoryFact?: (idOrKey: string) => Promise<void>;
+  onUpdateWorkspaceFact?: (rawOldLine: string, nextText: string) => Promise<void>;
+  onDeleteWorkspaceFact?: (rawLine: string) => Promise<void>;
+  onAddWorkspaceFact?: (text: string) => Promise<void>;
+  onUpdatePreference?: (
+    bucket: "likes" | "workflows" | "donts",
+    index: number,
+    nextText: string
+  ) => Promise<void>;
+  onDeletePreference?: (
+    bucket: "likes" | "workflows" | "donts",
+    index: number
+  ) => Promise<void>;
+  onAskXoxEditMemory?: (prefillPrompt: string) => void;
   onProfileChanged: (next: GlobalXoxProfile) => void;
   onPreviewAccentChange?: (preset: XoxAccentPreset) => void;
   onSkillsRefresh: () => Promise<void> | void;
@@ -339,6 +384,9 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   visible = true,
   hideStar = false,
   initialTab = "identity",
+  onTabChange,
+  isMemoryWideMode,
+  onToggleMemoryWideMode,
   highlightedSkillSlug = null,
   glideSeq = 0,
   profile,
@@ -347,6 +395,20 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   xoxState,
   hasActiveWorkspace,
   activeWorkspaceName,
+  localUser = null,
+  userMemoryFacts = [],
+  workspaceFacts = [],
+  patterns = [],
+  memoryLivePulse = null,
+  onSaveMemoryFact,
+  onTogglePinMemoryFact,
+  onDeleteMemoryFact,
+  onUpdateWorkspaceFact,
+  onDeleteWorkspaceFact,
+  onAddWorkspaceFact,
+  onUpdatePreference,
+  onDeletePreference,
+  onAskXoxEditMemory,
   onProfileChanged,
   onPreviewAccentChange,
   onSkillsRefresh,
@@ -358,6 +420,26 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   const uid = useId();
   const animPopoverId = `${uid}-anim-popover`;
   const [activeTab, setActiveTab] = useState<XoxStudioTabId>(initialTab);
+  const [localWideMode, setLocalWideMode] = useState<boolean>(false);
+  const effectiveMemoryWide = isMemoryWideMode ?? localWideMode;
+  const isMemoryTab = activeTab === "memory";
+  const isWideMemoryActive = isMemoryTab && effectiveMemoryWide;
+
+  const handleSelectTab = useCallback(
+    (nextTab: XoxStudioTabId) => {
+      setActiveTab(nextTab);
+      onTabChange?.(nextTab);
+    },
+    [onTabChange]
+  );
+
+  const handleToggleWideMode = useCallback(() => {
+    if (onToggleMemoryWideMode) {
+      onToggleMemoryWideMode();
+    } else {
+      setLocalWideMode((v) => !v);
+    }
+  }, [onToggleMemoryWideMode]);
   const [draft, setDraft] = useState<GlobalXoxProfile>(() => ({
     ...DEFAULT_GLOBAL_XOX_PROFILE,
     ...profile,
@@ -418,6 +500,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     voice: null,
     skills: null,
     rules: null,
+    memory: null,
   });
   const animBtnRefs = useRef<Record<XoxAnimCatalogOption, HTMLButtonElement | null>>({
     auto: null,
@@ -438,9 +521,28 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     rose: null,
   });
 
+  const [memoryUnreadPulse, setMemoryUnreadPulse] = useState(false);
+  const lastMemoryPulseSeqRef = useRef<number>(memoryLivePulse?.seq ?? 0);
+
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  useEffect(() => {
+    if (activeTab === "memory") {
+      setMemoryUnreadPulse(false);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!memoryLivePulse || memoryLivePulse.seq === lastMemoryPulseSeqRef.current) {
+      return;
+    }
+    lastMemoryPulseSeqRef.current = memoryLivePulse.seq;
+    if (memoryLivePulse.source === "xox" && activeTab !== "memory") {
+      setMemoryUnreadPulse(true);
+    }
+  }, [memoryLivePulse, activeTab]);
 
   useEffect(() => {
     setDraft({ ...DEFAULT_GLOBAL_XOX_PROFILE, ...profile });
@@ -450,12 +552,12 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     if (highlightedSkillSlug) {
       const target = skills.find((s) => s.slug === highlightedSkillSlug);
       if (target) {
-        setActiveTab("skills");
+        handleSelectTab("skills");
         setEditingSkill(parseSkillToBlocks(target));
         setIsNewSkill(false);
       }
     }
-  }, [highlightedSkillSlug, skills]);
+  }, [highlightedSkillSlug, skills, handleSelectTab]);
 
   useEffect(() => ttsPlayer.subscribe(setPlayback), []);
 
@@ -890,7 +992,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     }
   };
 
-  const tabOrder: XoxStudioTabId[] = ["identity", "voice", "skills", "rules"];
+  const tabOrder: XoxStudioTabId[] = ["identity", "voice", "skills", "rules", "memory"];
   const handleTabKeyDown = (e: React.KeyboardEvent) => {
     const idx = tabOrder.indexOf(activeTab);
     if (idx < 0) return;
@@ -902,7 +1004,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     else if (e.key === "End") next = tabOrder[tabOrder.length - 1];
     if (next) {
       e.preventDefault();
-      setActiveTab(next);
+      handleSelectTab(next);
       tabRefs.current[next]?.focus();
     }
   };
@@ -990,7 +1092,9 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   const chatCustomizeHint =
     activeTab === "rules"
       ? "Quiero actualizar mis reglas globales y preferencias: "
-      : `Ayúdame a personalizar tu nombre, carácter e instrucciones iniciales según cómo trabajo.`;
+      : activeTab === "memory"
+        ? "Quiero actualizar o limpiar recuerdos en mi memoria: "
+        : `Ayúdame a personalizar tu nombre, carácter e instrucciones iniciales según cómo trabajo.`;
 
   return (
     <aside
@@ -998,12 +1102,16 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
       style={
         { "--xox-control-accent": activeAccentSpec.glow } as React.CSSProperties
       }
-      className={`relative h-full flex flex-col rounded-2xl border border-white/[0.08] bg-[#080a0f] overflow-hidden transition-opacity duration-200 ${
+      className={`relative h-full flex-1 min-h-0 flex flex-col rounded-2xl border border-white/[0.08] bg-[#080a0f] overflow-hidden transition-opacity duration-200 ${
         visible ? "opacity-100" : "opacity-0 pointer-events-none"
       }`}
     >
       {/* Controles flotantes en esquina superior derecha: siempre accesibles sin apilar doble barra fija */}
-      <div className="absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
+      <div
+        className={`absolute right-3 z-30 flex items-center gap-1.5 ${
+          isWideMemoryActive ? "top-2" : "top-2.5"
+        }`}
+      >
         {onAskXoxCustomize && (
           <button
             type="button"
@@ -1029,17 +1137,22 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
       {/* Lienzo continuo: Santuario cósmico full-bleed -> pestañas -> contenido agrupado */}
       <div
         ref={scrollContainerRef}
-        className="flex-1 min-h-0 overflow-y-auto scroll-smooth"
+        className={
+          isMemoryTab
+            ? "flex-1 min-h-0 flex flex-col overflow-hidden"
+            : "flex-1 min-h-0 overflow-y-auto scroll-smooth"
+        }
       >
         {/* =================================================================== */}
-        {/* SANTUARIO VIVO DE XOX (FULL-BLEED, SIN CAJA ENCERRADA)              */}
+        {/* SANTUARIO VIVO DE XOX (OCULTO EN PESTAÑA DE MEMORIA PARA 100% ALTO) */}
         {/* =================================================================== */}
-        <section
-          id={`${uid}-xox-stage`}
-          aria-label={`Escenario de ${displayAgentName}`}
-          className="xook-xox-sanctuary relative px-4 pt-3 pb-4 flex flex-col items-center text-center"
-          style={getXoxCosmosVars(activeAccent)}
-        >
+        {!isMemoryTab && (
+          <section
+            id={`${uid}-xox-stage`}
+            aria-label={`Escenario de ${displayAgentName}`}
+            className="xook-xox-sanctuary relative px-4 pt-3 pb-4 flex flex-col items-center text-center"
+            style={getXoxCosmosVars(activeAccent)}
+          >
           {/* Etiqueta discreta de alcance arriba a la izquierda */}
           <div className="relative z-10 w-full flex items-center justify-start pr-20 min-h-[28px]">
             <span className="inline-flex items-center gap-1.5 text-[10.5px] font-medium text-zinc-300/75">
@@ -1177,7 +1290,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                 if (voiceConfig.enabled && (!inTauriVoice || modelsInstalled)) {
                   void handlePreviewVoice(voiceConfig.voiceId || "lola");
                 } else {
-                  setActiveTab("voice");
+                  handleSelectTab("voice");
                 }
               }}
               title={
@@ -1293,16 +1406,55 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
               </div>
             </div>
           </div>
-        </section>
+          </section>
+        )}
+
+        {/* Cabecera minimalista en modo compacto de Memoria para liberar el 100% de altura al grafo */}
+        {isMemoryTab && !isWideMemoryActive && (
+          <div className="shrink-0 px-3.5 pt-2.5 pb-1 pr-20 flex items-center gap-2 min-h-[38px]">
+            <span className="w-6 h-6 rounded-lg bg-white/[0.06] border border-white/[0.1] inline-flex items-center justify-center shrink-0">
+              <XoxSilhouetteIcon className="w-3.5 h-3.5 text-white" />
+            </span>
+            <div className="min-w-0 flex items-baseline gap-1.5">
+              <span className="text-[12px] font-semibold text-white truncate">
+                {displayAgentName}
+              </span>
+              <span className="text-[10.5px] text-zinc-400 truncate">
+                · Memoria
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* =================================================================== */}
-        {/* NAVEGACIÓN PRINCIPAL CENTRADA EN UNA SOLA FILA STICKY               */}
+        {/* NAVEGACIÓN PRINCIPAL EN UNA SOLA FILA STICKY (COMPACTA EN OBSIDIAN) */}
         {/* =================================================================== */}
         <div
-          className="xox-studio-enter-stagger sticky top-0 z-20 px-4 py-2 bg-[#080a0f]/95 border-b border-white/[0.06] overflow-x-auto no-scrollbar"
+          className={`xox-studio-enter-stagger shrink-0 sticky top-0 z-20 bg-[#080a0f]/95 border-b border-white/[0.06] overflow-x-auto no-scrollbar ${
+            isWideMemoryActive
+              ? "px-3.5 py-2 pr-20 flex items-center justify-between gap-3"
+              : isMemoryTab
+                ? "px-3 py-1.5"
+                : "px-4 py-2"
+          }`}
           style={{ animationDelay: "120ms" }}
         >
-          <div className="w-max mx-auto">
+          {isWideMemoryActive && (
+            <div className="inline-flex items-center gap-2 min-w-0 shrink-0">
+              <span className="w-6 h-6 rounded-lg bg-white/[0.06] border border-white/[0.1] inline-flex items-center justify-center shrink-0">
+                <XoxSilhouetteIcon className="w-3.5 h-3.5 text-white" />
+              </span>
+              <div className="min-w-0 flex items-baseline gap-1.5">
+                <span className="text-[12px] font-semibold text-white truncate">
+                  {displayAgentName}
+                </span>
+                <span className="text-[10.5px] text-zinc-400 hidden sm:inline truncate">
+                  · Memoria Obsidian
+                </span>
+              </div>
+            </div>
+          )}
+          <div className={isWideMemoryActive ? "w-max shrink-0" : "w-max mx-auto"}>
             <JellyPillTrack
               activeKey={activeTab}
               role="tablist"
@@ -1328,6 +1480,15 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                   icon: ListChecks,
                   badge: totalRulesCount > 0 ? totalRulesCount : null,
                 },
+                {
+                  id: "memory",
+                  label: "Memoria",
+                  icon: Brain,
+                  badge:
+                    userMemoryFacts.length + workspaceFacts.length > 0
+                      ? userMemoryFacts.length + workspaceFacts.length
+                      : null,
+                },
               ] as const
             ).map((tab) => {
               const Icon = tab.icon;
@@ -1343,7 +1504,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                   role="tab"
                   aria-selected={isSelected}
                   tabIndex={isSelected ? 0 : -1}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => handleSelectTab(tab.id)}
                   className={`xook-jelly-tab relative inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer shrink-0 whitespace-nowrap focus-visible:outline-2 focus-visible:outline-white/60 ${
                     isSelected
                       ? "text-white"
@@ -1352,6 +1513,13 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                 >
                   <Icon className="w-3 h-3 shrink-0" aria-hidden="true" />
                   <span>{tab.label}</span>
+                  {tab.id === "memory" && memoryUnreadPulse && !isSelected && (
+                    <span
+                      className="xook-live-dot w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ backgroundColor: activeAccentSpec.glow }}
+                      aria-label="Memoria actualizada por Xox"
+                    />
+                  )}
                   {tab.badge !== null && (
                     <span className="text-[9.5px] font-mono tabular-nums text-zinc-400">
                       {tab.badge}
@@ -1368,7 +1536,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
         {errorMsg && (
           <div
             role="alert"
-            className="mx-4 mt-3 rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 flex items-start justify-between gap-2 text-[11.5px] text-rose-100"
+            className="shrink-0 mx-4 mt-3 rounded-xl border border-rose-400/25 bg-rose-500/10 px-3 py-2 flex items-start justify-between gap-2 text-[11.5px] text-rose-100"
           >
             <span className="inline-flex items-start gap-2">
               <AlertCircle
@@ -1390,7 +1558,13 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
 
         {/* Contenido de la pestaña activa */}
         <div
-          className="xox-studio-enter-stagger px-4 pt-4 pb-10 space-y-3.5"
+          className={`xox-studio-enter-stagger ${
+            isWideMemoryActive
+              ? "flex-1 min-h-0 flex flex-col overflow-hidden px-2 pt-2 pb-2"
+              : isMemoryTab
+                ? "flex-1 min-h-0 flex flex-col overflow-hidden px-2.5 pt-2 pb-2.5"
+                : "px-4 pt-4 pb-10 space-y-3.5"
+          }`}
           style={{ animationDelay: "155ms" }}
         >
           {/* ================================================================= */}
@@ -1951,6 +2125,40 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                     </div>
                   )}
 
+                  {(editingSkill.kind === "document-design" ||
+                    editingSkill.kind === "pdf-design" ||
+                    editingSkill.domain === "document-design" ||
+                    Boolean(editingSkill.designSpec)) && (
+                    <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5 flex items-start justify-between gap-2.5">
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white/[0.06] border border-white/[0.1] text-[10px] font-medium text-zinc-100">
+                            <ScanSearch className="w-2.5 h-2.5 text-zinc-300" aria-hidden="true" />
+                            <span>{getDesignSkillBadgeLabel(editingSkill)}</span>
+                          </span>
+                          {editingSkill.palettePreview && editingSkill.palettePreview.length > 0 && (
+                            <span
+                              className="inline-flex items-center gap-1"
+                              title="Paleta principal detectada"
+                            >
+                              {editingSkill.palettePreview.slice(0, 3).map((hex) => (
+                                <span
+                                  key={hex}
+                                  className="w-2.5 h-2.5 rounded-full border border-white/25 shrink-0"
+                                  style={{ backgroundColor: hex }}
+                                  aria-hidden="true"
+                                />
+                              ))}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-zinc-400 leading-snug">
+                          Formato visual vinculado (PDF, Word o Excel). Sigue siendo 100% editable y personalizable al generar cualquier documento nuevo.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Datos básicos de la skill */}
                   <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3.5 space-y-3">
                     <div className="flex items-start justify-between gap-2">
@@ -2248,6 +2456,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                       <ul className="space-y-2">
                         {skills.map((entry) => {
                           const isHighlighted = highlightedSkillSlug === entry.slug;
+                          const designMeta = extractSkillDesignMeta(entry);
                           const scopeLabel =
                             entry.scope === "global"
                               ? "Global"
@@ -2275,6 +2484,31 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                                   <span className="text-[10px] text-zinc-500">
                                     · {scopeLabel}
                                   </span>
+                                  {designMeta.isDocumentDesign && (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white/[0.05] border border-white/[0.09] text-[9.5px] font-medium text-zinc-200">
+                                      <ScanSearch
+                                        className="w-2.5 h-2.5 text-zinc-300 shrink-0"
+                                        aria-hidden="true"
+                                      />
+                                      <span>{getDesignSkillBadgeLabel(designMeta)}</span>
+                                    </span>
+                                  )}
+                                  {designMeta.isDocumentDesign &&
+                                    designMeta.palettePreview.length > 0 && (
+                                      <span
+                                        className="inline-flex items-center gap-1"
+                                        title="Paleta de colores del diseño"
+                                      >
+                                        {designMeta.palettePreview.slice(0, 3).map((hex) => (
+                                          <span
+                                            key={hex}
+                                            className="w-2.5 h-2.5 rounded-full border border-white/25 shrink-0"
+                                            style={{ backgroundColor: hex }}
+                                            aria-hidden="true"
+                                          />
+                                        ))}
+                                      </span>
+                                    )}
                                   {!entry.enabled && (
                                     <span className="px-1.5 py-0.5 rounded-md bg-zinc-800/80 text-[9.5px] text-zinc-400">
                                       Pausada
@@ -2474,6 +2708,89 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
                   onChange={(next) => setDraft((p) => ({ ...p, donts: next }))}
                 />
               </DisclosureGroup>
+            </div>
+          )}
+
+          {/* ================================================================= */}
+          {/* TAB 5: GRAFO DE MEMORIA Y OPTIMIZACIÓN DE TOKENS AL INICIO        */}
+          {/* ================================================================= */}
+          {activeTab === "memory" && (
+            <div
+              role="tabpanel"
+              aria-labelledby={`${uid}-tab-memory`}
+              className="h-full flex-1 min-h-0 flex flex-col overflow-hidden"
+            >
+              <MemoryGraphView
+                agentName={displayAgentName}
+                accentPreset={activeAccent}
+                profile={draft}
+                localUser={localUser}
+                userMemoryFacts={userMemoryFacts}
+                workspaceFacts={workspaceFacts}
+                patterns={patterns}
+                activeWorkspaceName={activeWorkspaceName}
+                hasActiveWorkspace={hasActiveWorkspace}
+                livePulse={memoryLivePulse}
+                isWideMode={effectiveMemoryWide}
+                onToggleWideMode={handleToggleWideMode}
+                onSaveFact={async (input) => {
+                  await onSaveMemoryFact?.(input);
+                  showSaved("Recuerdo guardado en memoria");
+                }}
+                onTogglePinFact={async (fact) => {
+                  await onTogglePinMemoryFact?.(fact);
+                  showSaved(
+                    fact.pinned
+                      ? "Movido a L2 bajo demanda (0 tok inicio)"
+                      : "Fijado en núcleo L0 de inicio"
+                  );
+                }}
+                onDeleteFact={async (idOrKey) => {
+                  await onDeleteMemoryFact?.(idOrKey);
+                  showSaved("Recuerdo olvidado");
+                }}
+                onUpdateWorkspaceFact={
+                  onUpdateWorkspaceFact
+                    ? async (rawOldLine, nextText) => {
+                        await onUpdateWorkspaceFact(rawOldLine, nextText);
+                        showSaved("Hecho del espacio actualizado");
+                      }
+                    : undefined
+                }
+                onDeleteWorkspaceFact={
+                  onDeleteWorkspaceFact
+                    ? async (rawLine) => {
+                        await onDeleteWorkspaceFact(rawLine);
+                        showSaved("Hecho del espacio eliminado");
+                      }
+                    : undefined
+                }
+                onAddWorkspaceFact={
+                  onAddWorkspaceFact
+                    ? async (text) => {
+                        await onAddWorkspaceFact(text);
+                        showSaved("Hecho guardado en el espacio");
+                      }
+                    : undefined
+                }
+                onUpdatePreference={
+                  onUpdatePreference
+                    ? async (bucket, index, nextText) => {
+                        await onUpdatePreference(bucket, index, nextText);
+                        showSaved("Preferencia actualizada");
+                      }
+                    : undefined
+                }
+                onDeletePreference={
+                  onDeletePreference
+                    ? async (bucket, index) => {
+                        await onDeletePreference(bucket, index);
+                        showSaved("Preferencia eliminada");
+                      }
+                    : undefined
+                }
+                onAskXoxEditMemory={onAskXoxEditMemory}
+              />
             </div>
           )}
         </div>

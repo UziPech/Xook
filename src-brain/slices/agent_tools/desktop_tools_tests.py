@@ -7,19 +7,26 @@ from slices.agent_tools import (
     TOOL_SEARCH_TOOL_DEF,
     WorkspaceToolExecutor,
 )
+from slices.agent_tools.system_capabilities import unavailable_tools
 
 
 class DesktopControlToolsTests(unittest.TestCase):
     def test_desktop_tools_and_tool_search_have_valid_schemas(self) -> None:
         by_name = {td["function"]["name"]: td["function"] for td in [*AGENT_TOOL_DEFS, TOOL_SEARCH_TOOL_DEF]}
+        unsupported = unavailable_tools()
         for name in ("desktop_list_windows", "desktop_snapshot", "desktop_find", "desktop_act", "tool_search"):
+            if name in unsupported:
+                # Fuera de macOS el catálogo no expone el control del escritorio (ver system_capabilities).
+                self.assertNotIn(name, by_name)
+                continue
             self.assertIn(name, by_name)
             params = by_name[name]["parameters"]
             self.assertEqual(params.get("type"), "object")
             self.assertTrue(params.get("properties"), f"{name} must declare non-empty properties")
-        act_enum = by_name["desktop_act"]["parameters"]["properties"]["action"]["enum"]
-        for expected in ("click", "set_value", "type_text", "press_key", "focus", "scroll_to", "focus_window"):
-            self.assertIn(expected, act_enum)
+        if "desktop_act" in by_name:
+            act_enum = by_name["desktop_act"]["parameters"]["properties"]["action"]["enum"]
+            for expected in ("click", "set_value", "type_text", "press_key", "focus", "scroll_to", "focus_window"):
+                self.assertIn(expected, act_enum)
 
     def test_desktop_act_rejects_bare_ref_before_calling_bridge(self) -> None:
         called = []

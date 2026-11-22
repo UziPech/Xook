@@ -1,0 +1,89 @@
+# CI de XOOK en los tres sistemas que soporta: macOS, Windows y Linux.
+# El repo es público: los runners estándar de GitHub no consumen minutos de pago.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Un push nuevo a la misma rama cancela la corrida anterior.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Interfaz y contratos
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:packages
+      - run: npm run build
+
+  brain:
+    name: Cerebro Python · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      # Igual que en la app: Rust siempre lanza Python en modo UTF-8 (`ai_vault::python_command`).
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          # Versión objetivo del roadmap (el .venv local todavía usa 3.9).
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: src-brain/requirements.txt
+      - run: python -m pip install -r src-brain/requirements.txt
+      - run: python -m unittest discover -s src-brain/slices -t src-brain -p "*_tests.py"
+      # Suite heredada (script, no unittest): da por hecho las herramientas nativas de macOS.
+      - name: Suite heredada del sidecar
+        if: runner.os == 'macOS'
+        working-directory: src-brain
+        run: python test_sidecar.py
+
+  core:
+    name: Núcleo Rust · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v7
+      - name: Dependencias de sistema de Tauri
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      # Acciones de terceros fijadas a un commit exacto.
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri
+      # --locked: falla si Cargo.lock no corresponde a Cargo.toml (hay que commitear ambos).
+      - run: cargo test --locked

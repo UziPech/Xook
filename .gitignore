@@ -25,8 +25,8 @@ dist-ssr
 *.sw?
 
 # Rust build artifacts
+# (Cargo.lock sí se versiona: XOOK es una app y CI compila con --locked.)
 src-tauri/target/
-Cargo.lock
 
 # Python artifacts
 __pycache__/

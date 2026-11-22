@@ -3,6 +3,7 @@ import {
   Bot,
   GraduationCap,
   ListChecks,
+  ScanSearch,
   ShieldCheck,
   Sparkles,
   Slash,
@@ -92,6 +93,23 @@ Ejecuta una auditoría real y minuciosa sin modificar datos:
 2. Si hay workspace activo, invoca herramientas reales (\`run_business_review\`, \`workspace_list\`, \`workspace_read\`, \`workspace_search\`).
 3. Marca como \`done\` cada punto verificado y entrega hallazgos por severidad (Alta, Media, Baja).`,
   },
+  inspector: {
+    id: "inspector",
+    slash: "/inspector",
+    name: "Inspector de Diseño",
+    badge: "PDF · Word · Excel",
+    description:
+      "Analiza el diseño y estructura de un PDF, Word (.docx), Excel (.xlsx) o presentación (.pptx) y crea una habilidad reutilizable para replicarlo.",
+    hint: "Usa herramientas reales: document_inspect_design y document_save_design_skill",
+    inputPlaceholder:
+      "Modo Inspector: Adjunta un PDF, Word o Excel (o analiza el abierto) para replicar su diseño...",
+    promptPrefix: `[MODO INSPECTOR DE DISEÑO (/inspector)]:
+Analiza el diseño visual y estructural del documento indicado (PDF, Word .docx, Excel .xlsx o presentación .pptx) para crear una habilidad reutilizable y completamente editable:
+1. Ejecuta \`document_inspect_design\` sobre el documento adjunto, abierto en el visor o señalado por el usuario para detectar su ADN visual y estructural (en PDF, Word y PowerPoint: formato de página, márgenes, tipografía, paleta real de colores, encabezados/pies, tablas, portada y estructura de secciones; en Excel: hojas, columnas, paleta de cabecera/cebra/totales, fórmulas, formatos numéricos, filtros y paneles congelados).
+2. Presenta un resumen claro en español natural y sin tecnicismos del estilo visual y estructural detectado, sin exponer datos sensibles.
+3. Guarda el diseño como habilidad reutilizable con \`document_save_design_skill\` (o confirma nombre y alcance si conviene), dejando el perfil 100% personalizable al generar futuros PDF, Word (.docx) o Excel (.xlsx) con \`design_overrides\`.
+4. Nunca copies datos sensibles, nombres personales, montos, RFC/CURP, teléfonos ni valores confidenciales del documento de muestra: conserva únicamente la estructura genérica y las reglas de diseño.`,
+  },
   compact: {
     id: "compact",
     slash: "/compact",
@@ -116,6 +134,8 @@ export function getCommandIcon(id: XoxModeId, className = "w-4 h-4") {
       return <ListChecks className={className} />;
     case "audit":
       return <ShieldCheck className={className} />;
+    case "inspector":
+      return <ScanSearch className={className} />;
     case "compact":
       return <Sparkles className={className} />;
     default:
@@ -130,6 +150,8 @@ interface SlashCommandMenuProps {
   onSelect: (command: XoxCommandSpec) => void;
   onClose: () => void;
   menuRef?: React.RefObject<HTMLDivElement | null>;
+  placement?: "top" | "bottom";
+  className?: string;
 }
 
 export const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
@@ -139,6 +161,8 @@ export const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
   onSelect,
   onClose,
   menuRef,
+  placement = "top",
+  className = "",
 }) => {
   const cleanFilter = filterQuery.replace(/^\//, "").trim().toLowerCase();
 
@@ -155,12 +179,17 @@ export const SlashCommandMenu: React.FC<SlashCommandMenuProps> = ({
 
   if (!isOpen) return null;
 
+  const placementClass =
+    placement === "bottom"
+      ? "menu-origin-top-left top-full mt-2.5"
+      : "menu-origin-left bottom-full mb-2";
+
   return (
     <div
       ref={menuRef}
       role="listbox"
       aria-label="Comandos y modos de Xox"
-      className="xook-liquid-menu menu-origin-left menu-in absolute left-0 bottom-full mb-2 w-[min(24rem,calc(100vw-4.25rem))] p-1.5 rounded-2xl z-30 shadow-2xl bg-[#090b10]/68 backdrop-blur-2xl border border-white/[0.09]"
+      className={`xook-liquid-menu ${placementClass} menu-in absolute left-0 w-[min(24rem,calc(100vw-4.25rem))] p-1.5 rounded-2xl z-30 shadow-2xl bg-[#090b10]/68 backdrop-blur-2xl border border-white/[0.09] ${className}`}
     >
       <LiquidGlassBackdrop variant="menu" />
 
@@ -267,19 +296,31 @@ interface ActiveModeChipProps {
   spec: XoxCommandSpec;
   onDismiss: () => void;
   extraAction?: React.ReactNode;
+  compact?: boolean;
 }
 
 export const ActiveModeChip: React.FC<ActiveModeChipProps> = ({
   spec,
   onDismiss,
   extraAction,
+  compact = false,
 }) => {
   return (
-    <div className="inline-flex items-center gap-2 pl-2 pr-1.5 py-1 rounded-xl text-xs bg-white/[0.03] border border-white/[0.08] text-zinc-200 backdrop-blur-xl transition-all shadow-sm">
+    <div
+      className={`inline-flex items-center rounded-xl border text-zinc-200 backdrop-blur-xl transition-all shadow-sm ${
+        compact
+          ? "gap-1.5 pl-2 pr-1 py-0.5 text-[11px] bg-white/[0.06] border-white/[0.12] max-w-full"
+          : "gap-2 pl-2 pr-1.5 py-1 text-xs bg-white/[0.03] border-white/[0.08]"
+      }`}
+    >
       <span className="w-1.5 h-1.5 rounded-full bg-zinc-300 shrink-0" />
       <div className="flex items-center gap-1.5 min-w-0">
-        <span className="font-semibold text-white tracking-wide">{spec.slash}</span>
-        <span className="text-zinc-300 text-[11px] truncate">· {spec.name}</span>
+        <span className="font-semibold text-white tracking-wide shrink-0">{spec.slash}</span>
+        <span
+          className={`text-zinc-300 truncate ${compact ? "text-[10.5px]" : "text-[11px]"}`}
+        >
+          · {spec.name}
+        </span>
       </div>
 
       {extraAction}
@@ -289,7 +330,7 @@ export const ActiveModeChip: React.FC<ActiveModeChipProps> = ({
         onClick={onDismiss}
         title="Desactivar modo (Escape)"
         aria-label="Desactivar modo"
-        className="ml-0.5 p-0.5 rounded-md text-zinc-400 hover:text-white hover:bg-white/[0.1] transition-colors cursor-pointer"
+        className="ml-0.5 p-0.5 rounded-md text-zinc-400 hover:text-white hover:bg-white/[0.1] transition-colors cursor-pointer shrink-0"
       >
         <X className="w-3 h-3" />
       </button>

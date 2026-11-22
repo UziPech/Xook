@@ -7,6 +7,7 @@ import {
   Eye,
   HelpCircle,
   Monitor,
+  ScanSearch,
   Send,
   Settings,
   Shield,
@@ -16,6 +17,13 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import {
+  ActiveModeChip,
+  SlashCommandMenu,
+  XOX_COMMAND_LIST,
+  XOX_COMMAND_SPECS,
+  type XoxModeId,
+} from "./SlashCommandMenu";
 import { XoxDragMotion, XoxStar, XoxState, resolveXoxAccentPreset, type XoxAccentPreset, type XoxTerminalFeed } from "./XoxStar";
 import {
   getGlobalXoxProfile,
@@ -101,10 +109,12 @@ import {
   captureScreenContextNow,
   clearScreenMemory,
   getScreenReaderStatus,
+  isWorkspaceTauriRuntime,
   openScreenPermissionSettings,
   requestScreenPermission,
   resolveCommandPermission,
   setScreenReaderConfig,
+  stageWorkspaceAttachment,
   subscribePermissionEvents,
   subscribeScreenContext,
 } from "../features/workspace-store/workspaceApi";
@@ -116,8 +126,48 @@ import {
   type CommandPermissionDecisionKind,
   type CommandPermissionUiItem,
 } from "../features/ai-service/CommandPermissionCard";
+import {
+  appendReplyDeltaToTimeline,
+  applyCommandFinishedInTimeline,
+  finalizeChatTimeline,
+  groupTimelineForRender,
+  hasTimelineCommands,
+  markPermissionErrorInTimeline,
+  resolvePermissionInTimeline,
+  timelineHasRequestId,
+  upsertPermissionRequestInTimeline,
+  type ChatTimelineSegment,
+} from "@xook/contracts";
 
 const DRAG_THRESHOLD_PX = 4;
+
+const QUICK_OFFICE_INSPECT_EXT_SET = new Set([
+  "pdf",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "ppt",
+  "pptx",
+  "rtf",
+  "odt",
+  "ods",
+  "odp",
+  "csv",
+  "tsv",
+]);
+
+async function quickFileToBase64Payload(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const chunkSize = 0x8000;
+  const parts: string[] = [];
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const slice = bytes.subarray(i, i + chunkSize);
+    parts.push(String.fromCharCode(...slice));
+  }
+  return btoa(parts.join(""));
+}
 
 type Spring = { x: number; v: number };
 
@@ -185,6 +235,7 @@ export const QuickBar: React.FC = () => {
   const [xoxTerminalFeed, setXoxTerminalFeed] = useState<XoxTerminalFeed | null>(null);
   const [statusNote, setStatusNote] = useState<string>("");
   const [reply, setReply] = useState<string | null>(null);
+  const [quickTimeline, setQuickTimeline] = useState<ChatTimelineSegment[]>([]);
   const [quickCanvas, setQuickCanvas] = useState<CanvasArtifact | null>(null);
   const [pendingClarification, setPendingClarification] = useState<ClarificationSpec | null>(null);
   const [permissionItems, setPermissionItems] = useState<CommandPermissionUiItem[]>([]);
@@ -196,15 +247,32 @@ export const QuickBar: React.FC = () => {
     setTableScrolled(false);
   }, [summonSeq, reply === null, quickCanvas === null]);
   const [localUser, setLocalUser] = useState<LocalUserProfile | null>(null);
-  const quickPlaceholder = useMemo(
-    () =>
-      getQuickBarPlaceholder({
-        isStreaming,
-        userName: localUser?.name,
-        seed: summonSeq,
-      }),
-    [isStreaming, localUser?.name, summonSeq]
-  );
+  const [quickActiveMode, setQuickActiveMode] = useState<XoxModeId | null>(null);
+  const [showCommandMenu, setShowCommandMenu] = useState<boolean>(false);
+  const [commandMenuFilter, setCommandMenuFilter] = useState<string>("");
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState<number>(0);
+  const quickActiveModeSpec = quickActiveMode ? XOX_COMMAND_SPECS[quickActiveMode] : null;
+  const filteredCommands = useMemo(() => {
+    const cleanFilter = commandMenuFilter.replace(/^\//, "").trim().toLowerCase();
+    if (!cleanFilter) return XOX_COMMAND_LIST;
+    return XOX_COMMAND_LIST.filter(
+      (cmd) =>
+        cmd.slash.toLowerCase().includes(cleanFilter) ||
+        cmd.id.toLowerCase().includes(cleanFilter) ||
+        cmd.name.toLowerCase().includes(cleanFilter) ||
+        cmd.description.toLowerCase().includes(cleanFilter)
+    );
+  }, [commandMenuFilter]);
+  const quickPlaceholder = useMemo(() => {
+    if (quickActiveModeSpec && !isStreaming) {
+      return quickActiveModeSpec.inputPlaceholder;
+    }
+    return getQuickBarPlaceholder({
+      isStreaming,
+      userName: localUser?.name,
+      seed: summonSeq,
+    });
+  }, [quickActiveModeSpec, isStreaming, localUser?.name, summonSeq]);
   const [modelId, setModelId] = useState<string>(OPENROUTER_PRESET_MODELS[0].id);
   const [aiConfig, setAiConfig] = useState<AiConfigStatus>({
     provider: "openrouter",
@@ -230,6 +298,7 @@ export const QuickBar: React.FC = () => {
   const [quickAccentPreset, setQuickAccentPreset] = useState<XoxAccentPreset>("classic");
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const commandMenuRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const screenMenuRef = useRef<HTMLDivElement>(null);
   const capsuleRef = useRef<HTMLDivElement>(null);
@@ -247,11 +316,14 @@ export const QuickBar: React.FC = () => {
   const lastPromptRef = useRef<string>("");
   const lastCanvasRef = useRef<CanvasArtifact | null>(null);
   const lastReplyRef = useRef<string | null>(null);
+  const activeQuickTimelineRef = useRef<ChatTimelineSegment[]>([]);
+  const lastTimelineRef = useRef<ChatTimelineSegment[]>([]);
   const lastCanvasDisplayRef = useRef<CanvasArtifact | null>(null);
   const lastClarificationDisplayRef = useRef<ClarificationSpec | null>(null);
   const lastStatusNoteRef = useRef<string>("");
 
   if (reply) lastReplyRef.current = reply;
+  if (quickTimeline.length > 0) lastTimelineRef.current = quickTimeline;
   if (quickCanvas) lastCanvasDisplayRef.current = quickCanvas;
   if (pendingClarification) lastClarificationDisplayRef.current = pendingClarification;
   if (statusNote) lastStatusNoteRef.current = statusNote;
@@ -733,6 +805,8 @@ export const QuickBar: React.FC = () => {
           setIsQuickVisible(true);
           setShowModels(false);
           setShowScreenMenu(false);
+          setShowCommandMenu(false);
+          setCommandMenuFilter("");
           setSummonSeq(event.payload?.seq ?? Date.now());
           void refreshQuickSession();
           focusInput();
@@ -749,6 +823,8 @@ export const QuickBar: React.FC = () => {
           xoxDragMotionRef.current.active = false;
           setShowModels(false);
           setShowScreenMenu(false);
+          setShowCommandMenu(false);
+          setCommandMenuFilter("");
           setIsLeaving(true);
         });
         if (cancelled) {
@@ -872,17 +948,65 @@ export const QuickBar: React.FC = () => {
     };
   }, []);
 
+  const quickPermissionHandlersRef = useRef<{
+    onRequest: (req: Parameters<typeof applyPermissionRequestItem>[1]) => void;
+    onFinished: (ev: Parameters<typeof applyCommandFinishedEvent>[1]) => void;
+  }>({
+    onRequest: () => {},
+    onFinished: () => {},
+  });
+
+  quickPermissionHandlersRef.current = {
+    onRequest: (req) => {
+      if (!activeStreamIdRef.current || req.streamId !== activeStreamIdRef.current) {
+        return;
+      }
+      setPermissionItems((prev) => applyPermissionRequestItem(prev, req));
+      const nextTimeline = upsertPermissionRequestInTimeline(
+        activeQuickTimelineRef.current,
+        req
+      );
+      activeQuickTimelineRef.current = nextTimeline;
+      setQuickTimeline(nextTimeline);
+    },
+    onFinished: (ev) => {
+      const matchesActiveStream = Boolean(
+        ev.streamId &&
+          activeStreamIdRef.current &&
+          ev.streamId === activeStreamIdRef.current
+      );
+      if (
+        ev.streamId &&
+        (!activeStreamIdRef.current || ev.streamId !== activeStreamIdRef.current)
+      ) {
+        setPermissionItems((prev) => applyCommandFinishedEvent(prev, ev));
+        if (timelineHasRequestId(activeQuickTimelineRef.current, ev.requestId)) {
+          const nextTimeline = applyCommandFinishedInTimeline(
+            activeQuickTimelineRef.current,
+            ev
+          );
+          activeQuickTimelineRef.current = nextTimeline;
+          setQuickTimeline(nextTimeline);
+        }
+        return;
+      }
+      setPermissionItems((prev) =>
+        applyCommandFinishedEvent(prev, ev, { allowInsert: matchesActiveStream })
+      );
+      const nextTimeline = applyCommandFinishedInTimeline(
+        activeQuickTimelineRef.current,
+        ev,
+        { allowInsert: matchesActiveStream }
+      );
+      activeQuickTimelineRef.current = nextTimeline;
+      setQuickTimeline(nextTimeline);
+    },
+  };
+
   useEffect(() => {
     return subscribePermissionEvents({
-      onRequest: (req) => {
-        if (!activeStreamIdRef.current || req.streamId !== activeStreamIdRef.current) {
-          return;
-        }
-        setPermissionItems((prev) => applyPermissionRequestItem(prev, req));
-      },
-      onFinished: (ev) => {
-        setPermissionItems((prev) => applyCommandFinishedEvent(prev, ev));
-      },
+      onRequest: (req) => quickPermissionHandlersRef.current.onRequest(req),
+      onFinished: (ev) => quickPermissionHandlersRef.current.onFinished(ev),
     });
   }, []);
 
@@ -891,20 +1015,39 @@ export const QuickBar: React.FC = () => {
       setPermissionItems((prev) =>
         applyPermissionResolution(prev, requestId, decision)
       );
+      if (timelineHasRequestId(activeQuickTimelineRef.current, requestId)) {
+        const nextTimeline = resolvePermissionInTimeline(
+          activeQuickTimelineRef.current,
+          requestId,
+          decision
+        );
+        activeQuickTimelineRef.current = nextTimeline;
+        setQuickTimeline(nextTimeline);
+      }
       try {
         await resolveCommandPermission(requestId, decision);
       } catch (err) {
+        const errText = extractErrorMessage(err, "No se pudo enviar tu decisión.");
         setPermissionItems((prev) =>
           prev.map((item) =>
             item.requestId === requestId
               ? {
                   ...item,
                   state: "error",
-                  error: extractErrorMessage(err, "No se pudo enviar tu decisión."),
+                  error: errText,
                 }
               : item
           )
         );
+        if (timelineHasRequestId(activeQuickTimelineRef.current, requestId)) {
+          const nextTimeline = markPermissionErrorInTimeline(
+            activeQuickTimelineRef.current,
+            requestId,
+            errText
+          );
+          activeQuickTimelineRef.current = nextTimeline;
+          setQuickTimeline(nextTimeline);
+        }
       }
     },
     []
@@ -988,7 +1131,7 @@ export const QuickBar: React.FC = () => {
     }
   }, [inputPrompt, reply, quickCanvas]);
 
-  // Escape oculta el menú de modelos o la Quick Bar; ⌘↩ abre XOOK completo
+  // Escape oculta menús, desactiva el modo activo (cuando está vacío) o cierra la Quick Bar; ⌘↩ abre XOOK completo
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -998,10 +1141,16 @@ export const QuickBar: React.FC = () => {
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        if (showScreenMenu) {
+        if (showCommandMenu) {
+          setShowCommandMenu(false);
+          setCommandMenuFilter("");
+        } else if (showScreenMenu) {
           setShowScreenMenu(false);
         } else if (showModels) {
           setShowModels(false);
+        } else if (quickActiveMode && !inputPrompt.trim()) {
+          setQuickActiveMode(null);
+          inputRef.current?.focus();
         } else {
           dismissGracefully();
         }
@@ -1009,11 +1158,19 @@ export const QuickBar: React.FC = () => {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismissGracefully, openInMainWorkspace, showModels, showScreenMenu]);
+  }, [
+    dismissGracefully,
+    inputPrompt,
+    openInMainWorkspace,
+    quickActiveMode,
+    showCommandMenu,
+    showModels,
+    showScreenMenu,
+  ]);
 
-  // Cerrar selector de modelo / menú de pantalla al hacer clic fuera
+  // Cerrar menús flotantes al hacer clic fuera
   useEffect(() => {
-    if (!showModels && !showScreenMenu) return;
+    if (!showModels && !showScreenMenu && !showCommandMenu) return;
     const onDown = (e: MouseEvent) => {
       if (showModels && modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
         setShowModels(false);
@@ -1021,10 +1178,14 @@ export const QuickBar: React.FC = () => {
       if (showScreenMenu && screenMenuRef.current && !screenMenuRef.current.contains(e.target as Node)) {
         setShowScreenMenu(false);
       }
+      if (showCommandMenu && commandMenuRef.current && !commandMenuRef.current.contains(e.target as Node)) {
+        setShowCommandMenu(false);
+        setCommandMenuFilter("");
+      }
     };
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
-  }, [showModels, showScreenMenu]);
+  }, [showCommandMenu, showModels, showScreenMenu]);
 
   const runQuickPrompt = async (overridePrompt?: string) => {
     const rawTyped = (
@@ -1032,8 +1193,31 @@ export const QuickBar: React.FC = () => {
     ).trim();
     const currentQuickAttachments =
       typeof overridePrompt === "string" ? [] : quickAttachmentsRef.current;
-    if ((!rawTyped && currentQuickAttachments.length === 0) || isStreamingRef.current) return;
 
+    let effectiveQuickMode: XoxModeId | null = quickActiveMode;
+    let cleanedTyped = rawTyped;
+    const inlineCmdMatch = rawTyped.match(/^(\/[a-zA-Z]+)(?:\s+(.*))?$/s);
+    if (inlineCmdMatch) {
+      const matchedCmd = XOX_COMMAND_LIST.find(
+        (c) => c.slash.toLowerCase() === inlineCmdMatch[1].toLowerCase()
+      );
+      if (matchedCmd) {
+        effectiveQuickMode = matchedCmd.id;
+        cleanedTyped = (inlineCmdMatch[2] ?? "").trim();
+        setQuickActiveMode(matchedCmd.id);
+        if (!cleanedTyped && currentQuickAttachments.length === 0) {
+          setInputPrompt("");
+          setShowCommandMenu(false);
+          setCommandMenuFilter("");
+          inputRef.current?.focus();
+          return;
+        }
+      }
+    }
+
+    if ((!cleanedTyped && currentQuickAttachments.length === 0) || isStreamingRef.current) return;
+
+    const effectiveModeSpec = effectiveQuickMode ? XOX_COMMAND_SPECS[effectiveQuickMode] : null;
     const pastedItems = currentQuickAttachments.filter(
       (a): a is ComposerPastedTextAttachment => a.kind === "pasted_text"
     );
@@ -1042,7 +1226,7 @@ export const QuickBar: React.FC = () => {
         a.kind !== "pasted_text"
     );
     const text = composeLlmMessageWithPastedText(
-      rawTyped,
+      cleanedTyped,
       pastedItems,
       fileItems.map((f) => ({ name: f.name, kind: f.kind }))
     );
@@ -1050,6 +1234,8 @@ export const QuickBar: React.FC = () => {
     clearActionTimers();
     setShowModels(false);
     setShowScreenMenu(false);
+    setShowCommandMenu(false);
+    setCommandMenuFilter("");
     setLiveScreenBadge(null);
     setScreenPermissionNeeded(false);
     if (typeof overridePrompt !== "string") {
@@ -1057,9 +1243,12 @@ export const QuickBar: React.FC = () => {
       setQuickAttachments([]);
     }
     setReply(null);
+    setQuickTimeline([]);
+    activeQuickTimelineRef.current = [];
+    lastTimelineRef.current = [];
     setQuickCanvas(null);
     setPendingClarification(null);
-    lastPromptRef.current = rawTyped || text;
+    lastPromptRef.current = cleanedTyped || text;
     lastCanvasRef.current = null;
     lastReplyRef.current = null;
     lastCanvasDisplayRef.current = null;
@@ -1118,6 +1307,8 @@ export const QuickBar: React.FC = () => {
     }
 
     setPermissionItems([]);
+    setQuickTimeline([]);
+    activeQuickTimelineRef.current = [];
     setIsStreaming(true);
     setXoxState("reading");
     setStatusNote("Leyendo contexto...");
@@ -1159,6 +1350,7 @@ export const QuickBar: React.FC = () => {
       }));
 
       if (fileItems.length > 0) {
+        const canStageWorkspace = isWorkspaceTauriRuntime();
         const quickFileSnippets = await Promise.all(
           fileItems.map(async (item): Promise<AttachedContextItem | null> => {
             if (item.kind === "image") {
@@ -1184,6 +1376,54 @@ export const QuickBar: React.FC = () => {
                 content: `Imagen adjunta '${item.name}'${dimText}.`,
               };
             }
+
+            const ext = item.name.split(".").pop()?.toLowerCase() || "";
+            const isInspectableDoc =
+              item.kind === "pdf" || QUICK_OFFICE_INSPECT_EXT_SET.has(ext);
+            const shouldStageFile =
+              canStageWorkspace &&
+              item.file.size > 0 &&
+              item.file.size <= 25 * 1024 * 1024 &&
+              (item.kind === "pdf" ||
+                item.kind === "binary" ||
+                (isInspectableDoc && effectiveQuickMode === "inspector"));
+
+            let stagedPath: string | undefined;
+            let stagedMime =
+              item.mimeType ||
+              (item.kind === "pdf" ? "application/pdf" : "application/octet-stream");
+            if (shouldStageFile) {
+              try {
+                const b64 = await quickFileToBase64Payload(item.file);
+                const staged = await stageWorkspaceAttachment(item.name, b64);
+                stagedPath = staged.relativePath;
+                stagedMime = staged.mimeType || stagedMime;
+              } catch {
+                stagedPath = undefined;
+              }
+            }
+
+            if (isInspectableDoc && (stagedPath || item.kind !== "text")) {
+              const kb = Math.max(1, Math.round(item.sizeBytes / 1024));
+              const fmtTag = ext ? `.${ext}` : item.kind;
+              const content = stagedPath
+                ? effectiveQuickMode === "inspector"
+                  ? `Documento (${fmtTag}) adjunto guardado en '${stagedPath}' (${kb} KB). Estás en modo /inspector: usa 'document_inspect_design' con path='${stagedPath}' para analizar su diseño visual y estructural, y guárdalo como habilidad reutilizable con 'document_save_design_skill'.`
+                  : item.kind === "pdf"
+                    ? `PDF adjunto guardado en '${stagedPath}' (${kb} KB). Usa SIEMPRE la herramienta 'pdf_read' con path='${stagedPath}' para leerlo.`
+                    : `Documento Office (${fmtTag}) adjunto guardado en '${stagedPath}' (${kb} KB). Usa SIEMPRE la herramienta 'workspace_read' con path='${stagedPath}' para leerlo.`
+                : `Documento (${fmtTag}) adjunto '${item.name}' (${kb} KB).`;
+              return {
+                name: item.name,
+                type: stagedMime,
+                kind: item.kind === "pdf" ? "pdf" : "binary",
+                workspacePath: stagedPath,
+                mimeType: stagedMime,
+                sizeBytes: item.sizeBytes,
+                content,
+              };
+            }
+
             if (item.kind === "text" && item.file.size <= 131072) {
               try {
                 const raw = await item.file.text();
@@ -1191,6 +1431,7 @@ export const QuickBar: React.FC = () => {
                   name: item.name,
                   type: item.mimeType || "text/plain",
                   kind: "text",
+                  workspacePath: stagedPath,
                   sizeBytes: item.sizeBytes,
                   content: raw.slice(0, 4000),
                 };
@@ -1200,10 +1441,14 @@ export const QuickBar: React.FC = () => {
             }
             return {
               name: item.name,
-              type: item.mimeType || "application/octet-stream",
+              type: stagedMime,
               kind: item.kind,
+              workspacePath: stagedPath,
+              mimeType: stagedMime,
               sizeBytes: item.sizeBytes,
-              content: `Archivo adjunto '${item.name}'.`,
+              content: stagedPath
+                ? `Archivo adjunto guardado en '${stagedPath}' (${Math.max(1, Math.round(item.sizeBytes / 1024))} KB).`
+                : `Archivo adjunto '${item.name}'.`,
             };
           })
         );
@@ -1271,11 +1516,17 @@ export const QuickBar: React.FC = () => {
         .join("\n")
         .slice(0, 3500);
 
+      const messageForModel =
+        effectiveModeSpec && effectiveQuickMode !== "compact"
+          ? `${effectiveModeSpec.promptPrefix}\n\n${text}`
+          : text;
+
       const quickAbortController = new AbortController();
       quickAbortControllerRef.current = quickAbortController;
       const res = await runXoxAiChatStream(
         {
-          message: text,
+          message: messageForModel,
+          activeMode: effectiveQuickMode ?? undefined,
           history: quickHistoryRef.current.slice(-10),
           currentTasks,
           agendaItems,
@@ -1314,7 +1565,12 @@ export const QuickBar: React.FC = () => {
             }
           },
           onPhase: (phase, label) => {
-            if (hasEnteredTalking && (phase === "reading" || phase === "thinking" || phase === "coding")) {
+            const afterCommand =
+              activeQuickTimelineRef.current[activeQuickTimelineRef.current.length - 1]?.kind ===
+              "command";
+            if (phase === "coding" || (afterCommand && (phase === "reading" || phase === "thinking"))) {
+              hasEnteredTalking = false;
+            } else if (hasEnteredTalking && (phase === "reading" || phase === "thinking")) {
               return;
             }
             if (phase === "talking") {
@@ -1383,6 +1639,12 @@ export const QuickBar: React.FC = () => {
               setXoxState("talking");
               setStatusNote("Respondiendo...");
             }
+            const nextTimeline = appendReplyDeltaToTimeline(
+              activeQuickTimelineRef.current,
+              delta
+            );
+            activeQuickTimelineRef.current = nextTimeline;
+            setQuickTimeline(nextTimeline);
             setReply((prev) => `${prev ?? ""}${delta}`);
           },
           onCanvas: (canvas) => {
@@ -1430,6 +1692,17 @@ export const QuickBar: React.FC = () => {
         res.failoverNotice && res.reply && !res.reply.includes(res.failoverNotice)
           ? `> *Respaldo automático:* ${res.failoverNotice}\n\n${res.reply}`
           : res.reply;
+      const finalizedQuickTimeline =
+        finalizeChatTimeline(activeQuickTimelineRef.current, replyFinalText, {
+          failoverNotice: res.failoverNotice,
+          cleanText: (raw) =>
+            cleanVisibleReply(raw, {
+              stripTables: Boolean(res.canvas && res.canvas.columns.length > 0 && res.canvas.rows.length > 0),
+            }),
+        }) ?? [];
+      activeQuickTimelineRef.current = finalizedQuickTimeline;
+      setQuickTimeline(finalizedQuickTimeline);
+      setPermissionItems((prev) => prev.filter((p) => p.state === "pending"));
       setReply(replyFinalText);
       setIsStreaming(false);
 
@@ -1469,6 +1742,14 @@ export const QuickBar: React.FC = () => {
         isStreamCancelledError(err) || Boolean(quickAbortControllerRef.current?.signal.aborted);
       quickAbortControllerRef.current = null;
       activeStreamIdRef.current = null;
+      const settledQuickTimeline =
+        finalizeChatTimeline(activeQuickTimelineRef.current, "", {
+          cancelled: true,
+          cleanText: (raw) => cleanVisibleReply(raw, { stripTables: false }),
+        }) ?? [];
+      activeQuickTimelineRef.current = settledQuickTimeline;
+      setQuickTimeline(settledQuickTimeline);
+      setPermissionItems([]);
       setIsStreaming(false);
       if (wasCancelled) {
         setXoxState("idle");
@@ -1484,7 +1765,13 @@ export const QuickBar: React.FC = () => {
       }
       setXoxState("alert");
       setStatusNote("");
-      setReply(`Error (${activeSpec.shortName}): ${errMsg}`);
+      const errorLine = `Error (${activeSpec.shortName}): ${errMsg}`;
+      if (settledQuickTimeline.length > 0) {
+        const withError = appendReplyDeltaToTimeline(settledQuickTimeline, `\n\n${errorLine}`);
+        activeQuickTimelineRef.current = withError;
+        setQuickTimeline(withError);
+      }
+      setReply(errorLine);
       const t = setTimeout(() => setXoxState("idle"), 2800);
       timersRef.current.push(t);
     }
@@ -1651,12 +1938,19 @@ export const QuickBar: React.FC = () => {
 
   const modelsPresence = useAnimatedPresence(showModels, 150);
   const screenMenuPresence = useAnimatedPresence(showScreenMenu, 150);
+  const commandMenuPresence = useAnimatedPresence(showCommandMenu, 150);
   const statusPresence = useAnimatedPresence(Boolean(statusNote), 190);
   const hasQuickResult = Boolean(
-    reply || quickCanvas || pendingClarification || permissionItems.length > 0
+    reply ||
+      quickCanvas ||
+      pendingClarification ||
+      permissionItems.length > 0 ||
+      hasTimelineCommands(quickTimeline)
   );
   const replyPresence = useAnimatedPresence(hasQuickResult, 190);
   const displayReply = reply ?? lastReplyRef.current;
+  const displayTimeline =
+    quickTimeline.length > 0 ? quickTimeline : lastTimelineRef.current;
   const displayCanvas = quickCanvas ?? lastCanvasDisplayRef.current;
   const displayClarification = pendingClarification ?? lastClarificationDisplayRef.current;
   const displayStatusNote = statusNote || lastStatusNoteRef.current;
@@ -1726,8 +2020,23 @@ export const QuickBar: React.FC = () => {
           onPointerUp={handleCapsulePointerUp}
           onPointerCancel={handleCapsulePointerUp}
           onLostPointerCapture={handleCapsulePointerUp}
+          onDragOver={(e) => {
+            if (e.dataTransfer?.types?.includes("Files")) {
+              e.preventDefault();
+            }
+          }}
+          onDrop={(e) => {
+            const droppedFiles = Array.from(e.dataTransfer?.files ?? []);
+            if (droppedFiles.length > 0) {
+              e.preventDefault();
+              appendQuickFiles(droppedFiles);
+              inputRef.current?.focus();
+            }
+          }}
           className={`quick-capsule-shell relative w-full rounded-[26px] px-4 py-2.5 ${
-            inputExpanded || hasQuickResult || quickAttachments.length > 0 ? "is-expanded" : ""
+            inputExpanded || hasQuickResult || quickAttachments.length > 0 || Boolean(quickActiveMode)
+              ? "is-expanded"
+              : ""
           } ${isDragging ? "is-dragging cursor-grabbing" : "cursor-grab"} ${
             !isQuickVisible ? "is-paused" : ""
           }`}
@@ -1820,7 +2129,7 @@ export const QuickBar: React.FC = () => {
               </div>
 
               {/* Campo principal */}
-              <div className="flex-1 min-w-0">
+              <div ref={commandMenuRef} className="relative flex-1 min-w-0">
                 {statusPresence.mounted && displayStatusNote && (
                   <div
                     className={`flex items-center gap-1.5 mb-0.5 ${
@@ -1860,11 +2169,53 @@ export const QuickBar: React.FC = () => {
                   </div>
                 )}
 
+                {quickActiveModeSpec && (
+                  <div className="mb-1 flex items-center" data-no-drag="true">
+                    <ActiveModeChip
+                      spec={quickActiveModeSpec}
+                      compact
+                      onDismiss={() => {
+                        setQuickActiveMode(null);
+                        inputRef.current?.focus();
+                      }}
+                    />
+                  </div>
+                )}
+
                 <textarea
                   ref={inputRef}
                   rows={1}
                   value={inputPrompt}
-                  onChange={(e) => setInputPrompt(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setInputPrompt(val);
+
+                    if (val.startsWith("/")) {
+                      setShowModels(false);
+                      setShowScreenMenu(false);
+                      setShowCommandMenu(true);
+                      setCommandMenuFilter(val);
+                      setSelectedCommandIndex(0);
+                    } else if (showCommandMenu) {
+                      setShowCommandMenu(false);
+                      setCommandMenuFilter("");
+                    }
+
+                    const matchSlash = val.match(/^(\/[a-zA-Z]+)\s+(.*)$/s);
+                    if (matchSlash) {
+                      const typedCmd = matchSlash[1].toLowerCase();
+                      const rest = matchSlash[2];
+                      const found = XOX_COMMAND_LIST.find(
+                        (c) => c.slash.toLowerCase() === typedCmd
+                      );
+                      if (found) {
+                        setQuickActiveMode(found.id);
+                        setInputPrompt(rest);
+                        setShowCommandMenu(false);
+                        setCommandMenuFilter("");
+                      }
+                    }
+                  }}
                   onPaste={(e) => {
                     const { files: pastedFiles, text: pastedText } = extractClipboardPayload(
                       e.clipboardData
@@ -1880,6 +2231,53 @@ export const QuickBar: React.FC = () => {
                     }
                   }}
                   onKeyDown={(e) => {
+                    if (showCommandMenu) {
+                      if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        if (filteredCommands.length > 0) {
+                          setSelectedCommandIndex((i) => (i + 1) % filteredCommands.length);
+                        }
+                        return;
+                      }
+                      if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        if (filteredCommands.length > 0) {
+                          setSelectedCommandIndex(
+                            (i) => (i - 1 + filteredCommands.length) % filteredCommands.length
+                          );
+                        }
+                        return;
+                      }
+                      if (e.key === "Enter" || e.key === "Tab") {
+                        if (
+                          filteredCommands.length > 0 &&
+                          selectedCommandIndex >= 0 &&
+                          selectedCommandIndex < filteredCommands.length
+                        ) {
+                          e.preventDefault();
+                          const chosen = filteredCommands[selectedCommandIndex];
+                          setQuickActiveMode(chosen.id);
+                          setInputPrompt("");
+                          setShowCommandMenu(false);
+                          setCommandMenuFilter("");
+                          return;
+                        }
+                      }
+                      if (e.key === "Escape") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setShowCommandMenu(false);
+                        setCommandMenuFilter("");
+                        return;
+                      }
+                    }
+
+                    if (e.key === "Backspace" && !inputPrompt && quickActiveMode) {
+                      e.preventDefault();
+                      setQuickActiveMode(null);
+                      return;
+                    }
+
                     if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
                       e.preventDefault();
                       if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
@@ -1893,10 +2291,66 @@ export const QuickBar: React.FC = () => {
                   placeholder={quickPlaceholder}
                   className="input-bubble w-full resize-none overflow-y-auto bg-transparent text-[15px] leading-relaxed text-white placeholder:text-zinc-200/65 [text-shadow:0_1px_5px_rgba(4,8,18,0.68)] focus:outline-none py-1 cursor-text select-text disabled:opacity-50"
                 />
+
+                {commandMenuPresence.mounted && (
+                  <SlashCommandMenu
+                    isOpen={showCommandMenu}
+                    placement="bottom"
+                    filterQuery={commandMenuFilter}
+                    selectedIndex={selectedCommandIndex}
+                    onSelect={(cmd) => {
+                      setQuickActiveMode(cmd.id);
+                      setInputPrompt("");
+                      setShowCommandMenu(false);
+                      setCommandMenuFilter("");
+                      inputRef.current?.focus();
+                    }}
+                    onClose={() => {
+                      setShowCommandMenu(false);
+                      setCommandMenuFilter("");
+                      inputRef.current?.focus();
+                    }}
+                  />
+                )}
               </div>
 
-              {/* Lectura de pantalla + Selector de modelo + Enviar (estilo Liquid Glass neumórfico) */}
+              {/* Inspector + Lectura de pantalla + Selector de modelo + Enviar (estilo Liquid Glass neumórfico) */}
               <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  aria-pressed={quickActiveMode === "inspector"}
+                  aria-label="Activar /inspector — Analizar diseño de PDF, Word o Excel"
+                  title={
+                    quickActiveMode === "inspector"
+                      ? "Inspector de Diseño activo (PDF, Word, Excel) · Clic para desactivar"
+                      : "Activar /inspector — Analizar diseño de PDF, Word o Excel"
+                  }
+                  onClick={() => {
+                    setShowModels(false);
+                    setShowScreenMenu(false);
+                    setShowCommandMenu(false);
+                    setCommandMenuFilter("");
+                    setQuickActiveMode((prev) => (prev === "inspector" ? null : "inspector"));
+                    inputRef.current?.focus();
+                  }}
+                  className={`group/inspector relative w-8 h-8 inline-flex items-center justify-center rounded-full text-white cursor-pointer ${
+                    quickActiveMode === "inspector"
+                      ? "quick-liquid-chip-active"
+                      : "quick-liquid-btn"
+                  }`}
+                >
+                  <ScanSearch
+                    className={`w-3.5 h-3.5 shrink-0 transition-colors ${
+                      quickActiveMode === "inspector"
+                        ? "text-white"
+                        : "text-white/75 group-hover/inspector:text-white"
+                    }`}
+                  />
+                  {quickActiveMode === "inspector" && (
+                    <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-white/90 pointer-events-none" />
+                  )}
+                </button>
+
                 <div ref={screenMenuRef} className="relative">
                   <button
                     type="button"
@@ -2347,7 +2801,10 @@ export const QuickBar: React.FC = () => {
 
             {/* Respuesta rápida en vivo inline (con entrada y salida suaves) */}
             {replyPresence.mounted &&
-              (displayReply || previewTableCanvas || permissionItems.length > 0) && (
+              (displayReply ||
+                previewTableCanvas ||
+                permissionItems.length > 0 ||
+                hasTimelineCommands(displayTimeline)) && (
               <div
                 className={`${
                   hasQuickResult ? "toast-in" : "toast-out pointer-events-none"
@@ -2365,9 +2822,48 @@ export const QuickBar: React.FC = () => {
                     <div
                       className={`${
                         previewTableCanvas ? "max-h-[136px]" : "max-h-[340px]"
-                      } overflow-y-auto xook-scroll pr-1.5 text-[13px] text-zinc-100 leading-relaxed [text-shadow:0_1px_4px_rgba(4,8,18,0.68)] select-text min-w-0 flex-1`}
+                      } overflow-y-auto xook-scroll pr-1.5 text-[13px] text-zinc-100 leading-relaxed [text-shadow:0_1px_4px_rgba(4,8,18,0.68)] select-text min-w-0 flex-1 space-y-2`}
                     >
-                      {cleanedProseReply ? (
+                      {hasTimelineCommands(displayTimeline) ? (
+                        (() => {
+                          const qGroups = groupTimelineForRender(displayTimeline);
+                          if (qGroups.length === 0) {
+                            return permissionItems.some((p) => p.state === "pending") ? (
+                              <p className="text-zinc-300 font-medium truncate">
+                                Xox espera tu autorización para continuar
+                              </p>
+                            ) : null;
+                          }
+                          return qGroups.map((group) =>
+                            group.kind === "text" ? (
+                              <MarkdownContent
+                                key={group.id}
+                                text={cleanVisibleReply(group.text, {
+                                  stripTables: Boolean(previewTableCanvas),
+                                })}
+                                variant="liquid"
+                                compact
+                                streaming={isStreaming && group.isLastRawSegment}
+                                className="space-y-1.5"
+                              />
+                            ) : (
+                              <div key={group.id} data-no-drag="true" className="space-y-1.5">
+                                {group.items.map((perm) => (
+                                  <CommandPermissionCard
+                                    key={perm.requestId}
+                                    item={perm}
+                                    compact
+                                    surfaceVariant="liquid"
+                                    onResolve={(reqId, decision) =>
+                                      void handleResolveQuickPermission(reqId, decision)
+                                    }
+                                  />
+                                ))}
+                              </div>
+                            )
+                          );
+                        })()
+                      ) : cleanedProseReply ? (
                         <MarkdownContent
                           text={cleanedProseReply}
                           variant="liquid"
@@ -2399,6 +2895,9 @@ export const QuickBar: React.FC = () => {
                     type="button"
                     onClick={() => {
                       setReply(null);
+                      setQuickTimeline([]);
+                      activeQuickTimelineRef.current = [];
+                      lastTimelineRef.current = [];
                       setQuickCanvas(null);
                       setPendingClarification(null);
                       setPermissionItems([]);
@@ -2461,21 +2960,31 @@ export const QuickBar: React.FC = () => {
                   </div>
                 )}
 
-                {permissionItems.length > 0 && (
-                  <div data-no-drag="true" className="ml-7 space-y-2 select-text">
-                    {permissionItems.map((perm) => (
-                      <CommandPermissionCard
-                        key={perm.requestId}
-                        item={perm}
-                        compact
-                        surfaceVariant="liquid"
-                        onResolve={(reqId, decision) =>
-                          void handleResolveQuickPermission(reqId, decision)
-                        }
-                      />
-                    ))}
-                  </div>
-                )}
+                {(() => {
+                  const dockPerms = hasTimelineCommands(displayTimeline)
+                    ? permissionItems.filter(
+                        (p) =>
+                          p.state === "pending" ||
+                          !timelineHasRequestId(displayTimeline, p.requestId)
+                      )
+                    : permissionItems;
+                  if (dockPerms.length === 0) return null;
+                  return (
+                    <div data-no-drag="true" className="ml-7 space-y-2 select-text">
+                      {dockPerms.map((perm) => (
+                        <CommandPermissionCard
+                          key={perm.requestId}
+                          item={perm}
+                          compact
+                          surfaceVariant="liquid"
+                          onResolve={(reqId, decision) =>
+                            void handleResolveQuickPermission(reqId, decision)
+                          }
+                        />
+                      ))}
+                    </div>
+                  );
+                })()}
 
                 {previewTableCanvas && (
                   <div

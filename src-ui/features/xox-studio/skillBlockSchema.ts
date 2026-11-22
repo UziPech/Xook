@@ -9,6 +9,10 @@ export interface SkillBlockModel {
   scope: "global" | "workspace" | "builtin";
   enabled: boolean;
   source: string;
+  kind?: string;
+  designSpec?: string;
+  palettePreview?: string[];
+  extraMeta?: Record<string, string>;
   prefs: string[];
   steps: string[];
   donts: string[];
@@ -22,6 +26,7 @@ export const SKILL_DOMAIN_OPTIONS = [
   { id: "creative", label: "Redacción y creativo" },
   { id: "software", label: "Tecnología / software" },
   { id: "research", label: "Estudio e investigación" },
+  { id: "document-design", label: "Diseño de documentos" },
 ] as const;
 
 export interface SkillStarterTemplate {
@@ -141,9 +146,11 @@ function parseFrontmatter(raw: string): { meta: Record<string, string>; body: st
         meta[k] = v === "|" || v === ">" || v === "|-" || v === ">-" ? "" : v;
       }
     } else if (startsWs && currentKey) {
-      const extra = trimmed.replace(/^-\s*/, "").trim();
+      const isListItem = /^-\s+/.test(trimmed);
+      const extra = trimmed.replace(/^-\s*/, "").replace(/^["']|["']$/g, "").trim();
       if (extra) {
-        meta[currentKey] = meta[currentKey] ? `${meta[currentKey]} ${extra}` : extra;
+        const sep = isListItem ? ", " : " ";
+        meta[currentKey] = meta[currentKey] ? `${meta[currentKey]}${sep}${extra}` : extra;
       }
     }
   }
@@ -151,6 +158,176 @@ function parseFrontmatter(raw: string): { meta: Record<string, string>; body: st
   return {
     meta,
     body: lines.slice(endIdx + 1).join("\n").trim(),
+  };
+}
+
+const STANDARD_SKILL_FRONTMATTER_KEYS = new Set([
+  "name",
+  "title",
+  "description",
+  "role",
+  "domain",
+  "enabled",
+  "source",
+  "updated_at",
+  "kind",
+  "design_spec",
+  "palette_preview",
+]);
+
+const DESIGN_EXTRA_META_KEYS = [
+  "source_format",
+  "supported_outputs",
+  "source_file",
+  "source_pdf",
+  "document_type",
+] as const;
+
+function parsePalettePreview(raw?: string): string[] {
+  if (!raw) return [];
+  const matches = raw.match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g);
+  if (!matches) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const hex of matches) {
+    const norm = hex.toUpperCase();
+    if (!seen.has(norm)) {
+      seen.add(norm);
+      out.push(norm);
+      if (out.length >= 6) break;
+    }
+  }
+  return out;
+}
+
+function parseSupportedOutputs(raw?: string): string[] {
+  if (!raw) return [];
+  const cleaned = raw.replace(/[\[\]"']/g, " ");
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of cleaned.split(/[\s,]+/)) {
+    const token = part.trim().toLowerCase().replace(/^\./, "");
+    if (token && !seen.has(token)) {
+      seen.add(token);
+      out.push(token);
+    }
+  }
+  return out;
+}
+
+export interface SkillDesignMeta {
+  isPdfDesign: boolean;
+  isDocumentDesign: boolean;
+  kind?: string;
+  designSpec?: string;
+  palettePreview: string[];
+  documentType?: string;
+  sourceFormat?: string;
+  supportedOutputs?: string[];
+  sourceFile?: string;
+  sourcePdf?: string;
+}
+
+export type DesignSkillBadgeMetaInput =
+  | SkillDesignMeta
+  | SkillBlockModel
+  | {
+      kind?: string;
+      sourceFormat?: string;
+      source_format?: string;
+      sourceFile?: string;
+      source_file?: string;
+      sourcePdf?: string;
+      source_pdf?: string;
+      extraMeta?: Record<string, string>;
+    }
+  | null
+  | undefined;
+
+export function getDesignSkillBadgeLabel(meta: DesignSkillBadgeMetaInput): string {
+  if (!meta) return "Diseño Doc";
+  const extra = "extraMeta" in meta && meta.extraMeta ? meta.extraMeta : undefined;
+  const rawFormat = (
+    ("sourceFormat" in meta ? meta.sourceFormat : undefined) ||
+    ("source_format" in meta ? meta.source_format : undefined) ||
+    extra?.source_format ||
+    ""
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/^\./, "");
+
+  const sourcePath = (
+    ("sourceFile" in meta ? meta.sourceFile : undefined) ||
+    ("source_file" in meta ? meta.source_file : undefined) ||
+    extra?.source_file ||
+    ("sourcePdf" in meta ? meta.sourcePdf : undefined) ||
+    ("source_pdf" in meta ? meta.source_pdf : undefined) ||
+    extra?.source_pdf ||
+    ""
+  )
+    .trim()
+    .toLowerCase();
+  const inferredExt = sourcePath.includes(".") ? sourcePath.split(".").pop() || "" : "";
+  const fmt = rawFormat || inferredExt;
+
+  if (fmt === "docx" || fmt === "doc" || fmt === "rtf" || fmt === "odt" || fmt === "word") {
+    return "Diseño Word";
+  }
+  if (
+    fmt === "xlsx" ||
+    fmt === "xls" ||
+    fmt === "ods" ||
+    fmt === "csv" ||
+    fmt === "tsv" ||
+    fmt === "excel"
+  ) {
+    return "Diseño Excel";
+  }
+  if (fmt === "pptx" || fmt === "ppt" || fmt === "odp" || fmt === "powerpoint") {
+    return "Diseño PPTX";
+  }
+  if (fmt === "pdf" || meta.kind === "pdf-design") {
+    return "Diseño PDF";
+  }
+  return "Diseño Doc";
+}
+
+export function extractSkillDesignMeta(entry: XoxSkillEntry): SkillDesignMeta {
+  const { meta } = parseFrontmatter(entry.rawMarkdown);
+  const kind = meta.kind?.trim() || undefined;
+  const designSpec = meta.design_spec?.trim() || undefined;
+  const palettePreview = parsePalettePreview(meta.palette_preview);
+  const documentType = meta.document_type?.trim() || undefined;
+  const sourcePdf = meta.source_pdf?.trim() || undefined;
+  const sourceFile = meta.source_file?.trim() || sourcePdf || undefined;
+  const rawSourceFormat = meta.source_format?.trim().toLowerCase().replace(/^\./, "") || undefined;
+  const inferredFromFile =
+    sourceFile && sourceFile.includes(".")
+      ? sourceFile.split(".").pop()?.trim().toLowerCase()
+      : undefined;
+  const sourceFormat =
+    rawSourceFormat ||
+    inferredFromFile ||
+    (kind === "pdf-design" ? "pdf" : undefined);
+  const supportedOutputs = parseSupportedOutputs(meta.supported_outputs);
+  const domain = (meta.domain || entry.domain || "").trim().toLowerCase();
+  const isDocumentDesign =
+    kind === "document-design" ||
+    kind === "pdf-design" ||
+    domain === "document-design" ||
+    Boolean(designSpec);
+  return {
+    isPdfDesign: isDocumentDesign,
+    isDocumentDesign,
+    kind,
+    designSpec,
+    palettePreview,
+    documentType,
+    sourceFormat,
+    ...(supportedOutputs.length > 0 ? { supportedOutputs } : {}),
+    sourceFile,
+    sourcePdf,
   };
 }
 
@@ -213,6 +390,22 @@ export function parseSkillToBlocks(entry: XoxSkillEntry): SkillBlockModel {
   const scope =
     entry.scope === "workspace" || entry.scope === "builtin" ? entry.scope : "global";
 
+  const kind =
+    meta.kind?.trim() ||
+    (meta.design_spec?.trim() ? "document-design" : undefined);
+  const designSpec = meta.design_spec?.trim() || undefined;
+  const palettePreview = parsePalettePreview(meta.palette_preview);
+  const extraMeta: Record<string, string> = {};
+  for (const key of DESIGN_EXTRA_META_KEYS) {
+    const val = meta[key]?.trim();
+    if (val) extraMeta[key] = val;
+  }
+  for (const [k, v] of Object.entries(meta)) {
+    if (!STANDARD_SKILL_FRONTMATTER_KEYS.has(k) && v.trim() && !(k in extraMeta)) {
+      extraMeta[k] = v.trim();
+    }
+  }
+
   return {
     slug: entry.slug,
     title: title.trim() || entry.slug,
@@ -222,6 +415,10 @@ export function parseSkillToBlocks(entry: XoxSkillEntry): SkillBlockModel {
     scope,
     enabled: entry.enabled,
     source: entry.source || "learned-from-user",
+    ...(kind ? { kind } : {}),
+    ...(designSpec ? { designSpec } : {}),
+    ...(palettePreview.length > 0 ? { palettePreview } : {}),
+    ...(Object.keys(extraMeta).length > 0 ? { extraMeta } : {}),
     prefs,
     steps,
     donts,
@@ -251,6 +448,9 @@ export function serializeBlocksToSkillMarkdown(model: SkillBlockModel): string {
   const safeTitle = title.replace(/"/g, "'");
   const safeRole = model.role.replace(/\s+/g, " ").trim().replace(/"/g, "'");
   const safeDomain = (model.domain || "general").trim().replace(/"/g, "'");
+  const safeKind = (model.kind || "").trim().replace(/"/g, "'");
+  const safeDesignSpec = (model.designSpec || "").trim().replace(/"/g, "'");
+  const cleanPalette = parsePalettePreview((model.palettePreview ?? []).join(", "));
   const today = new Date().toISOString().slice(0, 10);
 
   const lines: string[] = [
@@ -261,6 +461,19 @@ export function serializeBlocksToSkillMarkdown(model: SkillBlockModel): string {
   ];
   if (safeRole) lines.push(`role: "${safeRole}"`);
   if (safeDomain) lines.push(`domain: "${safeDomain}"`);
+  if (safeKind) lines.push(`kind: "${safeKind}"`);
+  if (safeDesignSpec) lines.push(`design_spec: "${safeDesignSpec}"`);
+  if (cleanPalette.length > 0) {
+    lines.push(`palette_preview: "${cleanPalette.join(", ")}"`);
+  }
+  if (model.extraMeta) {
+    for (const [rawKey, rawVal] of Object.entries(model.extraMeta)) {
+      const key = rawKey.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+      const val = (rawVal ?? "").replace(/\s+/g, " ").trim().replace(/"/g, "'");
+      if (!key || !val || STANDARD_SKILL_FRONTMATTER_KEYS.has(key)) continue;
+      lines.push(`${key}: "${val}"`);
+    }
+  }
   lines.push(
     `enabled: ${model.enabled ? "true" : "false"}`,
     `source: "${(model.source || "user-studio").replace(/"/g, "'")}"`,

@@ -1,4 +1,4 @@
-export type XoxModeId = "agent" | "study" | "plan" | "audit" | "compact";
+export type XoxModeId = "agent" | "study" | "plan" | "audit" | "inspector" | "compact";
 
 export type SubagentDesign = "star" | "prism" | "orbit" | "shield";
 

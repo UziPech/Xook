@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::slices::secret_store::{self, SecretMap};
+
 struct ActiveChatStream {
     pid: u32,
     cancelled: Arc<AtomicBool>,
@@ -117,18 +119,6 @@ fn default_model_for_provider(provider: &str) -> &'static str {
         "openai" => "gpt-4.1-mini",
         "anthropic" => "claude-sonnet-4-6",
         _ => "openrouter/free",
-    }
-}
-
-fn provider_env_vars(provider: &str) -> &'static [&'static str] {
-    match normalize_provider_id(provider) {
-        "deepseek" => &["DEEPSEEK_API_KEY"],
-        "kimi" => &["MOONSHOT_API_KEY", "KIMI_API_KEY"],
-        "groq" => &["GROQ_API_KEY"],
-        "gemini" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-        "openai" => &["OPENAI_API_KEY"],
-        "anthropic" => &["ANTHROPIC_API_KEY"],
-        _ => &["OPENROUTER_API_KEY"],
     }
 }
 
@@ -400,16 +390,118 @@ fn normalize_vault_state(vault: &mut StoredAiVault) {
     vault.failover_order = normalize_failover_order(&vault.failover_order);
 }
 
-fn load_vault<R: Runtime>(app: &AppHandle<R>) -> StoredAiVault {
-    let mut vault = vault_file_path(app)
+/// Quita las claves del vault y las devuelve como `{proveedor: clave}`.
+fn take_secrets(vault: &mut StoredAiVault) -> SecretMap {
+    let mut secrets = SecretMap::new();
+    for (pid, entry) in vault.providers.iter_mut() {
+        if let Some(key) = entry
+            .api_key
+            .take()
+            .map(|k| normalize_api_key(&k))
+            .filter(|k| !k.is_empty())
+        {
+            secrets.insert(pid.clone(), key);
+        }
+    }
+    // Campo heredado de la versión de un solo proveedor.
+    if let Some(key) = vault
+        .api_key
+        .take()
+        .map(|k| normalize_api_key(&k))
+        .filter(|k| !k.is_empty())
+    {
+        secrets
+            .entry(normalize_provider_id(&vault.provider).to_string())
+            .or_insert(key);
+    }
+    secrets
+}
+
+fn apply_secrets(vault: &mut StoredAiVault, secrets: &SecretMap) {
+    for (pid, key) in secrets {
+        vault
+            .providers
+            .entry(pid.clone())
+            .or_insert_with(|| StoredProviderEntry {
+                model_id: default_model_for_provider(pid).to_string(),
+                ..Default::default()
+            })
+            .api_key = Some(key.clone());
+    }
+    let active = normalize_provider_id(&vault.provider);
+    vault.api_key = vault.providers.get(active).and_then(|e| e.api_key.clone());
+}
+
+fn read_vault_file<R: Runtime>(app: &AppHandle<R>) -> StoredAiVault {
+    vault_file_path(app)
         .and_then(|path| fs::read_to_string(path).ok())
         .and_then(|raw| serde_json::from_str::<StoredAiVault>(&raw).ok())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// Claves heredadas del archivo (versiones anteriores, en texto plano) que se conservan en disco
+/// cuando no hay almacén seguro: solo las que siguen vigentes sin cambios. Las nuevas o
+/// modificadas quedan solo en la sesión; las borradas por el usuario desaparecen del archivo.
+fn legacy_secrets_to_keep(on_disk: SecretMap, current: &SecretMap) -> SecretMap {
+    on_disk
+        .into_iter()
+        .filter(|(pid, key)| current.get(pid) == Some(key))
+        .collect()
+}
+
+fn load_vault<R: Runtime>(app: &AppHandle<R>) -> StoredAiVault {
+    let mut vault = read_vault_file(app);
     normalize_vault_state(&mut vault);
+    let file_secrets = take_secrets(&mut vault);
+    let (mut secrets, persistent) = secret_store::load();
+
+    if !file_secrets.is_empty() {
+        // Migración de claves en texto plano al almacén seguro (el almacén gana si ya tenía una).
+        for (pid, key) in file_secrets {
+            secrets.entry(pid).or_insert(key);
+        }
+        // El archivo se reescribe sin ellas solo si el almacén confirmó que las guardó.
+        if persistent {
+            match secret_store::save(&secrets) {
+                Ok(true) => {
+                    if let Err(err) = write_vault_file(app, &vault) {
+                        eprintln!("[ai_vault] {err}");
+                    }
+                }
+                Ok(false) => {}
+                Err(err) => eprintln!("[ai_vault] {err}"),
+            }
+        }
+    }
+
+    apply_secrets(&mut vault, &secrets);
     vault
 }
 
+/// Las claves van al almacén seguro del sistema y el archivo solo guarda la configuración.
+/// El orden importa: si el almacén falla, el archivo no se toca.
 fn write_vault<R: Runtime>(app: &AppHandle<R>, vault: &StoredAiVault) -> Result<(), String> {
+    let mut public_vault = vault.clone();
+    let secrets = take_secrets(&mut public_vault);
+    if secret_store::save(&secrets)? {
+        return write_vault_file(app, &public_vault);
+    }
+    // Solo sesión: ninguna clave nueva toca el disco, pero las heredadas sin cambios se conservan
+    // para no perderlas al cerrar XOOK.
+    let mut on_disk = read_vault_file(app);
+    normalize_vault_state(&mut on_disk);
+    let kept = legacy_secrets_to_keep(take_secrets(&mut on_disk), &secrets);
+    apply_secrets(&mut public_vault, &kept);
+    write_vault_file(app, &public_vault)
+}
+
+/// Dónde se guardan las claves (almacén seguro o solo esta sesión), para mostrarlo en Ajustes.
+#[tauri::command]
+pub fn get_secret_storage_status() -> secret_store::StorageStatus {
+    secret_store::status()
+}
+
+fn write_vault_file<R: Runtime>(app: &AppHandle<R>, vault: &StoredAiVault) -> Result<(), String> {
     let path = vault_file_path(app).ok_or_else(|| "No se pudo resolver app_config_dir".to_string())?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Error creando directorio de bóveda: {e}"))?;
@@ -500,14 +592,7 @@ fn resolve_provider_key(vault: &StoredAiVault, provider: &str) -> (Option<String
             return (Some(k), "vault");
         }
     }
-    for env_name in provider_env_vars(pid) {
-        if let Ok(env_k) = std::env::var(env_name) {
-            let trimmed = normalize_api_key(&env_k);
-            if !trimmed.is_empty() {
-                return (Some(trimmed), "env");
-            }
-        }
-    }
+    // Las claves entran solo por la bóveda: no hay respaldo en variables de entorno.
     (None, "none")
 }
 
@@ -595,6 +680,13 @@ fn build_provider_credentials_json(vault: &StoredAiVault) -> serde_json::Map<Str
         );
     }
     map
+}
+
+/// Credenciales para las evals de proveedores (`slices::provider_evals`), con el mismo formato que recibe `ai_chat`.
+pub(crate) fn provider_credentials_for_evals<R: Runtime>(
+    app: &AppHandle<R>,
+) -> serde_json::Map<String, serde_json::Value> {
+    build_provider_credentials_json(&load_vault(app))
 }
 
 fn to_public_config(vault: &StoredAiVault) -> AiConfigPublic {
@@ -785,6 +877,17 @@ pub(crate) fn find_sidecar_script<R: Runtime>(app: &AppHandle<R>) -> Result<Path
         .ok_or_else(|| "No se encontró src-brain/main_sidecar.py".to_string())
 }
 
+/// Comando para lanzar el Python de XOOK en modo UTF-8 en todos los sistemas.
+///
+/// Sin esto, en Windows stdin/stdout por pipe usan la página de códigos local (cp1252): el texto
+/// en español llega corrompido y caracteres como "Á" o "Í" hacen fallar la lectura.
+/// `PYTHONIOENCODING` va explícito porque, si el usuario lo tiene definido, gana sobre `PYTHONUTF8`.
+pub(crate) fn python_command(py_bin: &std::path::Path) -> Command {
+    let mut cmd = Command::new(py_bin);
+    cmd.env("PYTHONUTF8", "1").env("PYTHONIOENCODING", "utf-8");
+    cmd
+}
+
 pub(crate) fn resolve_python_executable(script_path: &PathBuf) -> PathBuf {
     if let Ok(explicit) = std::env::var("XOOK_PYTHON") {
         let trimmed = explicit.trim();
@@ -839,7 +942,7 @@ pub(crate) fn call_python_sidecar(
     let line = format!("{request}\n");
 
     let py_bin = resolve_python_executable(script_path);
-    let mut child = Command::new(&py_bin)
+    let mut child = python_command(&py_bin)
         .arg(script_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -4439,7 +4542,7 @@ fn call_python_sidecar_streaming<R: Runtime>(
     let line = format!("{request}\n");
 
     let py_bin = resolve_python_executable(script_path);
-    let mut child = Command::new(&py_bin)
+    let mut child = python_command(&py_bin)
         .arg(script_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -5337,6 +5440,104 @@ pub fn reset_provider_usage_ledger<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secrets_round_trip_without_leaking_into_the_file() {
+        let mut vault = StoredAiVault::default();
+        vault.provider = "deepseek".to_string();
+        vault.providers.get_mut("deepseek").unwrap().api_key = Some("Bearer sk-deepseek-000000000000".to_string());
+        vault.providers.get_mut("groq").unwrap().api_key = Some("gsk_groqgroqgroqgroqgroq".to_string());
+        vault.api_key = Some("sk-deepseek-000000000000".to_string());
+
+        let secrets = take_secrets(&mut vault);
+        assert_eq!(secrets.get("deepseek").map(String::as_str), Some("sk-deepseek-000000000000"));
+        assert_eq!(secrets.get("groq").map(String::as_str), Some("gsk_groqgroqgroqgroqgroq"));
+        let file_body = serde_json::to_string(&vault).unwrap();
+        assert!(!file_body.contains("sk-deepseek"), "el archivo no debe contener claves");
+        assert!(!file_body.contains("gsk_"), "el archivo no debe contener claves");
+
+        apply_secrets(&mut vault, &secrets);
+        assert_eq!(vault.providers["groq"].api_key.as_deref(), Some("gsk_groqgroqgroqgroqgroq"));
+        assert_eq!(vault.api_key.as_deref(), Some("sk-deepseek-000000000000"));
+    }
+
+    #[test]
+    fn legacy_single_provider_key_is_migrated_to_its_provider() {
+        let mut vault = StoredAiVault::default();
+        vault.provider = "openrouter".to_string();
+        vault.api_key = Some("sk-or-v1-legacylegacylegacy".to_string());
+
+        let secrets = take_secrets(&mut vault);
+        assert_eq!(secrets.get("openrouter").map(String::as_str), Some("sk-or-v1-legacylegacylegacy"));
+        assert!(vault.api_key.is_none());
+    }
+
+    #[test]
+    fn session_only_keeps_only_unchanged_legacy_keys_on_disk() {
+        let on_disk: SecretMap = [
+            ("openrouter", "sk-or-vieja"),
+            ("groq", "gsk_vieja"),
+            ("deepseek", "sk-borrada"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let current: SecretMap = [
+            ("openrouter", "sk-or-vieja"), // sin cambios: se conserva
+            ("groq", "gsk_nueva"),         // cambiada: solo en la sesión
+            ("gemini", "AIza-nueva"),      // nueva: solo en la sesión
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+        let kept = legacy_secrets_to_keep(on_disk, &current);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept.get("openrouter").map(String::as_str), Some("sk-or-vieja"));
+    }
+
+    #[test]
+    fn python_is_always_launched_in_utf8_mode() {
+        let cmd = python_command(std::path::Path::new("python3"));
+        let env: HashMap<_, _> = cmd.get_envs().collect();
+        assert_eq!(env.get(std::ffi::OsStr::new("PYTHONUTF8")).copied().flatten(), Some(std::ffi::OsStr::new("1")));
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("PYTHONIOENCODING")).copied().flatten(),
+            Some(std::ffi::OsStr::new("utf-8"))
+        );
+    }
+
+    /// Viaje real por el pipe. En Windows (cp1252), sin modo UTF-8 la "Á" hace fallar a Python.
+    #[test]
+    fn spanish_text_survives_the_python_pipe() {
+        let bin = if cfg!(windows) { "python" } else { "python3" };
+        let text = "¿Qué hora es? Ágil, Índice, año, ü — ✓";
+        let child = python_command(std::path::Path::new(bin))
+            .args(["-c", "import sys; sys.stdout.write(sys.stdin.read())"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        let Ok(mut child) = child else {
+            eprintln!("sin `{bin}` en este equipo: se omite la prueba del pipe");
+            return;
+        };
+        child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "Python falló: {}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), text);
+    }
+
+    #[test]
+    fn provider_keys_never_come_from_environment() {
+        let vault = StoredAiVault::default();
+        // SAFETY: test de un solo hilo sobre una variable que nada más lee en este proceso.
+        unsafe { std::env::set_var("DEEPSEEK_API_KEY", "sk-from-env-000000000000") };
+        let (key, source) = resolve_provider_key(&vault, "deepseek");
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+        assert!(key.is_none());
+        assert_eq!(source, "none");
+    }
 
     #[test]
     fn normalizes_kimi_and_moonshot_aliases() {
