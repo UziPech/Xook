@@ -682,6 +682,13 @@ fn build_provider_credentials_json(vault: &StoredAiVault) -> serde_json::Map<Str
     map
 }
 
+/// Credenciales para las evals de proveedores (`slices::provider_evals`), con el mismo formato que recibe `ai_chat`.
+pub(crate) fn provider_credentials_for_evals<R: Runtime>(
+    app: &AppHandle<R>,
+) -> serde_json::Map<String, serde_json::Value> {
+    build_provider_credentials_json(&load_vault(app))
+}
+
 fn to_public_config(vault: &StoredAiVault) -> AiConfigPublic {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let mut configured_providers = HashMap::new();

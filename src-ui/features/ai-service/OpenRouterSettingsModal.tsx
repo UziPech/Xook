@@ -25,6 +25,7 @@ import { LiquidGlassBackdrop } from "../../components/LiquidGlassBackdrop";
 import { JellyPillTrack } from "../../components/JellyPillTrack";
 import { waitTopLayerAnimations } from "../../utils/topLayerDialog";
 import { ProviderIcon, normalizeProviderIdClient } from "./ProviderIcon";
+import { ProviderEvalsSection } from "./ProviderEvalsSection";
 import { SecretStorageNote } from "./SecretStorageNote";
 import {
   AI_PROVIDERS,
@@ -1910,6 +1911,9 @@ export const OpenRouterSettingsModal: React.FC<OpenRouterSettingsModalProps> = (
                   </div>
                 </div>
               </section>
+
+              {/* Bloque 5: Probar modelos (evals de proveedores) */}
+              <ProviderEvalsSection />
             </div>
           )}
 
