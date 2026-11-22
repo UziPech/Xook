@@ -25,6 +25,7 @@ import uuid
 
 from slices.inventory_advisor.review_engine import run_workspace_review
 from slices.task_ui.schemas import sanitize_task_proposal
+from slices.agent_tools.system_capabilities import filter_tool_defs_for_system
 from slices.agent_tools.skills_hub import (
     USER_PROFILE_REL,
     discover_official_skills,
@@ -1785,6 +1786,9 @@ USER_MEMORY_TOOL_DEFS: List[Dict[str, Any]] = [
 ]
 
 AGENT_TOOL_DEFS.extend(USER_MEMORY_TOOL_DEFS)
+
+# Sin herramientas que este sistema operativo no puede ejecutar (ver `system_capabilities`).
+AGENT_TOOL_DEFS[:] = filter_tool_defs_for_system(AGENT_TOOL_DEFS)
 
 CHECKLIST_TOOL_DEF: Dict[str, Any] = {
     "type": "function",
