@@ -101,12 +101,15 @@ class _FakeNetwork:
         spawn_subagent: bool = False,
         spawn_model: Optional[str] = None,
         reasoning_tool_round: bool = False,
+        reasoning_only_round: bool = False,
     ) -> None:
         self.requests: List[Dict[str, Any]] = []
         self._pending_spawn = spawn_subagent
         self._spawn_model = spawn_model
         # Primera ronda: razonamiento nativo (`reasoning_content`) y una llamada a workspace_list.
         self._pending_reasoning_round = reasoning_tool_round
+        # Primera ronda: solo razonamiento nativo, sin texto ni herramientas.
+        self._pending_reasoning_only = reasoning_only_round
 
     def __call__(self, req: urllib.request.Request, timeout: Any = None, context: Any = None) -> _FakeResponse:
         body = json.loads(req.data.decode("utf-8")) if req.data else {}
@@ -132,6 +135,10 @@ class _FakeNetwork:
                 return _FakeResponse(lines=_openai_sse(
                     {"choices": [{"delta": {"reasoning_content": REASONING}}]},
                     {"choices": [{"delta": {"tool_calls": [call]}, "finish_reason": "tool_calls"}]}))
+            if self._pending_reasoning_only:
+                self._pending_reasoning_only = False
+                return _FakeResponse(lines=_openai_sse(
+                    {"choices": [{"delta": {"reasoning_content": REASONING}, "finish_reason": "stop"}]}))
             return _FakeResponse(lines=_openai_sse({"choices": [{"delta": {"content": FINAL}, "finish_reason": "stop"}]}))
         if is_anthropic:
             return _FakeResponse({"id": "msg_1", "type": "message", "role": "assistant", "model": body.get("model"),
@@ -256,11 +263,11 @@ class ProviderRequestsTests(unittest.TestCase):
                 self.assertEqual([r["body"]["model"] for r in reqs if r["body"].get("max_tokens") == 2400], [model])
 
     def test_native_reasoning_replay_in_tool_loop(self) -> None:
-        # Hoy el razonamiento nativo (`reasoning_content`) se reenvía vacío.
+        # El razonamiento nativo (`reasoning_content`) vuelve completo a quien lo necesita, y a nadie más.
         cases = {
-            ("deepseek", "deepseek-chat"): "",
+            ("deepseek", "deepseek-chat"): REASONING,
             ("openrouter", "openrouter/free"): None,
-            ("openrouter", "deepseek/deepseek-r1"): "",
+            ("openrouter", "deepseek/deepseek-r1"): REASONING,
         }
         for (provider, model), expected in cases.items():
             with self.subTest(provider=provider, model=model):
@@ -270,6 +277,14 @@ class ProviderRequestsTests(unittest.TestCase):
                 turns = [m for m in streams[1]["body"]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")]
                 self.assertEqual(len(turns), 1)
                 self.assertEqual(turns[0].get("reasoning_content"), expected)
+
+    def test_reasoning_only_round_asks_for_the_final_answer(self) -> None:
+        # Si el modelo solo razonó, el agente le pide la respuesta final en lugar de dar un texto genérico.
+        reqs = self._capture("stream", "deepseek", reasoning_only_round=True)
+        streams = [r for r in reqs if r["body"].get("stream")]
+        self.assertEqual(len(streams), 2)
+        last_user = [m.get("content") for m in streams[1]["body"]["messages"] if m.get("role") == "user"][-1]
+        self.assertIn("Completaste un razonamiento previo", str(last_user))
 
     def test_openrouter_custom_base_url_is_used_by_every_path(self) -> None:
         # Con una URL propia configurada, la clave nunca debe viajar a openrouter.ai.

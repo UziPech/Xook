@@ -6617,7 +6617,9 @@ def stream_agent_completion(
                 delta = choices[0].get("delta") or {}
                 r_chunk = _extract_delta_reasoning(delta)
                 if r_chunk:
-                    on_reasoning_delta(r_chunk)
+                    # Por el router de la ronda: así el razonamiento nativo (`reasoning_content`) también se
+                    # guarda para reenviárselo al proveedor que lo necesita (ver _provider_replays_reasoning).
+                    tag_router.on_reasoning(r_chunk)
                 tc_deltas = delta.get("tool_calls")
                 if isinstance(tc_deltas, list):
                     for tcd in tc_deltas:
