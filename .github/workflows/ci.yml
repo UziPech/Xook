@@ -54,6 +54,11 @@ jobs:
           cache-dependency-path: src-brain/requirements.txt
       - run: python -m pip install -r src-brain/requirements.txt
       - run: python -m unittest discover -s src-brain/slices -t src-brain -p "*_tests.py"
+      # Suite heredada (script, no unittest): da por hecho las herramientas nativas de macOS.
+      - name: Suite heredada del sidecar
+        if: runner.os == 'macOS'
+        working-directory: src-brain
+        run: python test_sidecar.py
 
   core:
     name: Núcleo Rust · ${{ matrix.os }}
