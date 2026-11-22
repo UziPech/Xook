@@ -1,5 +1,6 @@
 pub mod app_launcher;
 pub mod command_runner;
+pub mod desktop_control;
 pub mod env_actions;
 pub mod host_fs;
 pub mod scheduler;

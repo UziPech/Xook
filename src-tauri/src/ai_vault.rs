@@ -2116,16 +2116,17 @@ fn handle_open_app_rpc_callback<R: Runtime>(
 
 struct CapabilityActionSpec {
     kind: &'static str,
-    capability_key: &'static str,
+    capability_key: std::borrow::Cow<'static, str>,
     risk_level: &'static str,
     purpose: String,
     display_cmd: String,
     audit_action: &'static str,
     deny_audit_action: &'static str,
-    app_name: &'static str,
-    bundle_id: &'static str,
-    rule_description: &'static str,
+    app_name: std::borrow::Cow<'static, str>,
+    bundle_id: std::borrow::Cow<'static, str>,
+    rule_description: std::borrow::Cow<'static, str>,
     detail_preview: Option<String>,
+    force_ask_once: bool,
 }
 
 fn execute_and_record_capability_action<R, F>(
@@ -2151,13 +2152,19 @@ where
     match action_fn() {
         Ok((payload_val, summary)) => {
             let duration_ms = started.elapsed().as_millis() as i64;
+            let payload_ok = payload_val
+                .get("ok")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let final_status = if payload_ok { "finished" } else { "error" };
+            let final_exit = if payload_ok { 0 } else { -1 };
             if let Some(c) = conn {
                 let _ = finish_command_execution(
                     c,
                     cmd_id,
-                    "finished",
+                    final_status,
                     Some(permission_mode),
-                    Some(0),
+                    Some(final_exit),
                     Some(duration_ms),
                     None,
                 );
@@ -2172,18 +2179,31 @@ where
                     Some(&spec.display_cmd),
                 );
             }
+            let payload_err = if payload_ok {
+                None
+            } else {
+                payload_val
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| Some(summary.clone()))
+            };
             let cmd_result = CommandExecutionResult {
-                ok: true,
+                ok: payload_ok,
                 command_id: cmd_id.to_string(),
-                status: "finished".to_string(),
+                status: final_status.to_string(),
                 permission_mode: permission_mode.to_string(),
-                exit_code: Some(0),
+                exit_code: Some(final_exit),
                 duration_ms: duration_ms.max(0) as u128,
-                stdout: summary,
-                stderr: String::new(),
+                stdout: if payload_ok { summary } else { String::new() },
+                stderr: if payload_ok {
+                    String::new()
+                } else {
+                    payload_err.clone().unwrap_or_default()
+                },
                 truncated: false,
                 log_path: None,
-                error: None,
+                error: payload_err.clone(),
             };
             let _ = app.emit(
                 "xox:command-finished",
@@ -2196,11 +2216,12 @@ where
                     "command": spec.display_cmd,
                     "cwdRel": eval.cwd_rel,
                     "riskLevel": eval.risk_level,
-                    "status": "finished",
+                    "status": final_status,
                     "appName": spec.app_name,
                     "bundleId": spec.bundle_id,
                     "detailPreview": spec.detail_preview,
                     "result": cmd_result,
+                    "error": payload_err,
                 }),
             );
             payload_val
@@ -2300,18 +2321,24 @@ where
         .or_else(|| resolve_active_workspace_root(app));
     let conn = root.as_deref().and_then(|r| open_workspace_db(r).ok());
 
-    let eval = if let Some(ref ws_root) = root {
-        evaluate_capability(ws_root, spec.capability_key, spec.risk_level)
+    let mut eval = if let Some(ref ws_root) = root {
+        evaluate_capability(ws_root, spec.capability_key.as_ref(), spec.risk_level)
     } else {
         make_app_evaluation(
             PolicyVerdict::Ask,
             None,
             spec.risk_level,
             PathBuf::from("/"),
-            spec.capability_key,
-            spec.capability_key,
+            spec.capability_key.as_ref(),
+            spec.capability_key.as_ref(),
         )
     };
+    if spec.force_ask_once {
+        eval.allow_always_allowed = false;
+        if matches!(eval.verdict, PolicyVerdict::Allow) {
+            eval.verdict = PolicyVerdict::Ask;
+        }
+    }
 
     let cmd_id = format!("{request_id}_{}", chrono::Utc::now().timestamp_millis());
 
@@ -2418,6 +2445,7 @@ where
                     "riskLevel": eval.risk_level,
                     "program": spec.app_name,
                     "patternSuggestion": spec.capability_key,
+                    "allowAlwaysAllowed": !spec.force_ask_once,
                     "appName": spec.app_name,
                     "bundleId": spec.bundle_id,
                     "detailPreview": spec.detail_preview,
@@ -2438,21 +2466,26 @@ where
                     action_fn,
                 ),
                 Ok(CommandPermissionDecision::AllowAlways) => {
-                    if let Some(ref ws_root) = root {
-                        if let Ok(cfg) = add_or_update_rule(
-                            ws_root,
-                            spec.capability_key,
-                            "allow",
-                            "capability",
-                            Some(spec.rule_description.to_string()),
-                        ) {
-                            let _ = app.emit(PERMISSIONS_UPDATED_EVENT, &cfg);
-                            let _ = app.emit(
-                                WORKSPACE_UPDATED_EVENT,
-                                serde_json::json!({ "reason": "permission_always" }),
-                            );
+                    let eff_mode = if spec.force_ask_once {
+                        "once"
+                    } else {
+                        if let Some(ref ws_root) = root {
+                            if let Ok(cfg) = add_or_update_rule(
+                                ws_root,
+                                spec.capability_key.as_ref(),
+                                "allow",
+                                "capability",
+                                Some(spec.rule_description.to_string()),
+                            ) {
+                                let _ = app.emit(PERMISSIONS_UPDATED_EVENT, &cfg);
+                                let _ = app.emit(
+                                    WORKSPACE_UPDATED_EVENT,
+                                    serde_json::json!({ "reason": "permission_always" }),
+                                );
+                            }
                         }
-                    }
+                        "always"
+                    };
                     execute_and_record_capability_action(
                         app,
                         conn.as_ref(),
@@ -2460,7 +2493,7 @@ where
                         &cmd_id,
                         &request_id,
                         stream_id.as_deref(),
-                        "always",
+                        eff_mode,
                         &eval,
                         &spec,
                         action_fn,
@@ -3275,20 +3308,21 @@ fn handle_notes_list_rpc_callback<R: Runtime>(
 
     let spec = CapabilityActionSpec {
         kind: "os_notes_read",
-        capability_key: "notes:read",
+        capability_key: "notes:read".into(),
         risk_level: "low",
         purpose,
         display_cmd,
         audit_action: "os_notes_read",
         deny_audit_action: "os_notes_read_denied",
-        app_name: "Notas",
-        bundle_id: "com.apple.Notes",
-        rule_description: "Consultar Notas de Mac",
+        app_name: "Notas".into(),
+        bundle_id: "com.apple.Notes".into(),
+        rule_description: "Consultar Notas de Mac".into(),
         detail_preview: if preview_parts.is_empty() {
             None
         } else {
             Some(preview_parts.join(" · "))
         },
+        force_ask_once: false,
     };
 
     run_capability_gated_action(app, parsed, fallback_workspace_root, spec, move || {
@@ -3345,16 +3379,17 @@ fn handle_notes_create_rpc_callback<R: Runtime>(
 
     let spec = CapabilityActionSpec {
         kind: "os_notes_write",
-        capability_key: "notes:write",
+        capability_key: "notes:write".into(),
         risk_level: "medium",
         purpose,
         display_cmd: format!("os_notes: crear '{}'", validated.title),
         audit_action: "os_note_created",
         deny_audit_action: "os_note_create_denied",
-        app_name: "Notas",
-        bundle_id: "com.apple.Notes",
-        rule_description: "Crear notas en Notas de Mac",
+        app_name: "Notas".into(),
+        bundle_id: "com.apple.Notes".into(),
+        rule_description: "Crear notas en Notas de Mac".into(),
         detail_preview: Some(preview),
+        force_ask_once: false,
     };
 
     run_capability_gated_action(app, parsed, fallback_workspace_root, spec, move || {
@@ -3410,7 +3445,7 @@ fn handle_calendar_list_rpc_callback<R: Runtime>(
 
     let spec = CapabilityActionSpec {
         kind: "os_calendar_read",
-        capability_key: "calendar:read",
+        capability_key: "calendar:read".into(),
         risk_level: "low",
         purpose,
         display_cmd: format!(
@@ -3419,10 +3454,11 @@ fn handle_calendar_list_rpc_callback<R: Runtime>(
         ),
         audit_action: "os_calendar_read",
         deny_audit_action: "os_calendar_read_denied",
-        app_name: "Calendario",
-        bundle_id: "com.apple.iCal",
-        rule_description: "Consultar eventos en Calendario de Mac",
+        app_name: "Calendario".into(),
+        bundle_id: "com.apple.iCal".into(),
+        rule_description: "Consultar eventos en Calendario de Mac".into(),
         detail_preview: Some(preview),
+        force_ask_once: false,
     };
 
     run_capability_gated_action(app, parsed, fallback_workspace_root, spec, move || {
@@ -3516,7 +3552,7 @@ fn handle_calendar_create_rpc_callback<R: Runtime>(
 
     let spec = CapabilityActionSpec {
         kind: "os_calendar_write",
-        capability_key: "calendar:write",
+        capability_key: "calendar:write".into(),
         risk_level: "medium",
         purpose,
         display_cmd: format!(
@@ -3525,10 +3561,11 @@ fn handle_calendar_create_rpc_callback<R: Runtime>(
         ),
         audit_action: "os_calendar_event_created",
         deny_audit_action: "os_calendar_event_denied",
-        app_name: "Calendario",
-        bundle_id: "com.apple.iCal",
-        rule_description: "Crear eventos en Calendario de Mac",
+        app_name: "Calendario".into(),
+        bundle_id: "com.apple.iCal".into(),
+        rule_description: "Crear eventos en Calendario de Mac".into(),
         detail_preview: Some(preview),
+        force_ask_once: false,
     };
 
     run_capability_gated_action(app, parsed, fallback_workspace_root, spec, move || {
@@ -3540,6 +3577,288 @@ fn handle_calendar_create_rpc_callback<R: Runtime>(
         let val = serde_json::to_value(&out).map_err(|e| e.to_string())?;
         Ok((val, summary))
     })
+}
+
+fn handle_desktop_list_windows_rpc_callback(parsed: &serde_json::Value) -> serde_json::Value {
+    use crate::slices::desktop_control::commands::list_windows_for_agent;
+
+    let query = parsed
+        .get("query")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let limit = parsed
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|n| (n as usize).clamp(1, 20))
+        .unwrap_or(12);
+
+    let mut out = list_windows_for_agent();
+    if !query.is_empty() {
+        out.windows.retain(|w| {
+            w.app_name.to_ascii_lowercase().contains(&query)
+                || w.bundle_id.to_ascii_lowercase().contains(&query)
+                || w.title.to_ascii_lowercase().contains(&query)
+        });
+    }
+    out.windows.truncate(limit);
+    serde_json::to_value(&out).unwrap_or_else(|e| {
+        serde_json::json!({ "ok": false, "error": e.to_string() })
+    })
+}
+
+fn handle_desktop_snapshot_rpc_callback<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+) -> serde_json::Value {
+    use crate::slices::desktop_control::{
+        commands::snapshot_for_agent, macos_ax::DesktopSnapshotOptions,
+    };
+
+    let opts = DesktopSnapshotOptions {
+        app_name: parsed
+            .get("app_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        window_id: parsed
+            .get("window_id")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32),
+        root_ref: parsed
+            .get("root_ref")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        max_depth: parsed
+            .get("max_depth")
+            .and_then(|v| v.as_u64())
+            .map(|n| (n as usize).clamp(2, 16))
+            .unwrap_or(8),
+        max_nodes: parsed
+            .get("max_nodes")
+            .and_then(|v| v.as_u64())
+            .map(|n| (n as usize).clamp(40, 400))
+            .unwrap_or(220),
+        interactive_only: parsed
+            .get("interactive_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    };
+
+    let out = snapshot_for_agent(app, &opts);
+    serde_json::to_value(&out).unwrap_or_else(|e| {
+        serde_json::json!({ "ok": false, "error": e.to_string() })
+    })
+}
+
+fn handle_desktop_find_rpc_callback<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+) -> serde_json::Value {
+    use crate::slices::desktop_control::{commands::find_for_agent, macos_ax::DesktopFindOptions};
+
+    let roles: Vec<String> = parsed
+        .get("roles")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let opts = DesktopFindOptions {
+        app_name: parsed
+            .get("app_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        window_id: parsed
+            .get("window_id")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32),
+        root_ref: parsed
+            .get("root_ref")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        query: parsed
+            .get("query")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default(),
+        roles,
+        limit: parsed
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|n| (n as usize).clamp(5, 40))
+            .unwrap_or(25),
+        max_nodes: parsed
+            .get("max_nodes")
+            .and_then(|v| v.as_u64())
+            .map(|n| (n as usize).clamp(400, 6000))
+            .unwrap_or(2400),
+    };
+
+    let out = find_for_agent(app, &opts);
+    serde_json::to_value(&out).unwrap_or_else(|e| {
+        serde_json::json!({ "ok": false, "error": e.to_string() })
+    })
+}
+
+fn handle_desktop_act_rpc_callback<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+    fallback_workspace_root: Option<&str>,
+) -> serde_json::Value {
+    use crate::slices::desktop_control::{
+        DesktopControlState,
+        commands::{DesktopActionParams, execute_prepared_desktop_action, prepare_desktop_action},
+        policy::DesktopOperation,
+    };
+
+    let client_req_id = parsed
+        .get("client_request_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    if let Some(ref cid) = client_req_id {
+        let state = app.state::<DesktopControlState>();
+        if let Some(mut prev) = state.get_receipt(cid) {
+            if let Some(obj) = prev.as_object_mut() {
+                obj.insert("idempotentReplay".to_string(), serde_json::Value::Bool(true));
+            }
+            return prev;
+        }
+    }
+
+    let action_str = parsed
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let ref_id = parsed.get("ref_id").and_then(|v| v.as_str());
+    let value = parsed
+        .get("value")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let key = parsed.get("key").and_then(|v| v.as_str());
+    let clear_first = parsed
+        .get("clear")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let press_enter = parsed
+        .get("press_enter")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let headed = parsed
+        .get("headed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let coord_xy = match (
+        parsed.get("x").and_then(|v| v.as_f64()),
+        parsed.get("y").and_then(|v| v.as_f64()),
+    ) {
+        (Some(x), Some(y)) => Some((x, y)),
+        _ => None,
+    };
+    let app_name = parsed.get("app_name").and_then(|v| v.as_str());
+    let window_id = parsed
+        .get("window_id")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32);
+    let raw_purpose = parsed
+        .get("purpose")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let prepared = match prepare_desktop_action(
+        app,
+        DesktopActionParams {
+            action: action_str,
+            ref_id,
+            value,
+            key,
+            clear_first,
+            press_enter,
+            headed,
+            coord_xy,
+            app_name,
+            window_id,
+        },
+    ) {
+        Ok(p) => p,
+        Err((err, disp)) => {
+            return serde_json::json!({
+                "ok": false,
+                "status": "validation_error",
+                "error": err,
+                "disposition": disp,
+            });
+        }
+    };
+
+    let target_app_name = prepared.target_window.app_name.clone();
+    let target_bundle_id = prepared.target_window.bundle_id.clone();
+    let kind = match prepared.op {
+        DesktopOperation::FocusWindow => "desktop_ui_focus",
+        DesktopOperation::TypeText | DesktopOperation::PressKey => "desktop_ui_type",
+        _ => "desktop_ui_act",
+    };
+    let purpose = raw_purpose
+        .unwrap_or_else(|| format!("{} en {}.", prepared.op.human_verb_es(), target_app_name));
+    let rule_desc = format!("Interactuar con la interfaz de {}", target_app_name);
+
+    let spec = CapabilityActionSpec {
+        kind,
+        capability_key: prepared.capability_key.clone().into(),
+        risk_level: prepared.risk_level,
+        purpose,
+        display_cmd: prepared.display_cmd.clone(),
+        audit_action: kind,
+        deny_audit_action: "desktop_ui_act_denied",
+        app_name: target_app_name.into(),
+        bundle_id: target_bundle_id.into(),
+        rule_description: rule_desc.into(),
+        detail_preview: Some(prepared.detail_preview.clone()),
+        force_ask_once: prepared.force_ask_once,
+    };
+
+    let result = run_capability_gated_action(app, parsed, fallback_workspace_root, spec, move || {
+        let out = execute_prepared_desktop_action(&prepared);
+        let val = serde_json::to_value(&out).map_err(|e| e.to_string())?;
+        if out.ok {
+            Ok((val, out.summary))
+        } else {
+            Ok((
+                val,
+                out.error
+                    .unwrap_or_else(|| "La acción de interfaz no pudo completarse.".to_string()),
+            ))
+        }
+    });
+
+    if let Some(ref cid) = client_req_id {
+        if result.get("ok").and_then(|v| v.as_bool()) == Some(true)
+            || result
+                .get("disposition")
+                .and_then(|d| d.get("delivery"))
+                .and_then(|v| v.as_str())
+                == Some("delivered_unverified")
+        {
+            let state = app.state::<DesktopControlState>();
+            state.save_receipt(cid, result.clone());
+        }
+    }
+
+    result
 }
 
 fn handle_read_screen_rpc_callback<R: Runtime>(
@@ -4186,6 +4505,10 @@ fn call_python_sidecar_streaming<R: Runtime>(
                     Some(handle_calendar_create_rpc_callback(app, &parsed, ws_ref))
                 }
                 "read_screen_now" => Some(handle_read_screen_rpc_callback(app, &parsed)),
+                "desktop_list_windows" => Some(handle_desktop_list_windows_rpc_callback(&parsed)),
+                "desktop_snapshot" => Some(handle_desktop_snapshot_rpc_callback(app, &parsed)),
+                "desktop_find" => Some(handle_desktop_find_rpc_callback(app, &parsed)),
+                "desktop_act" => Some(handle_desktop_act_rpc_callback(app, &parsed, ws_ref)),
                 "query_screen_memory" => {
                     Some(handle_query_screen_memory_rpc_callback(app, &parsed, ws_ref))
                 }

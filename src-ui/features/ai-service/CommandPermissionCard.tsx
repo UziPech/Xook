@@ -37,6 +37,9 @@ export interface CommandPermissionUiItem {
     | "ext_fs_write"
     | "ext_fs_edit"
     | "ext_fs_mkdir"
+    | "desktop_ui_act"
+    | "desktop_ui_type"
+    | "desktop_ui_focus"
     | string;
   purpose: string;
   command: string;
@@ -279,6 +282,30 @@ function resolveActionCopy(item: CommandPermissionUiItem): ActionCopySpec {
       finishedFail: "No se pudo crear la carpeta",
       denied: "Creación de carpeta rechazada",
       zone: item.cwdRel || "Carpeta del equipo",
+    },
+    desktop_ui_act: {
+      pending: `Xox solicita permiso para interactuar con ${targetApp}`,
+      running: `Operando interfaz de ${targetApp}...`,
+      finishedOk: `Acción aplicada en ${targetApp}`,
+      finishedFail: `No se pudo completar la acción en ${targetApp}`,
+      denied: `Acción en ${targetApp} rechazada`,
+      zone: `Interfaz de ${targetApp}`,
+    },
+    desktop_ui_type: {
+      pending: `Xox solicita permiso para escribir en ${targetApp}`,
+      running: `Escribiendo en ${targetApp}...`,
+      finishedOk: `Texto enviado a ${targetApp}`,
+      finishedFail: `No se pudo escribir en ${targetApp}`,
+      denied: `Escritura en ${targetApp} rechazada`,
+      zone: `Interfaz de ${targetApp}`,
+    },
+    desktop_ui_focus: {
+      pending: `Xox solicita permiso para traer al frente ${targetApp}`,
+      running: `Enfocando ${targetApp}...`,
+      finishedOk: `${targetApp} enfocada`,
+      finishedFail: `No se pudo enfocar ${targetApp}`,
+      denied: `Enfoque en ${targetApp} rechazado`,
+      zone: `Ventana de ${targetApp}`,
     },
   };
   return (

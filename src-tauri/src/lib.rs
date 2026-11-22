@@ -12,6 +12,7 @@ pub fn run() {
         .manage(slices::screen_context::watcher::ScreenContextState::default())
         .manage(slices::tts_voice::worker::TtsWorkerState::default())
         .manage(slices::window_assist::AssistDockState::default())
+        .manage(slices::desktop_control::DesktopControlState::default())
         .setup(|app| {
             if let Ok((_, active)) =
                 slices::workspace_manager::registry::ensure_active_workspace(app.handle())
@@ -133,7 +134,10 @@ pub fn run() {
             slices::window_assist::commands::set_assist_always_on_top,
             slices::window_assist::commands::exit_assist_layout,
             slices::window_assist::commands::request_accessibility_permission_cmd,
-            slices::window_assist::commands::open_accessibility_settings_cmd
+            slices::window_assist::commands::open_accessibility_settings_cmd,
+            slices::desktop_control::commands::desktop_list_windows_cmd,
+            slices::desktop_control::commands::desktop_snapshot_cmd,
+            slices::desktop_control::commands::desktop_find_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
