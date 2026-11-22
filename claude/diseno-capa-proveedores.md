@@ -1,6 +1,6 @@
 # Diseño — Capa de proveedores agnóstica (Fase 0)
 
-Estado: **diseño listo, ejecución en espera**. `openrouter_client.py` está siendo modificado por otra sesión (swarm de PDF/Office). La refactorización empieza cuando ese trabajo esté commiteado.
+Estado: **en ejecución** en la rama `feat/capa-proveedores` (PR #2). Hechos: la red de seguridad, el paso 2 dentro del cliente y la corrección de la URL propia de OpenRouter. Ver "Plan de migración".
 
 ## Diagnóstico (2026-11-21)
 
@@ -55,8 +55,9 @@ El núcleo solo conoce `ChatRequest` / `ChatResponse` / `StreamEvent` (formato i
 
 Pasos pequeños; cada uno deja los tests y las evals en verde.
 
-1. Crear `providers/` con los adaptadores y sus tests (transporte falso, sin red). No toca el cliente actual.
-2. Reemplazar las 4 llamadas duplicadas por `get_adapter(p).complete(...)` / `.stream(...)`.
+0. **Red de seguridad** *(hecho)*: `slices/ai_service/provider_requests_tests.py` congela lo que sale a la red (URL, autenticación, timeout y campos que dependen del proveedor) en los cuatro caminos y por familia de proveedor. Se comprobó con mutaciones que detecta cambios.
+1. Crear `providers/` con los adaptadores y sus tests. *Va después del paso 2*: la suite heredada `test_sidecar.py` parchea `_http_json` y `_provider_http_json` dentro de `openrouter_client`, así que mover el transporte a otro módulo rompería esos parches sin avisar. Antes hay que llevar esos parches a `urlopen`, como hacen los tests de caracterización.
+2. Reemplazar las 4 llamadas duplicadas. *(Hecho dentro del cliente)*: `_provider_chat_completion` y `_open_provider_chat_stream`; las evals también las usan (eran la quinta copia). Al hacerlo apareció y se corrigió un desvío: el loop normal y los subagentes ignoraban la URL propia de OpenRouter y mandaban la clave a `openrouter.ai`.
 3. Mover a los adaptadores el reenvío de `reasoning_content` y la heurística de `max_tokens`.
 4. Agregar el proveedor `local` (Ollama / LM Studio en `localhost`, protocolo OpenAI). Hacer que `normalize_provider_id` falle con un mensaje claro ante un proveedor desconocido.
 5. Unificar los dos loops: `run_agent_completion` consume `stream_agent_completion`. Es el paso más riesgoso; va al final y con las evals corriendo antes y después.
@@ -65,4 +66,4 @@ Criterio de salida: `grep -n 'provider == "' src-brain/slices/ai_service/*.py` n
 
 ## Relación con las evals
 
-`slices/provider_evals/` mide qué tan bien usa las herramientas reales de XOOK cada modelo. Hoy su transporte copia por quinta vez la rama por proveedor. Es temporal: en el paso 2 pasa a usar `get_adapter(p).complete(...)`.
+`slices/provider_evals/` mide qué tan bien usa las herramientas reales de XOOK cada modelo. Desde el paso 2 su transporte usa `_provider_chat_completion`, así que cada modelo se mide con la misma petición que hace el agente.

@@ -1627,6 +1627,53 @@ def _provider_http_json(
         raise RuntimeError(f"Error de red al conectar con {spec['name']}: {err.reason}") from err
 
 
+def _provider_chat_completion(
+    provider: str,
+    api_key: str,
+    payload: Dict[str, Any],
+    *,
+    base_url: str,
+    timeout: int,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Chat no-streaming contra cualquier proveedor: el único lugar que sabe cómo llamar a cada uno."""
+    pid = normalize_provider_id(provider)
+    if pid == "anthropic":
+        # El adaptador arma su cuerpo campo por campo, así que `response_format` no viaja.
+        return anthropic_chat_completion(api_key, dict(payload), timeout=timeout)
+    url = f"{base_url}/chat/completions"
+    if pid == "openrouter":
+        return _http_json(url, method="POST", api_key=api_key, payload=payload, timeout=timeout)
+    compat_payload = build_openai_compat_chat_payload(pid, str(payload.get("model") or model or ""), payload)
+    return _provider_http_json(pid, url, method="POST", api_key=api_key, payload=compat_payload, timeout=timeout)
+
+
+def _open_provider_chat_stream(
+    provider: str,
+    api_key: str,
+    payload: Dict[str, Any],
+    *,
+    base_url: str,
+    timeout: int,
+    include_usage: bool,
+) -> Any:
+    """Abre el stream SSE de chat contra cualquier proveedor (Anthropic usa su propio protocolo)."""
+    pid = normalize_provider_id(provider)
+    if pid == "anthropic":
+        return open_anthropic_stream(api_key, payload, timeout_sec=timeout)
+    if include_usage:
+        payload = {**payload, "stream_options": {"include_usage": True}}
+    if pid != "openrouter":
+        payload = build_openai_compat_chat_payload(pid, str(payload.get("model") or ""), payload)
+    req = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=_build_headers(api_key, provider=pid),
+        method="POST",
+    )
+    return urllib.request.urlopen(req, timeout=timeout, context=_ssl_context())
+
+
 def _normalize_api_key(api_key: Optional[str]) -> str:
     return normalize_provider_api_key(api_key)
 
@@ -4374,22 +4421,7 @@ def _make_compact_llm_caller(
             "max_tokens": 1400,
             "stream": False,
         }
-        if pid == "anthropic":
-            resp = anthropic_chat_completion(key, base_payload, timeout=25)
-        else:
-            payload = (
-                base_payload
-                if pid == "openrouter"
-                else build_openai_compat_chat_payload(pid, mdl, base_payload)
-            )
-            resp = _provider_http_json(
-                pid,
-                f"{base_url}/chat/completions",
-                method="POST",
-                api_key=key,
-                payload=payload,
-                timeout=25,
-            )
+        resp = _provider_chat_completion(pid, key, base_payload, base_url=base_url, timeout=25)
         ch = resp.get("choices") or []
         msg = (ch[0].get("message") or {}) if ch else {}
         return str(msg.get("content") or "").strip()
@@ -5385,33 +5417,11 @@ def run_agent_completion(
             for _attempt in range(3):
                 try:
                     req_model = str(cur_payload.get("model") or local_active_model)
-                    if cur_provider == "anthropic":
-                        clean_ant = dict(cur_payload)
-                        clean_ant.pop("response_format", None)
-                        ant_res = anthropic_chat_completion(cur_key, clean_ant, timeout=60)
-                        local_rate_limits = _merge_rate_limits(local_rate_limits, _consume_http_rate_limits("anthropic"))
-                        return ant_res
-                    if cur_provider == "openrouter":
-                        or_res = _http_json(
-                            f"{OPENROUTER_BASE_URL}/chat/completions",
-                            method="POST",
-                            api_key=cur_key,
-                            payload=cur_payload,
-                            timeout=60,
-                        )
-                        local_rate_limits = _merge_rate_limits(local_rate_limits, _consume_http_rate_limits("openrouter"))
-                        return or_res
-                    compat_payload = build_openai_compat_chat_payload(cur_provider, req_model, cur_payload)
-                    prov_res = _provider_http_json(
-                        cur_provider,
-                        f"{cur_base_url}/chat/completions",
-                        method="POST",
-                        api_key=cur_key,
-                        payload=compat_payload,
-                        timeout=60,
+                    res = _provider_chat_completion(
+                        cur_provider, cur_key, cur_payload, base_url=cur_base_url, timeout=60, model=req_model
                     )
                     local_rate_limits = _merge_rate_limits(local_rate_limits, _consume_http_rate_limits(cur_provider))
-                    return prov_res
+                    return res
                 except RuntimeError as err:
                     err_limits = _consume_http_rate_limits(cur_provider)
                     if err_limits:
@@ -6395,24 +6405,14 @@ def stream_agent_completion(
             payload["tools"] = tool_exposure.active_tool_defs()
             payload["tool_choice"] = "auto"
 
-        if active_provider == "anthropic":
-            return open_anthropic_stream(active_key, payload, timeout_sec=timeout_sec)
-
-        if include_usage:
-            payload["stream_options"] = {"include_usage": True}
-        final_payload = (
-            payload
-            if active_provider == "openrouter"
-            else build_openai_compat_chat_payload(active_provider, active_model, payload)
+        return _open_provider_chat_stream(
+            active_provider,
+            active_key,
+            payload,
+            base_url=resolve_provider_base_url(active_provider, active_region),
+            timeout=timeout_sec,
+            include_usage=include_usage,
         )
-        base_url = resolve_provider_base_url(active_provider, active_region)
-        req = urllib.request.Request(
-            f"{base_url}/chat/completions",
-            data=json.dumps(final_payload).encode("utf-8"),
-            headers=_build_headers(active_key, provider=active_provider),
-            method="POST",
-        )
-        return urllib.request.urlopen(req, timeout=timeout_sec, context=_ssl_context())
 
     tools_supported = True
     vision_supported = True
@@ -6850,24 +6850,8 @@ def stream_agent_completion(
                     sub_payload["tool_choice"] = "auto"
 
                 def _call_sub(p: Dict[str, Any]) -> Dict[str, Any]:
-                    if cur_prov == "anthropic":
-                        return anthropic_chat_completion(cur_key, p, timeout=45)
-                    if cur_prov == "openrouter":
-                        return _http_json(
-                            f"{OPENROUTER_BASE_URL}/chat/completions",
-                            method="POST",
-                            api_key=cur_key,
-                            payload=p,
-                            timeout=45,
-                        )
-                    cp = build_openai_compat_chat_payload(cur_prov, str(p.get("model") or used_model), p)
-                    return _provider_http_json(
-                        cur_prov,
-                        f"{cur_base_url}/chat/completions",
-                        method="POST",
-                        api_key=cur_key,
-                        payload=cp,
-                        timeout=45,
+                    return _provider_chat_completion(
+                        cur_prov, cur_key, p, base_url=cur_base_url, timeout=45, model=used_model
                     )
 
                 try:

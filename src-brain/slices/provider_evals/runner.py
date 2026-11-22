@@ -18,21 +18,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import ssl
 import statistics
 import sys
 import time
 import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, TextIO, Tuple
 
-from slices.ai_service.provider_registry import (
-    build_openai_compat_chat_payload,
-    build_provider_headers,
-    normalize_provider_id,
-    resolve_provider_base_url,
-)
+from slices.ai_service.provider_registry import normalize_provider_id, resolve_provider_base_url
 from slices.provider_evals.grader import grade
 
 
@@ -91,21 +84,12 @@ def default_transport(
     payload: Dict[str, Any],
     region: Optional[str] = None,
 ) -> Dict[str, Any]:
-    # Temporal: copia la rama por proveedor de openrouter_client.py. Pasa a
-    # `get_adapter(provider).complete(...)` cuando exista la capa de proveedores.
-    if provider == "anthropic":
-        from slices.ai_service.anthropic_adapter import anthropic_chat_completion
+    # La misma llamada que usa el agente: el modelo se mide con las peticiones reales de XOOK.
+    from slices.ai_service.openrouter_client import _provider_chat_completion
 
-        return anthropic_chat_completion(api_key, payload, timeout=90)
-    body = payload if provider == "openrouter" else build_openai_compat_chat_payload(provider, model, payload)
-    req = urllib.request.Request(
-        f"{resolve_provider_base_url(provider, region)}/chat/completions",
-        data=json.dumps(body).encode("utf-8"),
-        headers=build_provider_headers(provider, api_key),
-        method="POST",
+    return _provider_chat_completion(
+        provider, api_key, payload, base_url=resolve_provider_base_url(provider, region), timeout=90, model=model
     )
-    with urllib.request.urlopen(req, timeout=90, context=ssl.create_default_context()) as resp:
-        return json.loads(resp.read().decode("utf-8"))
 
 
 def parse_target(raw: str) -> Tuple[str, str]:
