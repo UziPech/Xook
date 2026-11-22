@@ -195,6 +195,16 @@ class RunnerTests(unittest.TestCase):
         with mock.patch.object(runner, "default_transport", side_effect=AssertionError("no debe llamar a la red")):
             self.assertEqual(runner.main([], stdin=_Tty()), 2)
 
+    def test_default_transport_uses_the_agent_provider_call(self):
+        with mock.patch(
+            "slices.ai_service.openrouter_client._provider_chat_completion", return_value={"choices": []}
+        ) as call:
+            out = runner.default_transport("kimi", "sk-k", "kimi-k2", {"model": "kimi-k2"}, "cn")
+        self.assertEqual(out, {"choices": []})
+        args, kwargs = call.call_args
+        self.assertEqual(args, ("kimi", "sk-k", {"model": "kimi-k2"}))
+        self.assertEqual(kwargs, {"base_url": "https://api.moonshot.cn/v1", "timeout": 90, "model": "kimi-k2"})
+
     def test_report_never_contains_the_api_key(self):
         secret = "sk-test-supersecreta-123456"
         reply = {"choices": [{"message": {"content": "hola"}}]}
