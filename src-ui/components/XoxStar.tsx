@@ -2332,15 +2332,17 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             <stop ref={(el) => { stopRefs.current.liquidC0 = el; }} offset="0%" stopColor={initialColors.accessory} stopOpacity={glassContrast ? "0.22" : "0.15"} />
             <stop ref={(el) => { stopRefs.current.liquidC1 = el; }} offset="100%" stopColor={initialColors.accessory} stopOpacity="0" />
           </radialGradient>
-          {/* Brillo especular húmedo en dos etapas (velo de cúpula + destello cristalino húmedo) */}
-          <radialGradient id={ids.gloss} cx="44%" cy="34%" r="58%">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.40" />
-            <stop offset="46%" stopColor="#FFFFFF" stopOpacity="0.14" />
+          {/* Brillo especular húmedo en dos etapas (inscrito en r=50% con caída suave sin borde duro) */}
+          <radialGradient id={ids.gloss} cx="50%" cy="50%" fx="45%" fy="42%" r="50%">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.20" />
+            <stop offset="34%" stopColor="#FFFFFF" stopOpacity="0.08" />
+            <stop offset="68%" stopColor="#FFFFFF" stopOpacity="0.018" />
             <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
           </radialGradient>
-          <radialGradient id={ids.glossSpec} cx="45%" cy="38%" r="56%">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.64" />
-            <stop offset="42%" stopColor="#FFFFFF" stopOpacity="0.18" />
+          <radialGradient id={ids.glossSpec} cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.30" />
+            <stop offset="32%" stopColor="#FFFFFF" stopOpacity="0.11" />
+            <stop offset="66%" stopColor="#FFFFFF" stopOpacity="0.02" />
             <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
           </radialGradient>
           <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
@@ -2636,13 +2638,13 @@ export const XoxStar: React.FC<XoxStarProps> = ({
                   opacity={i === 0 || i === 4 ? "0.34" : i === 2 ? "0.30" : "0.22"}
                 />
               ))}
-              {/* Reflejos especulares húmedos en dos etapas (cúpula suave + destello cristalino vivo) */}
+              {/* Reflejos especulares húmedos en dos etapas (cúpula suave + destello cristalino sutil sin bordes cortados) */}
               <ellipse
                 ref={glossTopRef}
                 cx="104"
                 cy="87"
-                rx="24"
-                ry="8.5"
+                rx="25"
+                ry="9.5"
                 transform="rotate(-33 104 87)"
                 fill={`url(#${ids.gloss})`}
               />
@@ -2650,8 +2652,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
                 ref={glossSpecRef}
                 cx="102.5"
                 cy="85.2"
-                rx="11.5"
-                ry="3.1"
+                rx="11"
+                ry="3.2"
                 transform="rotate(-34 102.5 85.2)"
                 fill={`url(#${ids.glossSpec})`}
               />
@@ -2659,11 +2661,11 @@ export const XoxStar: React.FC<XoxStarProps> = ({
                 ref={glossBotRef}
                 cx="141"
                 cy="152"
-                rx="17"
-                ry="5.4"
+                rx="18"
+                ry="6.2"
                 transform="rotate(-28 141 152)"
                 fill={`url(#${ids.gloss})`}
-                opacity="0.42"
+                opacity="0.34"
               />
             </g>
           </g>
@@ -3124,7 +3126,7 @@ function ellipseCutoutPath(cx: number, cy: number, rx: number, ry: number): stri
   return `M${x0} ${cyStr}A${rxStr} ${ryStr} 0 1 0 ${x1} ${cyStr}A${rxStr} ${ryStr} 0 1 0 ${x0} ${cyStr}Z`;
 }
 
-const XOX_SILHOUETTE_PATH =
+export const XOX_SILHOUETTE_PATH =
   buildStar({ phase: 0, amp: 0, lag: 0, reach: 0, wave: -1 }) +
   ellipseCutoutPath(C - 8.5 * 1.15, C - 3, 6.0, 9.2) +
   ellipseCutoutPath(C + 8.5 * 1.15, C - 3, 6.0, 9.2);
@@ -3132,6 +3134,10 @@ const XOX_SILHOUETTE_PATH =
 export interface XoxSilhouetteIconProps {
   className?: string;
   style?: React.CSSProperties;
+  x?: number;
+  y?: number;
+  width?: number | string;
+  height?: number | string;
 }
 
 /**
@@ -3141,11 +3147,19 @@ export interface XoxSilhouetteIconProps {
 export const XoxSilhouetteIcon: React.FC<XoxSilhouetteIconProps> = ({
   className = "w-4 h-4",
   style,
+  x,
+  y,
+  width,
+  height,
 }) => (
   <svg
     viewBox="56 54 128 122"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
+    x={x}
+    y={y}
+    width={width}
+    height={height}
     className={className}
     style={style}
     aria-hidden="true"

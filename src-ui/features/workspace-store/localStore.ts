@@ -4,6 +4,7 @@ import {
   normalizeUserMemoryCategory,
   normalizeUserMemoryScope,
   normalizeWindowFlowScope,
+  sanitizeTimelineForStorage,
   upsertUserMemoryFacts,
   type UserDataSyncEvent,
   type UserMemoryCategory,
@@ -397,6 +398,7 @@ export async function saveLocalConversation(thread: ConversationThread): Promise
       ...m,
       isStreaming: false,
       isReasoningStreaming: false,
+      ...(m.timeline ? { timeline: sanitizeTimelineForStorage(m.timeline) } : {}),
       ...(m.attachments && m.attachments.length > 0
         ? {
             attachments: m.attachments.map((att) => {

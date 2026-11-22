@@ -1,5 +1,12 @@
 import React, { useState } from "react";
-import type { TurnWorkingMemory } from "@xook/contracts";
+import {
+  groupTimelineForRender,
+  hasTimelineCommands,
+  timelineHasRequestId,
+  type ChatTimelineSegment,
+  type TurnWorkingMemory,
+} from "@xook/contracts";
+export type { ChatTimelineSegment };
 import {
   CommandPermissionCard,
   type CommandPermissionDecisionKind,
@@ -117,6 +124,8 @@ export interface UiChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** Secuencia cronológica intercalada de bloques de texto y comandos ejecutados en el turno. */
+  timeline?: ChatTimelineSegment[];
   mode?: XoxModeId;
   subagents?: SubagentActivity[];
   studyDeck?: StudyDeckArtifact;
@@ -146,7 +155,7 @@ export interface UiChatMessage {
     provider?: AiProviderId;
     cardId?: string;
     clarification?: ClarificationSpec;
-    studioTab?: "identity" | "voice" | "skills" | "rules";
+    studioTab?: "identity" | "voice" | "skills" | "rules" | "memory";
     skillSlug?: string;
   };
 }
@@ -1208,46 +1217,138 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 </div>
               )}
 
-              {/* Respuesta limpia (sin recuadro pesado salvo en errores) */}
-              {msg.content.trim() ? (
-                msg.isError ? (
-                  <div className="rounded-2xl rounded-tl-sm px-4 py-3 bg-rose-500/[0.07] border border-rose-400/25">
-                    <FormattedReply text={msg.content} compact={isSplitMode} />
-                  </div>
-                ) : (
-                  <FormattedReply
-                    text={msg.content}
-                    streaming={Boolean(msg.isStreaming)}
-                    onOpenCanvas={onOpenCanvas}
-                    messageId={msg.id}
-                    compact={isSplitMode}
-                  />
-                )
-              ) : msg.isStreaming && !showThinkingRow && !phaseLabel ? (
-                <div className="py-0.5 text-[12.5px]">
-                  <span className="xox-shimmer inline-block font-medium">Thinking</span>
-                </div>
-              ) : null}
+              {/* Respuesta limpia intercalada cronológicamente con comandos (sin recuadro pesado salvo en errores) */}
+              {(() => {
+                const useInterleavedTimeline = hasTimelineCommands(msg.timeline);
+                const timelineGroups = useInterleavedTimeline
+                  ? groupTimelineForRender(msg.timeline)
+                  : [];
+                const fallbackPermissions = isActiveGuideTurn
+                  ? permissionItems.filter(
+                      (p) =>
+                        p.state !== "pending" && !timelineHasRequestId(msg.timeline, p.requestId)
+                    )
+                  : [];
+                const hasVisibleBody = useInterleavedTimeline
+                  ? timelineGroups.length > 0 || (Boolean(msg.isError) && Boolean(msg.content.trim()))
+                  : Boolean(msg.content.trim()) || fallbackPermissions.length > 0;
+
+                if (msg.isError) {
+                  const completedCmdGroups = timelineGroups.filter((g) => g.kind === "commands");
+                  return (
+                    <>
+                      {completedCmdGroups.map((group) => (
+                        <div key={group.id} className="space-y-1.5 my-1">
+                          {group.items.map((perm) => (
+                            <CommandPermissionCard
+                              key={perm.requestId}
+                              item={perm}
+                              onResolve={(reqId, decision) =>
+                                onResolvePermission?.(reqId, decision)
+                              }
+                            />
+                          ))}
+                        </div>
+                      ))}
+                      {msg.content.trim() && (
+                        <div className="rounded-2xl rounded-tl-sm px-4 py-3 bg-rose-500/[0.07] border border-rose-400/25">
+                          <FormattedReply text={msg.content} compact={isSplitMode} />
+                        </div>
+                      )}
+                    </>
+                  );
+                }
+
+                if (useInterleavedTimeline) {
+                  return (
+                    <>
+                      {timelineGroups.map((group) =>
+                        group.kind === "text" ? (
+                          <FormattedReply
+                            key={group.id}
+                            text={group.text}
+                            streaming={
+                              Boolean(msg.isStreaming) &&
+                              !msg.isReasoningStreaming &&
+                              group.isLastRawSegment
+                            }
+                            onOpenCanvas={onOpenCanvas}
+                            messageId={`${msg.id}_${group.id}`}
+                            compact={isSplitMode}
+                          />
+                        ) : (
+                          <div key={group.id} className="space-y-1 my-1">
+                            {group.items.map((perm) => (
+                              <CommandPermissionCard
+                                key={perm.requestId}
+                                item={perm}
+                                onResolve={(reqId, decision) =>
+                                  onResolvePermission?.(reqId, decision)
+                                }
+                              />
+                            ))}
+                          </div>
+                        )
+                      )}
+
+                      {!hasVisibleBody && msg.isStreaming && !showThinkingRow && !phaseLabel ? (
+                        <div className="py-0.5 text-[12.5px]">
+                          <span className="xox-shimmer inline-block font-medium">Thinking</span>
+                        </div>
+                      ) : null}
+
+                      {fallbackPermissions.length > 0 && (
+                        <div className="space-y-1 my-1">
+                          {fallbackPermissions.map((perm) => (
+                            <CommandPermissionCard
+                              key={perm.requestId}
+                              item={perm}
+                              onResolve={(reqId, decision) =>
+                                onResolvePermission?.(reqId, decision)
+                              }
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  );
+                }
+
+                return (
+                  <>
+                    {msg.content.trim() ? (
+                      <FormattedReply
+                        text={msg.content}
+                        streaming={Boolean(msg.isStreaming)}
+                        onOpenCanvas={onOpenCanvas}
+                        messageId={msg.id}
+                        compact={isSplitMode}
+                      />
+                    ) : msg.isStreaming && !showThinkingRow && !phaseLabel ? (
+                      <div className="py-0.5 text-[12.5px]">
+                        <span className="xox-shimmer inline-block font-medium">Thinking</span>
+                      </div>
+                    ) : null}
+
+                    {fallbackPermissions.length > 0 && (
+                      <div className="space-y-1 my-1">
+                        {fallbackPermissions.map((perm) => (
+                          <CommandPermissionCard
+                            key={perm.requestId}
+                            item={perm}
+                            onResolve={(reqId, decision) =>
+                              onResolvePermission?.(reqId, decision)
+                            }
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
 
               {/* Mazo de Estudio Interactivo (/study) */}
               {msg.studyDeck && <StudyDeckCard deck={msg.studyDeck} />}
-
-              {/* Trazas compactas de permisos ya resueltos o en ejecución (los pendientes salen en el dock del input) */}
-              {permissionItems.some((p) => p.state !== "pending") && isActiveGuideTurn && (
-                  <div className="space-y-1.5 my-1">
-                    {permissionItems
-                      .filter((p) => p.state !== "pending")
-                      .map((perm) => (
-                        <CommandPermissionCard
-                          key={perm.requestId}
-                          item={perm}
-                          onResolve={(reqId, decision) =>
-                            onResolvePermission?.(reqId, decision)
-                          }
-                        />
-                      ))}
-                  </div>
-                )}
 
               {/* Indicador en vivo mientras Xox diseña Canvas */}
               {msg.isStreaming && isActiveGuideTurn && xoxState === "syncing" && !msg.canvas && !(msg.canvases && msg.canvases.length > 0) && (

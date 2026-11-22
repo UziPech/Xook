@@ -1,3 +1,15 @@
+import type {
+  CommandExecutionResult,
+  CommandFinishedEvent,
+  CommandPermissionRequestEvent,
+} from "@xook/contracts";
+
+export type {
+  CommandExecutionResult,
+  CommandFinishedEvent,
+  CommandPermissionRequestEvent,
+};
+
 export interface WorkspaceEntry {
   id: string;
   name: string;
@@ -245,85 +257,6 @@ export interface CommandExecutionRecord {
   logPath?: string | null;
   createdAt: string;
   finishedAt?: string | null;
-}
-
-export interface CommandExecutionResult {
-  ok: boolean;
-  commandId: string;
-  status: string;
-  permissionMode: string;
-  exitCode?: number | null;
-  durationMs: number;
-  stdout: string;
-  stderr: string;
-  truncated: boolean;
-  logPath?: string | null;
-  error?: string | null;
-}
-
-export interface CommandPermissionRequestEvent {
-  requestId: string;
-  streamId?: string | null;
-  commandId: string;
-  kind?:
-    | "command"
-    | "external_command"
-    | "open_app"
-    | "os_notes_read"
-    | "os_notes_write"
-    | "os_calendar_read"
-    | "os_calendar_write"
-    | "ext_fs_list"
-    | "ext_fs_search"
-    | "ext_fs_read"
-    | "ext_fs_write"
-    | "ext_fs_edit"
-    | "ext_fs_mkdir"
-    | string;
-  purpose: string;
-  command: string;
-  cwdRel: string;
-  riskLevel: "low" | "medium" | "high" | "blocked" | string;
-  program: string;
-  patternSuggestion: string;
-  allowAlwaysAllowed?: boolean;
-  isExternal?: boolean;
-  appName?: string | null;
-  bundleId?: string | null;
-  appPath?: string | null;
-  detailPreview?: string | null;
-}
-
-export interface CommandFinishedEvent {
-  requestId: string;
-  streamId?: string | null;
-  commandId?: string;
-  kind?:
-    | "command"
-    | "external_command"
-    | "open_app"
-    | "os_notes_read"
-    | "os_notes_write"
-    | "os_calendar_read"
-    | "os_calendar_write"
-    | "ext_fs_list"
-    | "ext_fs_search"
-    | "ext_fs_read"
-    | "ext_fs_write"
-    | "ext_fs_edit"
-    | "ext_fs_mkdir"
-    | string;
-  purpose?: string;
-  command?: string;
-  cwdRel?: string;
-  riskLevel?: string;
-  status?: string;
-  appName?: string | null;
-  bundleId?: string | null;
-  appPath?: string | null;
-  detailPreview?: string | null;
-  result?: CommandExecutionResult;
-  error?: string;
 }
 
 export async function getCommandPermissions(): Promise<PermissionsConfig | null> {
