@@ -16,7 +16,7 @@ import urllib.request
 import concurrent.futures
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from slices.agent_tools import (
     AGENT_TOOL_DEFS,
@@ -1672,6 +1672,43 @@ def _open_provider_chat_stream(
         method="POST",
     )
     return urllib.request.urlopen(req, timeout=timeout, context=_ssl_context())
+
+
+# Reglas que dependen del proveedor o del modelo: viven aquí, junto a las llamadas, y no regadas por el loop.
+
+
+def _provider_supports_response_format(provider: str) -> bool:
+    """Anthropic no usa `response_format`; los protocolos compatibles con OpenAI sí."""
+    return normalize_provider_id(provider) != "anthropic"
+
+
+def _stream_max_output_tokens(provider: str, model: str, *, wants_long_output: bool) -> int:
+    """Tope de salida del stream: 16k solo donde el proveedor o el modelo lo soportan."""
+    if not wants_long_output:
+        return 6144
+    pid = normalize_provider_id(provider)
+    low_model = (model or "").lower()
+    extended = pid in ("openrouter", "gemini", "anthropic") or (
+        pid == "deepseek" and any(k in low_model for k in ("reasoner", "flash", "pro", "v4"))
+    )
+    return 16384 if extended else 8192
+
+
+def _iter_provider_stream_events(provider: str, resp: Any, model: str) -> Iterator[Dict[str, Any]]:
+    """Eventos del stream en formato OpenAI, sea cual sea el protocolo del proveedor."""
+    if normalize_provider_id(provider) == "anthropic":
+        return iter_anthropic_sse_as_openai_events(resp, default_model=model)
+    return _iter_openai_sse_events(resp)
+
+
+def _provider_accepts_model_id(provider: str, model_id: str) -> bool:
+    """Los ids "proveedor/modelo" solo existen en OpenRouter."""
+    return normalize_provider_id(provider) == "openrouter" or "/" not in model_id
+
+
+def _provider_replays_reasoning(provider: str, model: str) -> bool:
+    """DeepSeek necesita recibir de vuelta su `reasoning_content` en los turnos del loop de herramientas."""
+    return normalize_provider_id(provider) == "deepseek" or "deepseek" in (model or "").lower()
 
 
 def _normalize_api_key(api_key: Optional[str]) -> str:
@@ -5486,7 +5523,7 @@ def run_agent_completion(
             local_ui_tool_calls = []
             local_accum_usage = {}
             local_rate_limits = None
-            use_response_format = cur_provider != "anthropic"
+            use_response_format = _provider_supports_response_format(cur_provider)
             tools_supported = True
             vision_supported = True
             continuations_used = 0
@@ -6381,19 +6418,16 @@ def stream_agent_completion(
     ) -> Any:
         if max_tokens_override is not None:
             target_max_tokens = int(max_tokens_override)
-        elif (
-            routing_plan.task_profile.needs_reasoning
-            or routing_plan.task_profile.needs_canvas
-            or include_tools
-        ):
-            low_m = (active_model or "").lower()
-            is_extended_output = (
-                active_provider in ("openrouter", "gemini", "anthropic")
-                or (active_provider == "deepseek" and any(k in low_m for k in ("reasoner", "flash", "pro", "v4")))
-            )
-            target_max_tokens = 16384 if is_extended_output else 8192
         else:
-            target_max_tokens = 6144
+            target_max_tokens = _stream_max_output_tokens(
+                active_provider,
+                active_model,
+                wants_long_output=(
+                    routing_plan.task_profile.needs_reasoning
+                    or routing_plan.task_profile.needs_canvas
+                    or include_tools
+                ),
+            )
         payload: Dict[str, Any] = {
             "model": active_model,
             "messages": req_messages,
@@ -6534,11 +6568,7 @@ def stream_agent_completion(
         tc_acc: Dict[int, Dict[str, Any]] = {}
         notified_canvas_tc = False
         last_pdf_draft_emit: Dict[int, Tuple[float, int, str]] = {}
-        event_iter = (
-            iter_anthropic_sse_as_openai_events(resp, default_model=active_model)
-            if active_provider == "anthropic"
-            else _iter_openai_sse_events(resp)
-        )
+        event_iter = _iter_provider_stream_events(active_provider, resp, active_model)
         for event_obj in event_iter:
                 if event_obj.get("error"):
                     err_msg = (
@@ -6750,7 +6780,7 @@ def stream_agent_completion(
             str(args.get("design") or ""),
             fallback_model,
         )
-        if cur_prov != "openrouter" and "/" in sub_model:
+        if not _provider_accepts_model_id(cur_prov, sub_model):
             sub_model = fallback_model
         sub_role = str(args.get("role") or "Especialista").strip() or "Especialista"
         sub_task = str(args.get("task") or "").strip()
@@ -6830,7 +6860,7 @@ def stream_agent_completion(
         ]
 
         used_model = sub_model
-        if cur_prov != "openrouter" and "/" in used_model:
+        if not _provider_accepts_model_id(cur_prov, used_model):
             used_model = fallback_model
         final_text = ""
         sub_rounds_used = 0
@@ -7292,9 +7322,7 @@ def stream_agent_completion(
                         )
                     )
                 ]
-                is_deepseek_reasoning_msg = (
-                    active_provider == "deepseek" or "deepseek" in active_model.lower()
-                )
+                replays_reasoning = _provider_replays_reasoning(active_provider, active_model)
                 if not exec_calls:
                     round_reply_text = "".join(round_reply_chunks)
                     round_reas_text = round_reasoning_text
@@ -7318,7 +7346,7 @@ def stream_agent_completion(
                             "role": "assistant",
                             "content": round_reply_text or "La llamada anterior al Canvas quedó incompleta.",
                         }
-                        if is_deepseek_reasoning_msg:
+                        if replays_reasoning:
                             assist_repair["reasoning_content"] = round_reas_text
                         loop_messages.append(assist_repair)
                         loop_messages.append({
@@ -7355,7 +7383,7 @@ def stream_agent_completion(
                             "role": "assistant",
                             "content": round_reply_text or "Analicé los detalles.",
                         }
-                        if is_deepseek_reasoning_msg:
+                        if replays_reasoning:
                             assist_cont["reasoning_content"] = round_reas_text
                         loop_messages.append(assist_cont)
                         loop_messages.append({
@@ -7570,7 +7598,7 @@ def stream_agent_completion(
                         "role": "assistant",
                         "content": "".join(round_reply_chunks).strip() or "Intenté preparar la llamada a herramienta, pero se truncó el JSON.",
                     }
-                    if is_deepseek_reasoning_msg:
+                    if replays_reasoning:
                         assist_bad["reasoning_content"] = round_reasoning_text
                     loop_messages.append(assist_bad)
                     loop_messages.append({
@@ -7587,7 +7615,7 @@ def stream_agent_completion(
                         "content": "".join(round_reply_chunks).strip() or "",
                         "tool_calls": hist_tcs,
                     }
-                    if is_deepseek_reasoning_msg:
+                    if replays_reasoning:
                         assist_tcs["reasoning_content"] = round_reasoning_text
                     loop_messages.append(assist_tcs)
                     for tc_id, tool_res in pass_tool_results:
@@ -7815,7 +7843,7 @@ def stream_agent_completion(
                 "content": "",
                 "tool_calls": valid_followup_tcs,
             }
-            if active_provider == "deepseek" or "deepseek" in active_model.lower():
+            if _provider_replays_reasoning(active_provider, active_model):
                 assist_followup["reasoning_content"] = full_reasoning
             followup_messages = [
                 *loop_messages,
