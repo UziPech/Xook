@@ -9,7 +9,9 @@
     "./deliverySemantics": "./src/deliverySemantics.ts",
     "./agentPolicy": "./src/agentPolicy.ts",
     "./contextCheckpoint": "./src/contextCheckpoint.ts",
-    "./agentTrace": "./src/agentTrace.ts"
+    "./agentTrace": "./src/agentTrace.ts",
+    "./chatTimeline": "./src/chatTimeline.ts",
+    "./memoryGraph": "./src/memoryGraph.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
