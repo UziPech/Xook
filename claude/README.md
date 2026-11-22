@@ -1,0 +1,14 @@
+# claude/ — Espacio de trabajo de Claude en XOOK
+
+Carpeta donde Claude (como co-constructor) mantiene el plan, las decisiones y las notas de diseño del proyecto. No contiene código de producción.
+
+| Archivo | Para qué |
+|---|---|
+| [ROADMAP.md](ROADMAP.md) | Fases del agente personal proactivo, con entregables y criterios de salida |
+| [DECISIONES.md](DECISIONES.md) | Registro de decisiones tomadas (qué, por qué, qué se descartó) |
+
+Reglas:
+
+- Se actualiza conforme se avanza; no se reescribe desde cero. Lo descartado se marca con su motivo.
+- Cada fase tiene un criterio de salida medible. Si no se puede medir, no está terminada.
+- Lo que aplica a todo el repo vive en `AGENTS.md`; aquí solo va el plan.

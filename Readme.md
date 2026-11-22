@@ -2,86 +2,43 @@
   <img src=".github/xox-pixel.svg" width="164" alt="Xox — Mascota pixel art de XOOK" />
 </p>
 
-# XOOK - Enterprise Agentic Orchestrator
-> **Significado:** Del maya *Xook* (Leer, contar, estudiar / Tiburón).  
-> **Concepto:** Middleware agéntico multiplataforma de acoplamiento cero (*Zero-Refactor*). Permite conectar modelos de IA a infraestructuras empresariales existentes (E-commerce, SaaS, ERPs, APIs REST/GraphQL) mediante autodescubrimiento de endpoints y control estricto de permisos (*Human-in-the-Loop*).
+# XOOK — Agente personal proactivo
+> **Significado:** del maya *Xook* (leer, contar, estudiar / tiburón).
+> **Concepto:** un agente de escritorio que vive en el equipo del usuario, aprende cómo trabaja y actúa antes de que se lo pidan, siempre dentro de los límites que el usuario controla. Primero para una persona; después, para equipos y organizaciones.
 
 ---
 
-## 1. Principios Arquitectónicos
+## 1. Principios
 
-1. **Vertical Slice Architecture (VSA):** El código no se divide por capas técnicas globales, sino por **Features (Slices) de negocio** independientes de principio a fin (UI -> Rust Core -> Python Brain).
-2. **Ports & Adapters (Hexagonal en Conectores):** El motor central de Xook desconoce si habla con Shopify, Mercado Libre, Supabase o un ERP a medida; solo interactúa mediante contratos estandarizados (MCP - Model Context Protocol).
-3. **Zero-Trust Execution (RBAC & HITL):** Ninguna operación de mutación (`WRITE`, `UPDATE`, `DELETE`) se ejecuta automáticamente. El núcleo en Rust intercepta la intención del modelo y exige confirmación criptográfica/visual del usuario.
+1. **Local primero.** La memoria, el contexto de pantalla y los archivos se quedan en el equipo. Ningún screenshot crudo se guarda en disco.
+2. **Cualquier proveedor de IA.** OpenRouter, DeepSeek, Groq, Gemini, OpenAI, Anthropic o modelos locales. La inteligencia (memoria, herramientas, políticas, proactividad) vive en XOOK; el modelo es una pieza intercambiable.
+3. **Escalera de autonomía.** Observar → sugerir → preparar → ejecutar con aviso → ejecutar en silencio. Lo destructivo, lo que cuesta dinero y lo que sale del equipo nunca pasa de "preparar": el usuario ve el antes/después y aprueba.
+4. **Vertical slices.** El código se organiza por capacidad de punta a punta (UI → Rust → Python), no por capas técnicas.
+5. **Sin jerga para el usuario.** MCP, embeddings, sidecar o tokens nunca aparecen en la interfaz.
 
----
+## 2. Stack
 
-## 2. Stack Tecnológico e Infraestructura
+| Capa | Tecnología | Rol |
+|---|---|---|
+| Shell de escritorio | Tauri v2 | Ventanas (`main`, `quick`, `document`), bandeja, atajos globales |
+| Interfaz | React 19 + TypeScript + Tailwind 4 | Chat, canvas, Xox Studio, tarjetas de aprobación |
+| Núcleo y guardián | Rust (`tokio`, `rusqlite`, `notify`, `objc2`) | Bóveda de claves, política de comandos, control del escritorio por accesibilidad, scheduler, contexto de pantalla |
+| Cerebro | Python (sidecar por stdio, sin frameworks de LLM) | Loop del agente, proveedores de IA, herramientas, memoria, motor de documentos |
+| Contratos | `packages/contracts` (TypeScript) | Tipos compartidos entre las tres capas |
 
-| Componente | Tecnología Principal | Librerías / Crates Clave | Rol Técnico |
-| :--- | :--- | :--- | :--- |
-| **Desktop / Shell** | **Tauri v2** (o Electron) | `@tauri-apps/api`, IPC Bridge | Empaquetado nativo multiplataforma ligero sin incompatibilidades de SO. |
-| **Frontend UI** | **React + TypeScript** | Tailwind CSS, Zustand | Interfaz modo oscuro brutalista, renderizado del avatar Xook y modales de auditoría. |
-| **Core & Guard** | **Rust** | `tokio`, `reqwest`, `serde`, `sqlx` | Escáner de red/APIs (estilo `nmap`), proxy de seguridad, intercepción de permisos y bóveda SQLite. |
-| **Agentic Brain** | **Python (Sidecar)** | `LiteLLM`, `Pydantic`, `MCP SDK` | Orquestación de LLMs (Cloud/Local), generación de JSON estructurado y análisis de datos. |
+## 3. Comandos
 
----
+```bash
+npm run tauri dev          # app en modo desarrollo
+npm run typecheck          # tipos de la UI y de los paquetes
+npm run test:packages      # tests de packages/
+npm run test:brain         # tests del sidecar de Python
+npm run clean:all          # limpieza total de artefactos
+```
 
-## 3. Estructura del Proyecto (Vertical Slice Architecture)
+## 4. Dónde está cada cosa
 
-Cada **Slice** encapsula su propia lógica, contratos de datos, llamadas a modelos y componentes visuales:
-
-```text
-xook-workspace/
-├── ARCHITECTURE.md
-├── package.json
-│
-├── src-ui/                             # [FRONTEND - React + TypeScript]
-│   └── features/                       # Vertical Slices en UI
-│       ├── endpoint-discovery/         # Slice 1: Escaneo de APIs (Nmap style)
-│       │   ├── DiscoveryScanner.tsx    # Componente visual del radar de Xook
-│       │   ├── useDiscovery.ts         # Hook que invoca al comando de Rust
-│       │   └── discovery.types.ts      # Interfaces TS del Slice
-│       ├── inventory-shelf/            # Slice 2: Gestión de estante y productos
-│       │   ├── ShelfApprovalModal.tsx  # Modal Human-in-the-Loop para autorizar cambios
-│       │   └── useShelfAgent.ts
-│       ├── sales-evaluator/            # Slice 3: Reportes y análisis de ventas
-│       └── xook-avatar/                # Estado visual del personaje (Idle, Scanning, Guard)
-│
-├── src-tauri/                          # [CORE BACKEND - Rust]
-│   ├── Cargo.toml
-│   └── src/
-│       ├── main.rs                     # Punto de entrada y registro de comandos IPC
-│       ├── shared/                     # Infraestructura mínima compartida (SQLite, Sidecar IPC)
-│       └── slices/                     # Vertical Slices en Rust
-│           ├── discovery/
-│           │   ├── command.rs          # #[tauri::command] expuesto a la UI
-│           │   ├── scanner.rs          # Lógica asíncrona con reqwest/tokio
-│           │   └── models.rs           # Structs serializables con Serde
-│           ├── permission_guard/
-│           │   ├── interceptor.rs      # Cortafuegos que congela acciones WRITE
-│           │   └── audit_log.rs        # Registro inmutable de acciones aprobadas
-│           └── connector_hub/          # Adaptadores para E-commerce / SaaS
-│
-└── src-brain/                          # [AGENTIC ENGINE - Python Sidecar]
-    ├── pyproject.toml
-    ├── main_sidecar.py                 # Listener stdio/socket para hablar con Rust
-    └── slices/                         # Vertical Slices en el Motor de IA
-        ├── sales_analysis/
-        │   ├── agent.py                # Lógica de evaluación con LiteLLM
-        │   └── schemas.py              # Objetos Pydantic de salida garantizada
-        ├── catalog_mutation/
-        │   ├── shelf_mutator.py        # Preparación de payloads para agregar productos
-        │   └── schemas.py
-        └── mcp_bridge/                 # Cliente universal Model Context Protocol
-
-
-
-        comandos 
-
-        npm run tauri dev
-
-        limpieza
-
-        npm run clean:all
-
+- [ARCHITECTURE.md](ARCHITECTURE.md): mapa de directorios y responsabilidades.
+- [AGENTS.md](AGENTS.md): reglas obligatorias del repo (peso del workspace, dependencias, privacidad, referencias).
+- [claude/ROADMAP.md](claude/ROADMAP.md): fases del producto y criterios de salida.
+- [claude/DECISIONES.md](claude/DECISIONES.md): decisiones tomadas y lo que se descartó.
