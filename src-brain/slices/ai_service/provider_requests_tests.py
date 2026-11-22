@@ -211,14 +211,13 @@ class ProviderRequestsTests(unittest.TestCase):
                 self.assertNotIn("response_format", body)
                 self.assertNotIn("stream", body)
 
-    def test_openrouter_custom_base_url_per_path(self) -> None:
-        # Hoy el loop normal y los subagentes ignoran la URL propia de OpenRouter.
-        expected = {"compaction": GATEWAY_URL, "loop": OPENROUTER_URL, "stream": GATEWAY_URL, "subagent": OPENROUTER_URL}
-        for path, url in expected.items():
+    def test_openrouter_custom_base_url_is_used_by_every_path(self) -> None:
+        # Con una URL propia configurada, la clave nunca debe viajar a openrouter.ai.
+        for path in ("compaction", "loop", "stream", "subagent"):
             with self.subTest(path=path):
                 reqs = self._capture(path, "openrouter", region=GATEWAY)
-                req = [r for r in reqs if r["body"].get("max_tokens") == 2400][0] if path == "subagent" else reqs[0]
-                self._assert_transport(req, "openrouter", url=url)
+                for req in reqs:
+                    self._assert_transport(req, "openrouter", url=GATEWAY_URL)
 
 
 if __name__ == "__main__":

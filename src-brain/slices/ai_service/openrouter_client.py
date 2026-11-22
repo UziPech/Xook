@@ -5417,9 +5417,8 @@ def run_agent_completion(
             for _attempt in range(3):
                 try:
                     req_model = str(cur_payload.get("model") or local_active_model)
-                    chat_base_url = OPENROUTER_BASE_URL if cur_provider == "openrouter" else cur_base_url
                     res = _provider_chat_completion(
-                        cur_provider, cur_key, cur_payload, base_url=chat_base_url, timeout=60, model=req_model
+                        cur_provider, cur_key, cur_payload, base_url=cur_base_url, timeout=60, model=req_model
                     )
                     local_rate_limits = _merge_rate_limits(local_rate_limits, _consume_http_rate_limits(cur_provider))
                     return res
@@ -6851,9 +6850,8 @@ def stream_agent_completion(
                     sub_payload["tool_choice"] = "auto"
 
                 def _call_sub(p: Dict[str, Any]) -> Dict[str, Any]:
-                    chat_base_url = OPENROUTER_BASE_URL if cur_prov == "openrouter" else cur_base_url
                     return _provider_chat_completion(
-                        cur_prov, cur_key, p, base_url=chat_base_url, timeout=45, model=used_model
+                        cur_prov, cur_key, p, base_url=cur_base_url, timeout=45, model=used_model
                     )
 
                 try:
