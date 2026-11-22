@@ -48,6 +48,120 @@ _CAT_PAREN_RE = re.compile(r"^\(([^)\n]{1,40})\)\s*(.*)$")
 _CAT_BRACKET_RE = re.compile(r"^\[([^\]\n]{1,40})\]\s*(.*)$")
 _KEY_BRACKET_RE = re.compile(r"^\[key:([a-z0-9_-]{1,64})\]\s*(.*)$")
 
+_QUERY_STOPWORDS = frozenset({
+    "hola",
+    "hey",
+    "hello",
+    "buenos",
+    "buenas",
+    "dias",
+    "tardes",
+    "noches",
+    "que",
+    "tal",
+    "como",
+    "estas",
+    "esta",
+    "estoy",
+    "para",
+    "por",
+    "con",
+    "sin",
+    "sobre",
+    "entre",
+    "hasta",
+    "desde",
+    "una",
+    "uno",
+    "unos",
+    "unas",
+    "los",
+    "las",
+    "del",
+    "al",
+    "pero",
+    "mas",
+    "todo",
+    "toda",
+    "todos",
+    "todas",
+    "este",
+    "estos",
+    "estas",
+    "ese",
+    "esa",
+    "esos",
+    "esas",
+    "mio",
+    "mia",
+    "tuyo",
+    "suyo",
+    "nuestro",
+    "nuestra",
+    "tiene",
+    "tienen",
+    "tengo",
+    "hacer",
+    "hace",
+    "hago",
+    "puedes",
+    "puede",
+    "puedo",
+    "quiero",
+    "necesito",
+    "favor",
+    "gracias",
+    "ayuda",
+    "ayudame",
+    "dime",
+    "cual",
+    "cuales",
+    "donde",
+    "cuando",
+    "quien",
+    "porque",
+    "algo",
+    "muy",
+    "bien",
+    "mal",
+    "hoy",
+    "ayer",
+    "manana",
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "have",
+    "has",
+    "what",
+    "how",
+    "can",
+    "you",
+    "please",
+    "thanks",
+    "good",
+    "morning",
+    "afternoon",
+    "evening",
+    "about",
+    "into",
+    "your",
+    "xox",
+})
+
+_CATEGORY_SYNONYMS: Dict[str, str] = {
+    "identity": "identity identidad perfil nombre",
+    "preference": "preference preferencia preferencias estilo gusto",
+    "work": "work trabajo rol oficio negocio empresa",
+    "contact": "contact contacto equipo persona cliente proveedor",
+    "routine": "routine rutina horario agenda",
+    "project": "project proyecto meta objetivo",
+    "other": "other otro general",
+}
+
 
 def contains_secret_material(text: Optional[str]) -> bool:
     if not text or not isinstance(text, str):
@@ -411,6 +525,61 @@ def upsert_workspace_fact_md(
     }
 
 
+def _format_user_fact_line(item: Dict[str, Any]) -> str:
+    val = " ".join(str(item.get("value") or "").split()).strip()
+    if not val or contains_secret_material(val):
+        return ""
+    cat = normalize_category(item.get("category"))
+    key = str(item.get("key") or "").strip()
+    if key and contains_secret_material(key):
+        return ""
+    return f"- [{cat}] ({key}): {val}" if key else f"- [{cat}] {val}"
+
+
+def _extract_query_keywords(query: str) -> List[str]:
+    if not query or not isinstance(query, str):
+        return []
+    folded = _ascii_fold(query).lower()
+    raw_tokens = re.findall(r"[a-z0-9_]{3,}", folded)
+    out: List[str] = []
+    seen = set()
+    for tok in raw_tokens:
+        if len(tok) < 3 or tok in _QUERY_STOPWORDS:
+            continue
+        if tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    return out
+
+
+def _token_matches_haystack(token: str, haystack: str) -> bool:
+    if not token or not haystack:
+        return False
+    if token in haystack:
+        return True
+    if len(token) >= 5 and token.endswith("s") and token[:-1] in haystack:
+        return True
+    return False
+
+
+def _score_fact_query_match(item: Dict[str, Any], query_tokens: List[str]) -> int:
+    if not query_tokens:
+        return 0
+    key_fold = _ascii_fold(str(item.get("key") or "")).lower()
+    val_fold = _ascii_fold(str(item.get("value") or "")).lower()
+    cat = normalize_category(item.get("category"))
+    cat_fold = _CATEGORY_SYNONYMS.get(cat, cat)
+    score = 0
+    for tok in query_tokens:
+        if _token_matches_haystack(tok, key_fold):
+            score += 3
+        if _token_matches_haystack(tok, val_fold):
+            score += 2
+        if _token_matches_haystack(tok, cat_fold):
+            score += 1
+    return score
+
+
 def format_user_memory_block(facts: Optional[List[Dict[str, Any]]], max_chars: int = 1800) -> str:
     if not isinstance(facts, list) or not facts or max_chars <= 0:
         return ""
@@ -426,17 +595,187 @@ def format_user_memory_block(facts: Optional[List[Dict[str, Any]]], max_chars: i
     out_lines: List[str] = []
     used = 0
     for item in ordered:
-        val = " ".join(str(item.get("value") or "").split()).strip()
-        if not val or contains_secret_material(val):
+        line = _format_user_fact_line(item)
+        if not line:
             continue
-        cat = normalize_category(item.get("category"))
-        key = str(item.get("key") or "").strip()
-        line = f"- [{cat}] ({key}): {val}" if key else f"- [{cat}] {val}"
         add_len = len(line) + (1 if out_lines else 0)
         if used + add_len > max_chars:
             break
         out_lines.append(line)
         used += add_len
+    return "\n".join(out_lines)
+
+
+def select_startup_user_memory_block(
+    facts: Optional[List[Dict[str, Any]]],
+    query: str = "",
+    l0_max_chars: int = 450,
+    l1_max_chars: int = 650,
+) -> str:
+    """
+    Selección jerárquica de memoria global del usuario para el prompt inicial:
+    - L0 Core (Always-On): hechos con `pinned=True` o categoría `identity`, hasta `l0_max_chars`.
+    - L1 Contextual (Query-Activated): hechos restantes con coincidencia (`score > 0`) con `query`, hasta `l1_max_chars`.
+      Si `query` está vacía, es un saludo o no tiene coincidencias, L1 inyecta 0 caracteres.
+    - L2 On-Demand Index: los hechos restantes no inyectan su texto; se resumen en 1 línea compacta.
+    """
+    if not isinstance(facts, list) or not facts:
+        return ""
+
+    valid_items: List[Tuple[Dict[str, Any], str]] = []
+    for raw in facts:
+        if not isinstance(raw, dict):
+            continue
+        line = _format_user_fact_line(raw)
+        if not line:
+            continue
+        valid_items.append((raw, line))
+
+    if not valid_items:
+        return ""
+
+    def _recency_key(pair: Tuple[Dict[str, Any], str]) -> Tuple[int, str]:
+        item = pair[0]
+        return (
+            1 if item.get("pinned") else 0,
+            str(item.get("updatedAt") or item.get("updated_at") or ""),
+        )
+
+    l0_candidates: List[Tuple[Dict[str, Any], str]] = []
+    non_l0_candidates: List[Tuple[Dict[str, Any], str]] = []
+    for item, line in valid_items:
+        cat = normalize_category(item.get("category"))
+        if bool(item.get("pinned")) or cat == "identity":
+            l0_candidates.append((item, line))
+        else:
+            non_l0_candidates.append((item, line))
+
+    l0_candidates.sort(key=_recency_key, reverse=True)
+
+    l0_lines: List[str] = []
+    l0_used = 0
+    overflow_from_l0: List[Tuple[Dict[str, Any], str]] = []
+    for item, line in l0_candidates:
+        add_len = len(line) + (1 if l0_lines else 0)
+        if l0_max_chars > 0 and l0_used + add_len <= l0_max_chars:
+            l0_lines.append(line)
+            l0_used += add_len
+        else:
+            overflow_from_l0.append((item, line))
+
+    remaining_pool = [*overflow_from_l0, *non_l0_candidates]
+    query_tokens = _extract_query_keywords(query)
+
+    scored_l1: List[Tuple[int, str, Dict[str, Any], str]] = []
+    unmatched_for_l2: List[Dict[str, Any]] = []
+    for item, line in remaining_pool:
+        score = _score_fact_query_match(item, query_tokens)
+        if score > 0 and l1_max_chars > 0:
+            updated = str(item.get("updatedAt") or item.get("updated_at") or "")
+            scored_l1.append((score, updated, item, line))
+        else:
+            unmatched_for_l2.append(item)
+
+    scored_l1.sort(key=lambda entry: (entry[0], 1 if entry[2].get("pinned") else 0, entry[1]), reverse=True)
+
+    l1_lines: List[str] = []
+    l1_used = 0
+    l2_items: List[Dict[str, Any]] = []
+    for _score, _updated, item, line in scored_l1:
+        add_len = len(line) + (1 if l1_lines else 0)
+        if l1_used + add_len <= l1_max_chars:
+            l1_lines.append(line)
+            l1_used += add_len
+        else:
+            l2_items.append(item)
+
+    l2_items.extend(unmatched_for_l2)
+
+    out_lines: List[str] = [*l0_lines, *l1_lines]
+    if l2_items:
+        cats_ordered = list(dict.fromkeys(normalize_category(item.get("category")) for item in l2_items))
+        cats_csv = ", ".join(cats_ordered) if cats_ordered else "other"
+        out_lines.append(
+            f"- [índice_memoria_l2] ({len(l2_items)} dato(s) adicionales en {cats_csv}; usa memory_search si necesitas consultarlos)"
+        )
+
+    return "\n".join(out_lines)
+
+
+def select_startup_workspace_facts_block(
+    raw_facts_md: str,
+    query: str = "",
+    max_chars: int = 700,
+) -> str:
+    """
+    Compacta `memoria/hechos.md` para el prompt inicial:
+    - Conserva los 2 hechos más recientes (últimos 2 bullets) MÁS cualquier bullet relevante a `query`, hasta `max_chars`.
+    - Si se omitieron bullets, agrega una línea compacta indicando cuántos hechos adicionales hay bajo demanda.
+    """
+    if not raw_facts_md or not isinstance(raw_facts_md, str) or max_chars <= 0:
+        return ""
+
+    bullets: List[str] = []
+    for raw_ln in raw_facts_md.splitlines():
+        stripped = raw_ln.strip()
+        if not stripped or stripped.startswith("#") or stripped == "---":
+            continue
+        if stripped.startswith(("-", "*", "•")):
+            body = stripped.lstrip("-*• ").strip()
+            if body and not contains_secret_material(body):
+                bullets.append(f"- {body}")
+
+    if not bullets:
+        return ""
+
+    query_tokens = _extract_query_keywords(query)
+    scores: List[int] = []
+    for line in bullets:
+        folded = _ascii_fold(line).lower()
+        sc = sum(2 for tok in query_tokens if _token_matches_haystack(tok, folded))
+        scores.append(sc)
+
+    recent_idxs: List[int] = []
+    for idx in (len(bullets) - 1, len(bullets) - 2):
+        if idx >= 0 and idx not in recent_idxs:
+            recent_idxs.append(idx)
+
+    matching_idxs = sorted(
+        [idx for idx, sc in enumerate(scores) if sc > 0],
+        key=lambda idx: (scores[idx], idx),
+        reverse=True,
+    )
+
+    priority_idxs: List[int] = []
+    if matching_idxs:
+        # Garantizar el mejor match y los 2 hechos más recientes primero, luego el resto de matches
+        for candidate in (matching_idxs[0], *recent_idxs, *matching_idxs[1:]):
+            if candidate not in priority_idxs:
+                priority_idxs.append(candidate)
+    else:
+        priority_idxs.extend(recent_idxs)
+
+    chosen_set = set()
+    used = 0
+    for idx in priority_idxs:
+        line = bullets[idx]
+        add_len = len(line) + (1 if chosen_set else 0)
+        if used + add_len <= max_chars:
+            chosen_set.add(idx)
+            used += add_len
+
+    if not chosen_set and bullets:
+        chosen_set.add(len(bullets) - 1)
+        bullets[len(bullets) - 1] = bullets[len(bullets) - 1][:max_chars]
+
+    ordered_idxs = sorted(chosen_set)
+    out_lines = [bullets[idx] for idx in ordered_idxs]
+    omitted_count = len(bullets) - len(ordered_idxs)
+    if omitted_count > 0:
+        out_lines.append(
+            f"- [+{omitted_count} hecho(s) en memoria/hechos.md disponibles bajo demanda con memory_search]"
+        )
+
     return "\n".join(out_lines)
 
 

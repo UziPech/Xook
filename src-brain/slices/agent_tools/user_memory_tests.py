@@ -8,6 +8,8 @@ from slices.agent_tools.user_memory import (
     format_user_memory_block,
     load_global_user_memory,
     patch_local_user_fallback,
+    select_startup_user_memory_block,
+    select_startup_workspace_facts_block,
     upsert_workspace_fact_md,
 )
 
@@ -123,6 +125,117 @@ class UserMemoryTests(unittest.TestCase):
             txt = (ws / "memoria" / "hechos.md").read_text(encoding="utf-8")
             self.assertNotIn("999", txt)
             self.assertIn("1,200", txt)
+
+    def test_select_startup_user_memory_block_l0_and_l2_index_on_unrelated_query(self) -> None:
+        facts = [
+            {
+                "id": "1",
+                "key": "nombre_preferido",
+                "category": "identity",
+                "value": "Prefiere que le llamen Uzi",
+                "pinned": False,
+                "updatedAt": "2026-03-10T10:00:00Z",
+            },
+            {
+                "id": "2",
+                "key": "regla_fija",
+                "category": "preference",
+                "value": "Respuestas directas y concisas",
+                "pinned": True,
+                "updatedAt": "2026-03-11T10:00:00Z",
+            },
+            {
+                "id": "3",
+                "key": "proveedor_empaque",
+                "category": "work",
+                "value": "Cajas corrugadas con Cartonera del Norte",
+                "pinned": False,
+                "updatedAt": "2026-03-12T10:00:00Z",
+            },
+            {
+                "id": "4",
+                "key": "rutina_gimnasio",
+                "category": "routine",
+                "value": "Entrena a las 7am de lunes a viernes",
+                "pinned": False,
+                "updatedAt": "2026-03-12T11:00:00Z",
+            },
+        ]
+        block = select_startup_user_memory_block(facts, query="Hola buenos días, ¿cómo estás?")
+        self.assertIn("[preference] (regla_fija): Respuestas directas y concisas", block)
+        self.assertIn("[identity] (nombre_preferido): Prefiere que le llamen Uzi", block)
+        self.assertNotIn("Cartonera del Norte", block)
+        self.assertNotIn("Entrena a las 7am", block)
+        self.assertIn(
+            "- [índice_memoria_l2] (2 dato(s) adicionales en work, routine; usa memory_search si necesitas consultarlos)",
+            block,
+        )
+
+    def test_select_startup_user_memory_block_promotes_matching_l1_facts(self) -> None:
+        facts = [
+            {
+                "id": "1",
+                "key": "nombre_preferido",
+                "category": "identity",
+                "value": "Prefiere que le llamen Uzi",
+                "pinned": True,
+                "updatedAt": "2026-03-10T10:00:00Z",
+            },
+            {
+                "id": "2",
+                "key": "proveedor_empaque",
+                "category": "work",
+                "value": "Cajas corrugadas con Cartonera del Norte",
+                "pinned": False,
+                "updatedAt": "2026-03-12T10:00:00Z",
+            },
+            {
+                "id": "3",
+                "key": "rutina_gimnasio",
+                "category": "routine",
+                "value": "Entrena a las 7am de lunes a viernes",
+                "pinned": False,
+                "updatedAt": "2026-03-12T11:00:00Z",
+            },
+        ]
+        block = select_startup_user_memory_block(
+            facts,
+            query="Necesito cotizar cajas de empaque con nuestro proveedor",
+        )
+        self.assertIn("[identity] (nombre_preferido): Prefiere que le llamen Uzi", block)
+        self.assertIn("[work] (proveedor_empaque): Cajas corrugadas con Cartonera del Norte", block)
+        self.assertNotIn("Entrena a las 7am", block)
+        self.assertIn(
+            "- [índice_memoria_l2] (1 dato(s) adicionales en routine; usa memory_search si necesitas consultarlos)",
+            block,
+        )
+
+    def test_select_startup_workspace_facts_block_compacts_and_matches_query(self) -> None:
+        raw_md = "\n".join(
+            [
+                "# Hechos del negocio",
+                "",
+                "- [2026-03-01 09:00] (proveedores) Proveedor de café en grano: Café Veracruzano",
+                "- [2026-03-02 10:00] (logistica) Reparto local con flotilla propia en zona centro",
+                "- [2026-03-03 11:00] (empaque) Bolsas biodegradables calibre 40",
+                "- [2026-03-04 12:00] (finanzas) Corte de caja diario a las 21:00 hrs",
+                "- [2026-03-05 13:00] (horarios) Sucursal abre de lunes a sábado de 8:00 a 20:00",
+                "- [2026-03-06 14:00] (envios) Envío gratis arriba de $1,200 MXN",
+            ]
+        )
+        block = select_startup_workspace_facts_block(
+            raw_md,
+            query="¿Quién es nuestro proveedor de café en grano?",
+            max_chars=700,
+        )
+        self.assertIn("Café Veracruzano", block)
+        self.assertIn("Sucursal abre de lunes a sábado", block)
+        self.assertIn("Envío gratis arriba de $1,200 MXN", block)
+        self.assertNotIn("Bolsas biodegradables", block)
+        self.assertIn(
+            "- [+3 hecho(s) en memoria/hechos.md disponibles bajo demanda con memory_search]",
+            block,
+        )
 
 
 if __name__ == "__main__":

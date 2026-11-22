@@ -352,12 +352,105 @@ def handle_rpc_request(request_line):
 
             ws_root = Path(params.get("workspace_root") or str(BASE_DIR)).resolve()
             spec = params.get("spec") if isinstance(params.get("spec"), dict) else params
-            result = generate_pdf_document(
-                spec,
-                workspace_root=ws_root,
-                resolve_path_fn=resolve_workspace_path,
-                autonomous_roots=AUTONOMOUS_WRITE_ROOTS,
+            cfg_dir_raw = params.get("xox_config_dir")
+            global_skills_dir = (Path(cfg_dir_raw) / "xox-skills") if cfg_dir_raw else None
+            gen_kwargs = {
+                "workspace_root": ws_root,
+                "resolve_path_fn": resolve_workspace_path,
+                "autonomous_roots": AUTONOMOUS_WRITE_ROOTS,
+            }
+            if global_skills_dir is not None:
+                gen_kwargs["global_skills_dir"] = global_skills_dir
+            result = generate_pdf_document(spec, **gen_kwargs)
+        elif method == "generate_office_document":
+            from slices.agent_tools.toolkit import AUTONOMOUS_WRITE_ROOTS, resolve_workspace_path
+            from slices.pdf_engine.office_generator import generate_office_document
+
+            ws_root = Path(params.get("workspace_root") or str(BASE_DIR)).resolve()
+            spec = params.get("spec") if isinstance(params.get("spec"), dict) else params
+            cfg_dir_raw = params.get("xox_config_dir")
+            global_skills_dir = (Path(cfg_dir_raw) / "xox-skills") if cfg_dir_raw else None
+            gen_kwargs = {
+                "workspace_root": ws_root,
+                "resolve_path_fn": resolve_workspace_path,
+                "autonomous_roots": AUTONOMOUS_WRITE_ROOTS,
+            }
+            if global_skills_dir is not None:
+                gen_kwargs["global_skills_dir"] = global_skills_dir
+            result = generate_office_document(spec, **gen_kwargs)
+        elif method == "inspect_document_design":
+            from slices.agent_tools.toolkit import (
+                INSPECTABLE_DESIGN_EXTENSIONS,
+                READ_SEARCH_EXCLUDED_ROOTS,
+                _has_hidden_component,
+                resolve_workspace_path,
             )
+            from slices.pdf_engine.inspector import inspect_document_design
+
+            ws_root = Path(params.get("workspace_root") or str(BASE_DIR)).resolve()
+            raw_path = str(params.get("path") or "").strip()
+            if not raw_path:
+                result = {"ok": False, "error": "Falta el parámetro 'path' del documento."}
+            else:
+                target, clean_rel, top_zone = resolve_workspace_path(ws_root, raw_path)
+                if top_zone in READ_SEARCH_EXCLUDED_ROOTS or _has_hidden_component(clean_rel):
+                    result = {"ok": False, "error": f"Ruta reservada no accesible: {clean_rel}"}
+                elif not target.is_file():
+                    result = {"ok": False, "error": f"Archivo no encontrado: {clean_rel}"}
+                elif target.suffix.lower() not in INSPECTABLE_DESIGN_EXTENSIONS:
+                    result = {
+                        "ok": False,
+                        "error": (
+                            f"Formato no soportado para inspección de diseño "
+                            f"({target.suffix or 'sin extensión'}): {clean_rel}"
+                        ),
+                    }
+                else:
+                    sample_pages_val = max(1, min(12, int(params.get("sample_pages") or 4)))
+                    include_preview = bool(params.get("include_preview_images", False))
+                    max_preview = max(1, min(4, int(params.get("max_preview_pages") or 2)))
+                    design_res = inspect_document_design(
+                        target,
+                        sample_pages=sample_pages_val,
+                        extract_assets=False,
+                        include_preview_images=include_preview,
+                        max_preview_pages=max_preview,
+                    )
+                    design_res["path"] = clean_rel
+                    result = design_res
+        elif method == "inspect_pdf_design":
+            from slices.agent_tools.toolkit import (
+                READ_SEARCH_EXCLUDED_ROOTS,
+                _has_hidden_component,
+                resolve_workspace_path,
+            )
+            from slices.pdf_engine.inspector import inspect_pdf_design
+
+            ws_root = Path(params.get("workspace_root") or str(BASE_DIR)).resolve()
+            raw_path = str(params.get("path") or "").strip()
+            if not raw_path:
+                result = {"ok": False, "error": "Falta el parámetro 'path' del PDF."}
+            else:
+                target, clean_rel, top_zone = resolve_workspace_path(ws_root, raw_path)
+                if top_zone in READ_SEARCH_EXCLUDED_ROOTS or _has_hidden_component(clean_rel):
+                    result = {"ok": False, "error": f"Ruta reservada no accesible: {clean_rel}"}
+                elif not target.is_file():
+                    result = {"ok": False, "error": f"Archivo PDF no encontrado: {clean_rel}"}
+                elif target.suffix.lower() != ".pdf":
+                    result = {"ok": False, "error": f"El archivo no es un PDF válido: {clean_rel}"}
+                else:
+                    sample_pages_val = max(1, min(12, int(params.get("sample_pages") or 4)))
+                    include_preview = bool(params.get("include_preview_images", False))
+                    max_preview = max(1, min(4, int(params.get("max_preview_pages") or 2)))
+                    design_res = inspect_pdf_design(
+                        target,
+                        sample_pages=sample_pages_val,
+                        extract_assets=False,
+                        include_preview_images=include_preview,
+                        max_preview_pages=max_preview,
+                    )
+                    design_res["path"] = clean_rel
+                    result = design_res
         elif method == "inspect_pdf":
             from slices.agent_tools.toolkit import READ_SEARCH_EXCLUDED_ROOTS, resolve_workspace_path
             from slices.pdf_engine import inspect_pdf_summary, read_pdf_document
