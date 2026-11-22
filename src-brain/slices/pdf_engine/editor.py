@@ -29,10 +29,13 @@ from reportlab.lib.utils import simpleSplit
 from reportlab.pdfgen import canvas as rl_canvas
 
 from slices.pdf_engine.generator import (
+    THEMES,
     _FONT_FAMILY,
     _ensure_fonts,
+    _json_safe_copy,
     _normalize_blocks_input,
     _parse_markdown_to_blocks,
+    _resolve_inspector_funcs,
     _sanitize_text_for_pdf,
     generate_pdf_document,
 )
@@ -124,6 +127,58 @@ def blocks_to_markdown(blocks: List[Dict[str, Any]]) -> str:
                         cells = [str(r[i] if i < len(r) else "").strip() for i in range(len(headers))]
                         lines.append("| " + " | ".join(cells) + " |")
                 lines.append("")
+        elif btype in ("kv_grid", "header_band"):
+            kv_title = str(blk.get("title") or "").strip()
+            if kv_title:
+                lines.append(f"### {kv_title}")
+            raw_items = blk.get("items") or []
+            if isinstance(raw_items, dict):
+                raw_items = [{"label": k, "value": v} for k, v in raw_items.items()]
+            for item in raw_items if isinstance(raw_items, list) else []:
+                if isinstance(item, dict):
+                    lbl = str(item.get("label") or item.get("key") or "").strip()
+                    val = str(item.get("value") or "").strip()
+                    if lbl or val:
+                        lines.append(f"- **{lbl}**: {val}" if lbl else f"- {val}")
+            if kv_title or raw_items:
+                lines.append("")
+        elif btype == "columns":
+            raw_cols = blk.get("columns") or blk.get("cols") or []
+            for col_items in raw_cols if isinstance(raw_cols, list) else []:
+                if isinstance(col_items, list) and col_items:
+                    col_md = blocks_to_markdown(col_items)
+                    if col_md:
+                        lines.append(col_md)
+                        lines.append("")
+        elif btype in ("signature_block", "signatures"):
+            signers = blk.get("signers") or blk.get("items") or []
+            added_sig = False
+            for s in signers if isinstance(signers, list) else []:
+                if not isinstance(s, dict):
+                    continue
+                name = str(s.get("name") or "").strip()
+                role = str(s.get("role") or s.get("title") or "").strip()
+                date_v = str(s.get("date") or "").strip()
+                parts = [p for p in [name, f"({role})" if role else "", date_v] if p]
+                if parts:
+                    lines.append(f"- **Firma**: {' — '.join(parts)}")
+                    added_sig = True
+            if added_sig:
+                lines.append("")
+        elif btype in ("box", "panel", "card"):
+            b_title = str(blk.get("title") or "").strip()
+            b_txt = str(blk.get("text") or blk.get("content") or "").strip()
+            if b_title:
+                lines.append(f"> **{b_title}**")
+            if b_txt:
+                lines.append(f"> {b_txt}")
+            inner = blk.get("blocks")
+            if isinstance(inner, list) and inner:
+                inner_md = blocks_to_markdown(inner)
+                for ln in inner_md.splitlines():
+                    lines.append(f"> {ln}" if ln.strip() else ">")
+            if b_title or b_txt or (isinstance(inner, list) and inner):
+                lines.append("")
         elif btype == "divider":
             lines.append("---")
             lines.append("")
@@ -153,6 +208,21 @@ def save_pdf_spec_metadata(
         if not isinstance(blocks, list):
             blocks, _ = _normalize_blocks_input(spec_data)
 
+        raw_design_spec = (
+            spec_data.get("design_spec")
+            if "design_spec" in spec_data
+            else existing.get("design_spec")
+        )
+        raw_design_overrides = (
+            spec_data.get("design_overrides")
+            if "design_overrides" in spec_data
+            else existing.get("design_overrides")
+        )
+        raw_design_skill = (
+            spec_data.get("design_skill")
+            if "design_skill" in spec_data
+            else existing.get("design_skill")
+        )
         pdf_stat = pdf_abs.stat() if (pdf_abs and pdf_abs.is_file()) else None
         payload: Dict[str, Any] = {
             "path": rel_path,
@@ -173,6 +243,11 @@ def save_pdf_spec_metadata(
                 else existing.get("skip_inline_title", False)
             ),
             "cover": spec_data.get("cover") if "cover" in spec_data else existing.get("cover"),
+            "footer_text": spec_data.get("footer_text") if "footer_text" in spec_data else existing.get("footer_text"),
+            "watermark": spec_data.get("watermark") if "watermark" in spec_data else existing.get("watermark"),
+            "design_skill": str(raw_design_skill).strip() if raw_design_skill else None,
+            "design_spec": _json_safe_copy(raw_design_spec) if isinstance(raw_design_spec, dict) else None,
+            "design_overrides": _json_safe_copy(raw_design_overrides) if isinstance(raw_design_overrides, dict) else None,
             "blocks": blocks,
             "page_patches": (
                 spec_data.get("page_patches")
@@ -816,6 +891,11 @@ def load_pdf_editable_spec(
                 "preserve_first_page": preserve_first,
                 "skip_inline_title": bool(saved.get("skip_inline_title")),
                 "cover": saved.get("cover"),
+                "footer_text": saved.get("footer_text"),
+                "watermark": saved.get("watermark"),
+                "design_skill": saved.get("design_skill"),
+                "design_spec": saved.get("design_spec") if isinstance(saved.get("design_spec"), dict) else None,
+                "design_overrides": saved.get("design_overrides") if isinstance(saved.get("design_overrides"), dict) else None,
                 "blocks": blocks,
                 "markdown": blocks_to_markdown(blocks),
                 "page_patches": merged_patches,
@@ -894,6 +974,9 @@ def load_pdf_editable_spec(
         "preserve_first_page": has_cover_page,
         "skip_inline_title": False,
         "cover": {"enabled": has_cover_page, "layout": "full_page" if has_cover_page else "none"},
+        "design_skill": None,
+        "design_spec": None,
+        "design_overrides": None,
         "blocks": extracted_blocks,
         "markdown": blocks_to_markdown(extracted_blocks),
         "page_patches": base_interactive_items,
@@ -1112,6 +1195,13 @@ def save_edited_pdf_document(
         preserve_first = bool(payload.get("preserve_first_page"))
         prepend_cover_path = paths["cover_pdf"] if (preserve_first and paths["cover_pdf"].is_file()) else None
 
+        existing_meta_edit: Dict[str, Any] = {}
+        if paths["json"].is_file():
+            try:
+                existing_meta_edit = json.loads(paths["json"].read_text(encoding="utf-8"))
+            except Exception:
+                existing_meta_edit = {}
+
         gen_spec: Dict[str, Any] = {
             "title": str(payload.get("title") or pdf_abs.stem).strip() or "Documento",
             "subtitle": str(payload.get("subtitle") or "").strip(),
@@ -1129,6 +1219,15 @@ def save_edited_pdf_document(
             gen_spec["watermark"] = payload.get("watermark")
         elif "branding" in payload:
             gen_spec["branding"] = payload.get("branding")
+        eff_edit_skill = payload.get("design_skill") if "design_skill" in payload else existing_meta_edit.get("design_skill")
+        eff_edit_spec = payload.get("design_spec") if "design_spec" in payload else existing_meta_edit.get("design_spec")
+        eff_edit_overrides = payload.get("design_overrides") if "design_overrides" in payload else existing_meta_edit.get("design_overrides")
+        if eff_edit_skill:
+            gen_spec["design_skill"] = eff_edit_skill
+        if isinstance(eff_edit_spec, dict) and eff_edit_spec:
+            gen_spec["design_spec"] = eff_edit_spec
+        if isinstance(eff_edit_overrides, dict) and eff_edit_overrides:
+            gen_spec["design_overrides"] = eff_edit_overrides
 
         modified_only = [p for p in page_patches if isinstance(p, dict) and _is_patch_modified(p)]
         generate_pdf_document(
@@ -1289,6 +1388,30 @@ def _apply_replacements_to_blocks(
                                 if cnt:
                                     row[c_idx] = new_val
                                     total_applied += cnt
+            signers = blk.get("signers")
+            if isinstance(signers, list):
+                for s_item in signers:
+                    if isinstance(s_item, dict):
+                        for sub_k in ("name", "role", "title", "date"):
+                            if isinstance(s_item.get(sub_k), str):
+                                new_val, cnt = _sub_pattern_in_text(s_item[sub_k], find_txt, replace_txt)
+                                if cnt:
+                                    s_item[sub_k] = new_val
+                                    total_applied += cnt
+            inner_blks = blk.get("blocks")
+            if isinstance(inner_blks, list) and inner_blks:
+                new_inner, inner_cnt = _apply_replacements_to_blocks(inner_blks, [rep])
+                if inner_cnt:
+                    blk["blocks"] = new_inner
+                    total_applied += inner_cnt
+            raw_cols = blk.get("columns")
+            if isinstance(raw_cols, list) and raw_cols and isinstance(raw_cols[0], list):
+                for col_i, col_blks in enumerate(raw_cols):
+                    if isinstance(col_blks, list):
+                        new_col, col_cnt = _apply_replacements_to_blocks(col_blks, [rep])
+                        if col_cnt:
+                            raw_cols[col_i] = new_col
+                            total_applied += col_cnt
     return updated, total_applied
 
 
@@ -1532,12 +1655,13 @@ def modify_or_append_pdf_by_agent(
     resolve_path_fn: Callable,
     default_author: Optional[str] = None,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    global_skills_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Permite a Xox modificar un PDF existente o agregarle nuevas páginas (`append_pages`)
-    conservando la misma tipografía (`_FONT_FAMILY`), estilo visual (`theme`), encabezados,
-    pies de página y portada original. Soporta reemplazos puntuales, ediciones quirúrgicas
-    por sección (`section_updates`), reemplazo completo o anexado de páginas.
+    conservando la misma tipografía (`_FONT_FAMILY`), estilo visual (`theme`), `design_spec`,
+    encabezados, pies de página y portada original. Soporta reemplazos puntuales, ediciones quirúrgicas
+    por sección (`section_updates`), cambios de diseño (`design_overrides`), reemplazo completo o anexado.
     """
     source_ref = str(
         spec.get("source_pdf_path")
@@ -1555,6 +1679,7 @@ def modify_or_append_pdf_by_agent(
             resolve_path_fn=resolve_path_fn,
             default_author=default_author,
             progress_callback=progress_callback,
+            global_skills_dir=global_skills_dir,
         )
 
     pdf_abs, rel_path = resolved_pair
@@ -1562,6 +1687,7 @@ def modify_or_append_pdf_by_agent(
     existing_spec = load_pdf_editable_spec(workspace_root, pdf_abs, rel_path)
 
     # Heredar diseño, tipografía y metadatos del PDF existente para mantener coherencia total
+    has_explicit_theme = "theme" in spec and bool(str(spec.get("theme") or "").strip())
     theme = str(spec.get("theme") or existing_spec.get("theme") or "executive").strip().lower()
     title = str(spec.get("title") or existing_spec.get("title") or pdf_abs.stem).strip() or "Documento"
     subtitle = str(
@@ -1580,6 +1706,22 @@ def modify_or_append_pdf_by_agent(
         spec.get("watermark")
         if "watermark" in spec
         else (spec.get("branding") if "branding" in spec else (existing_spec.get("watermark") if "watermark" in existing_spec else existing_spec.get("branding")))
+    )
+
+    # Heredar o sobrescribir design_skill / design_spec / design_overrides
+    has_new_design_skill = bool(str(spec.get("design_skill") or "").strip())
+    has_new_design_spec = isinstance(spec.get("design_spec"), dict) and bool(spec.get("design_spec"))
+    has_new_design_overrides = isinstance(spec.get("design_overrides"), dict) and bool(spec.get("design_overrides"))
+    prev_design_skill = str(existing_spec.get("design_skill") or "").strip() or None
+    effective_design_skill = (
+        str(spec.get("design_skill") or "").strip() or None
+        if "design_skill" in spec
+        else prev_design_skill
+    )
+    inherited_design_spec: Optional[Dict[str, Any]] = (
+        _json_safe_copy(existing_spec.get("design_spec"))
+        if isinstance(existing_spec.get("design_spec"), dict) and existing_spec.get("design_spec")
+        else None
     )
 
     edit_action = str(spec.get("edit_action") or spec.get("mode") or "").strip().lower()
@@ -1650,6 +1792,9 @@ def modify_or_append_pdf_by_agent(
         or ("footer_text" in spec)
         or ("watermark" in spec)
         or ("branding" in spec)
+        or has_new_design_skill
+        or has_new_design_spec
+        or has_new_design_overrides
     )
     if (
         replacements
@@ -1669,6 +1814,94 @@ def modify_or_append_pdf_by_agent(
             "available_headings": _collect_headings(existing_blocks),
             "sample_snippets": _extract_block_text_preview(existing_blocks),
         }
+
+    # 3) Si solo enviaron `replacements` sin bloques estructurados modificados (ej. PDF escaneado o portada),
+    #    estampar parches directos; si sí coincidieron `blocks`, dejar que el modo `modify` recompile limpio.
+    if (
+        not is_append
+        and replacements_applied > 0
+        and block_replacements_applied == 0
+        and not new_blocks
+        and section_updates_applied == 0
+        and not metadata_changed
+    ):
+        saved = save_edited_pdf_document(
+            workspace_root,
+            pdf_abs,
+            rel_path,
+            {"patches_only": True, "page_patches": page_patches},
+            resolve_path_fn,
+        )
+        saved["edit_action"] = "replacements"
+        return saved
+
+    # Captura perezosa del diseño visual real de PDFs externos sin design_spec guardado
+    should_lazy_inspect = (
+        (existing_spec.get("source") == "extracted_pdf" or inherited_design_spec is None)
+        and not has_explicit_theme
+        and not has_new_design_skill
+        and not has_new_design_spec
+        and not prev_design_skill
+    )
+    if should_lazy_inspect:
+        try:
+            from slices.pdf_engine.inspector import inspect_pdf_design
+
+            inspected = inspect_pdf_design(pdf_abs, include_preview_images=False)
+            if isinstance(inspected, dict) and inspected.get("ok") and isinstance(inspected.get("design_spec"), dict):
+                inherited_design_spec = inspected["design_spec"]
+        except Exception:
+            pass
+
+    def _attach_design_fields(target_spec: Dict[str, Any]) -> None:
+        switched_skill = has_new_design_skill and (effective_design_skill != prev_design_skill)
+        if effective_design_skill:
+            target_spec["design_skill"] = effective_design_skill
+        if switched_skill:
+            if has_new_design_spec:
+                target_spec["design_spec"] = spec["design_spec"]
+            if has_new_design_overrides:
+                target_spec["design_overrides"] = spec["design_overrides"]
+            return
+
+        base_ds = _json_safe_copy(inherited_design_spec) if isinstance(inherited_design_spec, dict) else None
+        if (
+            base_ds is not None
+            and has_explicit_theme
+            and theme != str(existing_spec.get("theme") or "").strip().lower()
+            and not has_new_design_spec
+            and theme in THEMES
+        ):
+            t_pal = THEMES[theme]
+            pal_d = base_ds.setdefault("palette", {})
+            for pk in (
+                "page_bg", "text", "heading", "muted", "accent", "accent_dark",
+                "accent_soft", "border", "surface", "table_head_bg", "table_head_fg", "table_alt",
+            ):
+                if pk in t_pal:
+                    pal_d[pk] = t_pal[pk]
+            base_ds.setdefault("page", {})["background_hex"] = t_pal["page_bg"]
+
+        if has_new_design_spec:
+            if base_ds is not None:
+                _, merge_fn, _ = _resolve_inspector_funcs()
+                priv_dir = base_ds.get("_skill_dir")
+                priv_assets = base_ds.get("_resolved_assets")
+                priv_slug = base_ds.get("_skill_slug")
+                base_ds = merge_fn(base_ds, spec["design_spec"])
+                if priv_dir and "_skill_dir" not in base_ds:
+                    base_ds["_skill_dir"] = priv_dir
+                if priv_assets and "_resolved_assets" not in base_ds:
+                    base_ds["_resolved_assets"] = priv_assets
+                if priv_slug and "_skill_slug" not in base_ds:
+                    base_ds["_skill_slug"] = priv_slug
+            else:
+                base_ds = _json_safe_copy(spec["design_spec"])
+
+        if base_ds is not None:
+            target_spec["design_spec"] = base_ds
+        if has_new_design_overrides:
+            target_spec["design_overrides"] = spec["design_overrides"]
 
     # 2) Modo `append_pages`: conserva intactas todas las páginas actuales (1..N) y agrega
     #    las páginas nuevas (N+1..N+K) con la misma tipografía, paleta y numeración continua.
@@ -1697,6 +1930,7 @@ def modify_or_append_pdf_by_agent(
             append_spec["footer_text"] = footer_text
         if watermark_cfg is not None:
             append_spec["watermark"] = watermark_cfg
+        _attach_design_fields(append_spec)
         try:
             res = generate_pdf_document(
                 append_spec,
@@ -1706,6 +1940,7 @@ def modify_or_append_pdf_by_agent(
                 progress_callback=progress_callback,
                 allow_any_workspace_zone=True,
                 prepend_all_pages_from=prev_all_tmp,
+                global_skills_dir=global_skills_dir,
                 save_spec_override={
                     "title": title,
                     "subtitle": subtitle,
@@ -1717,6 +1952,7 @@ def modify_or_append_pdf_by_agent(
                     "cover": existing_spec.get("cover"),
                     "footer_text": footer_text,
                     "watermark": watermark_cfg,
+                    "design_skill": effective_design_skill,
                     "blocks": combined_blocks,
                     "page_patches": [],
                 },
@@ -1728,30 +1964,16 @@ def modify_or_append_pdf_by_agent(
         finally:
             prev_all_tmp.unlink(missing_ok=True)
 
-    # 3) Si solo enviaron `replacements` sin bloques estructurados modificados (ej. PDF escaneado o portada),
-    #    estampar parches directos; si sí coincidieron `blocks`, dejar que el modo `modify` recompile limpio.
-    if (
-        replacements_applied > 0
-        and block_replacements_applied == 0
-        and not new_blocks
-        and section_updates_applied == 0
-        and not metadata_changed
-    ):
-        saved = save_edited_pdf_document(
-            workspace_root,
-            pdf_abs,
-            rel_path,
-            {"patches_only": True, "page_patches": page_patches},
-            resolve_path_fn,
-        )
-        saved["edit_action"] = "replacements"
-        return saved
-
     # 4) Modo `modify`: recompila el cuerpo del documento conservando la portada original (Página 1)
     #    salvo que el usuario/agente haya pedido cambiarla o quitarla explícitamente.
     blocks_to_compile = new_blocks if new_blocks else existing_blocks
     explicit_cover_arg = spec.get("cover")
     explicit_cover_img = spec.get("cover_image") or spec.get("coverImage") or spec.get("portada_imagen")
+    override_cover_cfg = (
+        spec["design_overrides"].get("cover")
+        if has_new_design_overrides and isinstance(spec["design_overrides"].get("cover"), dict)
+        else None
+    )
     wants_new_or_removed_cover = (
         bool(explicit_cover_img)
         or (isinstance(explicit_cover_arg, bool))
@@ -1762,6 +1984,10 @@ def modify_or_append_pdf_by_agent(
                 or bool(explicit_cover_arg.get("image_path") or explicit_cover_arg.get("image") or explicit_cover_arg.get("path"))
                 or str(explicit_cover_arg.get("layout") or "").strip().lower() not in ("", "keep")
             )
+        )
+        or (
+            isinstance(override_cover_cfg, dict)
+            and ("enabled" in override_cover_cfg or "layout" in override_cover_cfg or "top_band" in override_cover_cfg)
         )
     )
     preserve_first = (
@@ -1788,6 +2014,7 @@ def modify_or_append_pdf_by_agent(
         modify_spec["footer_text"] = footer_text
     if watermark_cfg is not None:
         modify_spec["watermark"] = watermark_cfg
+    _attach_design_fields(modify_spec)
 
     res = generate_pdf_document(
         modify_spec,
@@ -1797,6 +2024,7 @@ def modify_or_append_pdf_by_agent(
         progress_callback=progress_callback,
         allow_any_workspace_zone=True,
         prepend_first_page_from=prepend_cover,
+        global_skills_dir=global_skills_dir,
         save_spec_override=(
             None
             if wants_new_or_removed_cover
