@@ -28,7 +28,12 @@ from slices.agent_tools import (
     ToolExposureSession,
     USER_MEMORY_TOOL_DEFS,
     USER_MEMORY_TOOL_NAMES,
+    WEB_TOOL_DEFS,
+    WEB_TOOL_NAMES,
     WorkspaceToolExecutor,
+    execute_web_tool,
+    merge_web_sources,
+    web_sources_from_result,
 )
 from slices.agent_tools.skills_hub import index_workspace_skills, load_global_xox_profile
 from slices.agent_tools.user_memory import (
@@ -194,6 +199,10 @@ def _xox_terminal_event(fn_name: str, args: Dict[str, Any], tool_res: Optional[D
 
 def _tool_step_meta(fn_name: str, args: Dict[str, Any]) -> Tuple[str, str]:
     target = str(args.get("path") or args.get("target_path") or args.get("query") or "").strip()
+    if fn_name == "web_search":
+        return "Buscando en internet", target
+    if fn_name == "web_fetch":
+        return "Leyendo página web", str(args.get("url") or "")
     if fn_name == "workspace_list":
         return "Explorando archivos", target or "."
     if fn_name == "workspace_read":
@@ -5363,7 +5372,7 @@ def run_agent_completion(
     if executor is not None:
         all_active_tools = [*AGENT_TOOL_DEFS, *active_tools]
     else:
-        all_active_tools = [*USER_MEMORY_TOOL_DEFS, *active_tools]
+        all_active_tools = [*USER_MEMORY_TOOL_DEFS, *WEB_TOOL_DEFS, *active_tools]
 
     has_attachments, image_parts = _extract_attached_flags(attached_context)
     has_active_document = effective_scope == "document" or _has_active_document_in_attached(attached_context)
@@ -5397,6 +5406,7 @@ def run_agent_completion(
         tool_defs_count=len(active_tools),
     )
     sync_tool_records: List[Dict[str, Any]] = []
+    sync_web_sources: List[Dict[str, str]] = []
 
     # Perfil inicial del turno (determinístico y rápido para failover multi-proveedor)
     base_plan = select_best_models_for_task(
@@ -5642,11 +5652,12 @@ def run_agent_completion(
                         if isinstance(tc, dict)
                         and str((tc.get("function") or {}).get("name") or "") not in ui_names
                     ]
-                    has_user_mem_calls = any(
-                        str((tc.get("function") or {}).get("name") or "") in USER_MEMORY_TOOL_NAMES
+                    # Memoria del usuario e internet funcionan sin workspace abierto.
+                    has_workspaceless_calls = any(
+                        str((tc.get("function") or {}).get("name") or "") in (USER_MEMORY_TOOL_NAMES | WEB_TOOL_NAMES)
                         for tc in exec_calls
                     )
-                    if not exec_calls or (executor is None and not has_user_mem_calls):
+                    if not exec_calls or (executor is None and not has_workspaceless_calls):
                         break
 
                     parsed_nonstream_args: List[Dict[str, Any]] = []
@@ -5677,6 +5688,11 @@ def run_agent_completion(
                                     limit=int(args.get("limit") or 8) if isinstance(args.get("limit"), (int, float)) else 8,
                                 )
                                 tool_out["disposition"] = {"delivery": "delivered_verified", "retry": "safe", "verified": True}
+                            elif fn_name in WEB_TOOL_NAMES:
+                                tool_out = execute_web_tool(fn_name, args)
+                                sync_web_sources = merge_web_sources(
+                                    sync_web_sources, web_sources_from_result(fn_name, tool_out)
+                                )
                             elif executor is not None:
                                 tool_out = executor.execute(fn_name, args)
                             elif fn_name in USER_MEMORY_TOOL_NAMES:
@@ -5972,6 +5988,7 @@ def run_agent_completion(
         "tasks": safe_tasks,
         "generated_pdfs": list(executor.generated_pdfs) if executor else [],
         "generated_documents": list(executor.generated_documents) if executor else [],
+        "web_sources": sync_web_sources,
         "provider_used": used_provider,
         "model_used": used_model_out,
         "usage": final_usage,
@@ -6224,7 +6241,7 @@ def stream_agent_completion(
     if executor is not None:
         all_active_tools = [*AGENT_TOOL_DEFS, *active_tools]
     else:
-        all_active_tools = [*USER_MEMORY_TOOL_DEFS, *active_tools]
+        all_active_tools = [*USER_MEMORY_TOOL_DEFS, *WEB_TOOL_DEFS, *active_tools]
 
     has_attachments, image_parts = _extract_attached_flags(attached_context)
     has_active_document = effective_scope == "document" or _has_active_document_in_attached(attached_context)
@@ -6259,6 +6276,19 @@ def stream_agent_completion(
     )
     turn_tool_records: List[Dict[str, Any]] = []
     turn_subagent_records: List[Dict[str, Any]] = []
+    turn_web_sources: List[Dict[str, str]] = []
+    web_sources_lock = threading.Lock()
+
+    def _record_web_sources(fn_name: str, tool_res: Any) -> None:
+        # Los subagentes buscan en paralelo: las fuentes se juntan con candado.
+        nonlocal turn_web_sources
+        new_sources = web_sources_from_result(fn_name, tool_res)
+        if not new_sources:
+            return
+        with web_sources_lock:
+            turn_web_sources = merge_web_sources(turn_web_sources, new_sources)
+            snapshot = list(turn_web_sources)
+        emit_event({"type": "web_sources", "sources": snapshot})
     rounds_executed = 1
 
     base_plan = select_best_models_for_task(
@@ -6740,6 +6770,7 @@ def stream_agent_completion(
         "memory_search",
         "query_screen_memory",
         "scan_workspace_cleanup",
+        *WEB_TOOL_NAMES,
     }
     desktop_observe_subagent_tool_names = read_only_subagent_tool_names | {
         "desktop_list_windows",
@@ -6749,12 +6780,12 @@ def stream_agent_completion(
     subagent_readonly_defs = (
         [td for td in AGENT_TOOL_DEFS if str((td.get("function") or {}).get("name") or "") in read_only_subagent_tool_names]
         if executor is not None
-        else []
+        else list(WEB_TOOL_DEFS)
     )
     subagent_desktop_observe_defs = (
         [td for td in AGENT_TOOL_DEFS if str((td.get("function") or {}).get("name") or "") in desktop_observe_subagent_tool_names]
         if executor is not None
-        else []
+        else list(WEB_TOOL_DEFS)
     )
 
     def _resolve_subagent_spec(raw_name: str, raw_model: str, raw_design: str, fallback_model: str) -> Tuple[str, str, str]:
@@ -6938,7 +6969,11 @@ def stream_agent_completion(
                     s_id = str(s_tc.get("id") or f"sub_{_sub_round}")
                     s_args = _parse_tool_args(s_fn.get("arguments"))
                     sub_parsed.append(s_args)
-                    if s_name in sub_allowed_names and not (isinstance(s_args, dict) and s_args.get("__parse_error__")):
+                    s_args_ok = not (isinstance(s_args, dict) and s_args.get("__parse_error__"))
+                    if s_name in WEB_TOOL_NAMES and s_args_ok:
+                        s_res = execute_web_tool(s_name, s_args)
+                        _record_web_sources(s_name, s_res)
+                    elif s_name in sub_allowed_names and s_args_ok and executor is not None:
                         s_res = executor.execute(s_name, s_args)
                     else:
                         s_res = {
@@ -7339,6 +7374,7 @@ def stream_agent_completion(
                     and (
                         str((tc.get("function") or {}).get("name") or "") in mode_tool_names
                         or str((tc.get("function") or {}).get("name") or "") in USER_MEMORY_TOOL_NAMES
+                        or str((tc.get("function") or {}).get("name") or "") in WEB_TOOL_NAMES
                         or (
                             executor is not None
                             and str((tc.get("function") or {}).get("name") or "") not in ui_tool_names
@@ -7516,6 +7552,12 @@ def stream_agent_completion(
                                     limit=int(args.get("limit") or 8) if isinstance(args.get("limit"), (int, float)) else 8,
                                 )
                                 tool_res["disposition"] = {"delivery": "delivered_verified", "retry": "safe", "verified": True}
+                            elif fn_name in WEB_TOOL_NAMES:
+                                _upsert_step(step_id, label, "running", detail=detail or None)
+                                emit_event({"type": "phase", "xox_state": "reading", "label": f"{label}..."})
+                                emit_event({"type": "steps", "steps": steps})
+                                tool_res = execute_web_tool(fn_name, args)
+                                _record_web_sources(fn_name, tool_res)
                             elif fn_name in mode_tool_names:
                                 _upsert_step(step_id, label, "running", detail=detail or None)
                                 emit_event({"type": "phase", "xox_state": "syncing", "label": f"{label}..."})
@@ -8040,6 +8082,7 @@ def stream_agent_completion(
         "tasks": safe_tasks,
         "generated_pdfs": list(executor.generated_pdfs) if executor else [],
         "generated_documents": list(executor.generated_documents) if executor else [],
+        "web_sources": turn_web_sources,
         "provider_used": used_provider,
         "model_used": actual_model,
         "usage": final_stream_usage,

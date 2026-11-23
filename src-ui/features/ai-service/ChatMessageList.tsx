@@ -74,6 +74,7 @@ import {
   OpenRouterModelOption,
   ThinkingStep,
   VaultPromptSpec,
+  type WebSource,
   detectApiKeyInText,
   formatModelDisplay,
   getProviderSpec,
@@ -89,6 +90,7 @@ import {
 } from "./agentModeTypes";
 import { SubagentGlyph } from "../../components/SubagentRosterPopover";
 import { StudyDeckCard } from "../../components/StudyDeckCard";
+import { WebSourcesStrip } from "../../components/WebSourcesStrip";
 import { OpenCircleCheckSvg } from "../../components/ChecklistCornerCard";
 import {
   type AttachmentPreviewTarget,
@@ -129,6 +131,8 @@ export interface UiChatMessage {
   mode?: XoxModeId;
   subagents?: SubagentActivity[];
   studyDeck?: StudyDeckArtifact;
+  /** Fuentes de internet consultadas en el turno (miniaturas y enlaces). */
+  webSources?: WebSource[];
   attachments?: UiChatAttachment[];
   reasoning?: string;
   reasoningDurationMs?: number;
@@ -1346,6 +1350,8 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                   </>
                 );
               })()}
+
+              {msg.webSources && msg.webSources.length > 0 && <WebSourcesStrip sources={msg.webSources} />}
 
               {/* Mazo de Estudio Interactivo (/study) */}
               {msg.studyDeck && <StudyDeckCard deck={msg.studyDeck} />}

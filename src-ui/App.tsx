@@ -5640,6 +5640,13 @@ export default function App() {
               )
             );
           },
+          onWebSources: (sources) => {
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId ? { ...m, webSources: sources } : m
+              )
+            );
+          },
           onReasoningDelta: (delta) => {
             if (!hasEnteredTalking && latestPhase === "reading") {
               const elapsed = performance.now() - readingStartedAt;
@@ -5987,6 +5994,7 @@ export default function App() {
           generatedTaskCount: generatedCount,
           canvas: finalCanvas ?? m.canvas,
           canvases: finalCanvases.length > 0 ? finalCanvases : m.canvases,
+          webSources: res.webSources && res.webSources.length > 0 ? res.webSources : m.webSources,
           vaultPrompt: resolvedVault,
           generatedPdfs: (() => {
             const base = m.generatedPdfs ?? [];

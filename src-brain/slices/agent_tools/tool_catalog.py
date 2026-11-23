@@ -65,6 +65,8 @@ CORE_ALWAYS_LOADED_TOOLS: Set[str] = {
     "agent_checklist_update",
     "spawn_subagent",
     "study_create_deck",
+    "web_search",
+    "web_fetch",
     TOOL_SEARCH_NAME,
 }
 
