@@ -26,6 +26,7 @@ import uuid
 from slices.inventory_advisor.review_engine import run_workspace_review
 from slices.task_ui.schemas import sanitize_task_proposal
 from slices.agent_tools.system_capabilities import filter_tool_defs_for_system
+from slices.agent_tools.web_tools import WEB_TOOL_DEFS, execute_web_tool
 from slices.agent_tools.skills_hub import (
     USER_PROFILE_REL,
     discover_official_skills,
@@ -2087,6 +2088,7 @@ USER_MEMORY_TOOL_DEFS: List[Dict[str, Any]] = [
 ]
 
 AGENT_TOOL_DEFS.extend(USER_MEMORY_TOOL_DEFS)
+AGENT_TOOL_DEFS.extend(WEB_TOOL_DEFS)
 
 # Sin herramientas que este sistema operativo no puede ejecutar (ver `system_capabilities`).
 AGENT_TOOL_DEFS[:] = filter_tool_defs_for_system(AGENT_TOOL_DEFS)
@@ -2355,6 +2357,8 @@ class WorkspaceToolExecutor:
             "propose_workspace_blueprint": self._tool_propose_workspace_blueprint,
             "save_user_info": self._tool_save_user_info,
             "forget_user_info": self._tool_forget_user_info,
+            "web_search": lambda a: execute_web_tool("web_search", a),
+            "web_fetch": lambda a: execute_web_tool("web_fetch", a),
         }.get(name)
         if not handler:
             return {
