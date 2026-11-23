@@ -1,6 +1,6 @@
 # Roadmap — XOOK como agente personal proactivo
 
-Creado: 2026-11-21 · Última actualización: 2026-11-21
+Creado: 2026-11-21 · Última actualización: 2026-11-23
 
 ## Visión
 
@@ -124,6 +124,17 @@ MCP como protocolo abierto del lado de XOOK (cliente y servidor propios), no com
 
 Criterio de salida: dos usuarios compartiendo un workspace sin fugas entre memorias personales, verificado por tests.
 
+## Línea transversal — Agente de uso cotidiano
+
+**Objetivo:** que Xox se comporte como agente y no como un chat: que no se rinda a mitad de una tarea, que vea internet, que revise su trabajo antes de entregarlo y que se conecte a sistemas sin depender de MCP.
+
+- [x] **Presupuesto por tarea en vez de 12 rondas fijas** *(2026-11-23, `ai_service/agent_loop_policy.py`)*. El loop sigue mientras queden rondas, tiempo y tokens: perfil `standard` (24 rondas, 5 min) y `extended` para `deep_analysis` (60 rondas, 15 min, subagentes con 10 rondas). Si el modelo repite 3 veces la misma ronda, se da por atascado. La ronda final va sin herramientas y le pide entregar lo que tiene y decir qué quedó pendiente; la interfaz muestra el motivo del cierre como un paso más.
+- [x] **Verificación antes de entregar** *(2026-11-23)*. El resultado de `office_generate`, `pdf_generate`, `workspace_write_file` y `workspace_edit_file` le pide al modelo comparar lo producido con cada instrucción del usuario, incluido lo que pidió no incluir, antes de responder.
+- [ ] Presupuesto visible y configurable en Ajustes (se une al "presupuesto de gasto" de la Fase 2).
+- [ ] `web_search` y `web_fetch` propios de XOOK (sin depender de la búsqueda nativa del proveedor), con miniaturas de las fuentes en el chat.
+- [ ] Modo investigación: plan, subagentes en paralelo, notas en archivo y síntesis con citas, como tarea de fondo que se puede retomar.
+- [ ] Modo código para documentos e integraciones sin MCP. Investigación y plan en [investigacion-code-mode.md](investigacion-code-mode.md).
+
 ---
 
 ## Principio: la inteligencia vive en XOOK, no en el proveedor
@@ -140,6 +151,7 @@ Memoria, disparadores, política de herramientas, escalera de autonomía, compac
 | Razonamiento | Nativo si existe | Paso de planificación explícito en el prompt |
 | Caché de prefijo | Del proveedor | Prompts igual de ordenados; solo cuesta más |
 | Control del escritorio | XOOK (AX + CGEvent) | No aplica |
+| Encadenar herramientas y filtrar datos | XOOK (modo código, propuesta en [investigacion-code-mode.md](investigacion-code-mode.md)) | Tool calling clásico, ronda por ronda |
 
 Nota honesta: el harness reduce mucho la diferencia entre modelos, pero no la elimina. La fiabilidad del tool calling sí varía entre proveedores. Por eso las evals de la Fase 0 existen: le dicen al usuario con datos qué modelo rinde con XOOK, en vez de prometer que todos rinden igual.
 

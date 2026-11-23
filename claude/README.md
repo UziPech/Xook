@@ -6,6 +6,7 @@ Carpeta donde Claude (como co-constructor) mantiene el plan, las decisiones y la
 |---|---|
 | [ROADMAP.md](ROADMAP.md) | Fases del agente personal proactivo, con entregables y criterios de salida |
 | [DECISIONES.md](DECISIONES.md) | Registro de decisiones tomadas (qué, por qué, qué se descartó) |
+| [investigacion-code-mode.md](investigacion-code-mode.md) | Modo código (Cloudflare, Anthropic, UTCP) y cómo aplicarlo a documentos e integraciones |
 
 Reglas:
 
