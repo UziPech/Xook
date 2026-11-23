@@ -45,6 +45,14 @@ from slices.ai_service.anthropic_adapter import (
     iter_anthropic_sse_as_openai_events,
     open_anthropic_stream,
 )
+from slices.ai_service.agent_loop_policy import (
+    BUDGET_PROFILES,
+    AgentBudget,
+    budget_profile_for_task,
+    with_delivery_check,
+    wrap_up_nudge,
+    wrap_up_step_label,
+)
 from slices.ai_service.agent_trace import AgentTraceWriter
 from slices.ai_service.context_manager import (
     build_turn_working_memory,
@@ -114,7 +122,6 @@ class _ProviderFailoverError(RuntimeError):
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 APP_REFERER = "https://xook.local"
 APP_TITLE = "XOOK Enterprise Agentic Orchestrator"
-MAX_AGENT_STEPS = 12
 
 
 def _parse_tool_args(raw_args: Any) -> Dict[str, Any]:
@@ -5527,6 +5534,7 @@ def run_agent_completion(
             tools_supported = True
             vision_supported = True
             continuations_used = 0
+            budget = AgentBudget(BUDGET_PROFILES[budget_profile_for_task(plan.task_profile.task_kind)])
             if executor is not None:
                 executor.transient_tool_images.clear()
             target_max_tokens = (
@@ -5540,8 +5548,12 @@ def run_agent_completion(
             )
 
             try:
-                for round_idx in range(MAX_AGENT_STEPS):
-                    allow_tools_now = tools_supported and round_idx < MAX_AGENT_STEPS - 1
+                for round_idx, is_final_round in budget.rounds(
+                    lambda: int(local_accum_usage.get("total_tokens") or 0)
+                ):
+                    if is_final_round:
+                        loop_messages.append({"role": "user", "content": wrap_up_nudge(budget.stop_reason or "")})
+                    allow_tools_now = tools_supported and not is_final_round
                     allow_downgrade_now = not ((has_next_candidate or has_next_provider) and round_idx == 0)
                     round_messages = loop_messages if vision_supported else _strip_image_parts(loop_messages)
                     had_images_before = _messages_have_images(round_messages)
@@ -5600,7 +5612,7 @@ def run_agent_completion(
                                 has_actions=bool(parsed_tmp.get("tasks") or parsed_tmp.get("clarification")),
                                 has_staged_tasks=bool(executor is not None and executor.staged_tasks),
                             )
-                            if (continuations_used < 2 and round_idx < MAX_AGENT_STEPS - 1)
+                            if (continuations_used < 2 and not is_final_round)
                             else None
                         )
                         if cont is not None:
@@ -5712,8 +5724,9 @@ def run_agent_completion(
                                 ),
                                 "disposition": tool_out.get("disposition"),
                             })
-                            tool_results_nonstream.append((tc_id, tool_out))
+                            tool_results_nonstream.append((tc_id, with_delivery_check(fn_name, tool_out)))
 
+                    budget.record_tool_round(tool_calls)
                     hist_tcs, all_failed_parse = _sanitize_tool_calls_for_history(tool_calls, parsed_nonstream_args)
                     if all_failed_parse:
                         loop_messages.append({
@@ -6866,8 +6879,9 @@ def stream_agent_completion(
             used_model = fallback_model
         final_text = ""
         sub_rounds_used = 0
+        sub_max_rounds = BUDGET_PROFILES[budget_profile_for_task(routing_plan.task_profile.task_kind)].subagent_rounds
         try:
-            for _sub_round in range(5):
+            for _sub_round in range(sub_max_rounds):
                 sub_rounds_used = _sub_round + 1
                 if _sub_round >= 1:
                     sub_msgs = prune_tool_loop_messages(sub_msgs)
@@ -6877,7 +6891,7 @@ def stream_agent_completion(
                     "temperature": 0.25,
                     "max_tokens": 2400,
                 }
-                if sub_tool_defs and _sub_round < 4:
+                if sub_tool_defs and _sub_round < sub_max_rounds - 1:
                     sub_payload["tools"] = sub_tool_defs
                     sub_payload["tool_choice"] = "auto"
 
@@ -7203,9 +7217,11 @@ def stream_agent_completion(
             emit_event({"type": "steps", "steps": steps})
 
         continuations_used = 0
+        budget_limits = BUDGET_PROFILES[budget_profile_for_task(routing_plan.task_profile.task_kind)]
+        budget = AgentBudget(budget_limits)
 
         try:
-            for round_idx in range(MAX_AGENT_STEPS):
+            for round_idx, is_final_round in budget.rounds(lambda: int(usage_data.get("total_tokens") or 0)):
                 rounds_executed = round_idx + 1
                 if round_idx >= 1:
                     loop_messages, prune_stats = prune_tool_loop_messages_with_stats(loop_messages)
@@ -7216,6 +7232,11 @@ def stream_agent_completion(
                             chars_before=prune_stats["chars_before"],
                             chars_after=prune_stats["chars_after"],
                         )
+                if is_final_round:
+                    stop_reason = budget.stop_reason or ""
+                    _upsert_step("budget_wrapup", wrap_up_step_label(stop_reason, budget_limits), "done")
+                    emit_event({"type": "steps", "steps": steps})
+                    loop_messages.append({"role": "user", "content": wrap_up_nudge(stop_reason)})
                 round_reasoning_chunks: List[str] = []
                 round_reply_chunks: List[str] = []
 
@@ -7240,7 +7261,7 @@ def stream_agent_completion(
                     on_reply=_round_on_reply,
                     on_phase=on_phase_change,
                 )
-                allow_tools_now = tools_supported and round_idx < MAX_AGENT_STEPS - 1
+                allow_tools_now = tools_supported and not is_final_round
                 can_failover_here = (
                     (has_next_candidate or has_next_provider)
                     and round_idx == 0
@@ -7337,7 +7358,7 @@ def stream_agent_completion(
                         broken_ui_calls_this_round > 0
                         and not has_valid_canvas_so_far
                         and continuations_used < 2
-                        and round_idx < MAX_AGENT_STEPS - 1
+                        and not is_final_round
                     ):
                         continuations_used += 1
                         _set_think_step(status="done")
@@ -7371,7 +7392,7 @@ def stream_agent_completion(
                             has_actions=bool(round_actions_parsed.get("tasks") or round_actions_parsed.get("clarification")),
                             has_staged_tasks=bool(executor is not None and executor.staged_tasks),
                         )
-                        if (continuations_used < 2 and round_idx < MAX_AGENT_STEPS - 1)
+                        if (continuations_used < 2 and not is_final_round)
                         else None
                     )
                     if cont is not None:
@@ -7591,8 +7612,9 @@ def stream_agent_completion(
                                 ),
                                 "disposition": tool_res.get("disposition"),
                             })
-                        pass_tool_results.append((tc_id, tool_res))
+                        pass_tool_results.append((tc_id, with_delivery_check(fn_name, tool_res)))
 
+                budget.record_tool_round(pass_tool_calls)
                 hist_tcs, all_failed_parse = _sanitize_tool_calls_for_history(pass_tool_calls, parsed_pass_args)
                 if all_failed_parse:
                     # Evitar mandar JSON roto dentro de `assistant.tool_calls` (causaría HTTP 400 en OpenRouter)
