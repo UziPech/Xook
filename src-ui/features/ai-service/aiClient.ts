@@ -1738,6 +1738,43 @@ export function sanitizeGeneratedOfficeDocumentEvent(
   };
 }
 
+/** Fuente de internet que Xox consultó con `web_search` o `web_fetch`. */
+export interface WebSource {
+  url: string;
+  title: string;
+  domain: string;
+  image?: string;
+}
+
+function isHttpUrl(value: unknown): value is string {
+  return typeof value === "string" && /^https?:\/\//i.test(value) && value.length <= 2000;
+}
+
+export function sanitizeWebSourceList(raw: unknown): WebSource[] {
+  if (!Array.isArray(raw)) return [];
+  const out: WebSource[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    if (!isHttpUrl(obj.url)) continue;
+    let domain = typeof obj.domain === "string" ? obj.domain : "";
+    if (!domain) {
+      try {
+        domain = new URL(obj.url).hostname;
+      } catch {
+        continue;
+      }
+    }
+    out.push({
+      url: obj.url,
+      title: typeof obj.title === "string" && obj.title ? obj.title.slice(0, 200) : domain,
+      domain,
+      ...(isHttpUrl(obj.image) ? { image: obj.image } : {}),
+    });
+  }
+  return out;
+}
+
 export function sanitizeGeneratedOfficeDocumentList(
   raw: unknown
 ): GeneratedOfficeDocumentEvent[] {
@@ -1840,6 +1877,7 @@ export interface XoxAiChatResponse {
   vaultAction?: VaultPromptSpec;
   generatedPdfs?: GeneratedPdfArtifact[];
   generatedDocuments?: GeneratedOfficeDocumentEvent[];
+  webSources?: WebSource[];
   providerUsed?: string;
   modelUsed: string;
   latencyMs: number;
@@ -1897,6 +1935,7 @@ export interface XoxStreamCallbacks {
   onUserMemoryUpdated?: (event: UserMemoryUpdatedEvent) => void;
   onChecklistUpdate?: (checklist: ChecklistState) => void;
   onSubagentEvent?: (subagent: SubagentActivity) => void;
+  onWebSources?: (sources: WebSource[]) => void;
   onStudyDeck?: (deck: StudyDeckArtifact) => void;
   onContextCompacted?: (event: ContextCompactedEvent) => void;
 }
@@ -4953,6 +4992,7 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       canvases?: unknown[];
       clarification?: unknown;
       generated_pdfs?: unknown[];
+      web_sources?: unknown[];
       provider_used?: string;
       model_used?: string;
       latency_ms?: number;
@@ -5028,6 +5068,7 @@ export async function runXoxAiChat(req: XoxAiChatRequest): Promise<XoxAiChatResp
       ...(safeCanvases && safeCanvases.length > 0 ? { canvases: safeCanvases } : {}),
       clarification: safeClarification,
       generatedPdfs: sanitizeGeneratedPdfList(res.generated_pdfs),
+      ...(Array.isArray(res.web_sources) ? { webSources: sanitizeWebSourceList(res.web_sources) } : {}),
       providerUsed: res.provider_used,
       modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
       latencyMs: res.latency_ms ?? 0,
@@ -5838,6 +5879,8 @@ export async function runXoxAiChatStream(
         callbacks?.onChecklistUpdate?.(evt.checklist as ChecklistState);
       } else if (evt.type === "subagent_event" && evt.subagent && typeof evt.subagent === "object") {
         callbacks?.onSubagentEvent?.(evt.subagent as SubagentActivity);
+      } else if (evt.type === "web_sources") {
+        callbacks?.onWebSources?.(sanitizeWebSourceList(evt.sources));
       } else if (evt.type === "study_deck" && evt.deck && typeof evt.deck === "object") {
         callbacks?.onStudyDeck?.(evt.deck as StudyDeckArtifact);
       } else if (evt.type === "context_compacted") {
@@ -5860,6 +5903,7 @@ export async function runXoxAiChatStream(
         clarification?: unknown;
         generated_pdfs?: unknown[];
         generated_documents?: unknown[];
+        web_sources?: unknown[];
         vault_action?: { provider?: string; intent?: string; note?: string };
         provider_used?: string;
         model_used?: string;
@@ -5990,6 +6034,7 @@ export async function runXoxAiChatStream(
         ...(Array.isArray(res.generated_documents)
           ? { generatedDocuments: sanitizeGeneratedOfficeDocumentList(res.generated_documents) }
           : {}),
+        ...(Array.isArray(res.web_sources) ? { webSources: sanitizeWebSourceList(res.web_sources) } : {}),
         providerUsed: res.provider_used,
         modelUsed: res.model_used ?? req.modelOverride ?? "openrouter/free",
         latencyMs: res.latency_ms ?? 0,

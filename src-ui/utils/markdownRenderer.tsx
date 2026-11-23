@@ -438,7 +438,7 @@ function sanitizeHref(rawUrl: string): string | null {
   }
 }
 
-async function openExternalUrl(
+export async function openExternalUrl(
   url: string,
   customHandler?: (url: string) => void
 ): Promise<void> {
