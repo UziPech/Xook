@@ -3,7 +3,6 @@ import {
   CheckCircle2, 
   Brain, 
   Store, 
-  FolderOpen,
   Plus,
   Send,
   Zap,
@@ -13,15 +12,13 @@ import {
   ListTodo,
   PanelLeft,
   ChevronDown,
+  ChevronLeft,
   AtSign,
   KeyRound,
   RefreshCw,
-  Trash2,
   MessageSquare,
   SquarePen,
   Table2,
-  UserCircle2,
-  Settings,
   Slash,
   ScanSearch,
   Users,
@@ -107,7 +104,8 @@ import {
   type XoxSkillEntry,
 } from "./features/xox-studio/xoxStudioApi";
 import { XookWordmark } from "./components/XookBrand";
-import { JellyPillTrack } from "./components/JellyPillTrack";
+import { SidebarChats } from "./features/sidebar/SidebarChats";
+import { SidebarFooter, footerUsageText } from "./features/sidebar/SidebarFooter";
 import { LiquidGlassBackdrop } from "./components/LiquidGlassBackdrop";
 import { useAnimatedPresence } from "./hooks/useAnimatedPresence";
 import {
@@ -276,7 +274,6 @@ import {
   estimateTokens,
   extractErrorMessage,
   fetchOpenRouterModels,
-  formatContextLength,
   formatModelDisplay,
   formatPricePerMillion,
   formatTokenCount,
@@ -1912,7 +1909,7 @@ export default function App() {
   const [showLocalAuth, setShowLocalAuth] = useState<boolean>(false);
   const [conversations, setConversations] = useState<ConversationThread[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string>(() => `conv_${Date.now()}`);
-  const [leftTab, setLeftTab] = useState<"context" | "chats">("context");
+  const [leftTab, setLeftTab] = useState<"context" | "chats">("chats");
   const [thinkingLabel, setThinkingLabel] = useState<string>("Consultando a Xox...");
   const [showModelMenu, setShowModelMenu] = useState<boolean>(false);
   const [showContextMenu, setShowContextMenu] = useState<boolean>(false);
@@ -2311,6 +2308,7 @@ export default function App() {
         meterMode: "unlimited" as const,
         hasMeterBar: false,
         connected: false,
+        alert: false,
       };
     }
 
@@ -2323,6 +2321,7 @@ export default function App() {
         meterMode: "used" as const,
         hasMeterBar: true,
         connected: true,
+        alert: true,
       };
     }
 
@@ -2335,6 +2334,7 @@ export default function App() {
         meterMode: "used" as const,
         hasMeterBar: true,
         connected: true,
+        alert: true,
       };
     }
 
@@ -2346,8 +2346,17 @@ export default function App() {
       meterMode: computedUsage.meterMode,
       hasMeterBar: computedUsage.hasMeterBar,
       connected: true,
+      alert: false,
     };
   })();
+  const sidebarUsageLabel = footerUsageText({
+    connected: usageSummary.connected,
+    providerName: activeSpec.shortName,
+    alertHeadline: usageSummary.alert ? usageSummary.headline : null,
+    shortBadge: computedUsage.shortBadge,
+    sourceKind: computedUsage.sourceKind,
+  });
+  const sidebarUsageDetail = `${usageSummary.tierLabel}: ${usageSummary.headline} · ${usageSummary.detail}`;
 
   async function refreshModelsAndUsage(
     forceRefresh = false,
@@ -7505,7 +7514,7 @@ export default function App() {
                 className="h-full bg-[#07080b] flex flex-col shrink-0 overflow-hidden select-none"
               >
               
-              {/* Cabecera del Panel Lateral: Identidad XOOK + Tabs Contexto / Chats */}
+              {/* Cabecera del Panel Lateral: identidad XOOK (los chats van primero; el proyecto se abre aparte) */}
               <div className="xook-sidebar-header-shell w-full px-2.5 py-2 border-b border-white/[0.06] bg-[#090a0e] shrink-0">
                 <div className="xook-sidebar-header-inner">
                   <div className="flex items-center-safe gap-2 shrink-0 min-w-0">
@@ -7517,223 +7526,25 @@ export default function App() {
                     />
                     <XookWordmark className="block h-3.5 w-auto shrink-0 text-zinc-100" />
                   </div>
-
-                  <JellyPillTrack
-                    activeKey={leftTab}
-                    role="tablist"
-                    aria-label="Secciones del panel lateral"
-                    pillRadius="9999px"
-                    className="flex items-center gap-1 p-0.5 rounded-full shrink-0"
-                    onKeyDown={(e) => {
-                      if (
-                        e.key === "ArrowLeft" ||
-                        e.key === "ArrowRight" ||
-                        e.key === "Home" ||
-                        e.key === "End"
-                      ) {
-                        e.preventDefault();
-                        const nextTab: "context" | "chats" =
-                          e.key === "Home"
-                            ? "context"
-                            : e.key === "End"
-                            ? "chats"
-                            : leftTab === "context"
-                            ? "chats"
-                            : "context";
-                        setLeftTab(nextTab);
-                        document
-                          .getElementById(
-                            nextTab === "context"
-                              ? "xook-sidebar-tab-context"
-                              : "xook-sidebar-tab-chats"
-                          )
-                          ?.focus();
-                      }
-                    }}
-                  >
-                    <button
-                      id="xook-sidebar-tab-context"
-                      type="button"
-                      role="tab"
-                      aria-selected={leftTab === "context"}
-                      tabIndex={leftTab === "context" ? 0 : -1}
-                      onClick={() => setLeftTab("context")}
-                      className={`xook-jelly-tab flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
-                        leftTab === "context"
-                          ? "text-white"
-                          : "text-zinc-400 hover:text-zinc-200"
-                      }`}
-                    >
-                      <FolderOpen
-                        className={`w-3.5 h-3.5 transition-colors duration-200 ${
-                          leftTab === "context" ? "text-zinc-200" : "text-zinc-500"
-                        }`}
-                      />
-                      <span>Contexto</span>
-                    </button>
-                    <button
-                      id="xook-sidebar-tab-chats"
-                      type="button"
-                      role="tab"
-                      aria-selected={leftTab === "chats"}
-                      tabIndex={leftTab === "chats" ? 0 : -1}
-                      onClick={() => setLeftTab("chats")}
-                      className={`xook-jelly-tab flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
-                        leftTab === "chats"
-                          ? "text-white"
-                          : "text-zinc-400 hover:text-zinc-200"
-                      }`}
-                    >
-                      <MessageSquare
-                        className={`w-3.5 h-3.5 transition-colors duration-200 ${
-                          leftTab === "chats" ? "text-zinc-200" : "text-zinc-500"
-                        }`}
-                      />
-                      <span>Chats</span>
-                      {conversations.length > 0 && (
-                        <span
-                          className={`text-[10px] font-mono tabular-nums px-1.5 py-0.2 rounded-full transition-colors duration-200 ${
-                            leftTab === "chats"
-                              ? "bg-white/[0.12] text-white"
-                              : "bg-white/[0.07] text-zinc-300"
-                          }`}
-                        >
-                          {conversations.length}
-                        </span>
-                      )}
-                    </button>
-                  </JellyPillTrack>
                 </div>
               </div>
 
               {leftTab === "context" ? (
                 <div
                   id="xook-sidebar-panel-context"
-                  role="tabpanel"
-                  aria-labelledby="xook-sidebar-tab-context"
+                  aria-label="Ajustes del proyecto"
                   className="flex-1 flex flex-col min-h-0 overflow-hidden"
                 >
-                  {/* Estado de OpenRouter + Memoria de conversación (monocromo negro/gris) */}
-                  <div className="mx-2.5 mt-2.5 mb-1.5 rounded-xl bg-[#0b0c10] border border-white/[0.08] p-2.5 space-y-2 shrink-0">
-                    {/* Consumo y estado del proveedor de IA */}
-                    <div>
-                      <div className="flex items-center justify-between gap-2 text-[11px] mb-1.5">
-                        <span className="flex items-center gap-1.5 text-zinc-100 font-medium truncate">
-                          <ProviderIcon
-                            provider={activeProvider}
-                            size={14}
-                            className={`shrink-0 ${
-                              accountUsage && !accountUsage.ok
-                                ? "text-zinc-400"
-                                : usageSummary.connected
-                                ? "text-zinc-200"
-                                : "text-zinc-500"
-                            }`}
-                          />
-                          <span className="truncate">{usageSummary.tierLabel}</span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => refreshModelsAndUsage(true)}
-                          title={`Actualizar límites y modelos de ${activeSpec.shortName}`}
-                          className="inline-flex items-center gap-1.5 text-[11px] font-mono text-zinc-300 hover:text-white transition-colors shrink-0 cursor-pointer rounded px-1 py-0.5 focus-visible:outline-2 focus-visible:outline-white/60"
-                        >
-                          <span className="tabular-nums">{usageSummary.headline}</span>
-                          <RefreshCw
-                            className={`w-3 h-3 text-zinc-500 ${loadingModels ? "animate-spin" : ""}`}
-                          />
-                        </button>
-                      </div>
-                      <progress
-                        className="xook-usage-progress"
-                        value={
-                          usageSummary.hasMeterBar
-                            ? Math.max(0, Math.min(100, usageSummary.pct))
-                            : usageSummary.connected
-                              ? 100
-                              : 0
-                        }
-                        max={100}
-                        aria-label={`${usageSummary.tierLabel}: ${usageSummary.headline}`}
-                        style={{
-                          ["--xook-progress-fill" as string]: getUsageMeterFillColor({
-                            meterMode: usageSummary.meterMode,
-                            pct: usageSummary.pct,
-                            hasError: Boolean(accountUsage && !accountUsage.ok),
-                          }),
-                        }}
-                      />
-                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[10.5px] text-zinc-400">
-                        <span className="truncate">{usageSummary.detail}</span>
-                        <button
-                          type="button"
-                          onClick={() => openAiSettings(hasAnyConfiguredKey ? "models" : "account")}
-                          className="px-2 py-0.5 rounded-md bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.09] text-zinc-200 hover:text-white font-medium shrink-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-white/60"
-                        >
-                          {hasAnyConfiguredKey ? "Proveedores" : "Conectar"}
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Capacidad de memoria real de la ventana activa (Documento aislado o Chat general) */}
-                    <div
-                      className="pt-2 border-t border-white/[0.06]"
-                      title={`Modelo activo: ${activeModel.name} (${formatTokenCount(totalActiveTokens)} de ${formatContextLength(modelContextWindow)} tokens en uso · auto-compact activo)`}
+                  <div className="px-2.5 pt-2.5 pb-1 flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setLeftTab("chats")}
+                      className="h-8 inline-flex items-center gap-1 pl-1.5 pr-2.5 rounded-lg text-[12px] text-zinc-300 hover:text-white hover:bg-white/[0.06] cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60"
                     >
-                      <div className="flex items-center justify-between gap-2 text-[11px] mb-1.5">
-                        <span className="text-zinc-300 font-medium truncate">
-                          {isDocumentWindowFocused && pdfPanelState
-                            ? `Ventana: ${pdfPanelState.title}`
-                            : "Memoria de conversación"}
-                        </span>
-                        <span className="text-zinc-200 font-mono text-[10.5px] tabular-nums shrink-0">
-                          {formatTokenCount(totalActiveTokens)} · {contextUsagePct < 1 ? "<1%" : `${contextUsagePct}%`}
-                        </span>
-                      </div>
-                      <div
-                        className="w-full bg-white/[0.07] h-1 rounded-full overflow-hidden"
-                        role="progressbar"
-                        aria-label="Memoria de ventana de contexto"
-                        aria-valuenow={contextUsagePct}
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                      >
-                        <div
-                          className={`h-full rounded-full transition-all duration-300 ${
-                            contextUsagePct >= 65
-                              ? "bg-amber-300"
-                              : "bg-zinc-300"
-                          }`}
-                          style={{
-                            width: `${Math.min(
-                              100,
-                              Math.max(totalActiveTokens > 0 ? 3 : 0, contextUsagePct)
-                            )}%`,
-                          }}
-                        />
-                      </div>
-                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[10.5px] text-zinc-500">
-                        <span className="truncate">
-                          {isDocumentWindowFocused
-                            ? "Contexto aislado · Auto-compact"
-                            : `Asistente: ${activeModel.name}`}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={isCompactingContext || isChatStreaming}
-                          onClick={() => void handleRunManualCompact()}
-                          title="Compactar ahora la ventana de contexto activa (/compact)"
-                          className="px-2 py-0.5 rounded-md bg-white/[0.05] hover:bg-white/[0.11] border border-white/[0.09] text-zinc-200 hover:text-white font-medium shrink-0 cursor-pointer transition-colors disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-white/60 inline-flex items-center gap-1"
-                        >
-                          {isCompactingContext ? (
-                            <Loader2 className="w-2.5 h-2.5 animate-spin" aria-hidden="true" />
-                          ) : (
-                            <Sparkles className="w-2.5 h-2.5" aria-hidden="true" />
-                          )}
-                          <span>{isCompactingContext ? "Compactando…" : "Compactar"}</span>
-                        </button>
-                      </div>
-                    </div>
+                      <ChevronLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                      Chats
+                    </button>
+                    <span className="text-[12px] font-medium text-zinc-400 truncate">Ajustes del proyecto</span>
                   </div>
 
               {/* Árbol Real del Espacio de Trabajo + Inspector/Editor */}
@@ -7777,184 +7588,35 @@ export default function App() {
               />
                 </div>
               ) : (
-                <div
-                  id="xook-sidebar-panel-chats"
-                  role="tabpanel"
-                  aria-labelledby="xook-sidebar-tab-chats"
-                  className="flex-1 flex flex-col min-h-0 overflow-hidden"
-                >
-                  {(conversations.length > 0 || chatMessages.length > 0) && (
-                    <div className="px-2.5 pt-2.5 pb-1 flex items-center-safe justify-between gap-2 shrink-0 min-w-0">
-                      <span className="text-[11px] font-medium text-zinc-400 truncate">
-                        Conversaciones
-                      </span>
-                      <button
-                        type="button"
-                        onClick={handleStartNewChat}
-                        disabled={isChatStreaming}
-                        title="Iniciar nueva conversación"
-                        className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-200 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.1] px-2.5 py-1 rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0 focus-visible:outline-2 focus-visible:outline-white/60"
-                      >
-                        <SquarePen className="w-3 h-3 text-zinc-300" />
-                        <span>Nueva</span>
-                      </button>
-                    </div>
-                  )}
-                  <div className="p-2.5 flex-1 overflow-y-auto space-y-1">
-                    {conversations.length === 0 ? (
-                      <div className="h-full flex flex-col items-center justify-center text-center px-5 py-10 space-y-3">
-                        <div className="w-10 h-10 rounded-full bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-300">
-                          <MessageSquare className="w-4 h-4" />
-                        </div>
-                        <div className="space-y-1.5">
-                          <p className="text-xs font-medium text-white">
-                            Aún no tienes chats guardados
-                          </p>
-                          <p className="text-[11px] text-zinc-400 leading-relaxed">
-                            Escribe tu primera consulta abajo. Cada conversación con Xox se guarda aquí automáticamente.
-                          </p>
-                        </div>
-                      </div>
-                    ) : (
-                      conversations.map((thread) => {
-                        const isActive = thread.id === activeConversationId;
-                        const lastMsg = thread.messages[thread.messages.length - 1];
-                        const snippet = lastMsg?.content?.replace(/\s+/g, " ").trim() ?? "";
-                        const dateLabel = (() => {
-                          try {
-                            const d = new Date(thread.updatedAt);
-                            const sameDay =
-                              d.toDateString() === new Date().toDateString();
-                            return sameDay
-                              ? d.toLocaleTimeString("es-MX", {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
-                              : d.toLocaleDateString("es-MX", {
-                                  day: "numeric",
-                                  month: "short",
-                                });
-                          } catch {
-                            return "";
-                          }
-                        })();
-                        return (
-                          <div
-                            key={thread.id}
-                            onClick={() => handleSelectConversation(thread)}
-                            role="button"
-                            tabIndex={0}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                handleSelectConversation(thread);
-                              }
-                            }}
-                            className={`group rounded-xl p-2.5 border transition-all cursor-pointer ${
-                              isActive
-                                ? "bg-white/[0.08] border-white/[0.14]"
-                                : "bg-transparent border-transparent hover:bg-white/[0.04] hover:border-white/[0.06]"
-                            }`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center justify-between gap-2">
-                                  <span
-                                    className={`text-xs font-medium truncate ${
-                                      isActive ? "text-white" : "text-zinc-200"
-                                    }`}
-                                  >
-                                    {thread.title}
-                                  </span>
-                                  <span className="text-[10px] text-zinc-500 font-mono shrink-0">
-                                    {dateLabel}
-                                  </span>
-                                </div>
-                                {snippet && (
-                                  <p className="text-[11px] text-zinc-500 truncate mt-0.5">
-                                    {snippet}
-                                  </p>
-                                )}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void handleDeleteConversation(thread.id);
-                                }}
-                                disabled={isChatStreaming}
-                                title="Eliminar conversación"
-                                className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-zinc-500 hover:text-red-400 hover:bg-white/[0.05] transition-all cursor-pointer disabled:opacity-30 shrink-0"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
+                <SidebarChats
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  isStreaming={isChatStreaming}
+                  projectName={workspaceOverview?.active.name ?? null}
+                  showLongConversationNotice={
+                    !isDocumentWindowFocused && chatMessages.length > 0 && contextUsagePct >= 65
+                  }
+                  isCompacting={isCompactingContext}
+                  onNewChat={handleStartNewChat}
+                  onSelectConversation={handleSelectConversation}
+                  onDeleteConversation={(id) => void handleDeleteConversation(id)}
+                  onOpenProject={() => setLeftTab("context")}
+                  onCompact={() => void handleRunManualCompact()}
+                />
               )}
 
               {/* Pie del Panel Lateral */}
-              <div className="px-3 py-2 border-t border-white/[0.06] bg-[#090a0e] text-[11px] text-zinc-400 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <button
-                    type="button"
-                    onClick={() => setShowLocalAuth(true)}
-                    className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors truncate cursor-pointer rounded focus-visible:outline-2 focus-visible:outline-white/60 min-w-0"
-                    title="Configurar perfil de usuario local"
-                  >
-                    <UserCircle2
-                      className={`w-3.5 h-3.5 shrink-0 ${
-                        localUser ? "text-zinc-300" : "text-zinc-500"
-                      }`}
-                    />
-                    <span className="truncate">
-                      {localUser ? localUser.name : "Sin perfil local"}
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => openSettings("voice")}
-                    aria-label="Configuraciones"
-                    title="Configuraciones (Voz, Pantalla, IA, Perfil)"
-                    className={`p-1 rounded-md border flex items-center gap-1 transition-all cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-white/60 ${
-                      showSettingsModal
-                        ? "bg-white/[0.08] text-white border-white/[0.12]"
-                        : "bg-transparent text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.06]"
-                    }`}
-                  >
-                    <Settings className="w-3.5 h-3.5" />
-                    {ttsStatus?.config.enabled && (
-                      <span
-                        className="w-1.5 h-1.5 rounded-full bg-emerald-300 shrink-0"
-                        title="Voz activada"
-                      />
-                    )}
-                  </button>
-                </div>
-                <span className="text-zinc-400 font-medium flex items-center gap-1.5 shrink-0 truncate max-w-[140px]">
-                  <Check
-                    className={`w-3 h-3 shrink-0 ${
-                      leftTab === "context"
-                        ? workspaceOverview
-                          ? "text-zinc-300"
-                          : "text-zinc-500"
-                        : "text-zinc-300"
-                    }`}
-                  />
-                  <span className="truncate">
-                    {leftTab === "context"
-                      ? workspaceOverview?.active.name ?? "Espacio local"
-                      : `${conversations.length} ${
-                          conversations.length === 1 ? "chat" : "chats"
-                        }`}
-                  </span>
-                </span>
-              </div>
+              <SidebarFooter
+                userName={localUser?.name ?? null}
+                usageLabel={sidebarUsageLabel}
+                usageDetail={sidebarUsageDetail}
+                voiceEnabled={Boolean(ttsStatus?.config.enabled)}
+                settingsOpen={showSettingsModal}
+                onOpenProfile={() => setShowLocalAuth(true)}
+                onOpenUsage={() => openAiSettings(hasAnyConfiguredKey ? "models" : "account")}
+                onOpenVoice={() => openSettings("voice")}
+                onOpenSettings={() => openSettings("voice")}
+              />
               </aside>
             </div>
 
