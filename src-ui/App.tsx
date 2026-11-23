@@ -1925,7 +1925,12 @@ export default function App() {
   const [inputExpanded, setInputExpanded] = useState<boolean>(false);
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  // El chat sigue al último mensaje solo mientras el usuario esté abajo. Si sube a
+  // leer durante el streaming, cada token ya no lo regresa al final.
+  const chatStickToBottomRef = useRef<boolean>(true);
+  const chatLastScrollTopRef = useRef<number>(0);
+  const chatPrevLengthRef = useRef<number>(0);
+  const chatPrevFirstIdRef = useRef<string | undefined>(undefined);
   const pendingSecretKeysRef = useRef<
     Map<string, { key: string; provider: AiProviderId; ambiguousProviders?: AiProviderId[] }>
   >(new Map());
@@ -2129,18 +2134,50 @@ export default function App() {
     xoxState === "reading" ||
     xoxState === "coding" ||
     xoxState === "syncing";
+  const handleChatScroll = useCallback(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceToBottom < 80) {
+      chatStickToBottomRef.current = true;
+    } else if (el.scrollTop < chatLastScrollTopRef.current) {
+      // Solo un desplazamiento hacia arriba suelta el chat: el texto que crece por
+      // debajo no mueve `scrollTop`, y el scroll propio hacia el final siempre baja.
+      chatStickToBottomRef.current = false;
+    }
+    chatLastScrollTopRef.current = el.scrollTop;
+  }, []);
+
   useEffect(() => {
+    const el = chatScrollRef.current;
+    const prevLength = chatPrevLengthRef.current;
+    const prevFirstId = chatPrevFirstIdRef.current;
+    chatPrevLengthRef.current = chatMessages.length;
+    chatPrevFirstIdRef.current = chatMessages[0]?.id;
+    if (!el) return;
     if (chatMessages.length === 0) {
-      if (chatScrollRef.current && chatScrollRef.current.scrollTop !== 0) {
-        chatScrollRef.current.scrollTop = 0;
+      chatStickToBottomRef.current = true;
+      if (el.scrollTop !== 0) {
+        el.scrollTop = 0;
       }
       return;
     }
-    chatEndRef.current?.scrollIntoView({
+    // Enviar un mensaje (o abrir otra conversación) vuelve a pegar el chat al final.
+    if (
+      prevLength === 0 ||
+      chatMessages[0]?.id !== prevFirstId ||
+      chatMessages.slice(prevLength).some((msg) => msg.role === "user")
+    ) {
+      chatStickToBottomRef.current = true;
+    }
+    if (!chatStickToBottomRef.current) return;
+    // `scrollTo` sobre el contenedor, no `scrollIntoView`: este también desplaza a
+    // los ancestros y hace temblar el layout en cada token.
+    el.scrollTo({
+      top: el.scrollHeight,
       behavior: isChatStreaming ? "auto" : "smooth",
-      block: "end",
     });
-  }, [chatMessages.length, lastMsgStreamLen, isChatStreaming, isXoxWorking]);
+  }, [chatMessages, lastMsgStreamLen, isChatStreaming, isXoxWorking]);
 
   const activeProvider = normalizeProviderIdClient(aiConfig.provider);
   const activeSpec = getProviderSpec(activeProvider);
@@ -8020,6 +8057,7 @@ export default function App() {
           {/* Área de Trabajo con Scroll: Xox Hero / Chat en vivo */}
           <div
             ref={chatScrollRef}
+            onScroll={handleChatScroll}
             className="xook-chat-scroll-pad relative z-[1] flex-1 flex flex-col overflow-y-auto"
           >
             <div
@@ -8248,7 +8286,6 @@ export default function App() {
                           : "h-60 sm:h-56"
                     } shrink-0 transition-[height]`}
                   />
-                  <div ref={chatEndRef} />
                 </>
               )}
 
