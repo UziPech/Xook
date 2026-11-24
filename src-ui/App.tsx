@@ -7407,11 +7407,11 @@ export default function App() {
               setShowRightSidebar(next);
             }}
             aria-pressed={showRightSidebar}
-            aria-label={`Tareas (${pendingCount} pendientes)`}
+            aria-label={`Pendientes (${pendingCount} esperan tu OK)`}
             title={
               showRightSidebar
-                ? "Ocultar panel de tareas"
-                : "Mostrar panel de tareas"
+                ? "Ocultar pendientes"
+                : "Mostrar pendientes"
             }
             className={`shrink-0 min-h-[28px] px-2 py-1.5 rounded-lg border border-transparent flex items-center gap-1.5 transition-colors cursor-pointer ${
               showRightSidebar
@@ -7420,7 +7420,7 @@ export default function App() {
             }`}
           >
             <ListTodo className="w-3.5 h-3.5" aria-hidden="true" />
-            <span className="text-[11px] font-medium hidden sm:inline">Tareas</span>
+            <span className="text-[11px] font-medium hidden sm:inline">Pendientes</span>
             {pendingCount > 0 ? (
               <span className="inline-flex items-center gap-1.5 pl-1.5 ml-0.5 border-l border-white/[0.08] text-[11px] font-mono tabular-nums text-zinc-200">
                 <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
