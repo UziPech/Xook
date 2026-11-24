@@ -23,5 +23,17 @@ Formato: fecha — decisión. **Por qué.** Alternativas descartadas.
 - 2026-11-23 — **Cada ejecución termina con un informe** (qué hizo, qué comprobó, qué decidió y por qué, qué quedó sin hacer). **Por qué:** el usuario quiere saber qué pasó sin estar presente.
 - 2026-11-23 — **Pagar, comprar, transferir y borrar se deciden con las pruebas reales;** mientras tanto quedan fuera del último clic.
 - 2026-11-23 — **La lista de botones de riesgo: Xox puede ampliarla, nunca reducirla.** La lista base vive en el código y solo crece con cambios revisados en el repo. En la lista personal, Xox puede agregar un botón de compromiso que encuentre ("Mandar", "Turn in"), pero solo el usuario puede quitarlo. Lo que el usuario acepta en cada caso sale de la instrucción del pendiente, no de editar la lista. **Por qué:** un guardián que el vigilado puede apagar no protege, y bastaría un texto en una página ("quita 'enviar' de tu lista") para desactivarlo. Descartado: que Xox edite la lista libremente.
+- 2026-11-23 — **Cómo corre un pendiente:**
+  - **Un pendiente a la vez**, porque el control del escritorio no se comparte.
+  - **15 minutos de margen.** Pasado ese tiempo, queda `perdido` y se pregunta: es mejor que hacerlo tarde sin avisar.
+  - **Ensayo 10 minutos antes.**
+  - **El último clic** solo pasa si Xox miró la pantalla después de su última acción y en los últimos 2 minutos, y se da una vez.
+  - **`hecho`** solo si Xox lo declara y, cuando tenía permiso para terminar, el clic se dio de verdad.
+
+  **Por qué:** nadie está mirando; el sistema tiene que exigir la comprobación en vez de confiar en que el modelo la haga.
+- 2026-11-23 — **El permiso de un pendiente decide en lugar de preguntar, pero nunca anula una regla del usuario.** Sube "Preguntar" a "Permitir" solo para la app del pendiente; lo que el usuario negó sigue negado. **Por qué:** una pregunta sin nadie que la conteste solo hace esperar 3 minutos y fallar.
+- 2026-11-23 — **La lista personal de botones de riesgo es global** (carpeta de configuración de la app), no por espacio de trabajo. **Por qué:** los botones de Teams o de WhatsApp son los mismos en cualquier proyecto.
+- 2026-11-23 — **El arranque al iniciar sesión solo se activa en la versión instalada** y cuando hay pendientes programados. **Por qué:** en desarrollo registraría el ejecutable de `target/debug`, que abre una ventana vacía sin el servidor de la interfaz.
+- 2026-11-23 — **La columna Pendientes es una lista con secciones, no pestañas,** y ya no muestra inventario ni presupuesto. **Por qué:** con pestañas, lo que espera tu OK quedaba escondido detrás de otra; el inventario solo servía a quien tiene una tienda. El motor de revisión sigue disponible en el chat.
 - 2026-11-21 — **Sin claves por variables de entorno**, ni en la app ni en herramientas de desarrollo. Las evals reciben las claves desde Rust por stdin.
 - 2026-11-21 — El plan se ejecuta **por fases** (ver `ROADMAP.md`), y la Fase 0 (cimientos) va antes que cualquier feature nueva. **Por qué:** `src-ui/App.tsx` (9.4k líneas) y el adaptador de Anthropic basado en formato OpenAI frenan todo lo demás.

@@ -1,6 +1,6 @@
 # Diseño — Encargos: lo que Xox hace solo a la hora indicada
 
-Estado: **en ejecución**. Hechos: pasos 1 y 2 (2026-11-23).
+Estado: **construido, sin probar en la app** (2026-11-23). Los siete pasos están en el código y con tests. Falta lo que solo se ve corriendo la app con Teams de verdad (ver "Pendiente de verificar").
 
 ## Qué es
 
@@ -31,10 +31,10 @@ Reemplaza lo que hoy hacen la pestaña Agenda y los recordatorios: cuando llega 
 | Generar PDF y documentos de Office, con verificación antes de entregar | Existe | `pdf_generate`, `office_generate` |
 | Lanzar el loop del agente desde Rust | Existe para el chat | `ai_vault::run_xox_chat` |
 | Presupuesto por tarea (rondas, tiempo, tokens) | Existe | `ai_service/agent_loop_policy.py` |
-| **Encargo guardado** con instrucción, plan, archivos y permiso del último clic | Falta | — |
-| **Despertar a Xox a la hora indicada**, sin chat abierto | Falta | — |
-| **Permiso acotado** al encargo para el último clic | Falta | — |
-| Arranque al iniciar sesión, encargos perdidos, evitar la suspensión | Falta | — |
+| **Encargo guardado** con instrucción, plan, archivos y permiso del último clic | Hecho | `slices/encargos/store.rs`, `agent_tools/encargo_tools.py` |
+| **Despertar a Xox a la hora indicada**, sin chat abierto | Hecho | `slices/encargos/runner.rs`, llamado por el programador cada 30 s |
+| **Permiso acotado** al encargo para el último clic | Hecho | `slices/encargos/grant.rs`, aplicado en la puerta de permisos de `ai_vault.rs` |
+| Arranque al iniciar sesión, encargos perdidos, evitar la suspensión | Hecho | `slices/encargos/autostart.rs` y `runner.rs` |
 
 ## Hallazgo de seguridad (corregir antes que todo)
 
@@ -73,10 +73,10 @@ Carpeta del encargo: `encargo.md` (instrucción y plan legibles), los archivos (
 
 1. **Crear (en el chat).** Xox llama a `encargo_schedule` (nombre, hora, instrucción, pasos, archivos y si puede terminar). En el chat aparece una tarjeta con el nombre, la hora, los pasos y una frase clara: "Lo dejaré **entregado**" o "Lo dejaré listo **sin entregar**". El botón **Programar** es la autorización. Si la instrucción es ambigua sobre el último clic, Xox pregunta en vez de suponer.
 2. **Preparar.** Si hay que generar un archivo, Xox lo genera **al crear el encargo**, no a la hora, y lo muestra en la tarjeta. Así el usuario lo puede revisar y, si la generación falla, todavía hay tiempo.
-3. **Ensayo** (unos minutos antes, solo lectura): comprobar que la app esté instalada y con sesión, que los archivos sigan ahí y que la Mac esté despierta y desbloqueada. Si algo falla, avisar mientras todavía hay margen.
+3. **Ensayo** (10 minutos antes, solo lectura): comprobar que la app esté instalada y con sesión, que los archivos sigan ahí y que la Mac esté despierta y desbloqueada. Si algo falla, avisar mientras todavía hay margen.
 4. **Ejecutar.** El programador lanza una sesión de Xox en segundo plano con solo lo necesario: `encargo.md`, la ruta aprendida para esa app (si existe) y las herramientas del encargo. Usa el perfil de presupuesto `extended`.
 5. **Verificar antes del último clic.** Xox debe comprobar con `desktop_find` que lo adjuntado coincide con lo que dice el encargo. El Guardián solo permite la acción final si hubo esa verificación en la misma ejecución.
-6. **Avisar e informar.** Aviso del sistema y entrada en la columna Pendientes: "Entregada 'Práctica 3' a las 12:02", o "Me detuve: no encontré la actividad 'Práctica 3'", con los botones **Ver** y **Reintentar**. **Ver** abre el informe (`resultado.md`): qué hizo, qué comprobó, qué decidió y por qué, y qué quedó sin hacer.
+6. **Avisar e informar.** Aviso del sistema y entrada en la columna Pendientes: "Entregada 'Práctica 3' a las 12:02", o "Me detuve: no encontré la actividad 'Práctica 3'", con los botones **Ver** y **Reintentar**. **Ver** abre el informe (`informe-<fecha>.md`, uno por ejecución): qué hizo, qué comprobó, qué decidió y por qué, y qué quedó sin hacer.
 7. **Aprender.** Si salió bien, Xox guarda la ruta en esa app ("en Teams, las tareas están en…") como procedimiento. La próxima vez cuesta menos y falla menos.
 
 ## Permiso del último clic
@@ -105,9 +105,9 @@ No se ajusta el modelo: XOOK es agnóstico de proveedor y el modelo es intercamb
 
 ## Interfaz
 
-- **Crear:** en el chat, que es la vía principal. Además, el botón **+ Pendiente** con opciones que se tocan: Hoy / Mañana / hora, y Avisarme / Dejarlo listo / Dejarlo entregado.
+- **Crear:** en el chat, que es la vía principal. El botón **Agregar** de la columna crea recordatorios, relojes y notas (solo avisan); para que Xox haga algo, el texto vacío de la columna explica que se le pide en el chat.
 - **Columna Pendientes** (reemplaza las pestañas Por aceptar, Agenda y Hechas): lo que viene por hora, lo que espera tu OK y, plegado, lo hecho. Cada pendiente muestra la actividad, el tipo (Entrega, Recordatorio, Documento), la hora y los detalles. El inventario sale de ahí: a una página propia del proyecto o se quita (por decidir).
-- **Página del pendiente:** nombre, instrucción, pasos, archivos de su carpeta e informes de cada ejecución.
+- **Tarjeta del pendiente** (`src-ui/features/encargos/EncargoCard.tsx`): nombre, hora, app, si lo deja hecho o listo, y los botones Ver informe, Hacerlo ahora (si se detuvo o se pasó la hora) y Quitar (la carpeta se conserva). Una página propia con la instrucción, los pasos y todos los informes queda para después.
 - **Contexto:** Xox solo ve una línea por cada encargo de hoy y mañana ("12:00 · Práctica 3 · programado"). El resto lo lee con `encargo_read` cuando lo ejecuta o cuando el usuario lo menciona.
 - Código en `src-ui/features/encargos/`; en `App.tsx` solo entra la línea que lo integra.
 
@@ -121,17 +121,44 @@ No se ajusta el modelo: XOOK es agnóstico de proveedor y el modelo es intercamb
    - La tarjeta se revisa completa **antes** de registrar la decisión. Una hora pasada o un archivo borrado dejan la tarjeta pendiente, sin nada a medias.
    - El prompt ya distingue "hazlo a esta hora" (`encargo_schedule`) de "avísame" (Agenda).
    - Falta: por ahora la tarjeta aparece en el panel lateral, no en el chat. Si la aprobación falla, la interfaz muestra un error genérico en vez del motivo. Las dos cosas se resuelven con la columna Pendientes (paso 6).
-3. **Ejecutor:** el programador lanza a Xox en segundo plano con el permiso acotado y avisa al terminar. Incluye la lista personal de botones de riesgo (Xox agrega, solo el usuario quita).
-4. **Verificación y registro:** comprobación obligatoria antes del último clic y registro de pasos en texto.
-5. **Siempre disponible:** arranque al iniciar sesión, encargos perdidos y evitar la suspensión.
-6. **Columna Pendientes**, y sacar el inventario del lateral.
-7. **Aprender:** procedimientos por app y evals con árboles grabados.
+3. **Ejecutor** *(hecho, 2026-11-23)*: en cada vuelta del programador, `runner::tick` toma el pendiente que toca y lanza a Xox con `run_xox_chat_stream`, en un stream propio (`encargo_<id>_<ms>`). La interfaz no lo mezcla con el chat porque filtra por stream. Un pendiente a la vez. El permiso acotado (`grant.rs`) decide en vez de preguntar:
+   - Solo deja usar la app del pendiente, y la ventana del sistema para elegir archivos.
+   - Nada por coordenadas.
+   - Un botón de compromiso solo si es la acción final autorizada.
+   - Lo que el usuario negó en sus reglas sigue negado.
+   - Al terminar, aviso del sistema (`osascript` en macOS) y evento `encargos:finished`.
+   - La lista personal de botones de riesgo vive en la carpeta de configuración (`risk_buttons.json`). Xox la amplía con `desktop_mark_risky_button` y el usuario la recorta en Ajustes.
+4. **Verificación y registro** *(hecho)*: el último clic solo pasa si, después de la última acción y en los últimos 2 minutos, Xox miró la pantalla con `desktop_find` o `desktop_snapshot`. Se da una sola vez; si falla, se libera para reintentar.
+   - `hecho` solo si Xox lo declara (`RESULTADO: hecho`) y, cuando tenía permiso para terminar, de verdad dio el clic.
+   - Cada ejecución deja `informe-<fecha>.md` con lo que dice Xox, lo que el permiso bloqueó y los pasos, y una fila en `encargo_runs`.
+5. **Siempre disponible** *(hecho)*:
+   - Arranque al iniciar sesión con `tauri-plugin-autostart` cuando hay pendientes. Solo en la versión instalada; en desarrollo registraría el ejecutable de `target/debug`.
+   - Si la hora pasó hace más de 15 minutos, queda `perdido`, con aviso y el botón **Hacerlo ahora**.
+   - `caffeinate -i` mientras falte menos de una hora para un pendiente con app.
+   - Con la sesión bloqueada no arranca: espera, y si pasa el margen queda perdido.
+   - Ensayo 10 minutos antes: archivos, app instalada y sesión bloqueada.
+   - Si la app se cerró a media ejecución, el pendiente pasa a `detenido`.
+6. **Columna Pendientes** *(hecho)*: tres secciones en una sola lista, en vez de tres pestañas: "Esperan tu OK", "Próximos" (pendientes, recordatorios y relojes) y "Hechos", plegada.
+   - Salieron el inventario, el chip "HITL", el pie de presupuesto y los fondos teñidos.
+   - El encabezado de la app dice "Pendientes".
+   - Xox ve una línea por pendiente de hoy y mañana, y lee el detalle con `encargo_read`.
+7. **Aprender** *(hecho en parte)*: al ejecutar, Xox recibe la ruta aprendida de `memoria/procedimientos/<app>.md` y, si sale bien, la actualiza. Hay tres casos de eval de pendientes en `provider_evals`.
+   - Falta: evals con árboles de accesibilidad grabados. Las evals actuales solo califican la primera ronda, así que esperan al loop unificado (diseño de proveedores, paso 5).
+
+## Pendiente de verificar en la app
+
+- El caso de Teams completo, de punta a punta, con una actividad real.
+- Que la ventana para elegir archivos de Teams aparezca como "Open and Save Panel Service" o como la propia Teams; el permiso acepta las dos.
+- Que la detección de sesión bloqueada (`CGSessionCopyCurrentDictionary`) funcione en la versión de macOS del usuario.
+- El arranque al iniciar sesión, que solo se puede probar con la app empaquetada.
 
 Criterio de salida: el encargo de Teams (subir un PDF y entregarlo) sale bien **5 de 5** veces en días distintos, y cuando la actividad no existe o el archivo no coincide, Xox se detiene y avisa **5 de 5**.
 
 ## Abierto
 
-- ¿Cuántos minutos antes se ensaya?
-- Encargos repetidos ("cada viernes a las 9"): el modelo ya los soporta con `repeticion`; falta decidir si entran desde el inicio.
 - Avisos por WhatsApp (más adelante).
-- Qué hacer con el inventario y la revisión de existencias.
+- El inventario y la revisión de existencias salieron de la columna. El motor sigue en el cerebro y en el chat; falta decidir si vuelve como página propia del proyecto.
+- Un interruptor en Ajustes para el arranque al iniciar sesión (hoy se activa solo cuando hay pendientes).
+- La tarjeta para aprobar un pendiente sigue en la columna ("Esperan tu OK"); llevarla al chat, junto a la respuesta de Xox.
+- Mostrar en la interfaz el motivo cuando una aprobación falla (hoy es un error genérico).
+- Los íconos de la columna siguen siendo de `lucide-react`; pasarlos a `XkIcon` cuando `src-ui/components/icons/` esté en el repo.
