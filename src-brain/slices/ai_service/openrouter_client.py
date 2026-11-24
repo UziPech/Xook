@@ -2840,7 +2840,8 @@ def _build_system_prompt(
   },
   "blocks": [
     // REGLA AGENDA VS RELOJ (MUY IMPORTANTE):
-    // - Si es cita, entrega o recordatorio para una FECHA u HORA DEL RELOJ (ej. "mañana 18:00", "viernes 13, 18:00", "aviso 1h antes"): usa category="agenda", intent.type="schedule_event", schedule.mode="alarm" (o "recurring"), SIN durationSeconds y NUNCA start_timer.
+    // - Si el usuario quiere que TÚ hagas algo a una hora (entregar, subir, enviar o generar un archivo), no uses estas tarjetas: llama a `encargo_schedule`.
+    // - Si es cita o recordatorio solo para AVISARLE a una FECHA u HORA DEL RELOJ (ej. "mañana 18:00", "viernes 13, 18:00", "aviso 1h antes"): usa category="agenda", intent.type="schedule_event", schedule.mode="alarm" (o "recurring"), SIN durationSeconds y NUNCA start_timer.
     // - Usa category="reloj" e intent.type="start_timer" SOLO para cuentas regresivas cortas que empiezan AHORA (ej. "timer de 15 min", "en 20 minutos"), pasando paramValues={"duration_min": 15} y schedule.durationSeconds=900 explícitos.
     // Usa SIEMPRE estos campos exactos por tipo:
     // - schedule: {"type":"schedule","mode":"alarm"|"timer"|"recurring"|"auto","timeLabel":"19:00 hrs","dateLabel":"Viernes 13 nov","recurrence":"Semanal","autoSchedule":false}

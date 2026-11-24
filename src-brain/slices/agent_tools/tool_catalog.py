@@ -164,6 +164,19 @@ TOOLKIT_SPECS: Dict[str, Dict[str, Any]] = {
             "recurrente", "automatiza", "automatizacion", "blueprint", "reestructura",
         },
     },
+    "pendientes": {
+        "label": "Pendientes que Xox hace solo a una hora indicada",
+        "risk": "write_protected_hitl",
+        "tools": {
+            "encargo_schedule",
+        },
+        "keywords": {
+            "a las", "entrega", "entregar", "entregala", "entregalo", "entregame", "sube", "subir",
+            "subelo", "subela", "manda", "mandalo", "pendiente", "pendientes", "manana", "hoy a",
+            "esta tarde", "esta noche", "teams", "classroom", "moodle", "programa", "programalo",
+            "cuando sea hora",
+        },
+    },
     "skills_profile": {
         "label": "Personalización de Xox, perfil del usuario y habilidades",
         "risk": "write_local",

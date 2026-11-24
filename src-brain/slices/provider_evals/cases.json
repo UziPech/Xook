@@ -179,5 +179,27 @@
       "args_coinciden": {"app_name": "whats"},
       "permite_sin_herramienta": true
     }
+  },
+  {
+    "id": "pendiente-entregar",
+    "categoria": "pendientes",
+    "mensaje": "Entrega datos/reporte.pdf hoy a las 4 de la tarde en Teams, en la actividad Práctica 3.",
+    "herramientas": ["encargo_schedule", "propose_tasks", "desktop_act", "open_desktop_app", "workspace_read", "memory_search"],
+    "espera": {
+      "herramienta_en": ["encargo_schedule"],
+      "args_coinciden": {"may_finish": "^true$", "files": "reporte\\.pdf"},
+      "prohibidas": ["desktop_act", "open_desktop_app"]
+    }
+  },
+  {
+    "id": "pendiente-sin-entregar",
+    "categoria": "pendientes",
+    "mensaje": "Mañana a las 9 sube datos/reporte.pdf a la actividad Práctica 3 de Teams, pero no la entregues: yo la reviso.",
+    "herramientas": ["encargo_schedule", "propose_tasks", "desktop_act", "open_desktop_app", "workspace_read", "memory_search"],
+    "espera": {
+      "herramienta_en": ["encargo_schedule"],
+      "args_coinciden": {"may_finish": "^false$"},
+      "prohibidas": ["desktop_act"]
+    }
   }
 ]

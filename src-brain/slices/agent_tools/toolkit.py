@@ -27,6 +27,7 @@ from slices.inventory_advisor.review_engine import run_workspace_review
 from slices.task_ui.schemas import sanitize_task_proposal
 from slices.agent_tools.system_capabilities import filter_tool_defs_for_system
 from slices.agent_tools.web_tools import WEB_TOOL_DEFS, execute_web_tool
+from slices.agent_tools.encargo_tools import ENCARGO_TOOL_DEFS, build_encargo_proposal
 from slices.agent_tools.skills_hub import (
     USER_PROFILE_REL,
     discover_official_skills,
@@ -109,6 +110,7 @@ STAGING_HITL_TOOL_NAMES = {
     "propose_schedule_automation",
     "propose_tasks",
     "propose_workspace_blueprint",
+    "encargo_schedule",
 }
 COMMAND_EXEC_TOOL_NAMES = {
     "run_workspace_command",
@@ -2089,6 +2091,7 @@ USER_MEMORY_TOOL_DEFS: List[Dict[str, Any]] = [
 
 AGENT_TOOL_DEFS.extend(USER_MEMORY_TOOL_DEFS)
 AGENT_TOOL_DEFS.extend(WEB_TOOL_DEFS)
+AGENT_TOOL_DEFS.extend(ENCARGO_TOOL_DEFS)
 
 # Sin herramientas que este sistema operativo no puede ejecutar (ver `system_capabilities`).
 AGENT_TOOL_DEFS[:] = filter_tool_defs_for_system(AGENT_TOOL_DEFS)
@@ -2359,6 +2362,7 @@ class WorkspaceToolExecutor:
             "forget_user_info": self._tool_forget_user_info,
             "web_search": lambda a: execute_web_tool("web_search", a),
             "web_fetch": lambda a: execute_web_tool("web_fetch", a),
+            "encargo_schedule": self._tool_encargo_schedule,
         }.get(name)
         if not handler:
             return {
@@ -4522,6 +4526,18 @@ class WorkspaceToolExecutor:
             "staged_card_id": card_id,
             "message": "Propuesta de programación automática enviada a Por aceptar para aprobación HITL.",
         }
+
+    def _tool_encargo_schedule(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        def resolve_file(raw: str) -> str:
+            target, clean_rel, _ = resolve_workspace_path(self.workspace_root, raw)
+            if not target.is_file():
+                raise ValueError(f"No encontré el archivo '{raw}' en el espacio de trabajo.")
+            return clean_rel
+
+        result, proposal = build_encargo_proposal(args, resolve_file=resolve_file)
+        if proposal:
+            self.staged_tasks.append(proposal)
+        return result
 
     def _tool_propose_tasks(self, args: Dict[str, Any]) -> Dict[str, Any]:
         raw_tasks = args.get("tasks")
