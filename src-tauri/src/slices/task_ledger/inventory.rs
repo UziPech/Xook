@@ -1478,18 +1478,16 @@ fn commit_hitl_write_item(
     Ok(prepared.zone == WorkspaceZone::Datos)
 }
 
-pub fn apply_post_hitl_side_effects(
-    conn: &mut Connection,
-    workspace_root: &Path,
-    payload: HitlSideEffectInput<'_>,
-    decision_norm: &str,
-    history_entry: &mut DecisionHistoryDto,
-    now: DateTime<Utc>,
-) -> Result<(), String> {
+/// Datos de la acción de una tarjeta: los guardados en SQLite y, si no hay, los de la propuesta.
+pub(crate) fn resolve_staging_payload(
+    conn: &Connection,
+    card_id: &str,
+    updated_proposal: Option<&Value>,
+) -> Option<Value> {
     let staging_from_db: Option<Value> = conn
         .query_row(
             "SELECT staging_payload_json FROM tasks WHERE card_id = ?1",
-            params![payload.card_id],
+            params![card_id],
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
@@ -1498,11 +1496,18 @@ pub fn apply_post_hitl_side_effects(
         .flatten()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok());
 
-    let staging = staging_from_db.or_else(|| {
-        payload
-            .updated_proposal
-            .and_then(|p| p.get("stagingPayload").cloned())
-    });
+    staging_from_db.or_else(|| updated_proposal.and_then(|p| p.get("stagingPayload").cloned()))
+}
+
+pub fn apply_post_hitl_side_effects(
+    conn: &mut Connection,
+    workspace_root: &Path,
+    payload: HitlSideEffectInput<'_>,
+    decision_norm: &str,
+    history_entry: &mut DecisionHistoryDto,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    let staging = resolve_staging_payload(conn, payload.card_id, payload.updated_proposal);
 
     let mut generated_artifact: Option<String> = None;
 
@@ -1611,6 +1616,25 @@ pub fn apply_post_hitl_side_effects(
                     );
                     generated_artifact = Some(prepared.clean_str);
                 }
+            }
+        } else if kind == "encargo" {
+            if let Some(sp) = staging.as_ref() {
+                let encargo = crate::slices::encargos::store::create_from_staging(
+                    conn,
+                    workspace_root,
+                    sp,
+                    payload.card_id,
+                    now,
+                )?;
+                let _ = store::try_record_audit_event_for_root(
+                    workspace_root,
+                    payload.decided_by.unwrap_or("user"),
+                    "encargo_scheduled",
+                    &encargo.folder,
+                    "agente",
+                    Some(payload.title),
+                );
+                generated_artifact = Some(format!("{}/encargo.md", encargo.folder));
             }
         } else if kind == "blueprint" {
             if let Some(sp) = staging.as_ref() {
@@ -1996,6 +2020,117 @@ mod tests {
 
         let patterns_raw = fs::read_to_string(root.join("memoria/patrones.json")).unwrap();
         assert!(patterns_raw.contains("approval_rate_global"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approving_encargo_card_creates_scheduled_encargo() {
+        let root = temp_ws("encargo");
+        let mut conn = open_workspace_db(&root).unwrap();
+        let next_run = (Utc::now() + ChronoDuration::hours(4)).to_rfc3339();
+        let proposal = json!({
+            "cardId": "enc_card_1",
+            "title": "Práctica 3",
+            "category": "agenda",
+            "intent": { "type": "schedule_encargo", "primaryLabel": "Programar", "targetLabel": "Práctica 3" },
+            "stagingPayload": {
+                "kind": "encargo",
+                "name": "Práctica 3",
+                "instruction": "Entrega esto a las 4 en Teams",
+                "steps": ["Abrir Teams", "Entregar"],
+                "files": [],
+                "nextRunAt": next_run,
+                "targetApp": "Microsoft Teams",
+                "mayFinish": true,
+                "finalAction": "Entregar"
+            }
+        });
+
+        let dec = decide_task_hitl_at(
+            &mut conn,
+            &root,
+            "ws_test",
+            DecideTaskPayload {
+                card_id: "enc_card_1".to_string(),
+                decision_id: None,
+                title: "Práctica 3".to_string(),
+                category: "agenda".to_string(),
+                decision: "approved".to_string(),
+                summary: "Programado".to_string(),
+                amount_label: None,
+                verified_cost: None,
+                currency: None,
+                adjusted_qty: None,
+                execution_artifact_path: None,
+                notes: None,
+                decided_by: Some("Uziel".to_string()),
+                updated_proposal: Some(proposal),
+                promote_agenda_item: None,
+            },
+            Utc::now(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            dec.history_entry.execution_artifact_path.as_deref(),
+            Some("agente/encargos/practica-3/encargo.md")
+        );
+        assert!(root.join("agente/encargos/practica-3/encargo.md").is_file());
+        let encargos = crate::slices::encargos::store::list_encargos(&conn).unwrap();
+        assert_eq!(encargos.len(), 1);
+        assert_eq!(encargos[0].status, "programado");
+        assert_eq!(encargos[0].source_card_id.as_deref(), Some("enc_card_1"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn approving_encargo_whose_time_passed_records_nothing() {
+        let root = temp_ws("encargo_late");
+        let mut conn = open_workspace_db(&root).unwrap();
+        let proposal = json!({
+            "stagingPayload": {
+                "kind": "encargo",
+                "name": "Práctica 3",
+                "instruction": "Entrega esto a las 4 en Teams",
+                "steps": ["Entregar"],
+                "nextRunAt": (Utc::now() - ChronoDuration::hours(2)).to_rfc3339(),
+                "mayFinish": false
+            }
+        });
+
+        let err = decide_task_hitl_at(
+            &mut conn,
+            &root,
+            "ws_test",
+            DecideTaskPayload {
+                card_id: "enc_card_late".to_string(),
+                decision_id: None,
+                title: "Práctica 3".to_string(),
+                category: "agenda".to_string(),
+                decision: "approved".to_string(),
+                summary: "Programado".to_string(),
+                amount_label: None,
+                verified_cost: None,
+                currency: None,
+                adjusted_qty: None,
+                execution_artifact_path: None,
+                notes: None,
+                decided_by: None,
+                updated_proposal: Some(proposal),
+                promote_agenda_item: None,
+            },
+            Utc::now(),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("ya pasó"));
+        let history: i64 = conn
+            .query_row("SELECT COUNT(*) FROM decision_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(history, 0);
+        assert!(!root.join("agente/encargos/practica-3").exists());
 
         let _ = fs::remove_dir_all(&root);
     }

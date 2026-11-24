@@ -409,7 +409,7 @@ const HIGH_RISK_UI_PHRASES: &[&str] = &[
     "empty trash",
 ];
 
-fn fold_ascii_spanish(raw: &str) -> String {
+pub(crate) fn fold_ascii_spanish(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {
         let mapped = match ch {

@@ -55,6 +55,7 @@ pub fn run() {
             slices::task_ledger::commands::create_tasks_batch,
             slices::task_ledger::commands::update_task_proposal,
             slices::task_ledger::commands::decide_task_hitl,
+            slices::encargos::commands::list_encargos,
             slices::task_ledger::commands::list_agenda_items,
             slices::task_ledger::commands::upsert_agenda_item,
             slices::task_ledger::commands::toggle_timer_state,

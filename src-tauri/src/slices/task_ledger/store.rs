@@ -1080,6 +1080,21 @@ pub fn decide_task_hitl_at(
         .filter(|_| decision_norm != "rejected")
         .map(|ag| ag.id.clone());
 
+    // Un pendiente que ya no se puede programar no debe quedar aprobado a medias.
+    if decision_norm != "rejected" {
+        let staging = super::inventory::resolve_staging_payload(
+            conn,
+            &payload.card_id,
+            payload.updated_proposal.as_ref(),
+        );
+        if let Some(sp) = staging
+            .as_ref()
+            .filter(|sp| sp.get("kind").and_then(|k| k.as_str()) == Some("encargo"))
+        {
+            crate::slices::encargos::store::validate_staging(workspace_root, sp, now)?;
+        }
+    }
+
     let tx = conn
         .transaction()
         .map_err(|e| format!("Error iniciando transacción HITL: {e}"))?;
