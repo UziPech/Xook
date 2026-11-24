@@ -65,6 +65,14 @@ CORE_ALWAYS_LOADED_TOOLS: Set[str] = {
     "agent_checklist_update",
     "spawn_subagent",
     "study_create_deck",
+    "web_search",
+    "web_fetch",
+    "image_search",
+    # El primer paso en otra app no puede depender de que su nombre esté en una lista de palabras:
+    # "revisa si en Teams tengo tareas" llegaba al modelo sin ninguna herramienta de escritorio.
+    "desktop_list_windows",
+    "desktop_snapshot",
+    "open_desktop_app",
     TOOL_SEARCH_NAME,
 }
 
@@ -91,7 +99,9 @@ TOOLKIT_SPECS: Dict[str, Dict[str, Any]] = {
             "enviar", "chat", "llena", "rellena", "interfaz", "ui", "pantalla", "abre",
             "abrir", "lanza", "safari", "chrome", "excel", "finder", "mail", "correo",
             "slack", "whatsapp", "calculadora", "navegador", "erp", "interactua", "opera",
-            "antigravity", "vscode", "cursor",
+            "antigravity", "vscode", "cursor", "teams", "outlook", "gmail", "classroom", "moodle",
+            "discord", "telegram", "notion", "zoom", "spotify", "claude", "chatgpt",
+            "dile", "preguntale", "mandale", "escribele", "respondele", "contestale", "avisale",
         },
     },
     "os_apps": {
@@ -178,7 +188,8 @@ TOOLKIT_SPECS: Dict[str, Dict[str, Any]] = {
         "keywords": {
             "skill", "skills", "habilidad", "habilidades", "personalidad", "nombre", "llamate",
             "voz", "tono", "prefiero", "preferencias", "gusta", "olvida", "olvidar", "espacio de xox",
-            "api key", "proveedor ia", "openrouter", "anthropic", "deepseek", "boveda", "vault",
+            "api key", "proveedor ia", "openrouter", "anthropic", "deepseek", "openai", "gemini",
+            "groq", "kimi", "boveda", "vault",
         },
     },
     "canvas_ui": {
@@ -333,6 +344,9 @@ class ToolExposureSession:
     def total_catalog_count(self) -> int:
         return len(self._ordered_names)
 
+    def has_tool(self, name: str) -> bool:
+        return name in self._all_by_name
+
     def mark_loaded(self, names: Iterable[str]) -> List[str]:
         newly: List[str] = []
         for nm in names:
@@ -340,6 +354,15 @@ class ToolExposureSession:
                 self.loaded_names.add(nm)
                 newly.append(nm)
         return newly
+
+    def load_toolkit(self, toolkit: str) -> List[str]:
+        return self.mark_loaded(sorted(TOOLKIT_SPECS.get(toolkit, {}).get("tools", set())))
+
+    def note_tool_used(self, name: str) -> List[str]:
+        """Usar el primer paso de un toolkit que está en el núcleo carga el resto para la siguiente ronda."""
+        if name in CORE_ALWAYS_LOADED_TOOLS and name in TOOL_TO_TOOLKIT:
+            return self.load_toolkit(TOOL_TO_TOOLKIT[name])
+        return []
 
     def search(self, query: str, limit: int = 8) -> Dict[str, Any]:
         clean_query = str(query or "").strip()

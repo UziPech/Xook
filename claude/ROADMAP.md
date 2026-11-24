@@ -1,6 +1,6 @@
 # Roadmap — XOOK como agente personal proactivo
 
-Creado: 2026-11-21 · Última actualización: 2026-11-21
+Creado: 2026-11-21 · Última actualización: 2026-11-23
 
 ## Visión
 
@@ -26,6 +26,8 @@ Cada tipo de acción tiene un nivel máximo permitido (`locked` como techo, idea
 
 Las mutaciones destructivas, de dinero o hacia fuera del equipo nunca pasan del nivel 2.
 
+Excepción (2026-11-23): un **encargo** puede dar el último clic hacia fuera (Entregar, Enviar) si el usuario lo dejó dicho en la instrucción, con un permiso acotado a ese encargo y verificación previa. Ver [diseno-encargos.md](diseno-encargos.md).
+
 ---
 
 ## Fase 0 — Cimientos
@@ -38,9 +40,9 @@ Entregables:
 - [ ] Partir `src-ui/App.tsx` en stores por dominio: chat, canvas, ledger, workspace, ajustes, voz, contexto de pantalla, atajos.
 - [x] Reescribir `Readme.md` y `ARCHITECTURE.md` con la visión actual. *(2026-11-21)*
 - [ ] Subir el sidecar de Python 3.9 a 3.11+ (3.9 está fuera de soporte).
-- [ ] **Capa de proveedores agnóstica.** *(En curso, PR #2 sobre el PR #1; avance en [diseno-capa-proveedores.md](diseno-capa-proveedores.md): red de seguridad con tests de caracterización, una sola llamada al proveedor en el cliente y en las evals, y la URL propia de OpenRouter respetada en todos los caminos.)* `openrouter_client.py` (8k líneas) mezcla el loop del agente con detalles de cada proveedor, como los casos especiales de `reasoning_content` de DeepSeek. Separarlo en un **núcleo del agente** que solo habla un formato interno, más **adaptadores delgados por proveedor** (OpenRouter, DeepSeek, Groq, Gemini, OpenAI, Anthropic, y local vía Ollama/LM Studio).
+- [ ] **Capa de proveedores agnóstica.** *(En curso; detalle en [diseno-capa-proveedores.md](diseno-capa-proveedores.md). Hecho: red de seguridad con tests de caracterización, una sola llamada al proveedor en el cliente y en las evals, las reglas de cada proveedor en un solo lugar, la URL propia de OpenRouter respetada en todos los caminos y el razonamiento de DeepSeek reenviado completo. Falta: paquete `providers/`, proveedor local y unificar los dos loops.)* `openrouter_client.py` (8k líneas) mezcla el loop del agente con detalles de cada proveedor, como los casos especiales de `reasoning_content` de DeepSeek. Separarlo en un **núcleo del agente** que solo habla un formato interno, más **adaptadores delgados por proveedor** (OpenRouter, DeepSeek, Groq, Gemini, OpenAI, Anthropic, y local vía Ollama/LM Studio).
 - [ ] **Degradación elegante por capacidades.** Usar la matriz que ya existe en `provider_registry.py` para que el núcleo decida: si el modelo no soporta salida estructurada, validar y reparar el JSON; si no soporta visión, mandar texto de pantalla en lugar de la imagen; si no hace bien el tool calling, cargar menos herramientas por ronda.
-- [x] **Evals por proveedor** (lo mismo que `t3code/evals`): un set fijo de tareas reales (herramientas, memoria, edición de archivos) que se corre contra cada modelo configurado. Así se muestra al usuario qué modelos funcionan bien con XOOK y cuáles no. *(2026-11-21: `slices/provider_evals/`, 18 casos sobre las herramientas reales. Las claves llegan solo de la bóveda, por stdin. Punto de entrada: comando `run_provider_evals` + sección plegable en Ajustes → Proveedores. Falta la primera corrida real.)*
+- [x] **Evals por proveedor** (lo mismo que `t3code/evals`): un set fijo de tareas reales (herramientas, memoria, edición de archivos) que se corre contra cada modelo configurado. Así se muestra al usuario qué modelos funcionan bien con XOOK y cuáles no. *(2026-11-21: `slices/provider_evals/`, 18 casos sobre las herramientas reales (20 desde el 2026-11-23). Las claves llegan solo de la bóveda, por stdin. Punto de entrada: comando `run_provider_evals` + sección plegable en Ajustes → Proveedores. Falta la primera corrida real.)*
 - [x] **Bóveda de verdad.** *(2026-11-21)* Las claves viven en el Llavero de macOS (`slices/secret_store`, crate `security-framework`, un solo ítem `com.xook.app` / `ai-provider-keys`). `ai-vault.json` guarda solo la configuración no secreta. Las claves en texto plano se migran solas al primer arranque, y el archivo se limpia solo después de que el Llavero confirma la escritura.
 - [x] **Bóveda multiplataforma.** *(2026-11-22)* Windows: Administrador de credenciales. Linux: Secret Service (GNOME Keyring / KWallet). Sin almacén seguro: solo en memoria durante la sesión, nunca en texto plano. El pie de Ajustes dice dónde quedan las claves. Verificado: en CI compila y pasan sus tests (con backend falso) en Windows y Linux reales; la escritura en el almacén real solo se probó en macOS, a mano.
 - [x] **Matriz de capacidades del sistema** *(2026-11-22)*: `agent_tools/system_capabilities.py`. Fuera de macOS, el agente, los subagentes y las evals no ven las herramientas de escritorio, pantalla, Notas/Calendario ni apertura de apps.
@@ -82,6 +84,7 @@ Criterio de salida: un eval de recuerdo (preguntas sobre hechos de hace 2+ seman
 
 Entregables:
 
+- [ ] **Encargos** *(diseño 2026-11-23 en [diseno-encargos.md](diseno-encargos.md))*: instrucciones con hora que Xox ejecuta solo, usando otras apps y generando archivos, y que avisa al terminar. Es el primer disparador de tiempo de punta a punta y reemplaza las pestañas Por aceptar, Agenda y Hechas por la columna Pendientes. Hecho el paso 1 (2026-11-23): "entregar", "turn in", "hand in" y "submit" ya cuentan como botones de alto riesgo. Deuda: control de otras apps en Windows y Linux. Más adelante: avisos por WhatsApp.
 - [ ] Motor de disparadores sobre `slices/scheduler` y `slices/screen_context`: tiempo (cron), archivos (`notify`), calendario/notas y contexto de pantalla deduplicado.
 - [ ] **Triage barato:** cada disparador pasa por un modelo pequeño (configurable: uno local, o uno barato vía API) que decide entre "ignorar", "sugerir" o "preparar" antes de despertar al modelo principal.
 - [ ] **Bandeja de sugerencias** en la UI: tarjetas con aceptar / posponer / "no vuelvas a sugerir esto". Cada respuesta del usuario alimenta la memoria de decisiones.
@@ -124,6 +127,20 @@ MCP como protocolo abierto del lado de XOOK (cliente y servidor propios), no com
 
 Criterio de salida: dos usuarios compartiendo un workspace sin fugas entre memorias personales, verificado por tests.
 
+## Línea transversal — Agente de uso cotidiano
+
+**Objetivo:** que Xox se comporte como agente y no como un chat: que no se rinda a mitad de una tarea, que vea internet, que revise su trabajo antes de entregarlo y que se conecte a sistemas sin depender de MCP.
+
+- [x] **Presupuesto por tarea en vez de 12 rondas fijas** *(2026-11-23, `ai_service/agent_loop_policy.py`)*. El loop sigue mientras queden rondas, tiempo y tokens: perfil `standard` (24 rondas, 5 min) y `extended` para `deep_analysis` (60 rondas, 15 min, subagentes con 10 rondas). Si el modelo repite 3 veces la misma ronda, se da por atascado. La ronda final va sin herramientas y le pide entregar lo que tiene y decir qué quedó pendiente; la interfaz muestra el motivo del cierre como un paso más.
+- [x] **Verificación antes de entregar** *(2026-11-23)*. El resultado de `office_generate`, `pdf_generate`, `workspace_write_file` y `workspace_edit_file` le pide al modelo comparar lo producido con cada instrucción del usuario, incluido lo que pidió no incluir, antes de responder.
+- [x] **Actuar en otras apps en vez de ofrecer** *(2026-11-23, `ai_service/desktop_action_policy.py`)*. En una conversación real, "revísame si en Teams tengo tareas" y "dile a Claude que…" terminaron en tres negativas y cero herramientas. Ahora: las herramientas para ver y abrir apps están siempre cargadas (antes dependían de que el nombre estuviera en una lista de palabras); el prompt dice que el acceso es la app ya abierta y que el permiso lo pide el Guardián; si el modelo se rinde sin intentar nada, la negativa no llega a la pantalla ni a la voz y se le exige el primer paso, una sola vez; y `open_desktop_app` espera a que la app muestre su ventana. El atajo local de la bóveda (`vaultIntent.ts`) ya no toma por configuración un mensaje que solo nombra a una IA. Dos casos nuevos en las evals. Falta probarlo con Teams real y con modelos gratuitos.
+- [ ] Las esperas por aprobación del usuario gastan el tiempo máximo del turno (5 min en `AgentBudget`): una tarea con varias tarjetas puede cerrarse por tiempo sin que el agente haya tardado.
+- [ ] Presupuesto visible y configurable en Ajustes (se une al "presupuesto de gasto" de la Fase 2).
+- [x] **`web_search` y `web_fetch` propios de XOOK** *(2026-11-23, `agent_tools/web_tools.py`)*. No dependen de la búsqueda nativa del proveedor ni piden clave: DuckDuckGo en su versión HTML y, si pide verificación anti-bot, Wikipedia. Funcionan sin workspace y los subagentes también los usan. Las fuentes aparecen bajo la respuesta con miniaturas (`og:image`) que la interfaz carga por URL, sin guardarlas. Solo se leen direcciones públicas, también al seguir redirecciones, y el contenido llega marcado como no confiable.
+- [ ] Buscador con clave opcional en la bóveda (Brave o Tavily) para quien necesite más volumen o fiabilidad que DuckDuckGo, que puede bloquear por IP.
+- [ ] Modo investigación: plan, subagentes en paralelo, notas en archivo y síntesis con citas, como tarea de fondo que se puede retomar.
+- [ ] Modo código para documentos e integraciones sin MCP. Investigación y plan en [investigacion-code-mode.md](investigacion-code-mode.md).
+
 ---
 
 ## Principio: la inteligencia vive en XOOK, no en el proveedor
@@ -140,6 +157,7 @@ Memoria, disparadores, política de herramientas, escalera de autonomía, compac
 | Razonamiento | Nativo si existe | Paso de planificación explícito en el prompt |
 | Caché de prefijo | Del proveedor | Prompts igual de ordenados; solo cuesta más |
 | Control del escritorio | XOOK (AX + CGEvent) | No aplica |
+| Encadenar herramientas y filtrar datos | XOOK (modo código, propuesta en [investigacion-code-mode.md](investigacion-code-mode.md)) | Tool calling clásico, ronda por ronda |
 
 Nota honesta: el harness reduce mucho la diferencia entre modelos, pero no la elimina. La fiabilidad del tool calling sí varía entre proveedores. Por eso las evals de la Fase 0 existen: le dicen al usuario con datos qué modelo rinde con XOOK, en vez de prometer que todos rinden igual.
 

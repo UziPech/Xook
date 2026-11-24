@@ -26,6 +26,7 @@ import uuid
 from slices.inventory_advisor.review_engine import run_workspace_review
 from slices.task_ui.schemas import sanitize_task_proposal
 from slices.agent_tools.system_capabilities import filter_tool_defs_for_system
+from slices.agent_tools.web_tools import WEB_TOOL_DEFS, execute_web_tool
 from slices.agent_tools.skills_hub import (
     USER_PROFILE_REL,
     discover_official_skills,
@@ -80,6 +81,9 @@ IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif
 INSPECTABLE_DESIGN_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".tsv", ".doc", ".rtf", ".odt"}
 MAX_READ_BYTES = 24 * 1024
 MAX_SEARCH_MATCHES = 40
+# Espera a que una app recién abierta muestre su ventana (unos 6 s en total).
+APP_WINDOW_WAIT_ATTEMPTS = 9
+APP_WINDOW_WAIT_SECONDS = 0.75
 
 READ_ONLY_TOOL_NAMES = {
     "workspace_list",
@@ -2087,6 +2091,7 @@ USER_MEMORY_TOOL_DEFS: List[Dict[str, Any]] = [
 ]
 
 AGENT_TOOL_DEFS.extend(USER_MEMORY_TOOL_DEFS)
+AGENT_TOOL_DEFS.extend(WEB_TOOL_DEFS)
 
 # Sin herramientas que este sistema operativo no puede ejecutar (ver `system_capabilities`).
 AGENT_TOOL_DEFS[:] = filter_tool_defs_for_system(AGENT_TOOL_DEFS)
@@ -2355,6 +2360,8 @@ class WorkspaceToolExecutor:
             "propose_workspace_blueprint": self._tool_propose_workspace_blueprint,
             "save_user_info": self._tool_save_user_info,
             "forget_user_info": self._tool_forget_user_info,
+            "web_search": lambda a: execute_web_tool("web_search", a),
+            "web_fetch": lambda a: execute_web_tool("web_fetch", a),
         }.get(name)
         if not handler:
             return {
@@ -4755,12 +4762,49 @@ class WorkspaceToolExecutor:
             return {"ok": False, "error": "Falta 'app_name' con el nombre de la aplicación a abrir."}
         if not purpose:
             purpose = f"Abrir la aplicación {app_name} a solicitud del usuario."
-        return self._require_bridge(
+        res = self._require_bridge(
             "open_desktop_app",
             "app",
             {"app_name": app_name, "purpose": purpose},
             "Abrir aplicaciones requiere la sesión de escritorio con Guardián activo.",
         )
+        if not isinstance(res, dict) or not res.get("ok"):
+            return res
+        app = res.get("app") if isinstance(res.get("app"), dict) else {}
+        window = self._wait_for_app_window(
+            [str(app.get("displayName") or ""), str(app.get("bundleId") or ""), str(app.get("fsName") or ""), app_name]
+        )
+        if window is None:
+            return {
+                **res,
+                "next_step": (
+                    "La app ya se abrió pero todavía no muestra una ventana. Vuelve a llamar "
+                    f"`desktop_list_windows(query=\"{app_name}\")` antes de decir que no se pudo."
+                ),
+            }
+        return {
+            **res,
+            "window": window,
+            "next_step": (
+                "La ventana está al frente. Si tienes que ver o hacer algo en ella, léela ahora con "
+                f"`read_screen_now(mode=\"window\")` o `desktop_snapshot(window_id={window.get('windowId')})`."
+            ),
+        }
+
+    def _wait_for_app_window(self, names: List[str]) -> Optional[Dict[str, Any]]:
+        """Una app recién abierta tarda en mostrar su ventana: sin esperar, el agente la da por cerrada."""
+        queries = list(dict.fromkeys(nm.strip() for nm in names if nm.strip()))
+        for attempt in range(APP_WINDOW_WAIT_ATTEMPTS):
+            if attempt:
+                time.sleep(APP_WINDOW_WAIT_SECONDS)
+            for query in queries:
+                listed = self._require_bridge("desktop_list_windows", "dwin", {"query": query, "limit": 1}, "")
+                windows = listed.get("windows") if isinstance(listed, dict) else None
+                if not isinstance(windows, list):
+                    return None
+                if windows and isinstance(windows[0], dict):
+                    return windows[0]
+        return None
 
     def _tool_desktop_list_windows(self, args: Dict[str, Any]) -> Dict[str, Any]:
         query = str(args.get("query") or "").strip()
@@ -4768,12 +4812,21 @@ class WorkspaceToolExecutor:
             limit = max(1, min(20, int(args.get("limit") or 12)))
         except (TypeError, ValueError):
             limit = 12
-        return self._require_bridge(
+        res = self._require_bridge(
             "desktop_list_windows",
             "dwin",
             {"query": query, "limit": limit},
             "Listar ventanas abiertas del escritorio requiere la sesión de escritorio activa.",
         )
+        if query and isinstance(res, dict) and res.get("ok") and res.get("windows") == []:
+            return {
+                **res,
+                "next_step": (
+                    f"No hay una ventana abierta de '{query}'. Ábrela con `open_desktop_app(app_name=\"{query}\")`; "
+                    "si puede estar en una pestaña del navegador, lista las ventanas sin `query`."
+                ),
+            }
+        return res
 
     def _compact_desktop_tree_response(self, raw: Any) -> Dict[str, Any]:
         if not isinstance(raw, dict):

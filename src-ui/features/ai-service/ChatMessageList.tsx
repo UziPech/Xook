@@ -74,6 +74,7 @@ import {
   OpenRouterModelOption,
   ThinkingStep,
   VaultPromptSpec,
+  type WebSource,
   detectApiKeyInText,
   formatModelDisplay,
   getProviderSpec,
@@ -89,6 +90,7 @@ import {
 } from "./agentModeTypes";
 import { SubagentGlyph } from "../../components/SubagentRosterPopover";
 import { StudyDeckCard } from "../../components/StudyDeckCard";
+import { WebSourcesStrip } from "../../components/WebSourcesStrip";
 import { OpenCircleCheckSvg } from "../../components/ChecklistCornerCard";
 import {
   type AttachmentPreviewTarget,
@@ -129,6 +131,8 @@ export interface UiChatMessage {
   mode?: XoxModeId;
   subagents?: SubagentActivity[];
   studyDeck?: StudyDeckArtifact;
+  /** Fuentes de internet consultadas en el turno (miniaturas y enlaces). */
+  webSources?: WebSource[];
   attachments?: UiChatAttachment[];
   reasoning?: string;
   reasoningDurationMs?: number;
@@ -207,9 +211,10 @@ interface ChatMessageListProps {
   rosterSubagents?: XoxSubagentOrbitItem[];
   xoxTerminal?: XoxTerminalFeed | null;
   isSplitMode?: boolean;
+  isChatCompactLane?: boolean;
 }
 
-function FormattedReply({
+function FormattedReplyContent({
   text,
   streaming,
   onOpenCanvas,
@@ -227,7 +232,7 @@ function FormattedReply({
   const renderChatTable = (table: MarkdownTableBlock, blockIdx: number) => (
     <div
       key={`tbl_${blockIdx}`}
-      className="my-2 xook-liquid-table rounded-2xl overflow-hidden"
+      className="my-2 xook-liquid-table max-w-full min-w-0 rounded-2xl overflow-hidden"
     >
       <div className="flex items-center justify-between px-3 py-2 bg-[#111318] border-b border-white/[0.08] text-[11px] text-zinc-300">
         <span className="inline-flex items-center gap-2 font-medium text-zinc-100">
@@ -338,6 +343,19 @@ function FormattedReply({
     />
   );
 }
+
+// Durante el streaming la lista se vuelve a dibujar con cada token. Sin memo, cada
+// mensaje viejo vuelve a procesar su Markdown y el scroll se traba en conversaciones
+// largas. De `onOpenCanvas` solo importa si existe (muestra el botón de las tablas).
+const FormattedReply = React.memo(
+  FormattedReplyContent,
+  (prev, next) =>
+    prev.text === next.text &&
+    prev.streaming === next.streaming &&
+    prev.compact === next.compact &&
+    prev.messageId === next.messageId &&
+    Boolean(prev.onOpenCanvas) === Boolean(next.onOpenCanvas)
+);
 
 const STREAM_PHASE_LABEL: Partial<Record<XoxState, string>> = {
   reading: "Leyendo contexto…",
@@ -608,6 +626,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   rosterSubagents,
   xoxTerminal,
   isSplitMode = false,
+  isChatCompactLane = false,
   onOpenTasksTab,
   onRegenerateMessage,
   onRateMessage,
@@ -716,10 +735,14 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
   };
 
   return (
-    <div className={`@container ${isSplitMode ? "space-y-4" : "space-y-6"}`}>
+    <div className={`min-w-0 ${isSplitMode ? "space-y-4" : "space-y-6"}`}>
       {messages.map((msg, idx) => {
         if (msg.isCompactionDividerOnly && msg.compactionNotice) {
-          return renderCompactionBanner(msg.compactionNotice, msg.id);
+          return (
+            <div key={msg.id} data-chat-msg-id={msg.id}>
+              {renderCompactionBanner(msg.compactionNotice, `${msg.id}_banner`)}
+            </div>
+          );
         }
 
         if (msg.role === "user") {
@@ -735,16 +758,17 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
           );
 
           return (
-            <div key={msg.id} className="flex justify-center">
+            <div
+              key={msg.id}
+              data-chat-msg-id={msg.id}
+              className="xox-turn-row-adaptive"
+            >
+              {!isSplitMode && (
+                <div aria-hidden="true" className="xox-lane-desktop-only shrink-0" />
+              )}
+              <div className="xox-split-text-body flex justify-end">
               <div
-                className={
-                  isSplitMode
-                    ? "xox-split-text-body flex justify-end"
-                    : "xox-split-text-body w-full @5xl:max-w-[780px] @6xl:max-w-[840px] flex justify-end"
-                }
-              >
-              <div
-                className={`xox-chat-user-text max-w-[86%] @lg:max-w-[74%] @5xl:max-w-[72%] rounded-2xl rounded-tr-sm bg-white/[0.075] border border-white/[0.1] text-zinc-100 select-text ${
+                className={`xox-chat-user-text max-w-[86%] @lg:max-w-[74%] rounded-2xl rounded-tr-sm bg-white/[0.075] border border-white/[0.1] text-zinc-100 select-text ${
                   isSplitMode
                     ? "px-3.5 py-2 space-y-2"
                     : "px-4 py-2.5 space-y-2.5"
@@ -889,6 +913,9 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 )}
               </div>
               </div>
+              {!isSplitMode && (
+                <div aria-hidden="true" className="xox-lane-mirror-desktop" />
+              )}
             </div>
           );
         }
@@ -940,26 +967,22 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
               : "";
 
         return (
-          <React.Fragment key={msg.id}>
+          <div key={msg.id} data-chat-msg-id={msg.id} className="min-w-0">
             {msg.compactionNotice && renderCompactionBanner(msg.compactionNotice, `${msg.id}_cmp`)}
-            <div
-              className={`xox-turn-row-adaptive ${
-                isSplitMode ? "" : "@5xl:justify-center"
-              }`}
-            >
-            {/* Mascota Xox: en ventana normal/completa (>=580px) vive a la izquierda con espejo simétrico;
-                en pantalla dividida vive siempre abajo-derecha sobre el input creciendo con el ancho */}
+            <div className="xox-turn-row-adaptive">
+            {/* Mascota Xox: en vista amplia (>=720px) vive a la izquierda con espejo flexible continuo;
+                en carril compacto (<720px) o pantalla dividida vive abajo-derecha sobre el input */}
             {!isSplitMode && (
               <div
                 data-xox-lane-slot={isActiveGuideTurn ? "active" : undefined}
-                className={`xox-chat-lane-slot xox-lane-desktop-only shrink-0 self-start sticky top-3 @md:top-4 @5xl:top-5 w-[178px] @lg:w-[204px] @2xl:w-[clamp(224px,22cqi,272px)] overflow-visible justify-center ${
+                className={`xox-chat-lane-slot xox-lane-desktop-only shrink-0 self-start sticky top-3 @md:top-4 @5xl:top-5 overflow-visible justify-center ${
                   xoxAwayInStudio ? "is-away" : ""
                 }`}
               >
                 {isActiveGuideTurn ? (
                   <div
                     data-xox-stage="chat-lane"
-                    className={`relative shrink-0 -mx-3 -my-4 @lg:-my-5 @2xl:-my-6 select-none pointer-events-none ${laneTravelClass}`}
+                    className={`relative shrink-0 -mx-6 -my-7 select-none pointer-events-none ${laneTravelClass}`}
                   >
                     <XoxStar
                       state={xoxState}
@@ -969,8 +992,8 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                       accentPreset={accentPreset}
                       glideTrigger={xoxInFlight ? 0 : glideSeq}
                       glideDir={xoxTravelPhase === "to-studio" ? "right" : "left"}
-                      active={!xoxAwayInStudio && !xoxInFlight}
-                      className="w-[228px] h-[228px] @lg:w-[264px] @lg:h-[264px] @2xl:w-[clamp(290px,28cqi,352px)] @2xl:h-[clamp(290px,28cqi,352px)]"
+                      active={!xoxAwayInStudio && !xoxInFlight && !isChatCompactLane}
+                      className="xox-lane-star-size"
                       summonTrigger={summonTrigger}
                       onClick={onXoxClick}
                       terminal={xoxTerminal}
@@ -1011,12 +1034,10 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
               </div>
             )}
 
-            {/* Contenido de la respuesta (centrado y con márgenes limpios en todos los tamaños divididos y angostos) */}
+            {/* Contenido de la respuesta con adaptación continua de ancho */}
             <div
-              className={`min-w-0 ${
-                isSplitMode
-                  ? "xox-split-text-body space-y-1.5"
-                  : "xox-split-text-body flex-1 max-w-3xl @5xl:max-w-[780px] @6xl:max-w-[840px] space-y-2"
+              className={`min-w-0 xox-split-text-body ${
+                isSplitMode ? "space-y-1.5" : "space-y-2"
               }`}
             >
               {/* Cabecera sutil del turno */}
@@ -1346,6 +1367,8 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                   </>
                 );
               })()}
+
+              {msg.webSources && msg.webSources.length > 0 && <WebSourcesStrip sources={msg.webSources} />}
 
               {/* Mazo de Estudio Interactivo (/study) */}
               {msg.studyDeck && <StudyDeckCard deck={msg.studyDeck} />}
@@ -1732,15 +1755,15 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
                 </div>
               )}
             </div>
-            {/* Carril espejo derecho en pantalla normal/completa (>=1024px) para centrar el texto con simetría real */}
+            {/* Carril espejo flexible: se encoge suavemente a 0 antes que el texto (sin salto de @5xl) */}
             {!isSplitMode && (
               <div
                 aria-hidden="true"
-                className="hidden @5xl:block shrink-0 w-[clamp(224px,22cqi,272px)]"
+                className="xox-lane-mirror-desktop"
               />
             )}
             </div>
-          </React.Fragment>
+          </div>
         );
       })}
     </div>

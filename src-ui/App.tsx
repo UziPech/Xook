@@ -3,9 +3,8 @@ import {
   CheckCircle2, 
   Brain, 
   Store, 
-  FolderOpen,
   Plus,
-  Send,
+  ArrowUp,
   Zap,
   Check,
   X,
@@ -13,15 +12,13 @@ import {
   ListTodo,
   PanelLeft,
   ChevronDown,
+  ChevronLeft,
   AtSign,
   KeyRound,
   RefreshCw,
-  Trash2,
   MessageSquare,
   SquarePen,
   Table2,
-  UserCircle2,
-  Settings,
   Slash,
   ScanSearch,
   Users,
@@ -107,7 +104,8 @@ import {
   type XoxSkillEntry,
 } from "./features/xox-studio/xoxStudioApi";
 import { XookWordmark } from "./components/XookBrand";
-import { JellyPillTrack } from "./components/JellyPillTrack";
+import { SidebarChats } from "./features/sidebar/SidebarChats";
+import { SidebarFooter, footerUsageText } from "./features/sidebar/SidebarFooter";
 import { LiquidGlassBackdrop } from "./components/LiquidGlassBackdrop";
 import { useAnimatedPresence } from "./hooks/useAnimatedPresence";
 import {
@@ -276,7 +274,6 @@ import {
   estimateTokens,
   extractErrorMessage,
   fetchOpenRouterModels,
-  formatContextLength,
   formatModelDisplay,
   formatPricePerMillion,
   formatTokenCount,
@@ -865,21 +862,22 @@ function XoxHeaderFace({
     >
       <svg viewBox="55 52 130 126" className="block w-full h-full" aria-hidden="true">
         <defs>
-          <linearGradient id={ids.body} x1="65" y1="60" x2="175" y2="170" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.22" />
-            <stop offset="35%" stopColor={colors.rim1} stopOpacity="0.14" />
-            <stop offset="62%" stopColor="#090B14" stopOpacity="0.14" />
-            <stop offset="100%" stopColor={colors.bodyGlow} stopOpacity="0.20" />
+          <linearGradient id={ids.body} x1="64" y1="58" x2="176" y2="172" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.18" />
+            <stop offset="24%" stopColor={colors.bodyTint} stopOpacity="0.10" />
+            <stop offset="52%" stopColor="#050814" stopOpacity="0.16" />
+            <stop offset="84%" stopColor={colors.bodyGlow} stopOpacity="0.16" />
+            <stop offset="100%" stopColor={colors.rim2} stopOpacity="0.24" />
           </linearGradient>
           <linearGradient id={ids.rim} x1="62" y1="58" x2="176" y2="172" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.82" />
-            <stop offset="34%" stopColor={colors.rim1} stopOpacity="0.48" />
-            <stop offset="60%" stopColor={colors.rim1} stopOpacity="0.18" />
-            <stop offset="100%" stopColor={colors.rim2} stopOpacity="0.44" />
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.94" />
+            <stop offset="32%" stopColor={colors.rim1} stopOpacity="0.54" />
+            <stop offset="62%" stopColor={colors.rim2} stopOpacity="0.28" />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.70" />
           </linearGradient>
-          <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor={isThinking || isAlert || isSuccess || isSyncing ? colors.glow : "#FFFFFF"} stopOpacity="0.55" />
-            <stop offset="55%" stopColor={colors.glow} stopOpacity="0.22" />
+          <radialGradient id={ids.core} cx="50%" cy="56%" r="52%">
+            <stop offset="0%" stopColor={isThinking || isAlert || isSuccess || isSyncing ? colors.glow : colors.bodyGlow} stopOpacity="0.26" />
+            <stop offset="58%" stopColor={colors.glow} stopOpacity="0.10" />
             <stop offset="100%" stopColor={colors.glow} stopOpacity="0" />
           </radialGradient>
           <radialGradient id={ids.blush} cx="50%" cy="50%" r="50%">
@@ -893,21 +891,17 @@ function XoxHeaderFace({
           d={XOX_MINI_STAR_PATH}
           fill={isAlert ? "rgba(239,68,68,0.24)" : `url(#${ids.body})`}
           stroke={isAlert ? "#F87171" : `url(#${ids.rim})`}
-          strokeWidth="4.2"
+          strokeWidth="3.3"
           strokeLinejoin="round"
         />
 
-        <circle cx="120" cy="117" r="30" fill={`url(#${ids.core})`} />
+        <circle cx="120" cy="120" r="32" fill={`url(#${ids.core})`} />
 
-        {/* Reflejo especular sutil */}
-        <ellipse
-          cx="104"
-          cy="94"
-          rx="12"
-          ry="4.2"
-          transform="rotate(-30 104 94)"
+        {/* Reflejo especular curvo de gota Liquid Glass */}
+        <path
+          d="M 93 99 Q 104 89 117 95 Q 105 93 93 99 Z"
           fill="#FFFFFF"
-          opacity="0.24"
+          opacity="0.62"
         />
 
         {/* Mejillas con sonrojo difuminado al interactuar o en sucesos */}
@@ -926,15 +920,15 @@ function XoxHeaderFace({
           <ellipse cx="140.5" cy="127" rx="9.5" ry="5.8" transform="rotate(8 140.5 127)" fill={`url(#${ids.blush})`} />
         </g>
 
-        {/* Ojos (ambas capas montadas con transición suave de opacidad/escala) */}
+        {/* Ojos limpios sin pupila (ambas capas montadas con transición suave de opacidad) */}
         <g
           className={`transition-opacity duration-200 ${
             isSuccess ? "opacity-100" : "opacity-0"
           }`}
         >
-          <path d="M104 117Q110.5 107.5 117 117" stroke="#FFFFFF" strokeWidth="4.4" strokeLinecap="round" fill="none" />
-          <path d="M123 117Q129.5 107.5 136 117" stroke="#FFFFFF" strokeWidth="4.4" strokeLinecap="round" fill="none" />
-          <path d="M113 128.5Q120 135.5 127 128.5" stroke="#FFFFFF" strokeWidth="3.6" strokeLinecap="round" fill="none" opacity="0.92" />
+          <path d="M103.5 117.5 C106 109.5 114.5 109.2 117 116.8" stroke="#FFFFFF" strokeWidth="4.5" strokeLinecap="round" fill="none" />
+          <path d="M123 116.8 C125.5 109.2 134 109.5 136.5 117.5" stroke="#FFFFFF" strokeWidth="4.5" strokeLinecap="round" fill="none" />
+          <path d="M113 128 Q120 135.5 127 128" stroke="#FFFFFF" strokeWidth="3.8" strokeLinecap="round" fill="none" opacity="0.95" />
         </g>
         <g
           className={`transition-opacity duration-200 ${
@@ -943,14 +937,12 @@ function XoxHeaderFace({
         >
           <g transform="translate(110.5 115)">
             <g className="xox-mini-eye">
-              <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
-              <circle cx="1.9" cy="-2.5" r="1.9" fill={colors.pupil} />
+              <ellipse cx="0" cy="0" rx="5.1" ry="7.8" fill="#FFFFFF" opacity="0.98" />
             </g>
           </g>
           <g transform="translate(129.5 115)">
             <g className="xox-mini-eye">
-              <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
-              <circle cx="1.9" cy="-2.5" r="1.9" fill={colors.pupil} />
+              <ellipse cx="0" cy="0" rx="5.1" ry="7.8" fill="#FFFFFF" opacity="0.98" />
             </g>
           </g>
         </g>
@@ -1032,21 +1024,13 @@ export default function App() {
   const [previewAccentPreset, setPreviewAccentPreset] = useState<XoxAccentPreset | null>(null);
   const [xoxTravelPhase, setXoxTravelPhase] = useState<"idle" | "to-studio" | "from-studio">("idle");
   const [xoxGlideSeq, setXoxGlideSeq] = useState<number>(0);
-  const [xoxExitingStage, setXoxExitingStage] = useState<boolean>(false);
   const [xoxFlight, setXoxFlight] = useState<XoxFlightSpec | null>(null);
   const [xoxFlightPending, setXoxFlightPending] = useState<boolean>(false);
   const xoxInFlight = Boolean(xoxFlight) || xoxFlightPending;
   const xoxFlightIdRef = useRef<number>(0);
   const pendingXoxFlightRef = useRef<{
-    direction: "to-studio";
+    direction: "to-studio" | "from-studio";
     from: XoxFlightPoint;
-  } | null>(null);
-  const lastChatXoxSnapshotRef = useRef<{
-    cx: number;
-    cy: number;
-    size: number;
-    viewportH: number;
-    isHero: boolean;
   } | null>(null);
   const prevShowStudioRef = useRef<boolean>(false);
 
@@ -1140,15 +1124,14 @@ export default function App() {
     prevShowStudioRef.current = showXoxStudio;
     if (showXoxStudio) {
       setXoxTravelPhase("to-studio");
-      setXoxExitingStage(true);
       setXoxGlideSeq((n) => n + 1);
-      const t = window.setTimeout(() => setXoxExitingStage(false), 380);
-      return () => window.clearTimeout(t);
+      return undefined;
     }
-    pendingXoxFlightRef.current = null;
-    setXoxFlightPending(false);
+    if (pendingXoxFlightRef.current?.direction === "to-studio") {
+      pendingXoxFlightRef.current = null;
+      setXoxFlightPending(false);
+    }
     setXoxFlight((curr) => (curr?.direction === "to-studio" ? null : curr));
-    setXoxExitingStage(false);
     setXoxTravelPhase("from-studio");
     setXoxGlideSeq((n) => n + 1);
     setPreviewAccentPreset(null);
@@ -1177,15 +1160,10 @@ export default function App() {
       const liveFlightFrom = measureFlightPoint("[data-xox-flight-mover]");
       const heroFrom = measureFlightPoint('[data-xox-stage="chat-hero"]');
       const laneFrom = heroFrom ? null : measureFlightPoint('[data-xox-stage="chat-lane"]');
-      const from = liveFlightFrom ?? heroFrom ?? laneFrom;
+      const perchFrom =
+        heroFrom || laneFrom ? null : measureFlightPoint('[data-xox-stage="chat-perch"]');
+      const from = liveFlightFrom ?? heroFrom ?? laneFrom ?? perchFrom;
       if (from) {
-        if (!liveFlightFrom) {
-          lastChatXoxSnapshotRef.current = {
-            ...from,
-            viewportH: window.innerHeight,
-            isHero: Boolean(heroFrom),
-          };
-        }
         pendingXoxFlightRef.current = { direction: "to-studio", from };
         setXoxFlightPending(true);
       }
@@ -1203,61 +1181,9 @@ export default function App() {
       const from =
         measureFlightPoint("[data-xox-flight-mover]") ??
         measureFlightPoint('[data-xox-stage="studio"]');
-      const chatSec = document.querySelector<HTMLElement>("[data-xox-chat-section]");
-      if (from && chatSec) {
-        const chatRect = chatSec.getBoundingClientRect();
-        const finalRight = getStudioRightEdge();
-        const finalChatW = Math.max(300, finalRight - chatRect.left);
-        const hasHeroDom = Boolean(document.querySelector('[data-xox-stage="chat-hero"]'));
-        const snap = lastChatXoxSnapshotRef.current;
-        let to: XoxFlightPoint | null = null;
-
-        if (hasHeroDom) {
-          const responsiveSize =
-            window.innerWidth >= 1280
-              ? 456
-              : window.innerWidth >= 1024
-                ? 408
-                : window.innerWidth >= 640
-                  ? 384
-                  : 308;
-          const sameViewportH =
-            Boolean(snap && snap.isHero && Math.abs(snap.viewportH - window.innerHeight) < 8);
-          const toSize = sameViewportH && snap ? snap.size : responsiveSize;
-          const toCy =
-            sameViewportH && snap
-              ? snap.cy
-              : chatRect.top + Math.max(180, (chatRect.height - 170) * 0.44);
-          to = {
-            cx: chatRect.left + finalChatW / 2,
-            cy: toCy,
-            size: toSize,
-          };
-        } else if (snap && !snap.isHero) {
-          const laneSlot = document.querySelector<HTMLElement>('[data-xox-lane-slot="active"]');
-          if (laneSlot) {
-            const lr = laneSlot.getBoundingClientRect();
-            if (lr.top >= 0 && lr.top <= window.innerHeight - 60) {
-              to = {
-                cx: snap.cx,
-                cy: lr.top + snap.size / 2 - 4,
-                size: snap.size,
-              };
-            }
-          }
-        }
-
-        if (to) {
-          pendingXoxFlightRef.current = null;
-          setXoxFlightPending(false);
-          xoxFlightIdRef.current += 1;
-          setXoxFlight({
-            id: xoxFlightIdRef.current,
-            direction: "from-studio",
-            from,
-            to,
-          });
-        }
+      if (from) {
+        pendingXoxFlightRef.current = { direction: "from-studio", from };
+        setXoxFlightPending(true);
       }
     }
     setShowXoxStudio(false);
@@ -1912,7 +1838,7 @@ export default function App() {
   const [showLocalAuth, setShowLocalAuth] = useState<boolean>(false);
   const [conversations, setConversations] = useState<ConversationThread[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string>(() => `conv_${Date.now()}`);
-  const [leftTab, setLeftTab] = useState<"context" | "chats">("context");
+  const [leftTab, setLeftTab] = useState<"context" | "chats">("chats");
   const [thinkingLabel, setThinkingLabel] = useState<string>("Consultando a Xox...");
   const [showModelMenu, setShowModelMenu] = useState<boolean>(false);
   const [showContextMenu, setShowContextMenu] = useState<boolean>(false);
@@ -1924,8 +1850,26 @@ export default function App() {
   const [learningToast, setLearningToast] = useState<MemoryPattern | null>(null);
   const [inputExpanded, setInputExpanded] = useState<boolean>(false);
 
+  const chatSectionRef = useRef<HTMLElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const [chatInlineWidth, setChatInlineWidth] = useState<number>(() =>
+    typeof window !== "undefined" ? window.innerWidth : 1200
+  );
+  const prevChatInlineWidthRef = useRef<number>(0);
+  const isAdjustingScrollOnResizeRef = useRef<boolean>(false);
+  const resizeScrollUnlockRafRef = useRef<number | null>(null);
+  const chatReadAnchorRef = useRef<{
+    msgId: string;
+    ratio: number;
+    pixelOffset: number;
+    usePixelOffset: boolean;
+  } | null>(null);
+  // El chat sigue al último mensaje solo mientras el usuario esté abajo. Si sube a
+  // leer durante el streaming, cada token ya no lo regresa al final.
+  const chatStickToBottomRef = useRef<boolean>(true);
+  const chatLastScrollTopRef = useRef<number>(0);
+  const chatPrevLengthRef = useRef<number>(0);
+  const chatPrevFirstIdRef = useRef<string | undefined>(undefined);
   const pendingSecretKeysRef = useRef<
     Map<string, { key: string; provider: AiProviderId; ambiguousProviders?: AiProviderId[] }>
   >(new Map());
@@ -2129,18 +2073,167 @@ export default function App() {
     xoxState === "reading" ||
     xoxState === "coding" ||
     xoxState === "syncing";
+  const isChatCompactLane = isEffectiveSplitLayout || chatInlineWidth < 720;
+
+  const captureChatReadAnchor = useCallback((el: HTMLDivElement) => {
+    const scrollRect = el.getBoundingClientRect();
+    if (scrollRect.height <= 0) return;
+    const nodes = el.querySelectorAll<HTMLElement>("[data-chat-msg-id]");
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i];
+      const msgId = node.dataset.chatMsgId;
+      if (!msgId) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.height <= 0) continue;
+      if (rect.bottom > scrollRect.top + 8) {
+        const scrolledInto = scrollRect.top - rect.top;
+        chatReadAnchorRef.current = {
+          msgId,
+          ratio: scrolledInto > 0 ? scrolledInto / rect.height : 0,
+          pixelOffset: scrolledInto,
+          usePixelOffset: scrolledInto <= 0,
+        };
+        return;
+      }
+    }
+  }, []);
+
+  const restoreChatScrollAfterWidthChange = useCallback((el: HTMLDivElement) => {
+    if (chatMessagesRef.current.length === 0) return;
+    isAdjustingScrollOnResizeRef.current = true;
+    if (resizeScrollUnlockRafRef.current !== null) {
+      window.cancelAnimationFrame(resizeScrollUnlockRafRef.current);
+    }
+    if (chatStickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    } else if (chatReadAnchorRef.current) {
+      const anchor = chatReadAnchorRef.current;
+      const safeId =
+        typeof CSS !== "undefined" && typeof CSS.escape === "function"
+          ? CSS.escape(anchor.msgId)
+          : anchor.msgId.replace(/["\\]/g, "\\$&");
+      const target = el.querySelector<HTMLElement>(`[data-chat-msg-id="${safeId}"]`);
+      if (target) {
+        const scrollRect = el.getBoundingClientRect();
+        const msgRect = target.getBoundingClientRect();
+        if (msgRect.height > 0) {
+          const currentScrolledInto = scrollRect.top - msgRect.top;
+          const desiredScrolledInto = anchor.usePixelOffset
+            ? anchor.pixelOffset
+            : anchor.ratio * msgRect.height;
+          el.scrollTop += desiredScrolledInto - currentScrolledInto;
+        }
+      }
+    }
+    chatLastScrollTopRef.current = el.scrollTop;
+    resizeScrollUnlockRafRef.current = window.requestAnimationFrame(() => {
+      resizeScrollUnlockRafRef.current = null;
+      isAdjustingScrollOnResizeRef.current = false;
+    });
+  }, []);
+
+  const handleChatScroll = useCallback(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    if (isAdjustingScrollOnResizeRef.current) {
+      chatLastScrollTopRef.current = el.scrollTop;
+      return;
+    }
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const movedUp = el.scrollTop < chatLastScrollTopRef.current - 1;
+    if (movedUp && distanceToBottom > 2) {
+      // Cualquier desplazamiento hacia arriba suelta el chat, aunque sea de pocos
+      // píxeles: el trackpad manda pasos pequeños entre token y token. El texto que
+      // crece por debajo no mueve `scrollTop`, y el scroll propio siempre baja.
+      chatStickToBottomRef.current = false;
+      captureChatReadAnchor(el);
+    } else if (!movedUp && distanceToBottom < 24) {
+      chatStickToBottomRef.current = true;
+      chatReadAnchorRef.current = null;
+    } else if (!chatStickToBottomRef.current) {
+      captureChatReadAnchor(el);
+    }
+    chatLastScrollTopRef.current = el.scrollTop;
+  }, [captureChatReadAnchor]);
+
+  // La rueda o el trackpad hacia arriba sueltan el chat antes de que llegue otro token.
+  const handleChatWheel = useCallback(
+    (e: React.WheelEvent<HTMLDivElement>) => {
+      if (e.deltaY < 0) {
+        chatStickToBottomRef.current = false;
+        if (chatScrollRef.current) {
+          captureChatReadAnchor(chatScrollRef.current);
+        }
+      }
+    },
+    [captureChatReadAnchor]
+  );
+
+  // Mantiene el ancho medido de la columna de chat y preserva la posición de lectura en WebKit
+  // cuando se redimensionan divisores o la ventana del sistema (sin interferir con el streaming).
   useEffect(() => {
+    const secEl = chatSectionRef.current;
+    if (!secEl || typeof ResizeObserver === "undefined") return;
+    const initialW = secEl.getBoundingClientRect().width;
+    if (initialW > 0) {
+      prevChatInlineWidthRef.current = initialW;
+      setChatInlineWidth(initialW);
+    }
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const nextW = entry.contentRect.width;
+      if (nextW <= 0) return;
+      const prevW = prevChatInlineWidthRef.current;
+      if (Math.abs(nextW - prevW) <= 0.5) return;
+      prevChatInlineWidthRef.current = nextW;
+      setChatInlineWidth((curr) => (curr < 720 !== nextW < 720 ? nextW : curr));
+      if (chatScrollRef.current) {
+        restoreChatScrollAfterWidthChange(chatScrollRef.current);
+      }
+    });
+    ro.observe(secEl);
+    return () => {
+      ro.disconnect();
+      if (resizeScrollUnlockRafRef.current !== null) {
+        window.cancelAnimationFrame(resizeScrollUnlockRafRef.current);
+        resizeScrollUnlockRafRef.current = null;
+      }
+    };
+  }, [restoreChatScrollAfterWidthChange]);
+
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    const prevLength = chatPrevLengthRef.current;
+    const prevFirstId = chatPrevFirstIdRef.current;
+    chatPrevLengthRef.current = chatMessages.length;
+    chatPrevFirstIdRef.current = chatMessages[0]?.id;
+    if (!el) return;
     if (chatMessages.length === 0) {
-      if (chatScrollRef.current && chatScrollRef.current.scrollTop !== 0) {
-        chatScrollRef.current.scrollTop = 0;
+      chatStickToBottomRef.current = true;
+      chatReadAnchorRef.current = null;
+      if (el.scrollTop !== 0) {
+        el.scrollTop = 0;
       }
       return;
     }
-    chatEndRef.current?.scrollIntoView({
+    // Enviar un mensaje (o abrir otra conversación) vuelve a pegar el chat al final.
+    if (
+      prevLength === 0 ||
+      chatMessages[0]?.id !== prevFirstId ||
+      chatMessages.slice(prevLength).some((msg) => msg.role === "user")
+    ) {
+      chatStickToBottomRef.current = true;
+      chatReadAnchorRef.current = null;
+    }
+    if (!chatStickToBottomRef.current) return;
+    // `scrollTo` sobre el contenedor, no `scrollIntoView`: este también desplaza a
+    // los ancestros y hace temblar el layout en cada token.
+    el.scrollTo({
+      top: el.scrollHeight,
       behavior: isChatStreaming ? "auto" : "smooth",
-      block: "end",
     });
-  }, [chatMessages.length, lastMsgStreamLen, isChatStreaming, isXoxWorking]);
+  }, [chatMessages, lastMsgStreamLen, isChatStreaming, isXoxWorking]);
 
   const activeProvider = normalizeProviderIdClient(aiConfig.provider);
   const activeSpec = getProviderSpec(activeProvider);
@@ -2274,6 +2367,7 @@ export default function App() {
         meterMode: "unlimited" as const,
         hasMeterBar: false,
         connected: false,
+        alert: false,
       };
     }
 
@@ -2286,6 +2380,7 @@ export default function App() {
         meterMode: "used" as const,
         hasMeterBar: true,
         connected: true,
+        alert: true,
       };
     }
 
@@ -2298,6 +2393,7 @@ export default function App() {
         meterMode: "used" as const,
         hasMeterBar: true,
         connected: true,
+        alert: true,
       };
     }
 
@@ -2309,8 +2405,17 @@ export default function App() {
       meterMode: computedUsage.meterMode,
       hasMeterBar: computedUsage.hasMeterBar,
       connected: true,
+      alert: false,
     };
   })();
+  const sidebarUsageLabel = footerUsageText({
+    connected: usageSummary.connected,
+    providerName: activeSpec.shortName,
+    alertHeadline: usageSummary.alert ? usageSummary.headline : null,
+    shortBadge: computedUsage.shortBadge,
+    sourceKind: computedUsage.sourceKind,
+  });
+  const sidebarUsageDetail = `${usageSummary.tierLabel}: ${usageSummary.headline} · ${usageSummary.detail}`;
 
   async function refreshModelsAndUsage(
     forceRefresh = false,
@@ -5640,6 +5745,13 @@ export default function App() {
               )
             );
           },
+          onWebSources: (sources) => {
+            setChatMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantMsgId ? { ...m, webSources: sources } : m
+              )
+            );
+          },
           onReasoningDelta: (delta) => {
             if (!hasEnteredTalking && latestPhase === "reading") {
               const elapsed = performance.now() - readingStartedAt;
@@ -5987,6 +6099,7 @@ export default function App() {
           generatedTaskCount: generatedCount,
           canvas: finalCanvas ?? m.canvas,
           canvases: finalCanvases.length > 0 ? finalCanvases : m.canvases,
+          webSources: res.webSources && res.webSources.length > 0 ? res.webSources : m.webSources,
           vaultPrompt: resolvedVault,
           generatedPdfs: (() => {
             const base = m.generatedPdfs ?? [];
@@ -6506,51 +6619,105 @@ export default function App() {
 
   const pendingCount = tasks.length;
 
-  // Estados de presencia animada para ventanas laterales y emergentes (entrada y salida)
-  const leftPresence = useAnimatedPresence(showLeftSidebar, 290);
-  const rightPresence = useAnimatedPresence(showRightSidebar, 290);
-  const canvasPresence = useAnimatedPresence(showCanvas && Boolean(activeCanvas), 290);
-  const studioPresence = useAnimatedPresence(showXoxStudio, 400);
-  const docViewerPresence = useAnimatedPresence(
-    showDocViewer && Boolean(pdfPanelState || pdfDraftProgress),
-    290
-  );
+  // Estados de presencia animada para drawers superpuestos en vistas compactas;
+  // en escritorio el ancho del split se aplica en un solo paso de layout para evitar
+  // refluir el texto del chat cuadro a cuadro mientras el contenido entra en GPU.
+  const isCanvasOpen = showCanvas && Boolean(activeCanvas);
+  const isDocViewerOpen = showDocViewer && Boolean(pdfPanelState || pdfDraftProgress);
+  const leftPresence = useAnimatedPresence(showLeftSidebar, 230);
+  const rightPresence = useAnimatedPresence(showRightSidebar, 230);
+  const canvasPresence = useAnimatedPresence(isCanvasOpen, 230);
+  const studioPresence = useAnimatedPresence(showXoxStudio, 230);
+  const docViewerPresence = useAnimatedPresence(isDocViewerOpen, 230);
 
-  // Calcula la coordenada destino exacta del santuario antes del primer paint para iniciar el vuelo físico
+  const leftMounted = isCompactViewport ? leftPresence.mounted : showLeftSidebar;
+  const rightMounted = isCompactViewport ? rightPresence.mounted : showRightSidebar;
+  const canvasMounted = isCompactViewport ? canvasPresence.mounted : isCanvasOpen;
+  const studioMounted = isCompactViewport ? studioPresence.mounted : showXoxStudio;
+  const docViewerMounted = isCompactViewport ? docViewerPresence.mounted : isDocViewerOpen;
+
+  // Ancla la posición de lectura antes del primer paint al abrir/cerrar/expandir cualquier ventana lateral
   useLayoutEffect(() => {
-    if (!showXoxStudio || !studioPresence.mounted) return;
-    const pending = pendingXoxFlightRef.current;
-    if (!pending || pending.direction !== "to-studio") return;
-    pendingXoxFlightRef.current = null;
+    const secEl = chatSectionRef.current;
+    if (secEl) {
+      const w = secEl.getBoundingClientRect().width;
+      if (w > 0) {
+        prevChatInlineWidthRef.current = w;
+        setChatInlineWidth((curr) => (curr < 720 !== w < 720 ? w : curr));
+      }
+    }
+    if (chatScrollRef.current) {
+      restoreChatScrollAfterWidthChange(chatScrollRef.current);
+    }
+  }, [
+    showLeftSidebar,
+    showRightSidebar,
+    isCanvasOpen,
+    isDocViewerOpen,
+    showXoxStudio,
+    canvasExpanded,
+    isMemoryWideMode,
+    isEffectiveSplitLayout,
+    isCompactViewport,
+    restoreChatScrollAfterWidthChange,
+  ]);
 
-    const innerEl = document.querySelector<HTMLElement>("[data-xox-studio-inner]");
-    const starEl = document.querySelector<HTMLElement>('[data-xox-stage="studio"]');
-    if (!innerEl || !starEl) {
+  // Calcula la coordenada destino exacta antes del primer paint para iniciar el vuelo físico de Xox
+  useLayoutEffect(() => {
+    const pending = pendingXoxFlightRef.current;
+    if (!pending) return;
+
+    if (pending.direction === "to-studio") {
+      if (!showXoxStudio || !studioMounted) return;
+      pendingXoxFlightRef.current = null;
+
+      const innerEl = document.querySelector<HTMLElement>("[data-xox-studio-inner]");
+      const starEl = document.querySelector<HTMLElement>('[data-xox-stage="studio"]');
+      if (!innerEl || !starEl) {
+        setXoxFlightPending(false);
+        return;
+      }
+
+      const innerRect = innerEl.getBoundingClientRect();
+      const starRect = starEl.getBoundingClientRect();
+      const finalStudioRight = getStudioRightEdge();
+      const finalInnerLeft = finalStudioRight - studioPanelWidth;
+      const relX = starRect.left - innerRect.left;
+
+      const to: XoxFlightPoint = {
+        cx: finalInnerLeft + relX + starRect.width / 2,
+        cy: starRect.top + starRect.height / 2,
+        size: starRect.width,
+      };
+
+      xoxFlightIdRef.current += 1;
       setXoxFlightPending(false);
+      setXoxFlight({
+        id: xoxFlightIdRef.current,
+        direction: "to-studio",
+        from: pending.from,
+        to,
+      });
       return;
     }
 
-    const innerRect = innerEl.getBoundingClientRect();
-    const starRect = starEl.getBoundingClientRect();
-    const finalStudioRight = getStudioRightEdge();
-    const finalInnerLeft = finalStudioRight - studioPanelWidth;
-    const relX = starRect.left - innerRect.left;
-
-    const to: XoxFlightPoint = {
-      cx: finalInnerLeft + relX + starRect.width / 2,
-      cy: starRect.top + starRect.height / 2,
-      size: starRect.width,
-    };
-
-    xoxFlightIdRef.current += 1;
-    setXoxFlightPending(false);
-    setXoxFlight({
-      id: xoxFlightIdRef.current,
-      direction: "to-studio",
-      from: pending.from,
-      to,
-    });
-  }, [showXoxStudio, studioPresence.mounted, studioPanelWidth, showRightSidebar]);
+    if (pending.direction === "from-studio" && !showXoxStudio) {
+      pendingXoxFlightRef.current = null;
+      const to =
+        measureFlightPoint('[data-xox-stage="chat-hero"]') ??
+        measureFlightPoint('[data-xox-stage="chat-lane"]') ??
+        measureFlightPoint('[data-xox-stage="chat-perch"]');
+      setXoxFlightPending(false);
+      if (!to) return;
+      xoxFlightIdRef.current += 1;
+      setXoxFlight({
+        id: xoxFlightIdRef.current,
+        direction: "from-studio",
+        from: pending.from,
+        to,
+      });
+    }
+  }, [showXoxStudio, studioMounted, studioPanelWidth, showRightSidebar]);
 
   const handleOpenCanvas = (canvas: CanvasArtifact) => {
     setShowXoxStudio(false);
@@ -7440,7 +7607,7 @@ export default function App() {
         {/* ========================================================================= */}
         {/* COLUMNA 1: CONTEXTO DEL LADO IZQUIERDO                                    */}
         {/* ========================================================================= */}
-        {leftPresence.mounted && (
+        {leftMounted && (
           <>
             <div
               role={isCompactViewport ? "dialog" : undefined}
@@ -7448,19 +7615,23 @@ export default function App() {
               aria-label={isCompactViewport ? "Panel de contexto y chats" : undefined}
               aria-hidden={!showLeftSidebar}
               inert={!showLeftSidebar}
-              style={{ width: leftPresence.visible ? `${effectiveLeftWidth}px` : "0px" }}
+              style={{ width: `${effectiveLeftWidth}px` }}
               className={`sidebar-slot flex justify-end shrink-0 overflow-hidden ${
-                isCompactViewport ? "xook-compact-drawer-surface is-left" : ""
-              } ${
-                isResizingLeft ? "is-resizing" : ""
-              } ${leftPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+                isCompactViewport
+                  ? `xook-compact-drawer-surface is-left ${
+                      leftPresence.visible ? "opacity-100" : "is-closed opacity-0 pointer-events-none"
+                    }`
+                  : ""
+              } ${isResizingLeft ? "is-resizing" : ""}`}
             >
               <aside
                 style={{ width: `${effectiveLeftWidth}px` }}
-                className="h-full bg-[#07080b] flex flex-col shrink-0 overflow-hidden select-none"
+                className={`h-full bg-[#07080b] flex flex-col shrink-0 overflow-hidden select-none ${
+                  !isCompactViewport ? "xook-panel-enter-left" : ""
+                }`}
               >
               
-              {/* Cabecera del Panel Lateral: Identidad XOOK + Tabs Contexto / Chats */}
+              {/* Cabecera del Panel Lateral: identidad XOOK (los chats van primero; el proyecto se abre aparte) */}
               <div className="xook-sidebar-header-shell w-full px-2.5 py-2 border-b border-white/[0.06] bg-[#090a0e] shrink-0">
                 <div className="xook-sidebar-header-inner">
                   <div className="flex items-center-safe gap-2 shrink-0 min-w-0">
@@ -7472,223 +7643,25 @@ export default function App() {
                     />
                     <XookWordmark className="block h-3.5 w-auto shrink-0 text-zinc-100" />
                   </div>
-
-                  <JellyPillTrack
-                    activeKey={leftTab}
-                    role="tablist"
-                    aria-label="Secciones del panel lateral"
-                    pillRadius="9999px"
-                    className="flex items-center gap-1 p-0.5 rounded-full shrink-0"
-                    onKeyDown={(e) => {
-                      if (
-                        e.key === "ArrowLeft" ||
-                        e.key === "ArrowRight" ||
-                        e.key === "Home" ||
-                        e.key === "End"
-                      ) {
-                        e.preventDefault();
-                        const nextTab: "context" | "chats" =
-                          e.key === "Home"
-                            ? "context"
-                            : e.key === "End"
-                            ? "chats"
-                            : leftTab === "context"
-                            ? "chats"
-                            : "context";
-                        setLeftTab(nextTab);
-                        document
-                          .getElementById(
-                            nextTab === "context"
-                              ? "xook-sidebar-tab-context"
-                              : "xook-sidebar-tab-chats"
-                          )
-                          ?.focus();
-                      }
-                    }}
-                  >
-                    <button
-                      id="xook-sidebar-tab-context"
-                      type="button"
-                      role="tab"
-                      aria-selected={leftTab === "context"}
-                      tabIndex={leftTab === "context" ? 0 : -1}
-                      onClick={() => setLeftTab("context")}
-                      className={`xook-jelly-tab flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
-                        leftTab === "context"
-                          ? "text-white"
-                          : "text-zinc-400 hover:text-zinc-200"
-                      }`}
-                    >
-                      <FolderOpen
-                        className={`w-3.5 h-3.5 transition-colors duration-200 ${
-                          leftTab === "context" ? "text-zinc-200" : "text-zinc-500"
-                        }`}
-                      />
-                      <span>Contexto</span>
-                    </button>
-                    <button
-                      id="xook-sidebar-tab-chats"
-                      type="button"
-                      role="tab"
-                      aria-selected={leftTab === "chats"}
-                      tabIndex={leftTab === "chats" ? 0 : -1}
-                      onClick={() => setLeftTab("chats")}
-                      className={`xook-jelly-tab flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60 focus-visible:outline-offset-2 ${
-                        leftTab === "chats"
-                          ? "text-white"
-                          : "text-zinc-400 hover:text-zinc-200"
-                      }`}
-                    >
-                      <MessageSquare
-                        className={`w-3.5 h-3.5 transition-colors duration-200 ${
-                          leftTab === "chats" ? "text-zinc-200" : "text-zinc-500"
-                        }`}
-                      />
-                      <span>Chats</span>
-                      {conversations.length > 0 && (
-                        <span
-                          className={`text-[10px] font-mono tabular-nums px-1.5 py-0.2 rounded-full transition-colors duration-200 ${
-                            leftTab === "chats"
-                              ? "bg-white/[0.12] text-white"
-                              : "bg-white/[0.07] text-zinc-300"
-                          }`}
-                        >
-                          {conversations.length}
-                        </span>
-                      )}
-                    </button>
-                  </JellyPillTrack>
                 </div>
               </div>
 
               {leftTab === "context" ? (
                 <div
                   id="xook-sidebar-panel-context"
-                  role="tabpanel"
-                  aria-labelledby="xook-sidebar-tab-context"
+                  aria-label="Ajustes del proyecto"
                   className="flex-1 flex flex-col min-h-0 overflow-hidden"
                 >
-                  {/* Estado de OpenRouter + Memoria de conversación (monocromo negro/gris) */}
-                  <div className="mx-2.5 mt-2.5 mb-1.5 rounded-xl bg-[#0b0c10] border border-white/[0.08] p-2.5 space-y-2 shrink-0">
-                    {/* Consumo y estado del proveedor de IA */}
-                    <div>
-                      <div className="flex items-center justify-between gap-2 text-[11px] mb-1.5">
-                        <span className="flex items-center gap-1.5 text-zinc-100 font-medium truncate">
-                          <ProviderIcon
-                            provider={activeProvider}
-                            size={14}
-                            className={`shrink-0 ${
-                              accountUsage && !accountUsage.ok
-                                ? "text-zinc-400"
-                                : usageSummary.connected
-                                ? "text-zinc-200"
-                                : "text-zinc-500"
-                            }`}
-                          />
-                          <span className="truncate">{usageSummary.tierLabel}</span>
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => refreshModelsAndUsage(true)}
-                          title={`Actualizar límites y modelos de ${activeSpec.shortName}`}
-                          className="inline-flex items-center gap-1.5 text-[11px] font-mono text-zinc-300 hover:text-white transition-colors shrink-0 cursor-pointer rounded px-1 py-0.5 focus-visible:outline-2 focus-visible:outline-white/60"
-                        >
-                          <span className="tabular-nums">{usageSummary.headline}</span>
-                          <RefreshCw
-                            className={`w-3 h-3 text-zinc-500 ${loadingModels ? "animate-spin" : ""}`}
-                          />
-                        </button>
-                      </div>
-                      <progress
-                        className="xook-usage-progress"
-                        value={
-                          usageSummary.hasMeterBar
-                            ? Math.max(0, Math.min(100, usageSummary.pct))
-                            : usageSummary.connected
-                              ? 100
-                              : 0
-                        }
-                        max={100}
-                        aria-label={`${usageSummary.tierLabel}: ${usageSummary.headline}`}
-                        style={{
-                          ["--xook-progress-fill" as string]: getUsageMeterFillColor({
-                            meterMode: usageSummary.meterMode,
-                            pct: usageSummary.pct,
-                            hasError: Boolean(accountUsage && !accountUsage.ok),
-                          }),
-                        }}
-                      />
-                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[10.5px] text-zinc-400">
-                        <span className="truncate">{usageSummary.detail}</span>
-                        <button
-                          type="button"
-                          onClick={() => openAiSettings(hasAnyConfiguredKey ? "models" : "account")}
-                          className="px-2 py-0.5 rounded-md bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.09] text-zinc-200 hover:text-white font-medium shrink-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:outline-white/60"
-                        >
-                          {hasAnyConfiguredKey ? "Proveedores" : "Conectar"}
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Capacidad de memoria real de la ventana activa (Documento aislado o Chat general) */}
-                    <div
-                      className="pt-2 border-t border-white/[0.06]"
-                      title={`Modelo activo: ${activeModel.name} (${formatTokenCount(totalActiveTokens)} de ${formatContextLength(modelContextWindow)} tokens en uso · auto-compact activo)`}
+                  <div className="px-2.5 pt-2.5 pb-1 flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setLeftTab("chats")}
+                      className="h-8 inline-flex items-center gap-1 pl-1.5 pr-2.5 rounded-lg text-[12px] text-zinc-300 hover:text-white hover:bg-white/[0.06] cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60"
                     >
-                      <div className="flex items-center justify-between gap-2 text-[11px] mb-1.5">
-                        <span className="text-zinc-300 font-medium truncate">
-                          {isDocumentWindowFocused && pdfPanelState
-                            ? `Ventana: ${pdfPanelState.title}`
-                            : "Memoria de conversación"}
-                        </span>
-                        <span className="text-zinc-200 font-mono text-[10.5px] tabular-nums shrink-0">
-                          {formatTokenCount(totalActiveTokens)} · {contextUsagePct < 1 ? "<1%" : `${contextUsagePct}%`}
-                        </span>
-                      </div>
-                      <div
-                        className="w-full bg-white/[0.07] h-1 rounded-full overflow-hidden"
-                        role="progressbar"
-                        aria-label="Memoria de ventana de contexto"
-                        aria-valuenow={contextUsagePct}
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                      >
-                        <div
-                          className={`h-full rounded-full transition-all duration-300 ${
-                            contextUsagePct >= 65
-                              ? "bg-amber-300"
-                              : "bg-zinc-300"
-                          }`}
-                          style={{
-                            width: `${Math.min(
-                              100,
-                              Math.max(totalActiveTokens > 0 ? 3 : 0, contextUsagePct)
-                            )}%`,
-                          }}
-                        />
-                      </div>
-                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[10.5px] text-zinc-500">
-                        <span className="truncate">
-                          {isDocumentWindowFocused
-                            ? "Contexto aislado · Auto-compact"
-                            : `Asistente: ${activeModel.name}`}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={isCompactingContext || isChatStreaming}
-                          onClick={() => void handleRunManualCompact()}
-                          title="Compactar ahora la ventana de contexto activa (/compact)"
-                          className="px-2 py-0.5 rounded-md bg-white/[0.05] hover:bg-white/[0.11] border border-white/[0.09] text-zinc-200 hover:text-white font-medium shrink-0 cursor-pointer transition-colors disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-white/60 inline-flex items-center gap-1"
-                        >
-                          {isCompactingContext ? (
-                            <Loader2 className="w-2.5 h-2.5 animate-spin" aria-hidden="true" />
-                          ) : (
-                            <Sparkles className="w-2.5 h-2.5" aria-hidden="true" />
-                          )}
-                          <span>{isCompactingContext ? "Compactando…" : "Compactar"}</span>
-                        </button>
-                      </div>
-                    </div>
+                      <ChevronLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                      Chats
+                    </button>
+                    <span className="text-[12px] font-medium text-zinc-400 truncate">Ajustes del proyecto</span>
                   </div>
 
               {/* Árbol Real del Espacio de Trabajo + Inspector/Editor */}
@@ -7732,184 +7705,35 @@ export default function App() {
               />
                 </div>
               ) : (
-                <div
-                  id="xook-sidebar-panel-chats"
-                  role="tabpanel"
-                  aria-labelledby="xook-sidebar-tab-chats"
-                  className="flex-1 flex flex-col min-h-0 overflow-hidden"
-                >
-                  {(conversations.length > 0 || chatMessages.length > 0) && (
-                    <div className="px-2.5 pt-2.5 pb-1 flex items-center-safe justify-between gap-2 shrink-0 min-w-0">
-                      <span className="text-[11px] font-medium text-zinc-400 truncate">
-                        Conversaciones
-                      </span>
-                      <button
-                        type="button"
-                        onClick={handleStartNewChat}
-                        disabled={isChatStreaming}
-                        title="Iniciar nueva conversación"
-                        className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-200 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.1] px-2.5 py-1 rounded-lg transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0 focus-visible:outline-2 focus-visible:outline-white/60"
-                      >
-                        <SquarePen className="w-3 h-3 text-zinc-300" />
-                        <span>Nueva</span>
-                      </button>
-                    </div>
-                  )}
-                  <div className="p-2.5 flex-1 overflow-y-auto space-y-1">
-                    {conversations.length === 0 ? (
-                      <div className="h-full flex flex-col items-center justify-center text-center px-5 py-10 space-y-3">
-                        <div className="w-10 h-10 rounded-full bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-zinc-300">
-                          <MessageSquare className="w-4 h-4" />
-                        </div>
-                        <div className="space-y-1.5">
-                          <p className="text-xs font-medium text-white">
-                            Aún no tienes chats guardados
-                          </p>
-                          <p className="text-[11px] text-zinc-400 leading-relaxed">
-                            Escribe tu primera consulta abajo. Cada conversación con Xox se guarda aquí automáticamente.
-                          </p>
-                        </div>
-                      </div>
-                    ) : (
-                      conversations.map((thread) => {
-                        const isActive = thread.id === activeConversationId;
-                        const lastMsg = thread.messages[thread.messages.length - 1];
-                        const snippet = lastMsg?.content?.replace(/\s+/g, " ").trim() ?? "";
-                        const dateLabel = (() => {
-                          try {
-                            const d = new Date(thread.updatedAt);
-                            const sameDay =
-                              d.toDateString() === new Date().toDateString();
-                            return sameDay
-                              ? d.toLocaleTimeString("es-MX", {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
-                              : d.toLocaleDateString("es-MX", {
-                                  day: "numeric",
-                                  month: "short",
-                                });
-                          } catch {
-                            return "";
-                          }
-                        })();
-                        return (
-                          <div
-                            key={thread.id}
-                            onClick={() => handleSelectConversation(thread)}
-                            role="button"
-                            tabIndex={0}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                handleSelectConversation(thread);
-                              }
-                            }}
-                            className={`group rounded-xl p-2.5 border transition-all cursor-pointer ${
-                              isActive
-                                ? "bg-white/[0.08] border-white/[0.14]"
-                                : "bg-transparent border-transparent hover:bg-white/[0.04] hover:border-white/[0.06]"
-                            }`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center justify-between gap-2">
-                                  <span
-                                    className={`text-xs font-medium truncate ${
-                                      isActive ? "text-white" : "text-zinc-200"
-                                    }`}
-                                  >
-                                    {thread.title}
-                                  </span>
-                                  <span className="text-[10px] text-zinc-500 font-mono shrink-0">
-                                    {dateLabel}
-                                  </span>
-                                </div>
-                                {snippet && (
-                                  <p className="text-[11px] text-zinc-500 truncate mt-0.5">
-                                    {snippet}
-                                  </p>
-                                )}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void handleDeleteConversation(thread.id);
-                                }}
-                                disabled={isChatStreaming}
-                                title="Eliminar conversación"
-                                className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-zinc-500 hover:text-red-400 hover:bg-white/[0.05] transition-all cursor-pointer disabled:opacity-30 shrink-0"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
+                <SidebarChats
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  isStreaming={isChatStreaming}
+                  projectName={workspaceOverview?.active.name ?? null}
+                  showLongConversationNotice={
+                    !isDocumentWindowFocused && chatMessages.length > 0 && contextUsagePct >= 65
+                  }
+                  isCompacting={isCompactingContext}
+                  onNewChat={handleStartNewChat}
+                  onSelectConversation={handleSelectConversation}
+                  onDeleteConversation={(id) => void handleDeleteConversation(id)}
+                  onOpenProject={() => setLeftTab("context")}
+                  onCompact={() => void handleRunManualCompact()}
+                />
               )}
 
               {/* Pie del Panel Lateral */}
-              <div className="px-3 py-2 border-t border-white/[0.06] bg-[#090a0e] text-[11px] text-zinc-400 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <button
-                    type="button"
-                    onClick={() => setShowLocalAuth(true)}
-                    className="flex items-center gap-1.5 text-zinc-300 hover:text-white transition-colors truncate cursor-pointer rounded focus-visible:outline-2 focus-visible:outline-white/60 min-w-0"
-                    title="Configurar perfil de usuario local"
-                  >
-                    <UserCircle2
-                      className={`w-3.5 h-3.5 shrink-0 ${
-                        localUser ? "text-zinc-300" : "text-zinc-500"
-                      }`}
-                    />
-                    <span className="truncate">
-                      {localUser ? localUser.name : "Sin perfil local"}
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => openSettings("voice")}
-                    aria-label="Configuraciones"
-                    title="Configuraciones (Voz, Pantalla, IA, Perfil)"
-                    className={`p-1 rounded-md border flex items-center gap-1 transition-all cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-white/60 ${
-                      showSettingsModal
-                        ? "bg-white/[0.08] text-white border-white/[0.12]"
-                        : "bg-transparent text-zinc-400 border-transparent hover:text-zinc-100 hover:bg-white/[0.06]"
-                    }`}
-                  >
-                    <Settings className="w-3.5 h-3.5" />
-                    {ttsStatus?.config.enabled && (
-                      <span
-                        className="w-1.5 h-1.5 rounded-full bg-emerald-300 shrink-0"
-                        title="Voz activada"
-                      />
-                    )}
-                  </button>
-                </div>
-                <span className="text-zinc-400 font-medium flex items-center gap-1.5 shrink-0 truncate max-w-[140px]">
-                  <Check
-                    className={`w-3 h-3 shrink-0 ${
-                      leftTab === "context"
-                        ? workspaceOverview
-                          ? "text-zinc-300"
-                          : "text-zinc-500"
-                        : "text-zinc-300"
-                    }`}
-                  />
-                  <span className="truncate">
-                    {leftTab === "context"
-                      ? workspaceOverview?.active.name ?? "Espacio local"
-                      : `${conversations.length} ${
-                          conversations.length === 1 ? "chat" : "chats"
-                        }`}
-                  </span>
-                </span>
-              </div>
+              <SidebarFooter
+                userName={localUser?.name ?? null}
+                usageLabel={sidebarUsageLabel}
+                usageDetail={sidebarUsageDetail}
+                voiceEnabled={Boolean(ttsStatus?.config.enabled)}
+                settingsOpen={showSettingsModal}
+                onOpenProfile={() => setShowLocalAuth(true)}
+                onOpenUsage={() => openAiSettings(hasAnyConfiguredKey ? "models" : "account")}
+                onOpenVoice={() => openSettings("voice")}
+                onOpenSettings={() => openSettings("voice")}
+              />
               </aside>
             </div>
 
@@ -7921,10 +7745,7 @@ export default function App() {
                   setIsResizingLeft(true);
                 }}
                 onDoubleClick={() => setLeftWidth(280)}
-                style={!leftPresence.visible ? { width: "0px" } : undefined}
-                className={`splitter-aurora-glass ${isResizingLeft ? "is-resizing" : ""} ${
-                  leftPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
-                }`}
+                className={`splitter-aurora-glass ${isResizingLeft ? "is-resizing" : ""}`}
               >
                 {/* Zona de captura ampliada invisible para fácil arrastre */}
                 <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
@@ -7935,6 +7756,7 @@ export default function App() {
 
         {/* COLUMNA CENTRAL: Xox + Conversación + Input Pinned al fondo */}
         <section
+          ref={chatSectionRef}
           data-xox-chat-section
           data-xox-split={isEffectiveSplitLayout ? "true" : "false"}
           inert={hasCompactOverlayOpen}
@@ -8012,10 +7834,12 @@ export default function App() {
           {/* Área de Trabajo con Scroll: Xox Hero / Chat en vivo */}
           <div
             ref={chatScrollRef}
-            className="xook-chat-scroll-pad relative z-[1] flex-1 flex flex-col overflow-y-auto"
+            onScroll={handleChatScroll}
+            onWheel={handleChatWheel}
+            className="xook-chat-scroll-pad relative z-[1] flex-1 min-w-0 flex flex-col overflow-y-auto overflow-x-hidden"
           >
             <div
-              className={`w-full max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto transition-[padding] duration-200 ${
+              className={`w-full min-w-0 max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto ${
                 chatMessages.length === 0 ? "flex-[1_0_auto] flex flex-col" : "shrink-0 space-y-6"
               } ${
                 activeChecklist && !checklistCollapsed && !hasRightSplitOpen && !isCompactViewport
@@ -8171,7 +7995,7 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <div className="space-y-4">
+                  <div className="space-y-4 min-w-0">
                     <ChatMessageList
                       messages={chatMessages}
                       xoxState={xoxState}
@@ -8209,12 +8033,13 @@ export default function App() {
                       onSpeakMessage={handleSpeakMessage}
                       accentPreset={displayAccentPreset}
                       agentName={effectiveAgentName}
-                      xoxAwayInStudio={showXoxStudio && !xoxExitingStage}
+                      xoxAwayInStudio={showXoxStudio}
                       xoxInFlight={xoxInFlight}
                       xoxTravelPhase={xoxTravelPhase}
                       glideSeq={showXoxStudio || xoxInFlight ? 0 : xoxGlideSeq}
                       xoxTerminal={xoxTerminalFeed}
                       isSplitMode={isEffectiveSplitLayout}
+                      isChatCompactLane={isChatCompactLane}
                       rosterSubagents={
                         activeMode === "agent" && subagentTeamMode === "custom"
                           ? subagentRoster
@@ -8235,12 +8060,11 @@ export default function App() {
                     className={`${
                       activeClarification || permissionItems.some((p) => p.state === "pending")
                         ? "h-[21rem] sm:h-[25rem]"
-                        : isEffectiveSplitLayout
+                        : isChatCompactLane
                           ? "h-[19rem] sm:h-[21rem]"
                           : "h-60 sm:h-56"
-                    } shrink-0 transition-[height]`}
+                    } shrink-0`}
                   />
-                  <div ref={chatEndRef} />
                 </>
               )}
 
@@ -8302,10 +8126,11 @@ export default function App() {
           {/* 4. INPUT / CHAT FIJO EN LA PARTE INFERIOR (PINNED DOCK)                    */}
           {/* ========================================================================= */}
           <div className="xook-composer-pad absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#060709] via-[#060709]/95 to-transparent pointer-events-none z-10">
-            <div className="@container max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto pointer-events-auto relative">
-              {/* Xox fija en la esquina derecha sobre el input cuando la columna de chat es angosta (<560px) */}
+            <div className="@container w-full max-w-[51rem] 2xl:max-w-[53rem] mx-auto pointer-events-auto relative">
+              {/* Xox fija en la esquina derecha sobre el input cuando la columna de chat es compacta (<720px) */}
               {chatMessages.length > 0 && (
                 <div
+                  data-xox-stage="chat-perch"
                   className={`xox-compact-dock-perch items-center justify-center select-none ${
                     showXoxStudio || xoxFlight || showModelMenu || showContextMenu || showCommandMenu
                       ? "opacity-0 scale-95"
@@ -8318,14 +8143,7 @@ export default function App() {
                     hitArea="star"
                     clickBehavior="greet"
                     accentPreset={displayAccentPreset}
-                    active={
-                      !showXoxStudio &&
-                      !xoxFlight &&
-                      (isEffectiveSplitLayout ||
-                        viewportWidth < 620 ||
-                        hasRightSplitOpen ||
-                        showLeftSidebar)
-                    }
+                    active={!showXoxStudio && !xoxFlight && isChatCompactLane}
                     className="xox-compact-perch-star"
                     summonTrigger={summonSeq}
                     onClick={handleXoxClick}
@@ -8406,22 +8224,21 @@ export default function App() {
                     setIsDraggingOverChat(false);
                   }
                 }}
-                className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-3.5 relative group shadow-2xl ${
+                className={`liquid-glass-hero input-console rounded-[22px] px-4 pt-3.5 pb-3 relative group ${
                   inputExpanded || attachments.length > 0 ? "is-expanded" : ""
                 } ${isDraggingOverChat ? "ring-1 ring-white/30 border-white/25" : ""}`}
               >
-                {/* Borde iridiscente 1px estilo Stitch (esquina superior izquierda violeta -> izquierda azul/cian) */}
+                {/* Contorno Fresnel de 1px sincronizado con Xox que recorre suavemente el perímetro */}
                 <span aria-hidden="true" className="xook-stitch-rim" />
                 <span aria-hidden="true" className="xook-stitch-pointer-rim" />
 
-                {/* Capa de recorte para los efectos de luz internos (los menús desplegables pueden sobresalir) */}
+                {/* Capa de recorte para el bisel interno de cristal (los menús desplegables pueden sobresalir) */}
                 <div className="xook-stitch-fx absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
-                  {/* Bruma luminosa interna en la esquina y borde izquierdo */}
                   <span aria-hidden="true" className="xook-stitch-bloom" />
-                  {/* Destello reactivo al puntero */}
+                  {/* Destello especular sutil reactivo al puntero */}
                   <span aria-hidden="true" className="xook-stitch-pointer-glow" />
-                  {/* Reflejo especular superior tenue */}
-                  <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-violet-200/12 via-white/[0.06] to-transparent" />
+                  {/* Filo especular superior de cristal pulido */}
+                  <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.08] to-transparent" />
                   {/* Barrido de luz de encendido */}
                   <span key={summonSeq} aria-hidden="true" className="console-sweep" />
                 </div>
@@ -8743,12 +8560,12 @@ export default function App() {
                       }}
                       disabled={isChatStreaming}
                       placeholder={chatInputPlaceholder}
-                      className="input-bubble w-full min-w-0 resize-none overflow-hidden bg-transparent text-sm sm:text-[15.5px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none py-1 font-normal leading-relaxed disabled:opacity-50 select-text"
+                      className="input-bubble w-full min-w-0 resize-none overflow-hidden bg-transparent text-[15px] sm:text-[15.5px] text-zinc-100 placeholder:text-zinc-400/65 focus:outline-none py-1 font-normal leading-[1.55] disabled:opacity-50 select-text"
                     />
                   </div>
 
                   {/* Barra inferior unificada: adjuntar + modos + contexto a la izquierda · modelo + atajos + enviar a la derecha */}
-                  <div className="pt-1.5 flex items-center justify-between gap-1.5">
+                  <div className="pt-2 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1 @[460px]:gap-1.5 min-w-0 shrink-0">
                       {/* Botón + para subir archivos o imágenes */}
                       <button
@@ -8901,28 +8718,24 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center gap-1 @[460px]:gap-1.5 min-w-0">
-                      <div className="hidden @[620px]:flex items-center gap-1 mr-0.5 shrink-0">
-                        {isTauriEnv && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              try {
-                                const { invoke } = await import("@tauri-apps/api/core");
-                                await invoke("toggle_quick_bar_cmd");
-                              } catch {
-                                // Ignore
-                              }
-                            }}
-                            title="Abrir Xox Quick Bar flotante (⌘⇧X)"
-                            className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 hover:text-zinc-200 bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] rounded transition-colors cursor-pointer"
-                          >
-                            ⌘⇧X
-                          </button>
-                        )}
-                        <kbd className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-500 bg-white/[0.03] border border-white/[0.06] rounded">
-                          ⌘K
-                        </kbd>
-                      </div>
+                      {isTauriEnv && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const { invoke } = await import("@tauri-apps/api/core");
+                              await invoke("toggle_quick_bar_cmd");
+                            } catch {
+                              // Ignore
+                            }
+                          }}
+                          aria-label="Abrir barra rápida flotante (⌘⇧X)"
+                          title="Abrir Xox Quick Bar flotante (⌘⇧X)"
+                          className="hidden @[620px]:inline-flex items-center justify-center h-8 px-2.5 text-[10.5px] font-mono text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.05] rounded-full transition-colors cursor-pointer shrink-0"
+                        >
+                          ⌘⇧X
+                        </button>
+                      )}
 
                       {/* Desplegable de modelos */}
                       <div ref={modelMenuRef} className="relative min-w-0">
@@ -9134,14 +8947,14 @@ export default function App() {
                             !inputPrompt.trim() && attachments.length === 0 && activeMode !== "compact"
                           }
                           aria-label="Enviar mensaje"
-                          className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
+                          className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-all ${
                             !inputPrompt.trim() && attachments.length === 0 && activeMode !== "compact"
-                              ? "quick-liquid-btn text-zinc-200/70 cursor-not-allowed"
+                              ? "xook-composer-send-idle text-zinc-500 cursor-not-allowed"
                               : "quick-liquid-btn-ready active:scale-95 cursor-pointer"
                           }`}
                           title="Enviar instrucción (Enter)"
                         >
-                          <Send className="w-3.5 h-3.5" />
+                          <ArrowUp className="w-4 h-4 stroke-[2.15]" />
                         </button>
                       )}
                     </div>
@@ -9154,29 +8967,31 @@ export default function App() {
         </section>
 
         {/* PANEL ESPACIO DE XOX (IDENTIDAD GLOBAL, VOZ, SKILLS EN BLOQUES Y PROMPT INICIAL) */}
-        {studioPresence.mounted && (
+        {studioMounted && (
           <div
             role={isCompactViewport ? "dialog" : undefined}
             aria-modal={isCompactViewport && showXoxStudio ? true : undefined}
             aria-label={isCompactViewport ? `Espacio de ${effectiveAgentName}` : undefined}
             aria-hidden={!showXoxStudio}
             inert={!showXoxStudio}
-            style={{ width: studioPresence.visible ? `${studioPanelWidth}px` : "0px" }}
+            style={{ width: `${studioPanelWidth}px` }}
             className={`sidebar-slot sidebar-studio-slot h-full flex flex-col min-h-0 shrink-0 bg-[#060709] overflow-hidden ${
-              isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
-            } ${
-              studioPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+              isCompactViewport
+                ? `xook-compact-drawer-surface is-right ${
+                    studioPresence.visible ? "opacity-100" : "is-closed opacity-0 pointer-events-none"
+                  }`
+                : ""
             }`}
           >
             <div
               data-xox-studio-inner
               style={{ width: `${studioPanelWidth}px` }}
-              className={`flex-1 h-full flex flex-col min-h-0 border-l border-white/[0.07] shrink-0 transition-[width] duration-300 ease-out ${
-                isMemoryWideStudio ? "p-1.5" : "p-2.5"
-              }`}
+              className={`flex-1 h-full flex flex-col min-h-0 border-l border-white/[0.07] shrink-0 ${
+                !isCompactViewport ? "xook-panel-enter-right" : ""
+              } ${isMemoryWideStudio ? "p-1.5" : "p-2.5"}`}
             >
               <XoxStudioPanel
-                visible={studioPresence.visible}
+                visible={isCompactViewport ? studioPresence.visible : true}
                 hideStar={xoxInFlight}
                 initialTab={xoxStudioTab}
                 onTabChange={(tab) => setXoxStudioTab(tab)}
@@ -9267,23 +9082,27 @@ export default function App() {
         )}
 
         {/* PANEL CANVAS INTERACTIVO ESTILO GEMINI (TABLAS COMPARATIVAS Y DATOS) */}
-        {canvasPresence.mounted && activeCanvas && (
+        {canvasMounted && activeCanvas && (
           <div
             role={isCompactViewport ? "dialog" : undefined}
             aria-modal={isCompactViewport && showCanvas ? true : undefined}
             aria-label={isCompactViewport ? "Canvas interactivo" : undefined}
             aria-hidden={!showCanvas}
             inert={!showCanvas}
-            style={{ width: canvasPresence.visible ? `${canvasPanelWidth}px` : "0px" }}
+            style={{ width: `${canvasPanelWidth}px` }}
             className={`sidebar-slot shrink-0 bg-[#060709] overflow-hidden ${
-              isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
-            } ${
-              canvasPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+              isCompactViewport
+                ? `xook-compact-drawer-surface is-right ${
+                    canvasPresence.visible ? "opacity-100" : "is-closed opacity-0 pointer-events-none"
+                  }`
+                : ""
             }`}
           >
             <div
               style={{ width: `${canvasPanelWidth}px` }}
-              className="h-full border-l border-white/[0.07] p-2.5 shrink-0"
+              className={`h-full border-l border-white/[0.07] p-2.5 shrink-0 ${
+                !isCompactViewport ? "xook-panel-enter-right" : ""
+              }`}
             >
               <CanvasPanel
                 canvas={activeCanvas}
@@ -9298,7 +9117,7 @@ export default function App() {
                     : undefined;
                 })()}
                 onSelectSiblingCanvas={handleOpenCanvas}
-                visible={canvasPresence.visible}
+                visible={isCompactViewport ? canvasPresence.visible : true}
                 expanded={canvasExpanded}
                 onToggleExpand={() => setCanvasExpanded((v) => !v)}
                 onUpdateCanvas={handleUpdateCanvas}
@@ -9315,23 +9134,27 @@ export default function App() {
         )}
 
         {/* PANEL DEDICADO DEL VISOR Y EDITOR DE DOCUMENTOS (INDEPENDIENTE DE TAREAS) */}
-        {docViewerPresence.mounted && (pdfPanelState || pdfDraftProgress) && (
+        {docViewerMounted && (pdfPanelState || pdfDraftProgress) && (
           <div
             role={isCompactViewport ? "dialog" : undefined}
             aria-modal={isCompactViewport && showDocViewer ? true : undefined}
             aria-label={isCompactViewport ? "Visor de documentos" : undefined}
             aria-hidden={!showDocViewer}
             inert={!showDocViewer}
-            style={{ width: docViewerPresence.visible ? `${docViewerPanelWidth}px` : "0px" }}
+            style={{ width: `${docViewerPanelWidth}px` }}
             className={`sidebar-slot shrink-0 bg-[#060709] overflow-hidden ${
-              isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
-            } ${
-              docViewerPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+              isCompactViewport
+                ? `xook-compact-drawer-surface is-right ${
+                    docViewerPresence.visible ? "opacity-100" : "is-closed opacity-0 pointer-events-none"
+                  }`
+                : ""
             }`}
           >
             <div
               style={{ width: `${docViewerPanelWidth}px` }}
-              className="h-full border-l border-white/[0.07] p-2.5 shrink-0"
+              className={`h-full border-l border-white/[0.07] p-2.5 shrink-0 ${
+                !isCompactViewport ? "xook-panel-enter-right" : ""
+              }`}
             >
               <PdfWorkspacePanel
               state={pdfPanelState}
@@ -9454,7 +9277,7 @@ export default function App() {
         {/* ========================================================================= */}
         {/* COLUMNA 3: TAREAS Y DECISIONES DEL LADO DERECHO (EXCLUSIVA PARA TAREAS)   */}
         {/* ========================================================================= */}
-        {rightPresence.mounted && (
+        {rightMounted && (
           <>
             {/* Separador redimensionable derecho (Splitter Aurora de Vidrio) */}
             {!isCompactViewport && (
@@ -9466,10 +9289,7 @@ export default function App() {
                   setIsResizingRight(true);
                 }}
                 onDoubleClick={() => setRightWidth(340)}
-                style={!rightPresence.visible ? { width: "0px" } : undefined}
-                className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""} ${
-                  rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
-                }`}
+                className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""}`}
               >
                 {/* Zona de captura ampliada invisible para fácil arrastre */}
                 <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
@@ -9482,14 +9302,20 @@ export default function App() {
               aria-label={isCompactViewport ? "Panel de tareas y decisiones" : undefined}
               aria-hidden={!showRightSidebar}
               inert={!showRightSidebar}
-              style={{ width: rightPresence.visible ? `${effectiveRightWidth}px` : "0px" }}
+              style={{ width: `${effectiveRightWidth}px` }}
               className={`sidebar-slot flex flex-col shrink-0 overflow-hidden bg-[#08090d] ${
-                isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
-              } ${
-                isResizingRight ? "is-resizing" : ""
-              } ${rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+                isCompactViewport
+                  ? `xook-compact-drawer-surface is-right ${
+                      rightPresence.visible ? "opacity-100" : "is-closed opacity-0 pointer-events-none"
+                    }`
+                  : ""
+              } ${isResizingRight ? "is-resizing" : ""}`}
             >
-              <div className="flex-1 min-h-0 flex">
+              <div
+                className={`flex-1 min-h-0 flex ${
+                  !isCompactViewport ? "xook-panel-enter-right" : ""
+                }`}
+              >
                 <TaskDecisionsPanel
                   width={effectiveRightWidth}
                   tasks={tasks}
@@ -9616,7 +9442,6 @@ export default function App() {
           onComplete={(flightId) => {
             setXoxFlight((curr) => (curr && curr.id === flightId ? null : curr));
             setXoxTravelPhase("idle");
-            setXoxExitingStage(false);
           }}
         />
       )}

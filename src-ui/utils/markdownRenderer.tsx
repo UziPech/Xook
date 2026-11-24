@@ -438,7 +438,7 @@ function sanitizeHref(rawUrl: string): string | null {
   }
 }
 
-async function openExternalUrl(
+export async function openExternalUrl(
   url: string,
   customHandler?: (url: string) => void
 ): Promise<void> {
@@ -605,13 +605,13 @@ function getInlineStyles(options: InlineMarkdownOptions) {
     code:
       options.codeClassName ??
       (isLiquid
-        ? "px-1.5 py-[1px] rounded-[5px] bg-white/[0.11] border border-white/[0.18] text-[0.9em] text-sky-100 font-mono [text-shadow:none]"
-        : "px-1.5 py-0.5 rounded-md bg-white/[0.08] border border-white/10 text-[0.875em] text-zinc-100 font-mono"),
+        ? "px-1.5 py-[1px] rounded-[5px] bg-white/[0.11] border border-white/[0.18] text-[0.9em] text-sky-100 font-mono break-words [text-shadow:none]"
+        : "px-1.5 py-0.5 rounded-md bg-white/[0.08] border border-white/10 text-[0.875em] text-zinc-100 font-mono break-words"),
     link:
       options.linkClassName ??
       (isLiquid
-        ? "text-sky-300 hover:text-sky-200 underline decoration-sky-300/45 underline-offset-2 transition-colors"
-        : "text-sky-300 hover:text-sky-200 underline decoration-sky-400/40 underline-offset-2 transition-colors"),
+        ? "text-sky-300 hover:text-sky-200 underline decoration-sky-300/45 underline-offset-2 transition-colors break-words"
+        : "text-sky-300 hover:text-sky-200 underline decoration-sky-400/40 underline-offset-2 transition-colors break-words"),
     math:
       options.mathClassName ??
       (isLiquid

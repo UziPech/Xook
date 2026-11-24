@@ -26,6 +26,15 @@ test("isHighRiskUiTargetLabel flags commit and destructive UI buttons", () => {
   assert.equal(isHighRiskUiTargetLabel("Buscar archivo"), false);
 });
 
+test("isHighRiskUiTargetLabel flags assignment turn-in buttons", () => {
+  assert.equal(isHighRiskUiTargetLabel("Entregar"), true);
+  assert.equal(isHighRiskUiTargetLabel("Turn in assignment"), true);
+  assert.equal(isHighRiskUiTargetLabel("Hand in"), true);
+  assert.equal(isHighRiskUiTargetLabel("Submit"), true);
+  assert.equal(isHighRiskUiTargetLabel("Ver tareas entregadas"), false);
+  assert.equal(isHighRiskUiTargetLabel("Adjuntar archivo"), false);
+});
+
 test("isBlockedKeyCombo catches dangerous macOS shortcuts and modifier supersets", () => {
   assert.equal(isBlockedKeyCombo("cmd+q"), true);
   assert.equal(isBlockedKeyCombo("Shift+Command+Q"), true);

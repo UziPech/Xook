@@ -82,6 +82,29 @@ class ToolCatalogTests(unittest.TestCase):
         after = {td["function"]["name"] for td in session.active_tool_defs()}
         self.assertIn("pdf_generate", after)
 
+    def test_any_app_can_be_looked_at_without_a_keyword(self) -> None:
+        session = ToolExposureSession(SAMPLE_CATALOG, user_message="revisa si en blackboard dejaron algo nuevo")
+        active_names = {td["function"]["name"] for td in session.active_tool_defs()}
+        self.assertIn("desktop_list_windows", active_names)
+        self.assertIn("desktop_snapshot", active_names)
+        self.assertNotIn("desktop_act", active_names)
+
+        self.assertIn("desktop_act", session.note_tool_used("desktop_list_windows"))
+        active_names = {td["function"]["name"] for td in session.active_tool_defs()}
+        self.assertLessEqual({"desktop_find", "desktop_act"}, active_names)
+
+    def test_using_a_core_tool_without_toolkit_loads_nothing(self) -> None:
+        session = ToolExposureSession(SAMPLE_CATALOG, user_message="lee el contrato")
+        self.assertEqual(session.note_tool_used("workspace_read"), [])
+
+    def test_messages_for_other_apps_preload_the_whole_desktop_toolkit(self) -> None:
+        for msg in (
+            "revisame si en teams tengo algunas tareas pendientes",
+            "dile a claude que no puedes abrir mi app",
+            "pregúntale a Juan si ya llegó",
+        ):
+            self.assertIn("desktop_ui", detect_initial_toolkits(msg), msg)
+
     def test_core_set_always_includes_tool_search(self) -> None:
         self.assertIn(TOOL_SEARCH_NAME, CORE_ALWAYS_LOADED_TOOLS)
 

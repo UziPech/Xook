@@ -16,7 +16,7 @@ import urllib.request
 import concurrent.futures
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from slices.agent_tools import (
     AGENT_TOOL_DEFS,
@@ -28,7 +28,12 @@ from slices.agent_tools import (
     ToolExposureSession,
     USER_MEMORY_TOOL_DEFS,
     USER_MEMORY_TOOL_NAMES,
+    WEB_TOOL_DEFS,
+    WEB_TOOL_NAMES,
     WorkspaceToolExecutor,
+    execute_web_tool,
+    merge_web_sources,
+    web_sources_from_result,
 )
 from slices.agent_tools.skills_hub import index_workspace_skills, load_global_xox_profile
 from slices.agent_tools.user_memory import (
@@ -44,6 +49,23 @@ from slices.ai_service.anthropic_adapter import (
     consume_last_anthropic_rate_limits,
     iter_anthropic_sse_as_openai_events,
     open_anthropic_stream,
+)
+from slices.ai_service.agent_loop_policy import (
+    BUDGET_PROFILES,
+    AgentBudget,
+    budget_profile_for_task,
+    with_delivery_check,
+    wrap_up_nudge,
+    wrap_up_step_label,
+)
+from slices.ai_service.desktop_action_policy import (
+    DESKTOP_RETRY_LABEL,
+    DESKTOP_RETRY_NUDGE,
+    DESKTOP_TOOLKIT,
+    ReplyHold,
+    attempted_desktop,
+    desktop_action_rules,
+    gave_up_on_desktop,
 )
 from slices.ai_service.agent_trace import AgentTraceWriter
 from slices.ai_service.context_manager import (
@@ -114,7 +136,6 @@ class _ProviderFailoverError(RuntimeError):
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 APP_REFERER = "https://xook.local"
 APP_TITLE = "XOOK Enterprise Agentic Orchestrator"
-MAX_AGENT_STEPS = 12
 
 
 def _parse_tool_args(raw_args: Any) -> Dict[str, Any]:
@@ -187,6 +208,12 @@ def _xox_terminal_event(fn_name: str, args: Dict[str, Any], tool_res: Optional[D
 
 def _tool_step_meta(fn_name: str, args: Dict[str, Any]) -> Tuple[str, str]:
     target = str(args.get("path") or args.get("target_path") or args.get("query") or "").strip()
+    if fn_name == "web_search":
+        return "Buscando en internet", target
+    if fn_name == "web_fetch":
+        return "Leyendo página web", str(args.get("url") or "")
+    if fn_name == "image_search":
+        return "Buscando imágenes", target
     if fn_name == "workspace_list":
         return "Explorando archivos", target or "."
     if fn_name == "workspace_read":
@@ -1674,6 +1701,43 @@ def _open_provider_chat_stream(
     return urllib.request.urlopen(req, timeout=timeout, context=_ssl_context())
 
 
+# Reglas que dependen del proveedor o del modelo: viven aquí, junto a las llamadas, y no regadas por el loop.
+
+
+def _provider_supports_response_format(provider: str) -> bool:
+    """Anthropic no usa `response_format`; los protocolos compatibles con OpenAI sí."""
+    return normalize_provider_id(provider) != "anthropic"
+
+
+def _stream_max_output_tokens(provider: str, model: str, *, wants_long_output: bool) -> int:
+    """Tope de salida del stream: 16k solo donde el proveedor o el modelo lo soportan."""
+    if not wants_long_output:
+        return 6144
+    pid = normalize_provider_id(provider)
+    low_model = (model or "").lower()
+    extended = pid in ("openrouter", "gemini", "anthropic") or (
+        pid == "deepseek" and any(k in low_model for k in ("reasoner", "flash", "pro", "v4"))
+    )
+    return 16384 if extended else 8192
+
+
+def _iter_provider_stream_events(provider: str, resp: Any, model: str) -> Iterator[Dict[str, Any]]:
+    """Eventos del stream en formato OpenAI, sea cual sea el protocolo del proveedor."""
+    if normalize_provider_id(provider) == "anthropic":
+        return iter_anthropic_sse_as_openai_events(resp, default_model=model)
+    return _iter_openai_sse_events(resp)
+
+
+def _provider_accepts_model_id(provider: str, model_id: str) -> bool:
+    """Los ids "proveedor/modelo" solo existen en OpenRouter."""
+    return normalize_provider_id(provider) == "openrouter" or "/" not in model_id
+
+
+def _provider_replays_reasoning(provider: str, model: str) -> bool:
+    """DeepSeek necesita recibir de vuelta su `reasoning_content` en los turnos del loop de herramientas."""
+    return normalize_provider_id(provider) == "deepseek" or "deepseek" in (model or "").lower()
+
+
 def _normalize_api_key(api_key: Optional[str]) -> str:
     return normalize_provider_api_key(api_key)
 
@@ -3013,6 +3077,8 @@ HERRAMIENTAS DEL ESPACIO DE TRABAJO Y EQUIPO DEL USUARIO (OBLIGATORIO CUANDO OPE
         skills_index_section += "\n\nHABILIDADES ACTIVAS EN ESTE TURNO:\n" + "\n\n".join(active_skills_bodies)
 
     mode_section = _build_active_mode_section(active_mode, subagent_roster)
+    desktop_rules = desktop_action_rules() if ws_active and workspace_root is not None else ""
+    desktop_rules_section = f"{desktop_rules}\n" if desktop_rules else ""
 
     # Perfil enfocado de Co-Editor de Documento: reduce ruido (~60% menos tokens de sistema)
     # para que Xox mantenga máxima precisión durante sesiones largas de feedback sobre un archivo.
@@ -3060,7 +3126,7 @@ Puedes operar en cualquier ámbito — negocio/empresa, ingeniería de software,
 {output_rules}
 
 REGLAS CRÍTICAS:
-- Tienes plena libertad expresiva y de formato: adapta el tono, la estructura, la extensión y el nivel de detalle a lo que pida el usuario, sin envolver el texto en etiquetas XML.
+{desktop_rules_section}- Tienes plena libertad expresiva y de formato: adapta el tono, la estructura, la extensión y el nivel de detalle a lo que pida el usuario, sin envolver el texto en etiquetas XML.
 - MEMORIA DURADERA DEL USUARIO: Cuando el usuario comparta datos estables sobre sí mismo (nombre o cómo prefiere que le llamen, ocupación, ciudad/zona horaria, preferencias de formato/estilo o te pida explícitamente "recuerda que..."), guárdalos proactivamente con `save_user_info` (usando una `key` estable si actualiza un dato previo). Si pide olvidar algo guardado, usa `forget_user_info`. Nunca guardes contraseñas, API keys, tokens ni charla pasajera.
 - CO-CONSTRUCCIÓN Y ADAPTACIÓN DE ROL: Si el usuario quiere construir un proyecto, empresa, flujo técnico o sistema desde cero o cambiar de enfoque, colabora con él proponiendo roles, reglas o estructura real mediante `propose_workspace_blueprint` o `propose_company_file_edit`, y aprende su forma de trabajar con `learn_skill` y `update_user_preferences`.
 - Si el usuario hace una pregunta general o cotidiana (ej. "¿qué hora es?", "¿qué día es hoy?", análisis de imágenes, dudas técnicas, matemáticas, redacción, charla o conocimiento general), respóndele directa y útilmente usando tu conocimiento y la fecha/hora local abajo, sin forzar temas de negocio/inventario ni crear tareas innecesarias.
@@ -5319,7 +5385,7 @@ def run_agent_completion(
     if executor is not None:
         all_active_tools = [*AGENT_TOOL_DEFS, *active_tools]
     else:
-        all_active_tools = [*USER_MEMORY_TOOL_DEFS, *active_tools]
+        all_active_tools = [*USER_MEMORY_TOOL_DEFS, *WEB_TOOL_DEFS, *active_tools]
 
     has_attachments, image_parts = _extract_attached_flags(attached_context)
     has_active_document = effective_scope == "document" or _has_active_document_in_attached(attached_context)
@@ -5332,6 +5398,12 @@ def run_agent_completion(
         enable_deferred=executor is not None,
     )
     active_tools = tool_exposure.active_tool_defs()
+    desktop_ready = (
+        executor is not None
+        and command_bridge is not None
+        and effective_scope != "document"
+        and tool_exposure.has_tool("desktop_list_windows")
+    )
 
     nonstream_user_profile_mutated = False
     nonstream_user_memory_mutated = False
@@ -5353,6 +5425,7 @@ def run_agent_completion(
         tool_defs_count=len(active_tools),
     )
     sync_tool_records: List[Dict[str, Any]] = []
+    sync_web_sources: List[Dict[str, str]] = []
 
     # Perfil inicial del turno (determinístico y rápido para failover multi-proveedor)
     base_plan = select_best_models_for_task(
@@ -5486,10 +5559,12 @@ def run_agent_completion(
             local_ui_tool_calls = []
             local_accum_usage = {}
             local_rate_limits = None
-            use_response_format = cur_provider != "anthropic"
+            use_response_format = _provider_supports_response_format(cur_provider)
             tools_supported = True
             vision_supported = True
             continuations_used = 0
+            desktop_retry_used = False
+            budget = AgentBudget(BUDGET_PROFILES[budget_profile_for_task(plan.task_profile.task_kind)])
             if executor is not None:
                 executor.transient_tool_images.clear()
             target_max_tokens = (
@@ -5503,8 +5578,12 @@ def run_agent_completion(
             )
 
             try:
-                for round_idx in range(MAX_AGENT_STEPS):
-                    allow_tools_now = tools_supported and round_idx < MAX_AGENT_STEPS - 1
+                for round_idx, is_final_round in budget.rounds(
+                    lambda: int(local_accum_usage.get("total_tokens") or 0)
+                ):
+                    if is_final_round:
+                        loop_messages.append({"role": "user", "content": wrap_up_nudge(budget.stop_reason or "")})
+                    allow_tools_now = tools_supported and not is_final_round
                     allow_downgrade_now = not ((has_next_candidate or has_next_provider) and round_idx == 0)
                     round_messages = loop_messages if vision_supported else _strip_image_parts(loop_messages)
                     had_images_before = _messages_have_images(round_messages)
@@ -5553,6 +5632,19 @@ def run_agent_completion(
                         tmp_reasoning = str(
                             local_message_obj.get("reasoning") or local_message_obj.get("reasoning_content") or ""
                         ).strip()
+                        if (
+                            desktop_ready
+                            and allow_tools_now
+                            and not desktop_retry_used
+                            and not attempted_desktop(sync_tool_records)
+                            and not (local_ui_tool_calls or parsed_tmp.get("tasks") or parsed_tmp.get("clarification"))
+                            and gave_up_on_desktop(tmp_reply, user_message)
+                        ):
+                            desktop_retry_used = True
+                            tool_exposure.load_toolkit(DESKTOP_TOOLKIT)
+                            loop_messages.append({"role": "assistant", "content": local_raw_content or tmp_reply})
+                            loop_messages.append({"role": "user", "content": DESKTOP_RETRY_NUDGE})
+                            continue
                         cont = (
                             _needs_agent_continuation(
                                 tmp_reply,
@@ -5563,7 +5655,7 @@ def run_agent_completion(
                                 has_actions=bool(parsed_tmp.get("tasks") or parsed_tmp.get("clarification")),
                                 has_staged_tasks=bool(executor is not None and executor.staged_tasks),
                             )
-                            if (continuations_used < 2 and round_idx < MAX_AGENT_STEPS - 1)
+                            if (continuations_used < 2 and not is_final_round)
                             else None
                         )
                         if cont is not None:
@@ -5593,11 +5685,12 @@ def run_agent_completion(
                         if isinstance(tc, dict)
                         and str((tc.get("function") or {}).get("name") or "") not in ui_names
                     ]
-                    has_user_mem_calls = any(
-                        str((tc.get("function") or {}).get("name") or "") in USER_MEMORY_TOOL_NAMES
+                    # Memoria del usuario e internet funcionan sin workspace abierto.
+                    has_workspaceless_calls = any(
+                        str((tc.get("function") or {}).get("name") or "") in (USER_MEMORY_TOOL_NAMES | WEB_TOOL_NAMES)
                         for tc in exec_calls
                     )
-                    if not exec_calls or (executor is None and not has_user_mem_calls):
+                    if not exec_calls or (executor is None and not has_workspaceless_calls):
                         break
 
                     parsed_nonstream_args: List[Dict[str, Any]] = []
@@ -5628,6 +5721,11 @@ def run_agent_completion(
                                     limit=int(args.get("limit") or 8) if isinstance(args.get("limit"), (int, float)) else 8,
                                 )
                                 tool_out["disposition"] = {"delivery": "delivered_verified", "retry": "safe", "verified": True}
+                            elif fn_name in WEB_TOOL_NAMES:
+                                tool_out = execute_web_tool(fn_name, args)
+                                sync_web_sources = merge_web_sources(
+                                    sync_web_sources, web_sources_from_result(fn_name, tool_out)
+                                )
                             elif executor is not None:
                                 tool_out = executor.execute(fn_name, args)
                             elif fn_name in USER_MEMORY_TOOL_NAMES:
@@ -5675,8 +5773,10 @@ def run_agent_completion(
                                 ),
                                 "disposition": tool_out.get("disposition"),
                             })
-                            tool_results_nonstream.append((tc_id, tool_out))
+                            tool_exposure.note_tool_used(fn_name)
+                            tool_results_nonstream.append((tc_id, with_delivery_check(fn_name, tool_out)))
 
+                    budget.record_tool_round(tool_calls)
                     hist_tcs, all_failed_parse = _sanitize_tool_calls_for_history(tool_calls, parsed_nonstream_args)
                     if all_failed_parse:
                         loop_messages.append({
@@ -5922,6 +6022,7 @@ def run_agent_completion(
         "tasks": safe_tasks,
         "generated_pdfs": list(executor.generated_pdfs) if executor else [],
         "generated_documents": list(executor.generated_documents) if executor else [],
+        "web_sources": sync_web_sources,
         "provider_used": used_provider,
         "model_used": used_model_out,
         "usage": final_usage,
@@ -6174,7 +6275,7 @@ def stream_agent_completion(
     if executor is not None:
         all_active_tools = [*AGENT_TOOL_DEFS, *active_tools]
     else:
-        all_active_tools = [*USER_MEMORY_TOOL_DEFS, *active_tools]
+        all_active_tools = [*USER_MEMORY_TOOL_DEFS, *WEB_TOOL_DEFS, *active_tools]
 
     has_attachments, image_parts = _extract_attached_flags(attached_context)
     has_active_document = effective_scope == "document" or _has_active_document_in_attached(attached_context)
@@ -6187,6 +6288,12 @@ def stream_agent_completion(
         enable_deferred=executor is not None,
     )
     active_tools = tool_exposure.active_tool_defs()
+    desktop_ready = (
+        executor is not None
+        and command_bridge is not None
+        and effective_scope != "document"
+        and tool_exposure.has_tool("desktop_list_windows")
+    )
 
     stream_user_profile_mutated = False
     stream_user_memory_mutated = False
@@ -6209,6 +6316,19 @@ def stream_agent_completion(
     )
     turn_tool_records: List[Dict[str, Any]] = []
     turn_subagent_records: List[Dict[str, Any]] = []
+    turn_web_sources: List[Dict[str, str]] = []
+    web_sources_lock = threading.Lock()
+
+    def _record_web_sources(fn_name: str, tool_res: Any) -> None:
+        # Los subagentes buscan en paralelo: las fuentes se juntan con candado.
+        nonlocal turn_web_sources
+        new_sources = web_sources_from_result(fn_name, tool_res)
+        if not new_sources:
+            return
+        with web_sources_lock:
+            turn_web_sources = merge_web_sources(turn_web_sources, new_sources)
+            snapshot = list(turn_web_sources)
+        emit_event({"type": "web_sources", "sources": snapshot})
     rounds_executed = 1
 
     base_plan = select_best_models_for_task(
@@ -6381,19 +6501,16 @@ def stream_agent_completion(
     ) -> Any:
         if max_tokens_override is not None:
             target_max_tokens = int(max_tokens_override)
-        elif (
-            routing_plan.task_profile.needs_reasoning
-            or routing_plan.task_profile.needs_canvas
-            or include_tools
-        ):
-            low_m = (active_model or "").lower()
-            is_extended_output = (
-                active_provider in ("openrouter", "gemini", "anthropic")
-                or (active_provider == "deepseek" and any(k in low_m for k in ("reasoner", "flash", "pro", "v4")))
-            )
-            target_max_tokens = 16384 if is_extended_output else 8192
         else:
-            target_max_tokens = 6144
+            target_max_tokens = _stream_max_output_tokens(
+                active_provider,
+                active_model,
+                wants_long_output=(
+                    routing_plan.task_profile.needs_reasoning
+                    or routing_plan.task_profile.needs_canvas
+                    or include_tools
+                ),
+            )
         payload: Dict[str, Any] = {
             "model": active_model,
             "messages": req_messages,
@@ -6534,11 +6651,7 @@ def stream_agent_completion(
         tc_acc: Dict[int, Dict[str, Any]] = {}
         notified_canvas_tc = False
         last_pdf_draft_emit: Dict[int, Tuple[float, int, str]] = {}
-        event_iter = (
-            iter_anthropic_sse_as_openai_events(resp, default_model=active_model)
-            if active_provider == "anthropic"
-            else _iter_openai_sse_events(resp)
-        )
+        event_iter = _iter_provider_stream_events(active_provider, resp, active_model)
         for event_obj in event_iter:
                 if event_obj.get("error"):
                     err_msg = (
@@ -6587,7 +6700,9 @@ def stream_agent_completion(
                 delta = choices[0].get("delta") or {}
                 r_chunk = _extract_delta_reasoning(delta)
                 if r_chunk:
-                    on_reasoning_delta(r_chunk)
+                    # Por el router de la ronda: así el razonamiento nativo (`reasoning_content`) también se
+                    # guarda para reenviárselo al proveedor que lo necesita (ver _provider_replays_reasoning).
+                    tag_router.on_reasoning(r_chunk)
                 tc_deltas = delta.get("tool_calls")
                 if isinstance(tc_deltas, list):
                     for tcd in tc_deltas:
@@ -6695,6 +6810,7 @@ def stream_agent_completion(
         "memory_search",
         "query_screen_memory",
         "scan_workspace_cleanup",
+        *WEB_TOOL_NAMES,
     }
     desktop_observe_subagent_tool_names = read_only_subagent_tool_names | {
         "desktop_list_windows",
@@ -6704,12 +6820,12 @@ def stream_agent_completion(
     subagent_readonly_defs = (
         [td for td in AGENT_TOOL_DEFS if str((td.get("function") or {}).get("name") or "") in read_only_subagent_tool_names]
         if executor is not None
-        else []
+        else list(WEB_TOOL_DEFS)
     )
     subagent_desktop_observe_defs = (
         [td for td in AGENT_TOOL_DEFS if str((td.get("function") or {}).get("name") or "") in desktop_observe_subagent_tool_names]
         if executor is not None
-        else []
+        else list(WEB_TOOL_DEFS)
     )
 
     def _resolve_subagent_spec(raw_name: str, raw_model: str, raw_design: str, fallback_model: str) -> Tuple[str, str, str]:
@@ -6750,7 +6866,7 @@ def stream_agent_completion(
             str(args.get("design") or ""),
             fallback_model,
         )
-        if cur_prov != "openrouter" and "/" in sub_model:
+        if not _provider_accepts_model_id(cur_prov, sub_model):
             sub_model = fallback_model
         sub_role = str(args.get("role") or "Especialista").strip() or "Especialista"
         sub_task = str(args.get("task") or "").strip()
@@ -6830,12 +6946,13 @@ def stream_agent_completion(
         ]
 
         used_model = sub_model
-        if cur_prov != "openrouter" and "/" in used_model:
+        if not _provider_accepts_model_id(cur_prov, used_model):
             used_model = fallback_model
         final_text = ""
         sub_rounds_used = 0
+        sub_max_rounds = BUDGET_PROFILES[budget_profile_for_task(routing_plan.task_profile.task_kind)].subagent_rounds
         try:
-            for _sub_round in range(5):
+            for _sub_round in range(sub_max_rounds):
                 sub_rounds_used = _sub_round + 1
                 if _sub_round >= 1:
                     sub_msgs = prune_tool_loop_messages(sub_msgs)
@@ -6845,7 +6962,7 @@ def stream_agent_completion(
                     "temperature": 0.25,
                     "max_tokens": 2400,
                 }
-                if sub_tool_defs and _sub_round < 4:
+                if sub_tool_defs and _sub_round < sub_max_rounds - 1:
                     sub_payload["tools"] = sub_tool_defs
                     sub_payload["tool_choice"] = "auto"
 
@@ -6892,7 +7009,11 @@ def stream_agent_completion(
                     s_id = str(s_tc.get("id") or f"sub_{_sub_round}")
                     s_args = _parse_tool_args(s_fn.get("arguments"))
                     sub_parsed.append(s_args)
-                    if s_name in sub_allowed_names and not (isinstance(s_args, dict) and s_args.get("__parse_error__")):
+                    s_args_ok = not (isinstance(s_args, dict) and s_args.get("__parse_error__"))
+                    if s_name in WEB_TOOL_NAMES and s_args_ok:
+                        s_res = execute_web_tool(s_name, s_args)
+                        _record_web_sources(s_name, s_res)
+                    elif s_name in sub_allowed_names and s_args_ok and executor is not None:
                         s_res = executor.execute(s_name, s_args)
                     else:
                         s_res = {
@@ -7171,9 +7292,12 @@ def stream_agent_completion(
             emit_event({"type": "steps", "steps": steps})
 
         continuations_used = 0
+        desktop_retry_used = False
+        budget_limits = BUDGET_PROFILES[budget_profile_for_task(routing_plan.task_profile.task_kind)]
+        budget = AgentBudget(budget_limits)
 
         try:
-            for round_idx in range(MAX_AGENT_STEPS):
+            for round_idx, is_final_round in budget.rounds(lambda: int(usage_data.get("total_tokens") or 0)):
                 rounds_executed = round_idx + 1
                 if round_idx >= 1:
                     loop_messages, prune_stats = prune_tool_loop_messages_with_stats(loop_messages)
@@ -7184,6 +7308,11 @@ def stream_agent_completion(
                             chars_before=prune_stats["chars_before"],
                             chars_after=prune_stats["chars_after"],
                         )
+                if is_final_round:
+                    stop_reason = budget.stop_reason or ""
+                    _upsert_step("budget_wrapup", wrap_up_step_label(stop_reason, budget_limits), "done")
+                    emit_event({"type": "steps", "steps": steps})
+                    loop_messages.append({"role": "user", "content": wrap_up_nudge(stop_reason)})
                 round_reasoning_chunks: List[str] = []
                 round_reply_chunks: List[str] = []
 
@@ -7195,20 +7324,28 @@ def stream_agent_completion(
                     round_reasoning_chunks.append(chunk)
                     on_reasoning_delta(chunk)
 
+                allow_tools_now = tools_supported and not is_final_round
+                can_retry_desktop = (
+                    desktop_ready
+                    and allow_tools_now
+                    and not desktop_retry_used
+                    and not attempted_desktop(turn_tool_records)
+                )
+                reply_hold = ReplyHold(on_reply_delta, on_phase_change, enabled=can_retry_desktop)
+
                 def _round_on_reply(chunk: str) -> None:
                     if not chunk:
                         return
                     if not round_reply_chunks and reply_chunks and not "".join(reply_chunks[-3:]).endswith("\n"):
-                        on_reply_delta("\n\n")
+                        reply_hold.feed("\n\n")
                     round_reply_chunks.append(chunk)
-                    on_reply_delta(chunk)
+                    reply_hold.feed(chunk)
 
                 round_router = _StreamTagRouter(
                     on_reasoning=_round_on_reasoning,
                     on_reply=_round_on_reply,
-                    on_phase=on_phase_change,
+                    on_phase=reply_hold.phase,
                 )
-                allow_tools_now = tools_supported and round_idx < MAX_AGENT_STEPS - 1
                 can_failover_here = (
                     (has_next_candidate or has_next_provider)
                     and round_idx == 0
@@ -7239,6 +7376,7 @@ def stream_agent_completion(
                             round_reply_chunks.clear()
                             if stripped_dsml_rep:
                                 round_reply_chunks.append(stripped_dsml_rep)
+                            reply_hold.replace(stripped_dsml_rep)
                             if reply_chunks:
                                 full_cur = _strip_dsml_markup("".join(reply_chunks))
                                 reply_chunks.clear()
@@ -7286,15 +7424,34 @@ def stream_agent_completion(
                     and (
                         str((tc.get("function") or {}).get("name") or "") in mode_tool_names
                         or str((tc.get("function") or {}).get("name") or "") in USER_MEMORY_TOOL_NAMES
+                        or str((tc.get("function") or {}).get("name") or "") in WEB_TOOL_NAMES
                         or (
                             executor is not None
                             and str((tc.get("function") or {}).get("name") or "") not in ui_tool_names
                         )
                     )
                 ]
-                is_deepseek_reasoning_msg = (
-                    active_provider == "deepseek" or "deepseek" in active_model.lower()
-                )
+                replays_reasoning = _provider_replays_reasoning(active_provider, active_model)
+                if (
+                    can_retry_desktop
+                    and not pass_tool_calls
+                    and not (all_ui_tool_calls or round_router.canvas_buf.strip() or round_router.actions_buf.strip())
+                    and gave_up_on_desktop("".join(round_reply_chunks), user_message)
+                ):
+                    desktop_retry_used = True
+                    reply_hold.discard()
+                    tool_exposure.load_toolkit(DESKTOP_TOOLKIT)
+                    _set_think_step(status="done")
+                    _upsert_step("desktop_retry", DESKTOP_RETRY_LABEL, "done")
+                    emit_event({"type": "phase", "xox_state": "thinking", "label": f"{DESKTOP_RETRY_LABEL}..."})
+                    emit_event({"type": "steps", "steps": steps})
+                    assist_gave_up: Dict[str, Any] = {"role": "assistant", "content": "".join(round_reply_chunks)}
+                    if replays_reasoning:
+                        assist_gave_up["reasoning_content"] = round_reasoning_text
+                    loop_messages.append(assist_gave_up)
+                    loop_messages.append({"role": "user", "content": DESKTOP_RETRY_NUDGE})
+                    continue
+                reply_hold.release()
                 if not exec_calls:
                     round_reply_text = "".join(round_reply_chunks)
                     round_reas_text = round_reasoning_text
@@ -7307,7 +7464,7 @@ def stream_agent_completion(
                         broken_ui_calls_this_round > 0
                         and not has_valid_canvas_so_far
                         and continuations_used < 2
-                        and round_idx < MAX_AGENT_STEPS - 1
+                        and not is_final_round
                     ):
                         continuations_used += 1
                         _set_think_step(status="done")
@@ -7318,7 +7475,7 @@ def stream_agent_completion(
                             "role": "assistant",
                             "content": round_reply_text or "La llamada anterior al Canvas quedó incompleta.",
                         }
-                        if is_deepseek_reasoning_msg:
+                        if replays_reasoning:
                             assist_repair["reasoning_content"] = round_reas_text
                         loop_messages.append(assist_repair)
                         loop_messages.append({
@@ -7341,7 +7498,7 @@ def stream_agent_completion(
                             has_actions=bool(round_actions_parsed.get("tasks") or round_actions_parsed.get("clarification")),
                             has_staged_tasks=bool(executor is not None and executor.staged_tasks),
                         )
-                        if (continuations_used < 2 and round_idx < MAX_AGENT_STEPS - 1)
+                        if (continuations_used < 2 and not is_final_round)
                         else None
                     )
                     if cont is not None:
@@ -7355,7 +7512,7 @@ def stream_agent_completion(
                             "role": "assistant",
                             "content": round_reply_text or "Analicé los detalles.",
                         }
-                        if is_deepseek_reasoning_msg:
+                        if replays_reasoning:
                             assist_cont["reasoning_content"] = round_reas_text
                         loop_messages.append(assist_cont)
                         loop_messages.append({
@@ -7465,6 +7622,12 @@ def stream_agent_completion(
                                     limit=int(args.get("limit") or 8) if isinstance(args.get("limit"), (int, float)) else 8,
                                 )
                                 tool_res["disposition"] = {"delivery": "delivered_verified", "retry": "safe", "verified": True}
+                            elif fn_name in WEB_TOOL_NAMES:
+                                _upsert_step(step_id, label, "running", detail=detail or None)
+                                emit_event({"type": "phase", "xox_state": "reading", "label": f"{label}..."})
+                                emit_event({"type": "steps", "steps": steps})
+                                tool_res = execute_web_tool(fn_name, args)
+                                _record_web_sources(fn_name, tool_res)
                             elif fn_name in mode_tool_names:
                                 _upsert_step(step_id, label, "running", detail=detail or None)
                                 emit_event({"type": "phase", "xox_state": "syncing", "label": f"{label}..."})
@@ -7561,8 +7724,10 @@ def stream_agent_completion(
                                 ),
                                 "disposition": tool_res.get("disposition"),
                             })
-                        pass_tool_results.append((tc_id, tool_res))
+                        tool_exposure.note_tool_used(fn_name)
+                        pass_tool_results.append((tc_id, with_delivery_check(fn_name, tool_res)))
 
+                budget.record_tool_round(pass_tool_calls)
                 hist_tcs, all_failed_parse = _sanitize_tool_calls_for_history(pass_tool_calls, parsed_pass_args)
                 if all_failed_parse:
                     # Evitar mandar JSON roto dentro de `assistant.tool_calls` (causaría HTTP 400 en OpenRouter)
@@ -7570,7 +7735,7 @@ def stream_agent_completion(
                         "role": "assistant",
                         "content": "".join(round_reply_chunks).strip() or "Intenté preparar la llamada a herramienta, pero se truncó el JSON.",
                     }
-                    if is_deepseek_reasoning_msg:
+                    if replays_reasoning:
                         assist_bad["reasoning_content"] = round_reasoning_text
                     loop_messages.append(assist_bad)
                     loop_messages.append({
@@ -7587,7 +7752,7 @@ def stream_agent_completion(
                         "content": "".join(round_reply_chunks).strip() or "",
                         "tool_calls": hist_tcs,
                     }
-                    if is_deepseek_reasoning_msg:
+                    if replays_reasoning:
                         assist_tcs["reasoning_content"] = round_reasoning_text
                     loop_messages.append(assist_tcs)
                     for tc_id, tool_res in pass_tool_results:
@@ -7815,7 +7980,7 @@ def stream_agent_completion(
                 "content": "",
                 "tool_calls": valid_followup_tcs,
             }
-            if active_provider == "deepseek" or "deepseek" in active_model.lower():
+            if _provider_replays_reasoning(active_provider, active_model):
                 assist_followup["reasoning_content"] = full_reasoning
             followup_messages = [
                 *loop_messages,
@@ -7988,6 +8153,7 @@ def stream_agent_completion(
         "tasks": safe_tasks,
         "generated_pdfs": list(executor.generated_pdfs) if executor else [],
         "generated_documents": list(executor.generated_documents) if executor else [],
+        "web_sources": turn_web_sources,
         "provider_used": used_provider,
         "model_used": actual_model,
         "usage": final_stream_usage,

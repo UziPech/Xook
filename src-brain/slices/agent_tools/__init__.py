@@ -13,6 +13,13 @@ from .toolkit import (
     USER_MEMORY_TOOL_NAMES,
     WorkspaceToolExecutor,
 )
+from .web_tools import (
+    WEB_TOOL_DEFS,
+    WEB_TOOL_NAMES,
+    execute_web_tool,
+    merge_web_sources,
+    web_sources_from_result,
+)
 
 __all__ = [
     "AGENT_TOOL_DEFS",
@@ -24,6 +31,11 @@ __all__ = [
     "ToolExposureSession",
     "USER_MEMORY_TOOL_DEFS",
     "USER_MEMORY_TOOL_NAMES",
+    "WEB_TOOL_DEFS",
+    "WEB_TOOL_NAMES",
     "WorkspaceToolExecutor",
     "detect_initial_toolkits",
+    "execute_web_tool",
+    "merge_web_sources",
+    "web_sources_from_result",
 ]

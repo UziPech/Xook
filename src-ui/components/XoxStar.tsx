@@ -79,9 +79,9 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     pupil: "#846CE8",
     eye: "#90AAFF",
     celebrateMid: "#C4BAFC",
-    celebrateGlow: "#7C96FF",
-    blush: "#B8A8F8",
-    blushCore: "#E6E0FF",
+    celebrateGlow: "#8B9CFF",
+    blush: "#C4B5FD",
+    blushCore: "#EDE9FE",
   },
   violet: {
     label: "Violeta",
@@ -89,6 +89,7 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     rim: "#DDD6FE",
     rim2: "#D8B4FE",
     tint: "#EDE9FE",
+    bodyLower: "#8B6FE8",
     glow: "#A78BFA",
     deep: "#7E6CDA",
     idleCore: "#7569CE",
@@ -97,8 +98,8 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     eye: "#90AAFF",
     celebrateMid: "#E9D5FF",
     celebrateGlow: "#D29BFF",
-    blush: "#D8B4FE",
-    blushCore: "#F3E8FF",
+    blush: "#E9D5FF",
+    blushCore: "#FAF5FF",
   },
   emerald: {
     label: "Esmeralda",
@@ -106,6 +107,7 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     rim: "#A7F3D0",
     rim2: "#80DFCD",
     tint: "#D1FAE5",
+    bodyLower: "#149E88",
     glow: "#34D399",
     deep: "#08B16F",
     idleCore: "#09976A",
@@ -114,8 +116,8 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     eye: "#7DD3FC",
     celebrateMid: "#A7F3D0",
     celebrateGlow: "#38D6B2",
-    blush: "#BAE6FD",
-    blushCore: "#E0F2FE",
+    blush: "#99F6E4",
+    blushCore: "#CCFBF1",
   },
   amber: {
     label: "Ámbar",
@@ -123,6 +125,7 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     rim: "#FDE68A",
     rim2: "#F9BC8B",
     tint: "#FEF3C7",
+    bodyLower: "#D97724",
     glow: "#FBBF24",
     deep: "#C98508",
     idleCore: "#B5720D",
@@ -130,9 +133,9 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     pupil: "#F59E0B",
     eye: "#7DD3FC",
     celebrateMid: "#FEF08A",
-    celebrateGlow: "#E5AF36",
-    blush: "#BAE6FD",
-    blushCore: "#E0F2FE",
+    celebrateGlow: "#FBBF24",
+    blush: "#FDBA74",
+    blushCore: "#FFEDD5",
   },
   rose: {
     label: "Coral",
@@ -140,6 +143,7 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     rim: "#FECDD3",
     rim2: "#FAB1D5",
     tint: "#FFE4E6",
+    bodyLower: "#E05A8A",
     glow: "#FB7185",
     deep: "#D94D72",
     idleCore: "#C14E66",
@@ -147,9 +151,9 @@ export const XOX_ACCENT_PRESETS: Record<XoxAccentPreset, XoxAccentSpec> = {
     pupil: "#FB7185",
     eye: "#7DD3FC",
     celebrateMid: "#FECDD3",
-    celebrateGlow: "#F88B98",
-    blush: "#BAE6FD",
-    blushCore: "#E0F2FE",
+    celebrateGlow: "#FB8498",
+    blush: "#FECDD3",
+    blushCore: "#FFF1F2",
   },
 };
 
@@ -187,6 +191,7 @@ export function getXoxBubbleVars(accentPreset?: string | null): React.CSSPropert
 export function getXoxCosmosVars(accentPreset?: string | null): React.CSSProperties {
   const preset = resolveXoxAccentPreset(accentPreset);
   const spec = XOX_ACCENT_PRESETS[preset];
+  const secondaryTone = spec.bodyLower ?? spec.deep;
   if (preset === "classic") {
     return {
       "--xox-cosmos-bloom": "var(--ref-gemini-bloom-core)",
@@ -196,7 +201,10 @@ export function getXoxCosmosVars(accentPreset?: string | null): React.CSSPropert
       "--xox-cosmos-whisper": spec.glow,
       "--xox-input-accent": spec.glow,
       "--xox-input-rim": spec.rim,
+      "--xox-input-rim-secondary": spec.rim2,
       "--xox-input-mid": spec.mid,
+      "--xox-input-secondary": secondaryTone,
+      "--xox-input-caret": spec.accessory,
       "--xox-cosmos-border": "color-mix(in oklab, var(--ref-gemini-bloom-core) 58%, rgba(255, 255, 255, 0.16))",
     } as React.CSSProperties;
   }
@@ -208,7 +216,10 @@ export function getXoxCosmosVars(accentPreset?: string | null): React.CSSPropert
     "--xox-cosmos-whisper": spec.glow,
     "--xox-input-accent": spec.glow,
     "--xox-input-rim": spec.rim,
+    "--xox-input-rim-secondary": spec.rim2,
     "--xox-input-mid": spec.mid,
+    "--xox-input-secondary": secondaryTone,
+    "--xox-input-caret": spec.accessory,
     "--xox-cosmos-border": `color-mix(in oklab, ${spec.glow} 38%, rgba(255, 255, 255, 0.14))`,
   } as React.CSSProperties;
 }
@@ -270,6 +281,7 @@ interface XoxStarProps {
  */
 
 const C = 120; // centro del viewBox 240x240
+const XOX_SVG_REV = "lg8"; // garantiza recarga limpia de <defs>/<clipPath> en WebKit SVGResourcesCache
 
 // Continuidad de fase compartida (Chat <-> Vuelo <-> Espacio de Xox) para que ni Xox ni sus partículas salten al relevo
 const sharedXoxPhase = {
@@ -305,8 +317,8 @@ const VALLEYS = [
   { a: 161, r: 33 },
   { a: 236, r: 34 },
 ];
-const PEAK_ROUND = 15;
-const VALLEY_ROUND = 13;
+const PEAK_ROUND = 17.6;
+const VALLEY_ROUND = 15.2;
 
 export interface XoxResolvedColors {
   bodyTint: string;
@@ -428,7 +440,7 @@ const toRad = (d: number) => (d * Math.PI) / 180;
  * s* = entrecerrado del ojo (negativo = abierto/zoom), p* = escala de pupila,
  * mouth = boca paramétrica (semiancho, altura base, curvatura, inclinación de comisura derecha).
  */
-type FocusExpr = "none" | "editL" | "editR" | "run" | "ok" | "err";
+type FocusExpr = "none" | "editL" | "editR" | "run" | "ok" | "err" | "lens";
 type FocusPose = {
   sL: number;
   sR: number;
@@ -448,7 +460,27 @@ const FOCUS_POSES: Record<FocusExpr, FocusPose> = {
   ok: { sL: -0.16, sR: -0.16, pL: 1.24, pR: 1.24, mouth: { w: 3.8, y: 6.3, bend: 3.9, tilt: 0, shift: 0 } },
   // Error: ojos abiertos con pupilas contraídas y boca invertida.
   err: { sL: -0.12, sR: -0.12, pL: 0.86, pR: 0.86, mouth: { w: 3.0, y: 8.0, bend: -2.4, tilt: 0, shift: 0 } },
+  // Lupa: el ojo detrás del cristal se abre grande (curioso) y el otro se entrecierra; boquita de "mmm" del lado libre.
+  lens: { sL: 0.34, sR: -0.14, pL: 0.9, pR: 1.2, mouth: { w: 2.0, y: 7.4, bend: 0.5, tilt: -0.7, shift: -1.6 } },
 };
+// Pose de lupa recalculada cada frame según el ojo que queda bajo el cristal
+const LIVE_LENS_POSE: FocusPose = { ...FOCUS_POSES.lens, mouth: { ...FOCUS_POSES.lens.mouth } };
+// Aumento de la lupa (estado `reading`) y radio del cristal en unidades del viewBox
+const LENS_MAG = 1.6;
+const LENS_R = 10;
+// Anillo de sincronización: radio, aplanado de perspectiva e inclinación (grados)
+const SYNC_R = 92;
+const SYNC_FLAT = 0.34;
+const SYNC_TILT = -14;
+// Barrido de la lupa de un ojo al otro (segundos por ida y vuelta)
+const LENS_SCAN_PERIOD = 2.8;
+// Frase completa del festejo ("happy"): anticipación → gran salto alegre → rebote asimétrico → bailecito rítmico
+const HAPPY_CYCLE = 2.2;
+// Destellos del festejo (ángulos en grados, distribuidos orgánicamente alrededor de la gota estelar)
+const CHEER_SPARKLES = [-102, -52, -12, 34, 146, 186, 224, 260];
+const SPARKLE_PATH = "M 0 -5.2 Q 0.78 -0.78 5.2 0 Q 0.78 0.78 0 5.2 Q -0.78 0.78 -5.2 0 Q -0.78 -0.78 0 -5.2 Z";
+// Reflejo especular curvo en media luna inscrito dentro de la cúpula (óptica húmeda de gota sin tocar el borde)
+const CRESCENT_SPEC_PATH = "M -9.8 2.4 Q -0.8 -3.5 9.6 1.2 Q 0.4 -0.9 -9.8 2.4 Z";
 // Parpadeo natural: cierre rápido, apertura algo más lenta
 const BLINK_CLOSE = 0.065;
 const BLINK_OPEN = 0.12;
@@ -456,6 +488,184 @@ const smooth01 = (e0: number, e1: number, x: number) => {
   const k = clamp((x - e0) / (e1 - e0), 0, 1);
   return k * k * (3 - 2 * k);
 };
+
+interface HappyChoreoPose {
+  /** Desplazamiento vertical en unidades SVG (< 0 sube, > 0 agacha al preparar/aterrizar). */
+  jumpY: number;
+  /** Velocidad vertical aproximada para inercia/overlap de brazos y carita. */
+  jumpVel: number;
+  /** Deformación preservando volumen (< 0 squash ancho/bajo, > 0 stretch vertical). */
+  deform: number;
+  /** Inclinación alegre en grados (con asimetría deliberada entre saltos). */
+  tiltDeg: number;
+  /** Desplazamiento lateral suave acompañando el arco de cada salto o balanceo. */
+  shiftX: number;
+  /** Elevación simétrica de las puntas-brazo (0..1.1). */
+  armRaise: number;
+  /** Asimetría rítmica de brazos (> 0 alza más el derecho, < 0 alza más el izquierdo). */
+  armAsym: number;
+  /** Apertura alegre de la sonrisa (0.28..0.56). */
+  mouthJoy: number;
+  /** Elevación expresiva del rostro en el clímax (< 0 mira arriba radiante, > 0 acompaña compresión). */
+  faceLift: number;
+  /** Fracción del ciclo actual (0..2.2s) para sincronizar destellos escalonados. */
+  cycleTime: number;
+}
+
+const HAPPY_POSE_OUT: HappyChoreoPose = {
+  jumpY: 0,
+  jumpVel: 0,
+  deform: 0,
+  tiltDeg: 0,
+  shiftX: 0,
+  armRaise: 0,
+  armAsym: 0,
+  mouthJoy: 0.34,
+  faceLift: 0,
+  cycleTime: 0,
+};
+
+/**
+ * Evaluador determinista por fases semánticas (Principios Disney: anticipación con anclaje de pies,
+ * stretch de despegue, hang-time flotante en el ápice, aterrizaje gelatinoso, rebote asimétrico y meneo feliz).
+ */
+function evalHappyChoreo(elapsed: number, reduce: boolean): HappyChoreoPose {
+  const out = HAPPY_POSE_OUT;
+  if (reduce) {
+    out.jumpY = -3.5;
+    out.jumpVel = 0;
+    out.deform = 0;
+    out.tiltDeg = 2.2;
+    out.shiftX = 0;
+    out.armRaise = 0.86;
+    out.armAsym = 0;
+    out.mouthJoy = 0.38;
+    out.faceLift = -1.2;
+    out.cycleTime = 0;
+    return out;
+  }
+
+  const u = ((elapsed % HAPPY_CYCLE) + HAPPY_CYCLE) % HAPPY_CYCLE;
+  out.cycleTime = u;
+
+  if (u < 0.13) {
+    // Fase 1: Anticipación — se agacha blandito tomando impulso antes de saltar
+    const p = u / 0.13;
+    const e = Math.sin(p * Math.PI * 0.5);
+    out.jumpY = 4.2 * e;
+    out.jumpVel = 32 * Math.cos(p * Math.PI * 0.5);
+    out.deform = -0.135 * e;
+    out.tiltDeg = -2.4 * e;
+    out.shiftX = -1.1 * e;
+    out.armRaise = 0.34 * e;
+    out.armAsym = 0;
+    out.mouthJoy = 0.30 + 0.08 * e;
+    out.faceLift = 1.1 * e;
+    return out;
+  }
+
+  if (u < 0.64) {
+    // Fase 2: Gran salto radiante con hang-time flotante en el ápice
+    const p = (u - 0.13) / 0.51;
+    const apexP = 0.44;
+    if (p <= apexP) {
+      const q = p / apexP;
+      const h = 1 - Math.pow(1 - q, 2.35);
+      out.jumpY = lerp(4.2, -23.5, h);
+      out.jumpVel = -145 * Math.pow(1 - q, 1.35);
+    } else {
+      const q = (p - apexP) / (1 - apexP);
+      const h = Math.pow(q, 2.05);
+      out.jumpY = lerp(-23.5, 0, h);
+      out.jumpVel = 135 * q;
+    }
+    const launchStretch = Math.sin(clamp(p / 0.34, 0, 1) * Math.PI) * 0.125;
+    const crouchRelease = (1 - smooth01(0, 0.14, p)) * -0.135;
+    const preLandStretch = smooth01(0.76, 1.0, p) * 0.055;
+    out.deform = crouchRelease + launchStretch + preLandStretch;
+    const arc = Math.sin(p * Math.PI);
+    out.tiltDeg = lerp(-2.4, 0, smooth01(0, 0.18, p)) + 7.2 * arc;
+    out.shiftX = lerp(-1.1, 0, smooth01(0, 0.18, p)) + 3.1 * arc;
+    out.armRaise = lerp(0.34, 1.05, smooth01(0.02, 0.36, p)) - 0.08 * smooth01(0.75, 1.0, p);
+    out.armAsym = 0.28 * arc;
+    out.mouthJoy = 0.36 + 0.18 * arc;
+    out.faceLift = -2.6 * arc;
+    return out;
+  }
+
+  if (u < 0.76) {
+    // Fase 3a: Aterrizaje acolchado de gota líquida
+    const p = (u - 0.64) / 0.12;
+    const c = Math.sin(p * Math.PI);
+    out.jumpY = 3.6 * c;
+    out.jumpVel = 45 * Math.cos(p * Math.PI);
+    out.deform = -0.145 * c;
+    out.tiltDeg = lerp(1.6, -1.8, smooth01(0, 1, p));
+    out.shiftX = lerp(1.4, -0.6, smooth01(0, 1, p));
+    out.armRaise = 0.94 - 0.18 * c;
+    out.armAsym = 0;
+    out.mouthJoy = 0.38;
+    out.faceLift = 1.3 * c;
+    return out;
+  }
+
+  if (u < 1.12) {
+    // Fase 3b: Segundo saltito juguetón inclinado al lado opuesto (asimetría viva)
+    const p = (u - 0.76) / 0.36;
+    const apexP = 0.46;
+    if (p <= apexP) {
+      const q = p / apexP;
+      out.jumpY = -13.2 * (1 - Math.pow(1 - q, 2.2));
+      out.jumpVel = -92 * Math.pow(1 - q, 1.2);
+    } else {
+      const q = (p - apexP) / (1 - apexP);
+      out.jumpY = -13.2 * (1 - Math.pow(q, 2.0));
+      out.jumpVel = 88 * q;
+    }
+    const arc = Math.sin(p * Math.PI);
+    out.deform = 0.075 * Math.sin(clamp(p / 0.4, 0, 1) * Math.PI) + 0.035 * smooth01(0.78, 1.0, p);
+    out.tiltDeg = -6.2 * arc;
+    out.shiftX = -2.8 * arc;
+    out.armRaise = 0.96 + 0.06 * arc;
+    out.armAsym = -0.34 * arc;
+    out.mouthJoy = 0.35 + 0.13 * arc;
+    out.faceLift = -1.8 * arc;
+    return out;
+  }
+
+  if (u < 1.26) {
+    // Fase 3c: Asentamiento suave antes del bailecito
+    const p = (u - 1.12) / 0.14;
+    const c = Math.sin(p * Math.PI);
+    out.jumpY = 2.2 * c;
+    out.jumpVel = 24 * Math.cos(p * Math.PI);
+    out.deform = -0.085 * c;
+    out.tiltDeg = 0;
+    out.shiftX = 0;
+    out.armRaise = lerp(0.92, 0.80, smooth01(0, 1, p));
+    out.armAsym = 0;
+    out.mouthJoy = 0.34;
+    out.faceLift = 0.8 * c;
+    return out;
+  }
+
+  // Fase 4: Meneo alegre rítmico ("¡yei, yei!") con brazos alternados sin deformación de paralelogramo
+  const p = (u - 1.26) / (HAPPY_CYCLE - 1.26);
+  const env = smooth01(0, 0.15, p) * (1 - smooth01(0.85, 1.0, p));
+  const th = p * Math.PI * 2;
+  const sinTh = Math.sin(th);
+  const absSin = Math.abs(sinTh);
+  out.jumpY = -3.8 * absSin * env;
+  out.jumpVel = -26 * Math.sin(th * 2) * env;
+  out.deform = -0.045 * Math.cos(th * 2) * env;
+  out.tiltDeg = 5.6 * sinTh * env;
+  out.shiftX = 2.5 * sinTh * env;
+  out.armRaise = lerp(0.80, 0.0, smooth01(0.86, 1.0, p)) + 0.13 * absSin * env;
+  out.armAsym = 0.56 * sinTh * env;
+  out.mouthJoy = 0.32 + 0.09 * absSin * env;
+  out.faceLift = -1.15 * absSin * env;
+  return out;
+}
 
 type OklabTriple = [number, number, number];
 const srgbChannelToLin = (v: number): number => {
@@ -542,7 +752,7 @@ function roundedPath(pts: number[][], radii: number[]): string {
     const d2x = p2[0] - p1[0];
     const d2y = p2[1] - p1[1];
     const l2 = Math.hypot(d2x, d2y);
-    const r = Math.min(radii[i], l1 * 0.46, l2 * 0.46);
+    const r = Math.min(radii[i], l1 * 0.475, l2 * 0.475);
     const ax = p1[0] - (d1x / l1) * r;
     const ay = p1[1] - (d1y / l1) * r;
     const bx = p1[0] + (d2x / l2) * r;
@@ -565,12 +775,37 @@ interface ShapeParams {
   lag: number; // grados que las puntas se arrastran tras el giro
   reach: number; // estiramiento extra de las puntas (hover)
   wave: number; // fase del saludo (-1 = sin saludo)
+  cheer?: number; // 0..1 festejo: las puntas laterales superiores se alzan como brazos
+  armFlap?: number; // grados extra de los brazos por inercia del salto (+ = flotan arriba al caer)
+  armAsym?: number; // asimetría rítmica entre brazo derecho e izquierdo al festejar
+  airborne?: number; // 0..1 en el aire: las patitas apuntan suavemente hacia abajo
 }
 
-function buildStar({ phase, amp, lag, reach, wave }: ShapeParams): string {
+// Giro de cada punta (grados) en el frame actual; los valles vecinos acompañan a la mitad
+const PEAK_TURN: number[] = [0, 0, 0, 0, 0];
+
+function buildStar({
+  phase,
+  amp,
+  lag,
+  reach,
+  wave,
+  cheer = 0,
+  armFlap = 0,
+  armAsym = 0,
+  airborne = 0,
+}: ShapeParams): string {
+  // Festejo "¡yei!": las puntas 1 (derecha) y 4 (izquierda) se alzan con inercia orgánica;
+  // en el aire las patitas 2 y 3 apuntan ligeramente hacia abajo con ligereza flotante
+  PEAK_TURN[0] = -2.2 * armAsym * cheer;
+  PEAK_TURN[1] = -(19.5 * cheer + 7.5 * armAsym + armFlap * cheer);
+  PEAK_TURN[2] = 6.2 * airborne * cheer;
+  PEAK_TURN[3] = -6.2 * airborne * cheer;
+  PEAK_TURN[4] = 19.5 * cheer - 7.5 * armAsym + armFlap * cheer;
   for (let i = 0; i < 5; i++) {
-    let pa = PEAKS[i].a + lag + 2.2 * amp * Math.sin(phase * 1.1 + i * 2.1);
-    let pr = PEAKS[i].r * (1 + 0.035 * amp * Math.sin(phase * 1.6 + i * 1.35) + reach);
+    let pa = PEAKS[i].a + lag + PEAK_TURN[i] + 2.0 * amp * Math.sin(phase * 1.1 + i * 2.1);
+    let pr = PEAKS[i].r * (1 + 0.032 * amp * Math.sin(phase * 1.6 + i * 1.35) + reach);
+    if (i === 1 || i === 4) pr *= 1 + 0.055 * cheer;
 
     // Saludo con la punta superior derecha (sin agregar brazos ni manos)
     if (i === 1 && wave >= 0 && wave < 1.3) {
@@ -584,7 +819,8 @@ function buildStar({ phase, amp, lag, reach, wave }: ShapeParams): string {
     STAR_PTS[pIdx][1] = C + pr * Math.sin(toRad(pa));
     STAR_RADII[pIdx] = PEAK_ROUND;
 
-    const va = VALLEYS[i].a + lag * 0.4;
+    // El valle i queda entre la punta i y la i+1: acompaña la mitad del giro de ambas (sin pellizcos)
+    const va = VALLEYS[i].a + lag * 0.4 + 0.5 * (PEAK_TURN[i] + PEAK_TURN[(i + 1) % 5]);
     const vr = VALLEYS[i].r * (1 + 0.045 * amp * Math.sin(phase * 2 + i * 0.9 + 1));
     const vIdx = pIdx + 1;
     STAR_PTS[vIdx][0] = C + vr * Math.cos(toRad(va));
@@ -631,14 +867,13 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   terminal,
   clickBehavior = "spin",
 }) => {
-  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const uid = `${useId().replace(/[^a-zA-Z0-9_-]/g, "")}-${XOX_SVG_REV}`;
   const ids = {
     body: `xox-body-${uid}`,
     bodyClip: `xox-body-clip-${uid}`,
     rim: `xox-rim-${uid}`,
-    peakGlint: `xox-peak-glint-${uid}`,
-    peakGlintAlt: `xox-peak-glint-alt-${uid}`,
     meniscus: `xox-meniscus-${uid}`,
+    refractCrease: `xox-refract-crease-${uid}`,
     bevel: `xox-bevel-${uid}`,
     bounce: `xox-bounce-${uid}`,
     liquidA: `xox-liq-a-${uid}`,
@@ -646,14 +881,24 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     liquidC: `xox-liq-c-${uid}`,
     gloss: `xox-gloss-${uid}`,
     glossSpec: `xox-gloss-spec-${uid}`,
+    eyeFill: `xox-eye-fill-${uid}`,
     core: `xox-core-${uid}`,
     glow: `xox-glow-${uid}`,
     cradle: `xox-cradle-${uid}`,
     blush: `xox-blush-${uid}`,
     mouthClip: `xox-mouth-clip-${uid}`,
-    eyeClipL: `xox-eye-clip-l-${uid}`,
-    eyeClipR: `xox-eye-clip-r-${uid}`,
     laptopScreen: `xox-lap-scr-${uid}`,
+    features: `xox-features-${uid}`,
+    lensClip: `xox-lens-clip-${uid}`,
+    lensBack: `xox-lens-back-${uid}`,
+    lensEdge: `xox-lens-edge-${uid}`,
+    lensRim: `xox-lens-rim-${uid}`,
+    lensHandle: `xox-lens-handle-${uid}`,
+    syncSpin: `xox-sync-spin-${uid}`,
+    syncArc: `xox-sync-arc-${uid}`,
+    syncFront: `xox-sync-front-${uid}`,
+    syncHead: `xox-sync-head-${uid}`,
+    screenLight: `xox-screen-light-${uid}`,
   };
   const resolvedAccent = resolveXoxAccentPreset(accentPreset);
   const currentColors = resolveXoxStateColors(resolvedAccent, state);
@@ -668,18 +913,19 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const yawRef = useRef<SVGGElement>(null);
   const starUnderlayRef = useRef<SVGPathElement>(null);
   const starRef = useRef<SVGPathElement>(null);
+  const starRimRef = useRef<SVGPathElement>(null);
   const starMeniscusRef = useRef<SVGPathElement>(null);
+  const starRefractCreaseRef = useRef<SVGPathElement>(null);
   const starBevelRef = useRef<SVGPathElement>(null);
   const starBounceRef = useRef<SVGPathElement>(null);
   const starClipPathRef = useRef<SVGPathElement>(null);
-  const peakGlintRefs = useRef<(SVGCircleElement | null)[]>([]);
   const rimGradRef = useRef<SVGLinearGradientElement>(null);
   const liquidARef = useRef<SVGEllipseElement>(null);
   const liquidBRef = useRef<SVGEllipseElement>(null);
   const liquidCRef = useRef<SVGEllipseElement>(null);
   const glossTopRef = useRef<SVGEllipseElement>(null);
-  const glossSpecRef = useRef<SVGEllipseElement>(null);
-  const glossBotRef = useRef<SVGEllipseElement>(null);
+  const glossSpecRef = useRef<SVGPathElement>(null);
+  const glossPinRef = useRef<SVGEllipseElement>(null);
   const coreRef = useRef<SVGCircleElement>(null);
   const faceRef = useRef<SVGGElement>(null);
   const eyeLRef = useRef<SVGGElement>(null);
@@ -688,16 +934,6 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const eyeOpenRRef = useRef<SVGGElement>(null);
   const eyeScleraLRef = useRef<SVGEllipseElement>(null);
   const eyeScleraRRef = useRef<SVGEllipseElement>(null);
-  const eyeClipEllipseLRef = useRef<SVGEllipseElement>(null);
-  const eyeClipEllipseRRef = useRef<SVGEllipseElement>(null);
-  const irisLRef = useRef<SVGCircleElement>(null);
-  const irisRRef = useRef<SVGCircleElement>(null);
-  const pupilLRef = useRef<SVGCircleElement>(null);
-  const pupilRRef = useRef<SVGCircleElement>(null);
-  const glintLRef = useRef<SVGCircleElement>(null);
-  const glintRRef = useRef<SVGCircleElement>(null);
-  const lidShadeLRef = useRef<SVGRectElement>(null);
-  const lidShadeRRef = useRef<SVGRectElement>(null);
   const eyeHappyLRef = useRef<SVGPathElement>(null);
   const eyeHappyRRef = useRef<SVGPathElement>(null);
   const cheekLRef = useRef<SVGGElement>(null);
@@ -721,10 +957,19 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   subagentsRef.current = subagents;
   const terminalRef = useRef<XoxTerminalFeed | null | undefined>(terminal);
   terminalRef.current = terminal;
-  const syncPathRefs = useRef<(SVGPathElement | null)[]>([]);
-  const syncArrowRefs = useRef<(SVGPolygonElement | null)[]>([]);
-  const lensHandleRef = useRef<SVGLineElement>(null);
-  const lensRingRef = useRef<SVGCircleElement>(null);
+  // Anillo de sincronización: mitad trasera (detrás del cristal) y delantera (frente al cuerpo)
+  const syncBackRef = useRef<SVGGElement>(null);
+  const syncFrontRef = useRef<SVGGElement>(null);
+  const syncSpinRef = useRef<SVGGElement>(null);
+  const syncRingRefs = useRef<(SVGGElement | null)[]>([]);
+  const syncHeadRefs = useRef<(SVGGElement | null)[]>([]);
+  // Lupa de cristal: el grupo interno re-dibuja el ojo derecho aumentado
+  const lensMagRef = useRef<SVGGElement>(null);
+  const lensFerruleRef = useRef<SVGRectElement>(null);
+  const cheerSparkRefs = useRef<(SVGPathElement | null)[]>([]);
+  const screenLightRef = useRef<SVGEllipseElement>(null);
+  const tongueRef = useRef<SVGPathElement>(null);
+  const sweatRef = useRef<SVGGElement>(null);
   // Refs de la mini-laptop flotante (edición de código + terminal sin brazos)
   const laptopRef = useRef<SVGGElement>(null);
   const laptopLidRef = useRef<SVGGElement>(null);
@@ -745,11 +990,11 @@ export const XoxStar: React.FC<XoxStarProps> = ({
   const stopRefs = useRef<{
     bodyTint: SVGStopElement | null;
     bodyGlow: SVGStopElement | null;
+    bodyMid: SVGStopElement | null;
+    bodyRimEnd: SVGStopElement | null;
     rim1: SVGStopElement | null;
     rimMid: SVGStopElement | null;
     rim2: SVGStopElement | null;
-    peakGlintTint: SVGStopElement | null;
-    peakGlintAltTint: SVGStopElement | null;
     meniscus1: SVGStopElement | null;
     meniscusMid: SVGStopElement | null;
     meniscus2: SVGStopElement | null;
@@ -763,6 +1008,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     liquidB2: SVGStopElement | null;
     liquidC0: SVGStopElement | null;
     liquidC1: SVGStopElement | null;
+    liquidC2: SVGStopElement | null;
     core0: SVGStopElement | null;
     core1: SVGStopElement | null;
     core2: SVGStopElement | null;
@@ -773,14 +1019,21 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     blush0: SVGStopElement | null;
     blush1: SVGStopElement | null;
     blush2: SVGStopElement | null;
+    lensRim1: SVGStopElement | null;
+    lensRim2: SVGStopElement | null;
+    lensEdge: SVGStopElement | null;
+    syncArc0: SVGStopElement | null;
+    syncArc1: SVGStopElement | null;
+    syncHead: SVGStopElement | null;
+    screenLight: SVGStopElement | null;
   }>({
     bodyTint: null,
     bodyGlow: null,
+    bodyMid: null,
+    bodyRimEnd: null,
     rim1: null,
     rimMid: null,
     rim2: null,
-    peakGlintTint: null,
-    peakGlintAltTint: null,
     meniscus1: null,
     meniscusMid: null,
     meniscus2: null,
@@ -794,6 +1047,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     liquidB2: null,
     liquidC0: null,
     liquidC1: null,
+    liquidC2: null,
     core0: null,
     core1: null,
     core2: null,
@@ -804,13 +1058,19 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     blush0: null,
     blush1: null,
     blush2: null,
+    lensRim1: null,
+    lensRim2: null,
+    lensEdge: null,
+    syncArc0: null,
+    syncArc1: null,
+    syncHead: null,
+    screenLight: null,
   });
   // Props (accesorios) que aparecen según el estado
   const lensRef = useRef<SVGGElement>(null);
   const bubbleRef = useRef<SVGGElement>(null);
   const dotRefs = useRef<(SVGCircleElement | null)[]>([]);
   const bangRef = useRef<SVGGElement>(null);
-  const syncRef = useRef<SVGGElement>(null);
 
   const prevAccentRef = useRef<XoxAccentPreset>(resolvedAccent);
   const prevStateRef = useRef<XoxState>(state);
@@ -856,6 +1116,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     blushBoostUntil: -10,
     blushPeak: 0,
     blushKick: 0,
+    cheerStartAt: -10,
+    sparkleBurstAt: -10,
+    sparkleScale: 1,
+    syncAngle: 0,
     lookTX: 0,
     lookTY: 0,
     mouseTime: -1e9,
@@ -883,13 +1147,10 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     }
   }, [resolvedAccent, state]);
 
-  const { initialPath, initialPeakApexes } = useMemo(() => {
-    const path = buildStar({ phase: 0, amp: 1, lag: 0, reach: 0, wave: -1 });
-    return {
-      initialPath: path,
-      initialPeakApexes: PEAK_APEXES.map(([x, y]) => [x, y] as [number, number]),
-    };
-  }, []);
+  const initialPath = useMemo(
+    () => buildStar({ phase: 0, amp: 1, lag: 0, reach: 0, wave: -1 }),
+    []
+  );
 
   const triggerSpin = () => {
     const a = anim.current;
@@ -929,9 +1190,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
       if (!a.reduce) {
         if (state === "idle" && prev === "success") {
-          // Aterrizaje acolchado al pasar de Feliz a Reposo
-          a.squashKick += 1.45;
-          a.jumpKick += 28;
+          // Aterrizaje acolchado suave al cerrar el festejo y volver a Reposo
+          a.squashKick += 0.95;
+          a.jumpKick += 18;
         } else if (state === "talking") {
           // Impulso ligero y cercano al tomar la palabra
           a.squashKick += 1.05;
@@ -944,17 +1205,16 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
     }
 
-    if (state === "success") {
-      a.blushBoostUntil = Math.max(a.blushBoostUntil, a.t + 1.4);
+    if (state === "success" && (prev !== "success" || a.cheerStartAt < 0)) {
+      // Festejo: anticipación blandita → gran salto radiante → rebote asimétrico → meneo alegre
+      a.windupUntil = 0;
+      a.blushBoostUntil = Math.max(a.blushBoostUntil, a.t + 2.2);
       a.blushPeak = 1;
+      a.cheerStartAt = a.t;
+      a.summonAt = a.t;
+      a.sparkleBurstAt = a.t + 0.16;
+      a.sparkleScale = 1;
       if (!a.reduce) a.blushKick += 1.6;
-      triggerSpin();
-    }
-    // Sincronizando: pirueta repetida mientras dure el estado y la vista esté activa
-    if (state === "syncing" && active) {
-      triggerSpin();
-      const id = window.setInterval(triggerSpin, 2200);
-      return () => window.clearInterval(id);
     }
   }, [state, active]);
 
@@ -973,14 +1233,20 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     }
   }, [terminal?.seq, terminal?.status]);
 
-  // Coreografía de entrada al invocar con ⌘⇧X (micro-salto, saludo y pulso estelar)
+  // Coreografía de entrada al invocar con ⌘⇧X o al repetir gesto en Xox Studio
   useEffect(() => {
     if (!summonTrigger) return;
     const a = anim.current;
     a.summonAt = a.t;
-    a.waveStart = a.t;
     a.blushBoostUntil = Math.max(a.blushBoostUntil, a.t + 1.6);
     a.blushPeak = Math.max(a.blushPeak, 0.58);
+    if (stateRef.current === "success") {
+      a.cheerStartAt = a.t;
+      a.sparkleBurstAt = a.t + 0.16;
+      a.sparkleScale = 1;
+      return;
+    }
+    a.waveStart = a.t;
     if (a.reduce) {
       a.jumpKick = -60;
       return;
@@ -1056,8 +1322,6 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     const mouthWidthSpring: Spring = { x: 3.8, v: 0 };
     const squintL: Spring = { x: 0, v: 0 };
     const squintR: Spring = { x: 0, v: 0 };
-    const pupilScaleL: Spring = { x: 1, v: 0 };
-    const pupilScaleR: Spring = { x: 1, v: 0 };
     const saccadeX: Spring = { x: 0, v: 0 };
     const saccadeY: Spring = { x: 0, v: 0 };
     // Boca paramétrica de enfoque (resortes críticamente amortiguados: sin rebote ni temblor)
@@ -1067,6 +1331,14 @@ export const XoxStar: React.FC<XoxStarProps> = ({
     const focusMouthBend: Spring = { x: editPose.bend, v: 0 };
     const focusMouthTilt: Spring = { x: editPose.tilt, v: 0 };
     const focusMouthShift: Spring = { x: editPose.shift, v: 0 };
+    // Festejo (brazos arriba con suavidad), lengüita de concentración y gota de sudor al fallar la terminal
+    const cheerArms: Spring = { x: 0, v: 0 };
+    const tongueOut: Spring = { x: 0, v: 0 };
+    const sweatDrop: Spring = { x: 0, v: 0 };
+    let sparklesShown = false;
+    let syncShown = false;
+    let lensShown = false;
+    let prevTermOk = false;
 
     const setProp = (el: SVGElement | null, pop: number, transform: string) => {
       if (!el) return;
@@ -1141,6 +1413,18 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const wCode = clamp(popLaptop.x, 0, 1);
       const wSucc = clamp(wSuccess.x, 0, 1);
 
+      // Coreografía determinista de festejo ("happy" / Feliz) con principios Disney
+      const cheerElapsed = Math.max(0, t - Math.max(0, a.cheerStartAt));
+      const happyPose = evalHappyChoreo(cheerElapsed, a.reduce);
+
+      // Barrido de la lupa: -1 = ojo izquierdo, 1 = ojo derecho, con una pausa breve en cada extremo
+      const scanTh = (t / LENS_SCAN_PERIOD) * Math.PI * 2;
+      const scanTanh = Math.tanh(1.8 * Math.sin(scanTh));
+      const lensScanU = a.reduce ? 0.9 : scanTanh / Math.tanh(1.8);
+      const lensScanVel = a.reduce
+        ? 0
+        : (1.8 * Math.cos(scanTh) * (1 - scanTanh * scanTanh) * ((Math.PI * 2) / LENS_SCAN_PERIOD)) / Math.tanh(1.8);
+
       // --- Cadencia conversacional (frases con pausas breves de sonrisa y sílabas asimétricas) ---
       const talkT = Math.max(0, t - a.talkStartedAt);
       const phraseCycle = talkT % 2.45;
@@ -1160,22 +1444,31 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         0.16 * Math.cos(talkT * 20.5);
       // Curva ligeramente asimétrica: vocales abiertas más legibles y cierres ágiles entre sílabas
       const shapedSyl = Math.pow(clamp(sylWave, 0, 1.08), 0.86);
+      // Feliz: sonrisa abierta proporcionada y luminosa que se expande en el ápice del salto
       const targetMouthOpen = talking
         ? clamp(shapedSyl * phraseEnv, phraseEnv < 0.25 ? 0.06 : 0.18, 1.04) * wTalk
-        : 0;
+        : succeeding
+          ? happyPose.mouthJoy * wSucc
+          : 0;
       // Alternancia entre vocales amplias ("a/e") y vocales redondeadas ("o/u")
       const vowelRound = (0.5 + 0.5 * Math.sin(talkT * 5.2 + 0.9)) * smooth01(0.2, 0.75, phraseEnv);
       const targetHalfW = talking
         ? (4.9 - 1.35 * vowelRound + 0.45 * targetMouthOpen) * (0.74 + 0.26 * wTalk)
-        : 3.6;
+        : succeeding
+          ? 3.85 + 0.95 * happyPose.mouthJoy
+          : 3.6;
 
       step(mouthOpenSpring, targetMouthOpen, 290, 20, dt);
       step(mouthWidthSpring, targetHalfW, 230, 18.5, dt);
 
       const mOpen = clamp(mouthOpenSpring.x, 0, 1.12);
-      const mHalfW = clamp(mouthWidthSpring.x, 2.7, 5.4);
+      const mHalfW = clamp(mouthWidthSpring.x, 2.7, 5.1);
       const talkEmphasis = wTalk * smooth01(0.28, 0.88, mOpen);
-      const smileLift = 0.48 + 0.74 * (1 - vowelRound) + 0.18 * (1 - smooth01(0.15, 0.55, mOpen));
+      const smileLift = lerp(
+        0.48 + 0.74 * (1 - vowelRound) + 0.18 * (1 - smooth01(0.15, 0.55, mOpen)),
+        1.42,
+        wSucc * (1 - wTalk)
+      );
 
       // En modo coding: determina si está editando código o viendo la respuesta de la terminal
       const tf = terminalRef.current;
@@ -1187,11 +1480,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       step(termModeBlend, isTermPhase ? 1 : 0, 140, 16, dt);
       const wTerm = clamp(termModeBlend.x, 0, 1);
 
-      // Trayectoria lateral de la laptop: pasa suavemente de un lado a otro frente a Xox
-      const lapSideWave = Math.sin(t * 0.92);
-
       // --- Parpadeo natural (cierre rápido, apertura suave) --------------------
-      const analyzeWeight = clamp(wCode + wRead * 0.55 + wThink * 0.35, 0, 1);
+      const analyzeWeight = clamp(wCode + wRead * 0.9 + wThink * 0.35, 0, 1);
       const focused = analyzeWeight > 0.3;
       const blinkTotal = BLINK_CLOSE + blinkHold + BLINK_OPEN;
       const blinkBusy = t - blinkStart < blinkTotal;
@@ -1213,7 +1503,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         else if (isTermPhase && isTermErr) wantedExpr = "err";
         else if (isTermPhase) wantedExpr = "run";
         else wantedExpr = editExpr;
-      } else if (reading || thinking) {
+      } else if (reading) {
+        wantedExpr = "lens";
+      } else if (thinking) {
         wantedExpr = editExpr;
       }
       // Alterna el ojo dominante de vez en cuando (sólo mientras edita/lee) para que siga vivo
@@ -1245,18 +1537,27 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         exprSwapPending = false;
       }
 
-      const pose = FOCUS_POSES[shownExpr];
+      let pose = FOCUS_POSES[shownExpr];
+      if (shownExpr === "lens") {
+        // El ojo bajo la lupa se abre curioso y el otro se entrecierra; la boquita se va al lado libre
+        const uR = Math.max(0, lensScanU);
+        const uL = Math.max(0, -lensScanU);
+        LIVE_LENS_POSE.sL = 0.34 * uR - 0.14 * uL;
+        LIVE_LENS_POSE.sR = 0.34 * uL - 0.14 * uR;
+        LIVE_LENS_POSE.pL = 1 + 0.2 * uL - 0.1 * uR;
+        LIVE_LENS_POSE.pR = 1 + 0.2 * uR - 0.1 * uL;
+        LIVE_LENS_POSE.mouth.tilt = -0.7 * lensScanU;
+        LIVE_LENS_POSE.mouth.shift = -1.6 * lensScanU;
+        pose = LIVE_LENS_POSE;
+      }
       // Calidez ocular carismática al hablar (suaviza ligeramente los ojos en sílabas alegres con leve asimetría)
       const talkWarmthWeight = wTalk * (1 - analyzeWeight);
       const talkAsym = Math.sin(talkT * 1.45) * 0.045;
       const talkSquintL = talkWarmthWeight * (0.065 + 0.075 * talkEmphasis + Math.max(0, talkAsym));
       const talkSquintR = talkWarmthWeight * (0.065 + 0.075 * talkEmphasis + Math.max(0, -talkAsym));
-      const talkPupilBoost = talkWarmthWeight * (0.08 + 0.055 * talkEmphasis);
       // Resortes críticamente amortiguados (c ≈ 2√k): llegan firmes a la pose sin rebotar
       step(squintL, pose.sL * analyzeWeight + talkSquintL, 300, 35, dt);
       step(squintR, pose.sR * analyzeWeight + talkSquintR, 300, 35, dt);
-      step(pupilScaleL, 1 + (pose.pL - 1) * analyzeWeight + talkPupilBoost, 260, 32, dt);
-      step(pupilScaleR, 1 + (pose.pR - 1) * analyzeWeight + talkPupilBoost, 260, 32, dt);
 
       // --- Lectura ocular coherente con el cursor del editor ---------------
       // Fijaciones discretas que avanzan con el texto que se escribe y un barrido de retorno
@@ -1322,21 +1623,30 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       if (dragging) {
         tx = clamp(dragNx * 1.15, -1, 1);
         ty = clamp(dragNy * 0.95, -1, 1);
+      } else if (succeeding) {
+        // En Feliz mantiene mirada centrada y radiante siguiendo sutilmente el arco alegre
+        tx = clamp(happyPose.shiftX * 0.09, -0.35, 0.35);
+        ty = clamp(happyPose.faceLift * 0.12, -0.38, 0.22);
       } else if (thinking) {
         tx = 0.4 + 0.18 * Math.sin(t * 2.3);
         ty = -0.6 + 0.12 * Math.sin(t * 3.1);
       } else if (reading) {
-        // Sigue la lupa mientras escanea
-        tx = Math.sin(t * 1.6) * 0.9;
-        ty = 0.45;
+        // La mirada acompaña a la lupa en su barrido de lado a lado
+        tx = 0.42 * lensScanU;
+        ty = 0.26 + 0.06 * Math.sin(t * 0.8);
       } else if (coding) {
-        // Sigue a la laptop con la cabeza; la lectura fina la hacen las pupilas (sacadas de lectura)
-        tx = clamp(lapSideWave * 0.82, -0.95, 0.95);
-        ty = isTermPhase ? (isTermDoneOk ? 0.16 : 0.3) : 0.24;
+        // Mira hacia la laptop (abajo a la derecha); la lectura fina la hacen las pupilas (sacadas)
+        tx = 0.52 + 0.06 * Math.sin(t * 0.8);
+        ty = isTermPhase ? (isTermDoneOk ? 0.18 : 0.36) : 0.4;
       } else if (alerting) {
         // Inquieto: mira nervioso de un lado a otro
         tx = 0.85 * Math.sin(t * 5.3) * Math.cos(t * 1.7);
         ty = 0.3 * Math.sin(t * 3.9);
+      } else if (syncing) {
+        // Sigue con la mirada a la flecha que recorre el anillo
+        const headRad = toRad(a.syncAngle + 120);
+        tx = 0.55 * Math.cos(headRad);
+        ty = 0.08 + 0.3 * Math.sin(headRad);
       } else if (talking) {
         // Conversación atenta y cercana: si el cursor está activo lo sigue con calidez; si no, mantiene contacto visual vivo
         const talkGlanceX = 0.24 * Math.sin(talkT * 1.35) + 0.12 * Math.cos(talkT * 2.4);
@@ -1394,7 +1704,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const interactiveBlush = hoverRef.current ? 0.62 : 0;
       const boostBlush = t <= a.blushBoostUntil ? a.blushPeak : 0;
       const dragBlush = dragging ? smooth01(0.15, 0.7, dragSpeed) * 0.52 : 0;
-      const successBlush = wSucc * 0.96;
+      const successBlush = wSucc * 0.92;
       const talkingBlush = wTalk * (0.4 + 0.16 * talkEmphasis);
       const codingOkBlush = wCode * (isTermPhase && isTermDoneOk ? 0.48 : 0);
       const blushTarget =
@@ -1408,14 +1718,21 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const swayThink = 5.5 * Math.sin(t * 2.2);
       const swayRead = -3.8 * Math.sin(t * 1.6);
       const swayTalk = 5.6 * Math.sin(talkT * 1.55 + 0.25) + 1.8 * Math.sin(talkT * 3.85);
-      const swayCode = 5.0 * lapSideWave + 1.6 * Math.sin(t * 3.2);
+      // Inclinado hacia la laptop con cabeceos cortos al ritmo del tecleo
+      const swayCode = 3.2 + 1.4 * Math.sin(t * 3.2);
+      // En Feliz: inclinación en arco asimétrica sincronizada con cada salto y balanceo rítmico
+      const swaySucc = happyPose.tiltDeg;
+      const swaySync = 2.6 * Math.sin(toRad(a.syncAngle + 120));
+      const wSync = clamp(popSync.x, 0, 1);
       const sway = alerting
         ? (3.4 * Math.sin(t * 0.85) + 3.2 * Math.sin(t * 23)) * A
-        : (swayIdle * (1 - Math.max(wThink, wRead, wTalk, wCode)) +
+        : (swayIdle * (1 - Math.max(wThink, wRead, wTalk, wCode, wSucc, wSync)) +
           swayThink * wThink +
           swayRead * wRead +
           swayTalk * wTalk +
-          swayCode * wCode) *
+          swayCode * wCode +
+          swaySucc * wSucc +
+          swaySync * wSync) *
         A;
 
       const landingPhase = (t - a.landedAt) / 0.95;
@@ -1429,9 +1746,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       for (let sIdx = 0; sIdx < subSteps; sIdx += 1) {
         step(
           rot,
-          a.spinTarget + windup + sway + lookX.x * 8 * A + dragTilt,
-          alerting ? 160 : dragging ? 120 : 78,
-          alerting ? 11 : dragging ? 13 : 13.5,
+          a.spinTarget + windup + sway + lookX.x * 8 * (1 - 0.55 * wSucc) * A + dragTilt,
+          alerting ? 160 : succeeding ? 145 : dragging ? 120 : 78,
+          alerting ? 11 : succeeding ? 16 : dragging ? 13 : 13.5,
           h
         );
 
@@ -1452,15 +1769,19 @@ export const XoxStar: React.FC<XoxStarProps> = ({
 
       const stretch = Math.min(Math.abs(jump.v) * 0.0005, 0.12);
       const talkBounce = wTalk * (mOpen - 0.34) * 0.036 * A;
-      const sy = (1 - squash.x * 0.45) * (1 + stretch + talkBounce);
-      const sx = (1 + squash.x * 0.4) * (1 - stretch * 0.55 - talkBounce * 0.72);
+      // Deformación de gota líquida en Feliz preservando volumen (sx * sy ≈ 1) y anclando las patitas al suelo
+      const happyDef = happyPose.deform * wSucc * A;
+      const happySy = 1 + happyDef;
+      const happySx = 1 - happyDef * 0.86;
+      const sy = (1 - squash.x * 0.45) * (1 + stretch + talkBounce) * happySy;
+      const sx = (1 + squash.x * 0.4) * (1 - stretch * 0.55 - talkBounce * 0.72) * happySx;
 
       // Flotación vertical continua (conservando el pulso rápido exacto en `alert`)
       const bobIdle = 3.2 * Math.sin(t * 1.15);
       const bobThink = 4.5 * Math.sin(t * 2.4);
       const bobTalk = 2.1 * Math.sin(talkT * 2.35) - 2.3 * talkEmphasis;
       const bobCode = 2.4 * Math.sin(t * 2.8) + (isTermPhase && isTermDoneOk ? -2.2 * Math.abs(Math.sin(t * 4.5)) : 0);
-      const activeBobWeight = clamp(wThink + wTalk + wCode, 0, 1);
+      const activeBobWeight = clamp(wThink + wTalk + wCode + wSucc, 0, 1);
       const bob = alerting
         ? 2 * Math.sin(t * 9) * A
         : (bobIdle * (1 - activeBobWeight) +
@@ -1469,8 +1790,11 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           bobCode * wCode) *
         A;
 
-      const y = C + bob + jump.x;
-      const shakeX = alerting ? 1.8 * Math.sin(t * 37) * A : 0;
+      const totalJumpY = jump.x + happyPose.jumpY * wSucc;
+      // Anclaje de contacto al suelo: cuando se agacha o aterriza (happyDef < 0), las patitas empujan el piso
+      const footContactAnchor = happyDef < 0 ? -happyDef * 32 * smooth01(-6, 1, totalJumpY) : 0;
+      const y = C + bob + totalJumpY + footContactAnchor;
+      const shakeX = alerting ? 1.8 * Math.sin(t * 37) * A : happyPose.shiftX * wSucc * A;
 
       bodyRef.current?.setAttribute(
         "transform",
@@ -1484,133 +1808,142 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         `translate(${(C - lookX.x * 2.5).toFixed(2)} ${C}) scale(${yaw.toFixed(4)} 1) translate(${-C} ${-C})`
       );
 
-      // --- Cuerpo gelatinoso (follow-through vivo en las puntas durante vuelo y aterrizaje) ---
+      // --- Cuerpo de gota líquida (follow-through vivo en las puntas y brazos expresivos) ---
       const starSpeed = alerting
         ? 3.2
-        : 1 + 0.8 * wThink + 0.35 * wCode + 0.32 * wTalk + dragSpeed * 1.45 + landingEnergy * 1.1;
+        : 1 + 0.8 * wThink + 0.35 * wCode + 0.32 * wTalk + 0.25 * wSucc + dragSpeed * 1.45 + landingEnergy * 1.1;
       a.starPhase += dt * starSpeed;
       const starAmp =
-        (alerting ? 2.1 : 1 + 0.6 * wThink + 0.18 * wCode + 0.28 * wTalk + dragSpeed * 0.95 + landingEnergy * 0.75) * A;
+        (alerting
+          ? 2.1
+          : 1 + 0.6 * wThink + 0.18 * wCode + 0.28 * wTalk + 0.22 * wSucc + dragSpeed * 0.95 + landingEnergy * 0.75) * A;
       const lag = clamp(-rot.v * 0.017 - dragNx * 13 * A, -18, 18);
+      const airborne = smooth01(0, 11, -totalJumpY);
+      step(cheerArms, happyPose.armRaise * wSucc, 185, 19, dt);
+      const combinedVelY = jump.v + happyPose.jumpVel * wSucc;
+      const armFlap = clamp(combinedVelY * 0.042, -7.5, 8.5) * A;
       const starPath = buildStar({
         phase: a.starPhase,
         amp: starAmp,
         lag,
-        reach: hover.x * 0.03 + wSucc * 0.02 + talkEmphasis * 0.018 + dragSpeed * 0.032 + landingEnergy * 0.024,
+        reach: hover.x * 0.028 + wSucc * 0.022 * airborne + talkEmphasis * 0.018 + dragSpeed * 0.032 + landingEnergy * 0.024,
         wave: t - a.waveStart,
+        cheer: clamp(cheerArms.x, 0, 1.12) * A,
+        armFlap,
+        armAsym: happyPose.armAsym * wSucc * A,
+        airborne,
       });
       starRef.current?.setAttribute("d", starPath);
+      starRimRef.current?.setAttribute("d", starPath);
       starMeniscusRef.current?.setAttribute("d", starPath);
+      starRefractCreaseRef.current?.setAttribute("d", starPath);
       starBevelRef.current?.setAttribute("d", starPath);
       starBounceRef.current?.setAttribute("d", starPath);
       starUnderlayRef.current?.setAttribute("d", starPath);
       starClipPathRef.current?.setAttribute("d", starPath);
 
-      // Puntos de luz cristalinos muy sutiles en las 5 puntas redondeadas
-      for (let i = 0; i < 5; i++) {
-        const el = peakGlintRefs.current[i];
-        if (!el) continue;
-        const px = PEAK_APEXES[i][0];
-        const py = PEAK_APEXES[i][1];
-        const dirBias = i === 0 || i === 4 ? 0.34 : i === 2 ? 0.30 : 0.22;
-        const breathe = 0.05 * Math.sin(t * 1.35 + i * 1.25) * A;
-        const op = clamp(dirBias + breathe + hover.x * 0.09 + wThink * 0.10 + wTalk * 0.05, 0.16, 0.52);
-        const rad = 6.8 + 0.9 * Math.sin(t * 1.35 + i * 1.25) * A + hover.x * 0.6;
-        el.setAttribute("cx", px.toFixed(2));
-        el.setAttribute("cy", py.toFixed(2));
-        el.setAttribute("r", rad.toFixed(2));
-        el.setAttribute("opacity", op.toFixed(3));
-      }
-
-      // Refracción líquida viva: cáusticas internas, onda periwinkle y filo especular fluyen dentro del cristal
+      // Óptica Liquid Glass cristalina: centro transparente profundo y refracción cromática concentrada hacia la curvatura
+      const sloshSquash = clamp(squash.x * 0.4 - happyDef, -0.18, 0.26);
       if (liquidARef.current) {
-        const ax = 87 + (10.5 * Math.sin(t * 0.56) - lookX.x * 5.6) * A;
-        const ay = 83 + (8.0 * Math.cos(t * 0.44) - lookY.x * 4.5) * A;
-        const arx = 56 + 5.5 * Math.sin(t * 0.68) * A;
-        const ary = 43 + 4.4 * Math.cos(t * 0.61) * A;
+        const ax = 86 + (7.5 * Math.sin(t * 0.52) - lookX.x * 5.2 - shakeX * 0.35) * A;
+        const ay = 78 + (5.8 * Math.cos(t * 0.43) - lookY.x * 4.0) * A;
+        const arx = 48 + 4.0 * Math.sin(t * 0.64) * A + sloshSquash * 14;
+        const ary = 36 + 3.2 * Math.cos(t * 0.58) * A - sloshSquash * 8;
         liquidARef.current.setAttribute("cx", ax.toFixed(2));
         liquidARef.current.setAttribute("cy", ay.toFixed(2));
         liquidARef.current.setAttribute("rx", arx.toFixed(2));
         liquidARef.current.setAttribute("ry", ary.toFixed(2));
       }
       if (liquidBRef.current) {
-        const bx = 151 + (11.0 * Math.cos(t * 0.49 + 1.3) + lookX.x * 5.2) * A;
-        const by = 154 + (8.5 * Math.sin(t * 0.41 + 0.7) + lookY.x * 4.2) * A;
-        const brx = 57 + 5.5 * Math.cos(t * 0.63) * A;
-        const bry = 45 + 4.6 * Math.sin(t * 0.57) * A;
+        const bx = 146 + (8.5 * Math.cos(t * 0.47 + 1.2) + lookX.x * 5.0 + shakeX * 0.45) * A;
+        const by = 156 + (6.2 * Math.sin(t * 0.41 + 0.7) + lookY.x * 3.8 + sloshSquash * 10) * A;
+        const brx = 52 + 4.5 * Math.cos(t * 0.61) * A + sloshSquash * 20;
+        const bry = 40 + 3.6 * Math.sin(t * 0.55) * A - sloshSquash * 9;
         liquidBRef.current.setAttribute("cx", bx.toFixed(2));
         liquidBRef.current.setAttribute("cy", by.toFixed(2));
         liquidBRef.current.setAttribute("rx", brx.toFixed(2));
         liquidBRef.current.setAttribute("ry", bry.toFixed(2));
       }
       if (liquidCRef.current) {
-        const cx = 122 + (18.0 * Math.sin(t * 0.37 + 2.1) - lookX.x * 4.0) * A;
-        const cy = 132 + (13.0 * Math.cos(t * 0.45 + 0.5) - lookY.x * 3.2) * A;
-        const crx = 40 + 6.0 * Math.sin(t * 0.74) * A;
-        const cry = 26 + 4.0 * Math.cos(t * 0.62) * A;
+        // Cáustica cromática inferior sin blanco lechoso (se mece y ensancha al comprimir)
+        const cx = 128 + (10.5 * Math.sin(t * 0.42 + 1.8) + lookX.x * 4.4 + shakeX * 0.5) * A;
+        const cy = 164 + (4.8 * Math.cos(t * 0.48 + 0.5) + sloshSquash * 8) * A;
+        const crx = 36 + 4.0 * Math.sin(t * 0.7) * A + sloshSquash * 18 + wSucc * 3;
+        const cry = 16 + 2.2 * Math.cos(t * 0.6) * A - sloshSquash * 4;
         liquidCRef.current.setAttribute("cx", cx.toFixed(2));
         liquidCRef.current.setAttribute("cy", cy.toFixed(2));
         liquidCRef.current.setAttribute("rx", crx.toFixed(2));
         liquidCRef.current.setAttribute("ry", cry.toFixed(2));
-        liquidCRef.current.setAttribute("transform", `rotate(${(-22 + 12 * Math.sin(t * 0.31) * A).toFixed(1)} ${cx.toFixed(2)} ${cy.toFixed(2)})`);
+        liquidCRef.current.setAttribute("transform", `rotate(${(-10 + 7 * Math.sin(t * 0.33) * A).toFixed(1)} ${cx.toFixed(2)} ${cy.toFixed(2)})`);
       }
       if (rimGradRef.current) {
-        const rimDriftX = 14 * Math.sin(t * 0.65) * A;
-        const rimDriftY = 11 * Math.cos(t * 0.52) * A;
-        rimGradRef.current.setAttribute("x1", (55 + rimDriftX).toFixed(1));
-        rimGradRef.current.setAttribute("y1", (45 + rimDriftY).toFixed(1));
-        rimGradRef.current.setAttribute("x2", (185 - rimDriftX * 0.85).toFixed(1));
-        rimGradRef.current.setAttribute("y2", (195 - rimDriftY * 0.85).toFixed(1));
+        const rimDriftX = 12 * Math.sin(t * 0.6) * A;
+        const rimDriftY = 10 * Math.cos(t * 0.48) * A;
+        rimGradRef.current.setAttribute("x1", (56 + rimDriftX).toFixed(1));
+        rimGradRef.current.setAttribute("y1", (46 + rimDriftY).toFixed(1));
+        rimGradRef.current.setAttribute("x2", (184 - rimDriftX * 0.85).toFixed(1));
+        rimGradRef.current.setAttribute("y2", (194 - rimDriftY * 0.85).toFixed(1));
       }
+      // Reflejo especular húmedo inscrito dentro de la frente convexa (nunca cortado por los valles)
+      const specShiftX = (-lookX.x * 3.0 - rot.x * 0.06 + 1.5 * Math.sin(t * 0.65)) * A;
+      const specShiftY = (-lookY.x * 2.0 + 1.2 * Math.cos(t * 0.55)) * A;
       if (glossTopRef.current) {
-        const gx = 104 + (-lookX.x * 3.8 + 2.4 * Math.sin(t * 0.7)) * A;
-        const gy = 87 + (-lookY.x * 2.6 + 1.8 * Math.cos(t * 0.58)) * A;
+        const gx = 108.0 + specShiftX;
+        const gy = 96.0 + specShiftY;
         glossTopRef.current.setAttribute("cx", gx.toFixed(2));
         glossTopRef.current.setAttribute("cy", gy.toFixed(2));
-        glossTopRef.current.setAttribute("transform", `rotate(-33 ${gx.toFixed(2)} ${gy.toFixed(2)})`);
+        glossTopRef.current.setAttribute("transform", `rotate(-32 ${gx.toFixed(2)} ${gy.toFixed(2)})`);
       }
       if (glossSpecRef.current) {
-        const sx2 = 102.5 + (-lookX.x * 4.5 + 2.8 * Math.sin(t * 0.72 + 0.2)) * A;
-        const sy2 = 85.2 + (-lookY.x * 3.0 + 2.0 * Math.cos(t * 0.6 + 0.2)) * A;
-        glossSpecRef.current.setAttribute("cx", sx2.toFixed(2));
-        glossSpecRef.current.setAttribute("cy", sy2.toFixed(2));
-        glossSpecRef.current.setAttribute("transform", `rotate(-34 ${sx2.toFixed(2)} ${sy2.toFixed(2)})`);
+        const sx2 = 108.5 + specShiftX * 1.08;
+        const sy2 = 95.2 + specShiftY * 1.08;
+        glossSpecRef.current.setAttribute("transform", `translate(${sx2.toFixed(2)} ${sy2.toFixed(2)}) rotate(-32)`);
       }
-      if (glossBotRef.current) {
-        const gbx = 141 + (lookX.x * 3.0 - 2.0 * Math.cos(t * 0.62)) * A;
-        const gby = 152 + (lookY.x * 2.2 + 1.5 * Math.sin(t * 0.54)) * A;
-        glossBotRef.current.setAttribute("cx", gbx.toFixed(2));
-        glossBotRef.current.setAttribute("cy", gby.toFixed(2));
-        glossBotRef.current.setAttribute("transform", `rotate(-28 ${gbx.toFixed(2)} ${gby.toFixed(2)})`);
+      if (glossPinRef.current) {
+        const px2 = 98.8 + specShiftX * 1.04;
+        const py2 = 106.0 + specShiftY * 1.04;
+        glossPinRef.current.setAttribute("cx", px2.toFixed(2));
+        glossPinRef.current.setAttribute("cy", py2.toFixed(2));
+        glossPinRef.current.setAttribute("transform", `rotate(-40 ${px2.toFixed(2)} ${py2.toFixed(2)})`);
       }
 
-      // --- Núcleo y aura (resplandor interno amplio y difuso, suspendido dentro del cristal líquido) ---
-      const coreBase = 36 + 2.0 * Math.sin(t * 2);
-      const coreThink = 41 + 3.2 * Math.sin(t * 6);
-      const coreTalk = 37.5 + 3.2 * mOpen;
-      const coreCode = 39 + 2.2 * Math.sin(t * 5.2);
+      // --- Núcleo profundo y halo atmosférico discreto (preservan transparencia oscura de cristal puro) ---
+      const coreBase = 35 + 1.8 * Math.sin(t * 2);
+      const coreThink = 40 + 3.0 * Math.sin(t * 6);
+      const coreTalk = 36.5 + 2.8 * mOpen;
+      const coreCode = 38 + 2.0 * Math.sin(t * 5.2);
+      const coreSucc = 40 + 3.5 * airborne;
       const coreR = alerting
-        ? 37 + 3.0 * Math.sin(t * 9)
-        : coreBase * (1 - clamp(wThink + wTalk + wCode, 0, 1)) +
+        ? 36 + 3.0 * Math.sin(t * 9)
+        : coreBase * (1 - clamp(wThink + wTalk + wCode + wSucc, 0, 1)) +
         coreThink * wThink +
         coreTalk * wTalk +
-        coreCode * wCode;
+        coreCode * wCode +
+        coreSucc * wSucc;
       coreRef.current?.setAttribute("r", coreR.toFixed(2));
 
       const isGlassContrast = glassContrastRef.current;
-      const corePeakBase = isGlassContrast ? 0.28 : 0.19;
+      const corePeakBase = isGlassContrast ? 0.20 : 0.095;
+      // Pulso del núcleo cada vez que una flecha del anillo cruza por delante (dato recibido)
+      const syncPulse =
+        wSync *
+        Math.max(
+          Math.pow(Math.max(0, Math.sin(toRad(a.syncAngle + 120))), 14),
+          Math.pow(Math.max(0, Math.sin(toRad(a.syncAngle + 300))), 14)
+        );
       const corePeakOp = clamp(
         corePeakBase +
-        wThink * (0.14 + 0.04 * Math.sin(t * 6)) +
-        wTalk * 0.065 +
-        wCode * 0.065 +
-        wSucc * 0.095 +
+        wThink * (0.12 + 0.035 * Math.sin(t * 6)) +
+        wTalk * 0.045 +
+        wCode * 0.05 +
+        wSucc * (0.10 + 0.04 * airborne) +
         wAlert * 0.14 +
+        syncPulse * 0.10 +
         hover.x * 0.03,
-        0.15,
-        isGlassContrast ? 0.48 : 0.41
+        0.08,
+        isGlassContrast ? 0.42 : 0.30
       );
-      const coreMidOp = corePeakOp * 0.52;
+      const coreMidOp = corePeakOp * 0.48;
       const coreOuterOp = corePeakOp * 0.14;
 
       const summonPhase = (t - a.summonAt) / 0.62;
@@ -1618,7 +1951,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const colorMorphPhase = (t - a.colorMorphAt) / 0.72;
       const colorMorphActive = colorMorphPhase >= 0 && colorMorphPhase <= 1;
 
-      // Interpolación perceptual en OKLab sobre stops, accesorios, pupilas y sonrojo
+      // Interpolación perceptual en OKLab sobre stops, accesorios y sonrojo
       const cs = colorStateRef.current;
       const colorAlpha = a.reduce ? 1 : 1 - Math.exp(-8.5 * dt);
       const cBodyTint = stepOklab(cs.cur.bodyTint, cs.target.bodyTint, colorAlpha);
@@ -1629,7 +1962,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const cMid = stepOklab(cs.cur.mid, cs.target.mid, colorAlpha);
       const cGlow = stepOklab(cs.cur.glow, cs.target.glow, colorAlpha);
       const cPupil = stepOklab(cs.cur.pupil, cs.target.pupil, colorAlpha);
-      const cEye = stepOklab(cs.cur.eye, cs.target.eye, colorAlpha);
+      stepOklab(cs.cur.eye, cs.target.eye, colorAlpha);
       const cAccessory = stepOklab(cs.cur.accessory, cs.target.accessory, colorAlpha);
       const cBlush = stepOklab(cs.cur.blush, cs.target.blush, colorAlpha);
       const cBlushCore = stepOklab(cs.cur.blushCore, cs.target.blushCore, colorAlpha);
@@ -1637,62 +1970,62 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       const sr = stopRefs.current;
       sr.bodyTint?.setAttribute("stop-color", cBodyTint);
       sr.bodyGlow?.setAttribute("stop-color", cBodyGlow);
+      sr.bodyMid?.setAttribute("stop-color", cMid);
+      sr.bodyRimEnd?.setAttribute("stop-color", cRim2);
       sr.rim1?.setAttribute("stop-color", cRim1);
-      sr.rimMid?.setAttribute("stop-color", cRim1);
+      sr.rimMid?.setAttribute("stop-color", cRim2);
       sr.rim2?.setAttribute("stop-color", cRim2);
-      sr.peakGlintTint?.setAttribute("stop-color", cRim1);
-      sr.peakGlintAltTint?.setAttribute("stop-color", cRim2);
       sr.meniscus1?.setAttribute("stop-color", cRim1);
       sr.meniscusMid?.setAttribute("stop-color", cBodyGlow);
       sr.meniscus2?.setAttribute("stop-color", cRim2);
       sr.bevelTint?.setAttribute("stop-color", cRim1);
       sr.bounceTint?.setAttribute("stop-color", cRim2);
       sr.liquidA0?.setAttribute("stop-color", cBodyTint);
-      sr.liquidA1?.setAttribute("stop-color", cGlow);
+      sr.liquidA1?.setAttribute("stop-color", cRim1);
       sr.liquidA2?.setAttribute("stop-color", cGlow);
-      sr.liquidB0?.setAttribute("stop-color", cRim2);
-      sr.liquidB1?.setAttribute("stop-color", cBodyGlow);
-      sr.liquidB2?.setAttribute("stop-color", cBodyGlow);
-      sr.liquidC0?.setAttribute("stop-color", cAccessory);
+      sr.liquidB0?.setAttribute("stop-color", cBodyGlow);
+      sr.liquidB1?.setAttribute("stop-color", cGlow);
+      sr.liquidB2?.setAttribute("stop-color", cMid);
+      sr.liquidC0?.setAttribute("stop-color", cRim1);
       sr.liquidC1?.setAttribute("stop-color", cAccessory);
+      sr.liquidC2?.setAttribute("stop-color", cBodyGlow);
       sr.core0?.setAttribute("stop-color", cCore);
       sr.core0?.setAttribute("stop-opacity", corePeakOp.toFixed(3));
-      sr.core1?.setAttribute("stop-color", cMid);
+      sr.core1?.setAttribute("stop-color", cGlow);
       sr.core1?.setAttribute("stop-opacity", coreMidOp.toFixed(3));
       sr.core2?.setAttribute("stop-color", cMid);
       sr.core2?.setAttribute("stop-opacity", coreOuterOp.toFixed(3));
       sr.core3?.setAttribute("stop-color", cMid);
       sr.glow0?.setAttribute("stop-color", cGlow);
-      sr.glow1?.setAttribute("stop-color", cGlow);
+      sr.glow1?.setAttribute("stop-color", cBodyGlow);
       sr.glow2?.setAttribute("stop-color", cGlow);
       sr.blush0?.setAttribute("stop-color", cBlush);
       sr.blush1?.setAttribute("stop-color", cBlush);
       sr.blush2?.setAttribute("stop-color", cBlush);
       cheekLCoreRef.current?.setAttribute("fill", cBlushCore);
       cheekRCoreRef.current?.setAttribute("fill", cBlushCore);
-      // Pupilas discretas: azul muy clarito (no el acento neón)
-      pupilLRef.current?.setAttribute("fill", cEye);
-      pupilRRef.current?.setAttribute("fill", cEye);
-      irisLRef.current?.setAttribute("fill", cEye);
-      irisRRef.current?.setAttribute("fill", cEye);
-      lidShadeLRef.current?.setAttribute("fill", cEye);
-      lidShadeRRef.current?.setAttribute("fill", cEye);
       ringRef.current?.setAttribute("stroke", cAccessory);
       talkWave1Ref.current?.setAttribute("stroke", cRim1);
       talkWave2Ref.current?.setAttribute("stroke", cGlow);
       talkWave3Ref.current?.setAttribute("stroke", cAccessory);
       talkInnerShadeRef.current?.setAttribute("fill", cPupil);
-      talkTongueRef.current?.setAttribute("fill", "#FCC6D9");
-      syncPathRefs.current.forEach((p) => p?.setAttribute("stroke", cAccessory));
-      syncArrowRefs.current.forEach((p) => p?.setAttribute("fill", cAccessory));
-      lensHandleRef.current?.setAttribute("stroke", cRim1);
-      lensRingRef.current?.setAttribute("stroke", cBodyTint);
-      lensRingRef.current?.setAttribute("fill", cRim1);
+      talkTongueRef.current?.setAttribute("fill", "#FBCFE8");
+      if (popLens.x > 0.002) {
+        sr.lensRim1?.setAttribute("stop-color", cRim1);
+        sr.lensRim2?.setAttribute("stop-color", cRim2);
+        sr.lensEdge?.setAttribute("stop-color", cRim1);
+        lensFerruleRef.current?.setAttribute("fill", cRim1);
+      }
+      if (popSync.x > 0.002) {
+        sr.syncArc0?.setAttribute("stop-color", cAccessory);
+        sr.syncArc1?.setAttribute("stop-color", cRim1);
+        sr.syncHead?.setAttribute("stop-color", cAccessory);
+      }
       laptopBaseRimRef.current?.setAttribute("stroke", cRim1);
       laptopScreenRimRef.current?.setAttribute("stroke", cAccessory);
 
       if (cradleRef.current) {
-        cradleRef.current.setAttribute("transform", `translate(0 ${(bob + jump.x).toFixed(2)})`);
+        cradleRef.current.setAttribute("transform", `translate(0 ${(bob + totalJumpY).toFixed(2)})`);
       }
 
       // --- Silueta estelar expansiva al aparecer / cambiar aura (dentro de yawRef: hereda la pose exacta) ---
@@ -1738,13 +2071,6 @@ export const XoxStar: React.FC<XoxStarProps> = ({
       }
 
       // --- Accesorios por estado (aparecen y desaparecen con transición elástica) ---
-      // Lupa: barrido horizontal sobre el cuerpo con leve cabeceo
-      setProp(
-        lensRef.current,
-        popLens.x,
-        `translate(${(C + 56 * Math.sin(t * 1.6)).toFixed(2)} ${(y + 38 + 3 * Math.sin(t * 3.2)).toFixed(2)}) rotate(${(-12 + 6 * Math.sin(t * 1.6)).toFixed(1)}) scale($S)`
-      );
-
       // Burbuja de pensamiento con tres puntos que rebotan en secuencia
       setProp(
         bubbleRef.current,
@@ -1767,20 +2093,56 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         ).toFixed(3)}) scale($S)`
       );
 
-      // Aro de sincronización: dos flechas circulares girando
-      setProp(
-        syncRef.current,
-        popSync.x,
-        `translate(${C} ${y.toFixed(2)}) rotate(${(t * 140).toFixed(1)}) scale($S)`
-      );
+      // Anillo planetario de sincronización: gira inclinado alrededor de la cintura de Xox.
+      // La mitad trasera se ve a través del cristal y la delantera pasa por encima del cuerpo.
+      if (popSync.x > 0.002) {
+        a.syncAngle += dt * (a.reduce ? 55 : 132);
+        const s = Math.max(popSync.x, 0.0001);
+        const ringY = y + 8;
+        const ringT = `translate(${C} ${ringY.toFixed(2)}) rotate(${SYNC_TILT}) scale(${s.toFixed(4)} ${(s * SYNC_FLAT).toFixed(4)})`;
+        const ringOp = clamp(popSync.x * 1.4, 0, 1);
+        syncRingRefs.current[0]?.setAttribute("transform", ringT);
+        syncRingRefs.current[1]?.setAttribute("transform", ringT);
+        // La mitad trasera queda más tenue: está lejos y se ve a través del cristal
+        syncBackRef.current?.setAttribute("opacity", (ringOp * 0.5).toFixed(3));
+        syncFrontRef.current?.setAttribute("opacity", ringOp.toFixed(3));
+        syncSpinRef.current?.setAttribute("transform", `rotate(${(a.syncAngle % 360).toFixed(2)})`);
+        // Puntas de flecha calculadas en espacio de pantalla para que la perspectiva no las aplaste
+        const cosT = Math.cos(toRad(SYNC_TILT));
+        const sinT = Math.sin(toRad(SYNC_TILT));
+        for (let k = 0; k < 2; k++) {
+          const phi = toRad(a.syncAngle + 120 + k * 180);
+          const lx = SYNC_R * Math.cos(phi) * s;
+          const ly = SYNC_R * Math.sin(phi) * s * SYNC_FLAT;
+          const dx0 = -Math.sin(phi);
+          const dy0 = Math.cos(phi) * SYNC_FLAT;
+          const ang = (Math.atan2(dx0 * sinT + dy0 * cosT, dx0 * cosT - dy0 * sinT) * 180) / Math.PI;
+          const depth = 0.5 + 0.5 * Math.sin(phi);
+          const hs = s * (0.8 + 0.32 * depth);
+          const tr = `translate(${(C + lx * cosT - ly * sinT).toFixed(2)} ${(ringY + lx * sinT + ly * cosT).toFixed(2)}) rotate(${ang.toFixed(1)}) scale(${hs.toFixed(3)})`;
+          const inFront = Math.sin(phi) > 0;
+          syncHeadRefs.current[k]?.setAttribute("transform", tr);
+          syncHeadRefs.current[k]?.setAttribute("opacity", inFront ? "0" : "0.8");
+          syncHeadRefs.current[k + 2]?.setAttribute("transform", tr);
+          syncHeadRefs.current[k + 2]?.setAttribute("opacity", inFront ? "1" : "0");
+        }
+        if (!syncShown) {
+          syncBackRef.current?.setAttribute("display", "inline");
+          syncFrontRef.current?.setAttribute("display", "inline");
+          syncShown = true;
+        }
+      } else if (syncShown) {
+        syncBackRef.current?.setAttribute("display", "none");
+        syncFrontRef.current?.setAttribute("display", "none");
+        syncShown = false;
+      }
 
-      // --- Mini-Laptop flotante que pasa de un lado a otro frente a Xox ---
+      // --- Mini-laptop flotante abajo a la derecha, de cara a Xox y sin taparle el rostro ---
       if (laptopRef.current) {
-        const lapPop = Math.max(popLaptop.x, 0.0001);
-        const lapX = C + 54 * lapSideWave;
-        const lapArcY = 7 * Math.cos(t * 0.92 * 2);
-        const lapHoverY = y + 26 + lapArcY + (1 - clamp(popLaptop.x, 0, 1)) * 16 + 2.0 * Math.sin(t * 3.4);
-        const lapRot = -7.5 * lapSideWave + 1.6 * Math.sin(t * 2.6);
+        const lapPop = Math.max(popLaptop.x, 0.0001) * 0.92;
+        const lapX = C + 46 + 1.6 * Math.sin(t * 0.9) * A;
+        const lapHoverY = y + 40 + (1 - clamp(popLaptop.x, 0, 1)) * 14 + 1.8 * Math.sin(t * 2.2) * A;
+        const lapRot = -6 + 1.2 * Math.sin(t * 1.7) * A;
         laptopRef.current.setAttribute(
           "transform",
           `translate(${lapX.toFixed(2)} ${lapHoverY.toFixed(2)}) rotate(${lapRot.toFixed(2)}) scale(${lapPop.toFixed(4)})`
@@ -1788,9 +2150,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         laptopRef.current.setAttribute("opacity", clamp(popLaptop.x * 1.35, 0, 1).toFixed(3));
       }
       if (laptopLidRef.current) {
-        // La pantalla pivota su perspectiva 3/4 según el lado por el que viaja la laptop
+        // Pantalla en perspectiva 3/4 fija, girada hacia Xox
         const lidSy = Math.max(0.06, lidOpen.x);
-        const lidSkew = -6.5 * lapSideWave + (1 - clamp(lidOpen.x, 0, 1)) * 14;
+        const lidSkew = -9 + (1 - clamp(lidOpen.x, 0, 1)) * 14;
         laptopLidRef.current.setAttribute(
           "transform",
           `skewX(${lidSkew.toFixed(1)}) scale(1 ${lidSy.toFixed(3)})`
@@ -1808,6 +2170,20 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           kEl.setAttribute("opacity", activeKey ? "0.95" : "0.28");
           kEl.setAttribute("fill", activeKey ? cAccessory : "#94A3B8");
         });
+
+        // La luz de la pantalla baña el cristal por abajo a la derecha (verde al pasar, rojo al fallar)
+        const termOkNow = isTermPhase && isTermDoneOk;
+        if (screenLightRef.current) {
+          const flicker = 0.5 + 0.5 * Math.sin(t * 13) * Math.sin(t * 7.3);
+          screenLightRef.current.setAttribute("opacity", (wCode * (0.62 + 0.18 * flicker + (termOkNow || isTermErr ? 0.2 : 0))).toFixed(3));
+          sr.screenLight?.setAttribute("stop-color", isTermErr && isTermPhase ? "#F87171" : termOkNow ? "#6EE7B7" : cAccessory);
+        }
+        // "¡Ajá!": destellitos discretos cuando la terminal pasa
+        if (termOkNow && !prevTermOk) {
+          a.sparkleBurstAt = t;
+          a.sparkleScale = 0.55;
+        }
+        prevTermOk = termOkNow;
 
         // Animación de escritura de líneas de código, barra de línea activa y cursor parpadeante
         const typeCycle = (t * 1.55) % 4;
@@ -1892,6 +2268,9 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           laptopTermBadgeRef.current.setAttribute("opacity", badgePop.toFixed(3));
           laptopTermCheckRef.current.setAttribute("opacity", badgePop.toFixed(3));
         }
+      } else {
+        screenLightRef.current?.setAttribute("opacity", "0");
+        prevTermOk = false;
       }
 
       // --- Rostro: mirada, pupila viva ("ojo dentro del ojo") y gestos coherentes ---
@@ -1905,9 +2284,13 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         }
       }
 
+      // La carita se rezaga un pelín respecto al cuerpo en los saltos y sigue las líneas al programar
+      const combinedJumpVel = jump.v + happyPose.jumpVel * wSucc;
+      const faceLag = clamp(-combinedJumpVel * 0.006, -1.7, 1.7) * A;
+      const happyFaceY = happyPose.faceLift * wSucc * A;
       faceRef.current?.setAttribute(
         "transform",
-        `translate(${(lookX.x * 9).toFixed(2)} ${(lookY.x * 6 - hover.x * 1.5).toFixed(2)})`
+        `translate(${(lookX.x * 9 + saccadeX.x * 1.35).toFixed(2)} ${(lookY.x * 6 + saccadeY.x * 0.95 - hover.x * 1.5 + faceLag + happyFaceY).toFixed(2)})`
       );
       const sep = 8 * (1 - 0.22 * Math.abs(lookX.x));
       const eyeAlertScale = 1 + 0.15 * wAlert;
@@ -1923,72 +2306,65 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         `translate(${(C + sep).toFixed(2)} ${C - 3}) scale(${rsx.toFixed(3)} ${blinkScaleY.toFixed(3)})`
       );
 
-      // Geometría independiente de la esclerótica blanca vs. la pupila redonda ("el ojo dentro del ojo")
-      // Así al entrecerrar un ojo para analizar, la pupila NO se aplasta y se ve enfocando por dentro
-      const rxL = clamp(3.4 - squintL.x * 0.35, 3.0, 3.95);
-      const ryL = clamp(5.2 * (1 - squintL.x), 3.0, 6.15);
-      const rxR = clamp(3.4 - squintR.x * 0.35, 3.0, 3.95);
-      const ryR = clamp(5.2 * (1 - squintR.x), 3.0, 6.15);
+      // Lupa de cristal que barre de un ojo al otro: dentro del lente se re-dibuja la carita aumentada
+      if (lensRef.current) {
+        if (popLens.x > 0.002) {
+          const settle = 1 - clamp(popLens.x, 0, 1);
+          // Arco de péndulo: baja un poco al cruzar por el centro, como llevada a mano
+          const lx = C + lensScanU * (sep + 0.3) + settle * 8;
+          const ly = C - 3.4 + 1.6 * (1 - lensScanU * lensScanU) + 0.4 * Math.cos(t * 2.1) * A + settle * 14;
+          // Por inercia el lente se queda atrás y el mango se adelanta en la dirección del barrido
+          const lensTilt = clamp(-lensScanVel * 3.2, -10, 10) * A + settle * 25;
+          lensRef.current.setAttribute(
+            "transform",
+            `translate(${lx.toFixed(2)} ${ly.toFixed(2)}) rotate(${lensTilt.toFixed(1)}) scale(${Math.max(popLens.x, 0.0001).toFixed(4)})`
+          );
+          lensRef.current.setAttribute("opacity", clamp(popLens.x * 1.6, 0, 1).toFixed(3));
+          lensMagRef.current?.setAttribute(
+            "transform",
+            `rotate(${(-lensTilt).toFixed(1)}) scale(${LENS_MAG}) translate(${(-lx).toFixed(2)} ${(-ly).toFixed(2)})`
+          );
+          if (!lensShown) {
+            lensRef.current.setAttribute("display", "inline");
+            lensShown = true;
+          }
+        } else if (lensShown) {
+          lensRef.current.setAttribute("display", "none");
+          lensShown = false;
+        }
+      }
+
+      // Ojos limpios de cristal luminoso sin pupila (cápsulas expresivas con squint suave)
+      const rxL = clamp(3.45 - squintL.x * 0.3, 3.05, 4.0);
+      const ryL = clamp(5.25 * (1 - squintL.x), 3.0, 6.2);
+      const rxR = clamp(3.45 - squintR.x * 0.3, 3.05, 4.0);
+      const ryR = clamp(5.25 * (1 - squintR.x), 3.0, 6.2);
 
       eyeScleraLRef.current?.setAttribute("rx", rxL.toFixed(2));
       eyeScleraLRef.current?.setAttribute("ry", ryL.toFixed(2));
-      eyeClipEllipseLRef.current?.setAttribute("rx", rxL.toFixed(2));
-      eyeClipEllipseLRef.current?.setAttribute("ry", ryL.toFixed(2));
-
       eyeScleraRRef.current?.setAttribute("rx", rxR.toFixed(2));
       eyeScleraRRef.current?.setAttribute("ry", ryR.toFixed(2));
-      eyeClipEllipseRRef.current?.setAttribute("rx", rxR.toFixed(2));
-      eyeClipEllipseRRef.current?.setAttribute("ry", ryR.toFixed(2));
 
-      // Sombra interna de párpado superior recortada dentro del ojo cuando ese ojo entrecierra analizando
-      const lidDropL = clamp(squintL.x * 4.2 * analyzeWeight, 0, 2.2);
-      const lidDropR = clamp(squintR.x * 4.2 * analyzeWeight, 0, 2.2);
-      lidShadeLRef.current?.setAttribute("y", (-ryL - 2.6 + lidDropL).toFixed(2));
-      lidShadeLRef.current?.setAttribute("opacity", clamp(squintL.x * 0.7 * analyzeWeight, 0, 0.26).toFixed(3));
-      lidShadeRRef.current?.setAttribute("y", (-ryR - 2.6 + lidDropR).toFixed(2));
-      lidShadeRRef.current?.setAttribute("opacity", clamp(squintR.x * 0.7 * analyzeWeight, 0, 0.26).toFixed(3));
-
-      // Movimiento vivo de iris, pupila y brillo especular (con sacadas de análisis y zoom por ojo)
-      const pupX = clamp(0.45 + lookX.x * 1.25 + saccadeX.x * 0.95, -1.65, 1.85);
-      const pupY = clamp(-1.1 + lookY.x * 1.45 + saccadeY.x * 0.85, -2.5, 1.65);
-      const pupRL = (1.18 * pupilScaleL.x).toFixed(2);
-      const pupRR = (1.18 * pupilScaleR.x).toFixed(2);
-      const irisRL = (1.92 * pupilScaleL.x).toFixed(2);
-      const irisRR = (1.92 * pupilScaleR.x).toFixed(2);
-
-      irisLRef.current?.setAttribute("cx", pupX.toFixed(2));
-      irisLRef.current?.setAttribute("cy", pupY.toFixed(2));
-      irisLRef.current?.setAttribute("r", irisRL);
-      pupilLRef.current?.setAttribute("cx", pupX.toFixed(2));
-      pupilLRef.current?.setAttribute("cy", pupY.toFixed(2));
-      pupilLRef.current?.setAttribute("r", pupRL);
-      glintLRef.current?.setAttribute("cx", (pupX - 0.48).toFixed(2));
-      glintLRef.current?.setAttribute("cy", (pupY - 0.52).toFixed(2));
-
-      irisRRef.current?.setAttribute("cx", pupX.toFixed(2));
-      irisRRef.current?.setAttribute("cy", pupY.toFixed(2));
-      irisRRef.current?.setAttribute("r", irisRR);
-      pupilRRef.current?.setAttribute("cx", pupX.toFixed(2));
-      pupilRRef.current?.setAttribute("cy", pupY.toFixed(2));
-      pupilRRef.current?.setAttribute("r", pupRR);
-      glintRRef.current?.setAttribute("cx", (pupX - 0.48).toFixed(2));
-      glintRRef.current?.setAttribute("cy", (pupY - 0.52).toFixed(2));
-
-      // Transición continua entre ojos abiertos y ojos felices (^^) sin corte brusco
-      const openEyeOp = clamp(1 - smooth01(0.18, 0.72, wSucc), 0, 1);
-      const openEyeSquashY = Math.max(0.18, 1 - 0.75 * wSucc);
-      const happyEyeOp = clamp(smooth01(0.15, 0.75, wSucc), 0, 1);
-      const arcPeakY = -0.8 - 4.2 * wSucc;
-      const arcEndY = 1.5 - 1.1 * (1 - wSucc);
-      const happyArcD = `M -4.5 ${arcEndY.toFixed(2)} Q 0 ${arcPeakY.toFixed(2)} 4.5 ${arcEndY.toFixed(2)}`;
+      // Transición continua entre ojos abiertos y arcos felices cálidos (◠ ◠)
+      const openEyeOp = clamp(1 - smooth01(0.14, 0.66, wSucc), 0, 1);
+      const openEyeSquashY = Math.max(0.18, 1 - 0.78 * wSucc);
+      const happyEyeOp = clamp(smooth01(0.12, 0.68, wSucc), 0, 1);
+      // Los arcos felices se redondean más en el ápice del salto y se acolchan suavemente al aterrizar
+      const happyCushion = clamp(-happyDef * 6, 0, 1.1) * wSucc;
+      const ctrlYInner = -0.8 - (4.5 + 0.9 * airborne - 1.1 * happyCushion) * wSucc;
+      const ctrlYOuter = -0.6 - (4.2 + 0.8 * airborne - 1.0 * happyCushion) * wSucc;
+      const innerEndY = 1.35 - 0.9 * (1 - wSucc);
+      const outerEndY = 1.9 - 1.1 * (1 - wSucc);
+      const happyArcLD = `M -4.35 ${outerEndY.toFixed(2)} C -2.35 ${ctrlYOuter.toFixed(2)} 2.15 ${ctrlYInner.toFixed(2)} 4.15 ${innerEndY.toFixed(2)}`;
+      const happyArcRD = `M -4.15 ${innerEndY.toFixed(2)} C -2.15 ${ctrlYInner.toFixed(2)} 2.35 ${ctrlYOuter.toFixed(2)} 4.35 ${outerEndY.toFixed(2)}`;
 
       eyeOpenLRef.current?.setAttribute("opacity", openEyeOp.toFixed(3));
       eyeOpenLRef.current?.setAttribute("transform", `scale(1 ${openEyeSquashY.toFixed(3)})`);
       eyeOpenRRef.current?.setAttribute("opacity", openEyeOp.toFixed(3));
       eyeOpenRRef.current?.setAttribute("transform", `scale(1 ${openEyeSquashY.toFixed(3)})`);
-      eyeHappyLRef.current?.setAttribute("d", happyArcD);
+      eyeHappyLRef.current?.setAttribute("d", happyArcLD);
       eyeHappyLRef.current?.setAttribute("opacity", happyEyeOp.toFixed(3));
-      eyeHappyRRef.current?.setAttribute("d", happyArcD);
+      eyeHappyRRef.current?.setAttribute("d", happyArcRD);
       eyeHappyRRef.current?.setAttribute("opacity", happyEyeOp.toFixed(3));
 
       // --- Boca coherente con cada fase: una sola curva paramétrica que se transforma con resortes ---
@@ -1999,14 +2375,17 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           ? (1 - smooth01(a.postTalkSmileUntil - 0.45, a.postTalkSmileUntil, t)) * 0.9
           : 0;
       const dragSmile = dragging ? smooth01(0.15, 0.65, dragSpeed) * 0.72 : 0;
+      // Hablar y festejar usan la boca abierta; la línea se desvanece mientras tanto
+      const openMouthW = clamp(Math.max(wTalk, wSucc), 0, 1);
       const smileTargetWeight =
-        Math.max(hover.x * 0.85, wSucc, codingMouthWeight, postTalkSmile, dragSmile) * (1 - wTalk);
+        Math.max(hover.x * 0.85, codingMouthWeight, wRead * 0.9, wSync * 0.6, postTalkSmile, dragSmile) *
+        (1 - openMouthW);
       if (mouthRef.current) {
         // Boca genérica (hover / celebración), expresada en los mismos parámetros
         const genW = 3.0 + 1.5 * wSucc;
         const genY = 6.5 - 0.5 * wSucc;
         const genBend = 2.5 + 2.6 * wSucc;
-        const wm = smooth01(0.1, 0.6, wCode) * (1 - smooth01(0.1, 0.5, wSucc));
+        const wm = smooth01(0.1, 0.6, wCode + wRead) * (1 - smooth01(0.1, 0.5, wSucc));
         const mW = lerp(genW, focusMouthW.x, wm);
         const mY = C + lerp(genY, focusMouthY.x, wm);
         const mBend = lerp(genBend, focusMouthBend.x, wm);
@@ -2023,12 +2402,48 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           `M ${(mX - mW).toFixed(2)} ${yL.toFixed(2)} C ${(mX - mW / 3).toFixed(2)} ${c1y.toFixed(2)} ${(mX + mW / 3).toFixed(2)} ${c2y.toFixed(2)} ${(mX + mW).toFixed(2)} ${yR.toFixed(2)}`
         );
         mouthRef.current.setAttribute("opacity", clamp(smileTargetWeight, 0, 0.94).toFixed(3));
+
+        // Lengüita de concentración asomando por la comisura baja mientras edita código
+        const editingCode = coding && (shownExpr === "editL" || shownExpr === "editR");
+        step(tongueOut, editingCode ? 1 : 0, 120, 16, dt);
+        if (tongueRef.current) {
+          const tw = clamp(tongueOut.x, 0, 1) * wm;
+          if (tw > 0.01) {
+            const side = mTilt >= 0 ? -1 : 1;
+            const tipX = mX + side * mW * 0.62;
+            const tipY = (side > 0 ? yR : yL) + 0.15;
+            tongueRef.current.setAttribute(
+              "transform",
+              `translate(${tipX.toFixed(2)} ${tipY.toFixed(2)}) rotate(${(side * 14 + 7 * Math.sin(t * 3.1) * A).toFixed(1)}) scale(${(0.6 + 0.4 * tw).toFixed(3)} ${tw.toFixed(3)})`
+            );
+            tongueRef.current.setAttribute("opacity", clamp(tw * 1.3, 0, 1).toFixed(3));
+          } else {
+            tongueRef.current.setAttribute("opacity", "0");
+          }
+        }
       }
 
-      // --- Boca blanca luminosa con tonalidades al hablar (sílabas vivas y expresivas) ---
+      // Gota de sudor "¡ups!" cuando la terminal devuelve error
+      step(sweatDrop, coding && isTermPhase && isTermErr ? 1 : 0, 140, 15, dt);
+      if (sweatRef.current) {
+        const sw = clamp(sweatDrop.x, 0, 1.15);
+        if (sw > 0.01) {
+          const slide = ((t * 0.7) % 1) * 3.2 * A;
+          sweatRef.current.setAttribute(
+            "transform",
+            `translate(${(C + 21).toFixed(2)} ${(C - 15 + slide).toFixed(2)}) scale(${sw.toFixed(3)})`
+          );
+          sweatRef.current.setAttribute("opacity", clamp(sw * 1.2, 0, 0.95).toFixed(3));
+        } else {
+          sweatRef.current.setAttribute("opacity", "0");
+        }
+      }
+
+      // --- Boca blanca luminosa al hablar (sílabas vivas) o sonrisa radiante limpia al festejar ---
       if (talkMouthGroupRef.current) {
-        if (wTalk > 0.01) {
-          const mouthCy = C + 6.6;
+        if (openMouthW > 0.01) {
+          const happyPure = wSucc * (1 - wTalk);
+          const mouthCy = C + 6.4 - 0.4 * happyPure;
           const mouthD = buildOrganicTalkMouthPath(C, mouthCy, mHalfW, mOpen, smileLift);
           talkMouthPathRef.current?.setAttribute("d", mouthD);
           talkMouthClipPathRef.current?.setAttribute("d", mouthD);
@@ -2040,14 +2455,16 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             "d",
             `M ${xL} ${yCorner.toFixed(2)} Q ${C} ${yTopCtrl.toFixed(2)} ${xR} ${yCorner.toFixed(2)}`
           );
-          // Tonalidad media celeste/acento e interior cálido sobre la base blanca de la boca
+          // En Feliz mantiene una sonrisa limpia con sutil rubor rosado inferior (sin mancha oscura interna)
           talkInnerShadeRef.current?.setAttribute("cy", (mouthCy + 1.4 + mOpen * 2.2).toFixed(2));
-          talkInnerShadeRef.current?.setAttribute("rx", (mHalfW * 0.82).toFixed(2));
-          talkInnerShadeRef.current?.setAttribute("ry", (1.2 + mOpen * 2.6).toFixed(2));
-          talkTongueRef.current?.setAttribute("cy", (mouthCy + 3.0 + mOpen * 3.8).toFixed(2));
-          talkTongueRef.current?.setAttribute("rx", (mHalfW * 0.64).toFixed(2));
-          talkTongueRef.current?.setAttribute("ry", (1.1 + mOpen * 1.8).toFixed(2));
-          talkMouthGroupRef.current.setAttribute("opacity", clamp(wTalk * 1.08, 0, 1).toFixed(3));
+          talkInnerShadeRef.current?.setAttribute("rx", (mHalfW * 0.80).toFixed(2));
+          talkInnerShadeRef.current?.setAttribute("ry", (1.1 + mOpen * 2.4).toFixed(2));
+          talkInnerShadeRef.current?.setAttribute("opacity", (0.28 * (1 - 0.78 * happyPure)).toFixed(3));
+          talkTongueRef.current?.setAttribute("cy", (mouthCy + 2.8 + mOpen * 3.6).toFixed(2));
+          talkTongueRef.current?.setAttribute("rx", (mHalfW * 0.60).toFixed(2));
+          talkTongueRef.current?.setAttribute("ry", (1.0 + mOpen * 1.65).toFixed(2));
+          talkTongueRef.current?.setAttribute("opacity", lerp(0.72, 0.44, happyPure).toFixed(3));
+          talkMouthGroupRef.current.setAttribute("opacity", clamp(openMouthW * 1.08, 0, 1).toFixed(3));
         } else {
           talkMouthGroupRef.current.setAttribute("opacity", "0");
         }
@@ -2124,11 +2541,60 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           0.98
         );
         el.setAttribute("cx", (C + Math.cos(ang) * radius + trailX).toFixed(2));
-        el.setAttribute("cy", (C + bob * 0.5 + jump.x * 0.35 + Math.sin(ang) * radius * 0.5 + trailY).toFixed(2));
+        el.setAttribute("cy", (C + bob * 0.5 + totalJumpY * 0.35 + Math.sin(ang) * radius * 0.5 + trailY).toFixed(2));
         el.setAttribute("opacity", sparkOp.toFixed(3));
         el.setAttribute("r", (1.2 + 0.9 * depth + landingEnergy * 0.35).toFixed(2));
         el.setAttribute("fill", i === 1 ? cAccessory : i === 2 ? cRim1 : "#FFFFFF");
       });
+
+      // --- Destellos prismáticos escalonados de festejo (dos oleadas rítmicas en `success` + ráfaga en terminal ok) ---
+      const extBurstP = (t - a.sparkleBurstAt) / 1.05;
+      const hasExtBurst = !succeeding && extBurstP >= 0 && extBurstP <= 1;
+      if ((wSucc > 0.04 || hasExtBurst) && !a.reduce) {
+        const uCycle = happyPose.cycleTime;
+        cheerSparkRefs.current.forEach((el, i) => {
+          if (!el) return;
+          let localP = -1;
+          let waveScale = 1;
+          if (wSucc > 0.04) {
+            // Oleada 1: brota escalonada durante el gran salto; Oleada 2: centellea suave en el rebote y bailecito
+            const stagger = (i % 4) * 0.045 + (i >= 4 ? 0.022 : 0);
+            const p1 = (uCycle - (0.14 + stagger)) / 0.88;
+            const p2 = i % 2 === 0 ? (uCycle - (0.82 + stagger * 1.1)) / 0.86 : -1;
+            if (p1 >= 0 && p1 <= 1) {
+              localP = p1;
+              waveScale = wSucc;
+            } else if (p2 >= 0 && p2 <= 1) {
+              localP = p2;
+              waveScale = wSucc * 0.72;
+            }
+          } else if (hasExtBurst) {
+            localP = clamp((extBurstP - (i % 3) * 0.04) / 0.92, 0, 1);
+            waveScale = a.sparkleScale;
+          }
+
+          if (localP > 0 && localP < 1) {
+            const reachOut = 1 - Math.pow(1 - localP, 2.7);
+            const ang = toRad(CHEER_SPARKLES[i] + 6 * Math.sin(i * 2.1 + localP * 2.4));
+            const dist = (52 + (i % 2 === 0 ? 40 : 28) * reachOut) * (0.8 + 0.2 * waveScale);
+            const floatUp = -9.5 * reachOut;
+            const life = Math.sin(Math.PI * Math.pow(localP, 0.65));
+            const s = life * (i % 2 === 0 ? 1.08 : 0.76) * waveScale;
+            el.setAttribute(
+              "transform",
+              `translate(${(C + Math.cos(ang) * dist).toFixed(2)} ${(y + Math.sin(ang) * dist * 0.9 + floatUp).toFixed(2)}) rotate(${(localP * 92 + i * 22).toFixed(1)}) scale(${Math.max(s, 0.0001).toFixed(3)})`
+            );
+            el.setAttribute("opacity", clamp(life * 1.28, 0, 1).toFixed(3));
+            el.setAttribute("fill", i % 3 === 0 ? "#FFFFFF" : i % 3 === 1 ? cAccessory : cRim1);
+          } else {
+            el.setAttribute("opacity", "0");
+          }
+        });
+        sparklesShown = true;
+      } else if (sparklesShown) {
+        cheerSparkRefs.current.forEach((el) => el?.setAttribute("opacity", "0"));
+        sparklesShown = false;
+      }
 
       // Comparte fase viva para relevos sin cortes entre Chat <-> Vuelo <-> Espacio de Xox
       sharedXoxPhase.t = t;
@@ -2262,6 +2728,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         />
       )}
       <svg
+        key={XOX_SVG_REV}
         viewBox="0 0 240 240"
         width={responsive ? undefined : size}
         height={responsive ? undefined : size}
@@ -2269,92 +2736,97 @@ export const XoxStar: React.FC<XoxStarProps> = ({
         aria-hidden="true"
       >
         <defs>
-          {/* Cuerpo de cristal líquido translúcido: superficie cristalina limpia manteniendo volumen visible */}
-          <linearGradient id={ids.body} x1="58" y1="48" x2="184" y2="194" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.34" : "0.21"} />
-            <stop ref={(el) => { stopRefs.current.bodyTint = el; }} offset="26%" stopColor={initialColors.bodyTint} stopOpacity={glassContrast ? "0.20" : "0.10"} />
-            <stop offset="52%" stopColor="#060812" stopOpacity={glassContrast ? "0.20" : "0.035"} />
-            <stop ref={(el) => { stopRefs.current.bodyGlow = el; }} offset="78%" stopColor={initialColors.bodyGlow} stopOpacity={glassContrast ? "0.19" : "0.095"} />
-            <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.24" : "0.125"} />
+          {/* Cuerpo de cristal líquido ultra-transparente: centro limpio sobre negro y refracción sólo en las curvas */}
+          <linearGradient id={ids.body} x1="60" y1="48" x2="180" y2="192" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.26" : "0.13"} />
+            <stop ref={(el) => { stopRefs.current.bodyTint = el; }} offset="19%" stopColor={initialColors.bodyTint} stopOpacity={glassContrast ? "0.14" : "0.065"} />
+            <stop
+              ref={(el) => { stopRefs.current.bodyMid = glassContrast ? null : el; }}
+              offset="50%"
+              stopColor={glassContrast ? "#050814" : initialColors.mid}
+              stopOpacity={glassContrast ? "0.18" : "0.025"}
+            />
+            <stop ref={(el) => { stopRefs.current.bodyGlow = el; }} offset="82%" stopColor={initialColors.bodyGlow} stopOpacity={glassContrast ? "0.17" : "0.085"} />
+            <stop ref={(el) => { stopRefs.current.bodyRimEnd = el; }} offset="100%" stopColor={initialColors.rim2} stopOpacity={glassContrast ? "0.26" : "0.16"} />
           </linearGradient>
-          {/* Filo fino de cristal: brilla en los puntos de luz y mantiene flancos ligeros */}
-          <linearGradient ref={rimGradRef} id={ids.rim} x1="55" y1="45" x2="185" y2="195" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.96" : "0.90"} />
-            <stop ref={(el) => { stopRefs.current.rim1 = el; }} offset="20%" stopColor={initialColors.rim1} stopOpacity={glassContrast ? "0.66" : "0.50"} />
-            <stop ref={(el) => { stopRefs.current.rimMid = el; }} offset="50%" stopColor={initialColors.rim1} stopOpacity={glassContrast ? "0.26" : "0.16"} />
-            <stop ref={(el) => { stopRefs.current.rim2 = el; }} offset="78%" stopColor={initialColors.rim2} stopOpacity={glassContrast ? "0.60" : "0.44"} />
-            <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.68" : "0.54"} />
+          {/* Filo Fresnel nítido de cristal pulido: destello húmedo arriba-izq y rebote óptico abajo-der */}
+          <linearGradient ref={rimGradRef} id={ids.rim} x1="56" y1="46" x2="184" y2="194" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.98" : "0.93"} />
+            <stop ref={(el) => { stopRefs.current.rim1 = el; }} offset="22%" stopColor={initialColors.rim1} stopOpacity={glassContrast ? "0.66" : "0.50"} />
+            <stop ref={(el) => { stopRefs.current.rimMid = el; }} offset="52%" stopColor={initialColors.rim2} stopOpacity={glassContrast ? "0.34" : "0.22"} />
+            <stop ref={(el) => { stopRefs.current.rim2 = el; }} offset="80%" stopColor={initialColors.rim2} stopOpacity={glassContrast ? "0.64" : "0.48"} />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity={glassContrast ? "0.80" : "0.68"} />
           </linearGradient>
-          {/* Destellos de cristal mínimos en cada una de las 5 puntas redondeadas */}
-          <radialGradient id={ids.peakGlint} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.46" />
-            <stop ref={(el) => { stopRefs.current.peakGlintTint = el; }} offset="45%" stopColor={initialColors.rim1} stopOpacity="0.22" />
-            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
-          </radialGradient>
-          <radialGradient id={ids.peakGlintAlt} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.42" />
-            <stop ref={(el) => { stopRefs.current.peakGlintAltTint = el; }} offset="45%" stopColor={initialColors.rim2} stopOpacity="0.20" />
-            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
-          </radialGradient>
-          {/* Menisco interno fino de cristal (espesor sutil de vidrio sin borde grueso) */}
+          {/* Menisco interno sutil por tensión superficial (sin velar ni blanquear el cristal) */}
           <linearGradient id={ids.meniscus} x1="58" y1="48" x2="182" y2="192" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.68" />
-            <stop ref={(el) => { stopRefs.current.meniscus1 = el; }} offset="26%" stopColor={initialColors.rim1} stopOpacity="0.52" />
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.65" />
+            <stop ref={(el) => { stopRefs.current.meniscus1 = el; }} offset="26%" stopColor={initialColors.rim1} stopOpacity="0.44" />
             <stop ref={(el) => { stopRefs.current.meniscusMid = el; }} offset="54%" stopColor={initialColors.bodyGlow} stopOpacity="0.10" />
-            <stop ref={(el) => { stopRefs.current.meniscus2 = el; }} offset="82%" stopColor={initialColors.rim2} stopOpacity="0.48" />
-            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.44" />
+            <stop ref={(el) => { stopRefs.current.meniscus2 = el; }} offset="82%" stopColor={initialColors.rim2} stopOpacity="0.46" />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.52" />
           </linearGradient>
-          {/* Bisel cristalino delicado arriba-izquierda (destello puro de vidrio sin línea pesada) */}
-          <linearGradient id={ids.bevel} x1="56" y1="46" x2="146" y2="144" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.90" />
-            <stop ref={(el) => { stopRefs.current.bevelTint = el; }} offset="34%" stopColor={initialColors.rim1} stopOpacity="0.34" />
-            <stop offset="72%" stopColor="#FFFFFF" stopOpacity="0" />
+          {/* Surco oscuro fino de refracción pegado al borde (espesor de vidrio limpio sin doble línea pesada) */}
+          <linearGradient id={ids.refractCrease} x1="58" y1="50" x2="182" y2="190" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#040714" stopOpacity="0.14" />
+            <stop offset="35%" stopColor="#030612" stopOpacity="0.38" />
+            <stop offset="70%" stopColor="#030612" stopOpacity="0.34" />
+            <stop offset="100%" stopColor="#040714" stopOpacity="0.16" />
           </linearGradient>
-          {/* Reflejo interno fino abajo-derecha (rebote zafiro-cristal delicado) */}
-          <linearGradient id={ids.bounce} x1="186" y1="194" x2="96" y2="98" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.72" />
-            <stop ref={(el) => { stopRefs.current.bounceTint = el; }} offset="36%" stopColor={initialColors.rim2} stopOpacity="0.36" />
-            <stop offset="72%" stopColor="#FFFFFF" stopOpacity="0" />
+          {/* Bisel cristalino húmedo arriba-izquierda */}
+          <linearGradient id={ids.bevel} x1="56" y1="46" x2="148" y2="146" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.92" />
+            <stop ref={(el) => { stopRefs.current.bevelTint = el; }} offset="34%" stopColor={initialColors.rim1} stopOpacity="0.38" />
+            <stop offset="68%" stopColor="#FFFFFF" stopOpacity="0" />
           </linearGradient>
-          {/* Cáusticas líquidas internas que fluyen suavemente dentro del cristal */}
+          {/* Rebote Fresnel interno abajo-derecha */}
+          <linearGradient id={ids.bounce} x1="186" y1="194" x2="94" y2="96" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.80" />
+            <stop ref={(el) => { stopRefs.current.bounceTint = el; }} offset="36%" stopColor={initialColors.rim2} stopOpacity="0.42" />
+            <stop offset="68%" stopColor="#FFFFFF" stopOpacity="0" />
+          </linearGradient>
+          {/* Cáusticas líquidas saturadas y transparentes (cero blanco lechoso en el interior) */}
           <radialGradient id={ids.liquidA} cx="50%" cy="50%" r="50%">
-            <stop ref={(el) => { stopRefs.current.liquidA0 = el; }} offset="0%" stopColor={initialColors.bodyTint} stopOpacity={glassContrast ? "0.38" : "0.30"} />
-            <stop ref={(el) => { stopRefs.current.liquidA1 = el; }} offset="48%" stopColor={initialColors.glow} stopOpacity={glassContrast ? "0.15" : "0.11"} />
+            <stop ref={(el) => { stopRefs.current.liquidA0 = el; }} offset="0%" stopColor={initialColors.bodyTint} stopOpacity={glassContrast ? "0.24" : "0.14"} />
+            <stop ref={(el) => { stopRefs.current.liquidA1 = el; }} offset="50%" stopColor={initialColors.rim1} stopOpacity={glassContrast ? "0.10" : "0.055"} />
             <stop ref={(el) => { stopRefs.current.liquidA2 = el; }} offset="100%" stopColor={initialColors.glow} stopOpacity="0" />
           </radialGradient>
           <radialGradient id={ids.liquidB} cx="50%" cy="50%" r="50%">
-            <stop ref={(el) => { stopRefs.current.liquidB0 = el; }} offset="0%" stopColor={initialColors.rim2} stopOpacity={glassContrast ? "0.36" : "0.28"} />
-            <stop ref={(el) => { stopRefs.current.liquidB1 = el; }} offset="48%" stopColor={initialColors.bodyGlow} stopOpacity={glassContrast ? "0.145" : "0.105"} />
-            <stop ref={(el) => { stopRefs.current.liquidB2 = el; }} offset="100%" stopColor={initialColors.bodyGlow} stopOpacity="0" />
+            <stop ref={(el) => { stopRefs.current.liquidB0 = el; }} offset="0%" stopColor={initialColors.bodyGlow} stopOpacity={glassContrast ? "0.30" : "0.20"} />
+            <stop ref={(el) => { stopRefs.current.liquidB1 = el; }} offset="52%" stopColor={initialColors.glow} stopOpacity={glassContrast ? "0.13" : "0.08"} />
+            <stop ref={(el) => { stopRefs.current.liquidB2 = el; }} offset="100%" stopColor={initialColors.mid} stopOpacity="0" />
           </radialGradient>
-          {/* Onda cáustica interna periwinkle que cruza suavemente la cúpula líquida */}
           <radialGradient id={ids.liquidC} cx="50%" cy="50%" r="50%">
-            <stop ref={(el) => { stopRefs.current.liquidC0 = el; }} offset="0%" stopColor={initialColors.accessory} stopOpacity={glassContrast ? "0.22" : "0.15"} />
-            <stop ref={(el) => { stopRefs.current.liquidC1 = el; }} offset="100%" stopColor={initialColors.accessory} stopOpacity="0" />
+            <stop ref={(el) => { stopRefs.current.liquidC0 = el; }} offset="0%" stopColor={initialColors.rim1} stopOpacity={glassContrast ? "0.22" : "0.16"} />
+            <stop ref={(el) => { stopRefs.current.liquidC1 = el; }} offset="52%" stopColor={initialColors.accessory} stopOpacity={glassContrast ? "0.11" : "0.075"} />
+            <stop ref={(el) => { stopRefs.current.liquidC2 = el; }} offset="100%" stopColor={initialColors.bodyGlow} stopOpacity="0" />
           </radialGradient>
-          {/* Brillo especular húmedo en dos etapas (inscrito en r=50% con caída suave sin borde duro) */}
-          <radialGradient id={ids.gloss} cx="50%" cy="50%" fx="45%" fy="42%" r="50%">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.20" />
-            <stop offset="34%" stopColor="#FFFFFF" stopOpacity="0.08" />
-            <stop offset="68%" stopColor="#FFFFFF" stopOpacity="0.018" />
+          {/* Brillo húmedo de agua: velo mínimo + media luna especular concentrada */}
+          <radialGradient id={ids.gloss} cx="50%" cy="50%" fx="45%" fy="40%" r="50%">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.15" />
+            <stop offset="40%" stopColor="#FFFFFF" stopOpacity="0.055" />
+            <stop offset="75%" stopColor="#FFFFFF" stopOpacity="0.012" />
             <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
           </radialGradient>
-          <radialGradient id={ids.glossSpec} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.30" />
-            <stop offset="32%" stopColor="#FFFFFF" stopOpacity="0.11" />
-            <stop offset="66%" stopColor="#FFFFFF" stopOpacity="0.02" />
-            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
-          </radialGradient>
+          <linearGradient id={ids.glossSpec} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.72" />
+            <stop offset="55%" stopColor="#FFFFFF" stopOpacity="0.44" />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.08" />
+          </linearGradient>
+          {/* Cápsula ocular blanca limpia estilo Liquid Glass (sin pupila) */}
+          <linearGradient id={ids.eyeFill} x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="1" />
+            <stop offset="100%" stopColor="#EEF2FF" stopOpacity="0.96" />
+          </linearGradient>
           <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
-            <stop ref={(el) => { stopRefs.current.core0 = el; }} offset="0%" stopColor={initialColors.core} stopOpacity={glassContrast ? "0.28" : "0.19"} />
-            <stop ref={(el) => { stopRefs.current.core1 = el; }} offset="42%" stopColor={initialColors.mid} stopOpacity={glassContrast ? "0.146" : "0.099"} />
-            <stop ref={(el) => { stopRefs.current.core2 = el; }} offset="76%" stopColor={initialColors.mid} stopOpacity={glassContrast ? "0.039" : "0.027"} />
+            <stop ref={(el) => { stopRefs.current.core0 = el; }} offset="0%" stopColor={initialColors.core} stopOpacity={glassContrast ? "0.20" : "0.095"} />
+            <stop ref={(el) => { stopRefs.current.core1 = el; }} offset="44%" stopColor={initialColors.glow} stopOpacity={glassContrast ? "0.10" : "0.048"} />
+            <stop ref={(el) => { stopRefs.current.core2 = el; }} offset="78%" stopColor={initialColors.mid} stopOpacity={glassContrast ? "0.03" : "0.014"} />
             <stop ref={(el) => { stopRefs.current.core3 = el; }} offset="100%" stopColor={initialColors.mid} stopOpacity="0" />
           </radialGradient>
-          {/* Aura dibujada dentro del SVG: halo atmosférico sutil para despegar a Xox del fondo */}
+          {/* Halo atmosférico discreto para no levantar velo gris detrás de la gota transparente */}
           <radialGradient id={ids.glow} cx="50%" cy="50%" r="50%">
-            <stop ref={(el) => { stopRefs.current.glow0 = el; }} offset="0%" stopColor={initialColors.glow} stopOpacity="0.15" />
-            <stop ref={(el) => { stopRefs.current.glow1 = el; }} offset="45%" stopColor={initialColors.glow} stopOpacity="0.048" />
+            <stop ref={(el) => { stopRefs.current.glow0 = el; }} offset="0%" stopColor={initialColors.glow} stopOpacity="0.12" />
+            <stop ref={(el) => { stopRefs.current.glow1 = el; }} offset="48%" stopColor={initialColors.bodyGlow} stopOpacity="0.042" />
             <stop ref={(el) => { stopRefs.current.glow2 = el; }} offset="100%" stopColor={initialColors.glow} stopOpacity="0" />
           </radialGradient>
           {/* Sonrojo orgánico difuminado sin bordes duros ni exceso de rojez */}
@@ -2363,6 +2835,49 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             <stop ref={(el) => { stopRefs.current.blush1 = el; }} offset="50%" stopColor={initialColors.blush} stopOpacity="0.24" />
             <stop ref={(el) => { stopRefs.current.blush2 = el; }} offset="100%" stopColor={initialColors.blush} stopOpacity="0" />
           </radialGradient>
+          {/* Luz de la pantalla de la laptop reflejada en el cristal (programando) */}
+          <radialGradient id={ids.screenLight} cx="50%" cy="50%" r="50%">
+            <stop ref={(el) => { stopRefs.current.screenLight = el; }} offset="0%" stopColor={initialColors.accessory} stopOpacity="0.5" />
+            <stop offset="55%" stopColor={initialColors.accessory} stopOpacity="0.14" />
+            <stop offset="100%" stopColor={initialColors.accessory} stopOpacity="0" />
+          </radialGradient>
+          {/* Lupa de cristal: fondo del lente, refracción en el borde, aro y mango */}
+          <radialGradient id={ids.lensBack} cx="42%" cy="38%" r="62%">
+            <stop offset="0%" stopColor="#1E2654" stopOpacity="0.96" />
+            <stop offset="100%" stopColor="#0A0E28" stopOpacity="0.97" />
+          </radialGradient>
+          <radialGradient id={ids.lensEdge} cx="50%" cy="50%" r="50%">
+            <stop offset="62%" stopColor={initialColors.rim1} stopOpacity="0" />
+            <stop ref={(el) => { stopRefs.current.lensEdge = el; }} offset="100%" stopColor={initialColors.rim1} stopOpacity="0.42" />
+          </radialGradient>
+          <linearGradient id={ids.lensRim} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="1" />
+            <stop ref={(el) => { stopRefs.current.lensRim1 = el; }} offset="38%" stopColor={initialColors.rim1} stopOpacity="0.95" />
+            <stop ref={(el) => { stopRefs.current.lensRim2 = el; }} offset="100%" stopColor={initialColors.rim2} stopOpacity="1" />
+          </linearGradient>
+          <linearGradient id={ids.lensHandle} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#F4F2FF" />
+            <stop offset="45%" stopColor={currentColors.rim1} />
+            <stop offset="100%" stopColor={currentColors.mid} />
+          </linearGradient>
+          <clipPath id={ids.lensClip}>
+            <circle cx="0" cy="0" r={LENS_R - 0.4} />
+          </clipPath>
+          {/* Anillo de sincronización: estela que se aviva hacia la punta de cada flecha */}
+          <linearGradient id={ids.syncArc} x1={SYNC_R} y1="0" x2={SYNC_R * Math.cos(toRad(120))} y2={SYNC_R * Math.sin(toRad(120))} gradientUnits="userSpaceOnUse">
+            <stop ref={(el) => { stopRefs.current.syncArc0 = el; }} offset="0%" stopColor={initialColors.accessory} stopOpacity="0" />
+            <stop offset="55%" stopColor={initialColors.accessory} stopOpacity="0.5" />
+            <stop ref={(el) => { stopRefs.current.syncArc1 = el; }} offset="100%" stopColor={initialColors.rim1} stopOpacity="1" />
+          </linearGradient>
+          <radialGradient id={ids.syncHead} cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.95" />
+            <stop ref={(el) => { stopRefs.current.syncHead = el; }} offset="42%" stopColor={initialColors.accessory} stopOpacity="0.5" />
+            <stop offset="100%" stopColor={initialColors.accessory} stopOpacity="0" />
+          </radialGradient>
+          {/* Mitad delantera del anillo (en coordenadas del anillo antes de aplastarlo) */}
+          <clipPath id={ids.syncFront}>
+            <rect x={-SYNC_R - 20} y="0" width={SYNC_R * 2 + 40} height={SYNC_R + 20} />
+          </clipPath>
           <clipPath id={ids.bodyClip}>
             <path ref={starClipPathRef} d={initialPath} />
           </clipPath>
@@ -2371,12 +2886,6 @@ export const XoxStar: React.FC<XoxStarProps> = ({
               ref={talkMouthClipPathRef}
               d={buildOrganicTalkMouthPath(C, C + 7.2, 3.6, 0.2, 0.6)}
             />
-          </clipPath>
-          <clipPath id={ids.eyeClipL}>
-            <ellipse ref={eyeClipEllipseLRef} cx="0" cy="0" rx="3.4" ry="5.2" />
-          </clipPath>
-          <clipPath id={ids.eyeClipR}>
-            <ellipse ref={eyeClipEllipseRRef} cx="0" cy="0" rx="3.4" ry="5.2" />
           </clipPath>
           {glassContrast && (
             <radialGradient id={ids.cradle} cx="50%" cy="50%" r="50%">
@@ -2497,10 +3006,8 @@ export const XoxStar: React.FC<XoxStarProps> = ({
                       fill="#FFFFFF"
                       opacity="0.26"
                     />
-                    <ellipse cx="8.5" cy={geom.eyeY} rx="0.92" ry="1.42" fill="#FFFFFF" fillOpacity="0.96" />
-                    <ellipse cx="11.5" cy={geom.eyeY} rx="0.92" ry="1.42" fill="#FFFFFF" fillOpacity="0.96" />
-                    <circle cx="8.7" cy={geom.eyeY - 0.35} r="0.28" fill={pal.tintHex} />
-                    <circle cx="11.7" cy={geom.eyeY - 0.35} r="0.28" fill={pal.tintHex} />
+                    <ellipse cx="8.5" cy={geom.eyeY} rx="0.92" ry="1.42" fill="#FFFFFF" fillOpacity="0.98" />
+                    <ellipse cx="11.5" cy={geom.eyeY} rx="0.92" ry="1.42" fill="#FFFFFF" fillOpacity="0.98" />
                   </g>
                 </g>
               );
@@ -2523,6 +3030,53 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           strokeLinecap="round"
           opacity="0"
         />
+
+        {/* Anillo de sincronización — mitad trasera: pasa detrás del cuerpo y se ve a través del cristal */}
+        <g ref={syncBackRef} display="none" opacity="0">
+          <g
+            ref={(el) => {
+              syncRingRefs.current[0] = el;
+            }}
+            transform={`translate(${C} ${C + 8}) rotate(${SYNC_TILT}) scale(1 ${SYNC_FLAT})`}
+          >
+            <g ref={syncSpinRef} id={ids.syncSpin}>
+              <circle
+                r={SYNC_R}
+                fill="none"
+                stroke="#FFFFFF"
+                strokeOpacity="0.2"
+                strokeWidth="1.1"
+                strokeDasharray="0.5 7"
+                strokeLinecap="round"
+                vectorEffect="non-scaling-stroke"
+              />
+              {[0, 180].map((deg) => (
+                <path
+                  key={deg}
+                  transform={`rotate(${deg})`}
+                  d={`M ${SYNC_R} 0 A ${SYNC_R} ${SYNC_R} 0 0 1 ${(SYNC_R * Math.cos(toRad(120))).toFixed(2)} ${(SYNC_R * Math.sin(toRad(120))).toFixed(2)}`}
+                  fill="none"
+                  stroke={`url(#${ids.syncArc})`}
+                  strokeWidth="2.6"
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+            </g>
+          </g>
+          {[0, 1].map((k) => (
+            <g
+              key={k}
+              ref={(el) => {
+                syncHeadRefs.current[k] = el;
+              }}
+              opacity="0"
+            >
+              <circle r="5" fill={`url(#${ids.syncHead})`} />
+              <path d="M -3 -3.6 L 1.6 0 L -3 3.6" fill="none" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </g>
+          ))}
+        </g>
 
         {/* Cuerpo */}
         <g ref={bodyRef}>
@@ -2552,250 +3106,321 @@ export const XoxStar: React.FC<XoxStarProps> = ({
             <path
               ref={starRef}
               d={initialPath}
-              fill={state === "alert" ? "rgba(239,68,68,0.18)" : `url(#${ids.body})`}
-              stroke={state === "alert" ? "#F87171" : `url(#${ids.rim})`}
-              strokeWidth={glassContrast ? "1.55" : "1.05"}
-              strokeLinejoin="round"
+              fill={state === "alert" ? "rgba(239,68,68,0.22)" : `url(#${ids.body})`}
             />
-            {/* Capas internas Liquid Glass recortadas a la silueta (cáusticas + onda + núcleo + menisco fino + bisel cristalino + puntos de luz en puntas) */}
+            {/* Capas ópticas internas de gota Liquid Glass recortadas a la silueta */}
             <g clipPath={`url(#${ids.bodyClip})`}>
               <ellipse
                 ref={liquidARef}
-                cx="87"
-                cy="83"
-                rx="56"
-                ry="43"
+                cx="86"
+                cy="78"
+                rx="48"
+                ry="36"
                 fill={`url(#${ids.liquidA})`}
               />
               <ellipse
                 ref={liquidBRef}
-                cx="151"
-                cy="154"
-                rx="57"
-                ry="45"
+                cx="146"
+                cy="156"
+                rx="52"
+                ry="40"
                 fill={`url(#${ids.liquidB})`}
               />
               <ellipse
                 ref={liquidCRef}
-                cx="122"
-                cy="132"
-                rx="40"
-                ry="26"
-                transform="rotate(-22 122 132)"
+                cx="128"
+                cy="164"
+                rx="36"
+                ry="16"
+                transform="rotate(-10 128 164)"
                 fill={`url(#${ids.liquidC})`}
               />
-              {/* Núcleo de energía interno suspendido en el corazón del líquido */}
+              {/* Núcleo cromático profundo y transparente */}
               <circle
                 ref={coreRef}
                 cx={C}
-                cy={C - 2.5}
-                r="36"
+                cy={C + 1.5}
+                r="35"
                 fill={`url(#${ids.core})`}
               />
-              {/* Menisco interno fino de cristal (espesor de vidrio sin contorno pesado) */}
+              {/* Luz de la pantalla de la laptop reflejada en el cristal (sólo programando) */}
+              <ellipse
+                ref={screenLightRef}
+                cx="168"
+                cy="162"
+                rx="54"
+                ry="42"
+                fill={`url(#${ids.screenLight})`}
+                opacity="0"
+              />
+              {/* Menisco perimetral delicado por tensión superficial */}
               <path
                 ref={starMeniscusRef}
                 d={initialPath}
                 fill="none"
                 stroke={`url(#${ids.meniscus})`}
-                strokeWidth="5.0"
-                strokeOpacity={glassContrast ? "0.24" : "0.15"}
+                strokeWidth="4.4"
+                strokeOpacity={glassContrast ? "0.18" : "0.11"}
                 strokeLinejoin="round"
               />
-              {/* Bisel especular fino arriba-izquierda (destello cristalino delicado) */}
+              {/* Surco oscuro fino de refracción pegado al filo exterior */}
+              <path
+                ref={starRefractCreaseRef}
+                d={initialPath}
+                transform={`translate(${(C * 0.017).toFixed(2)} ${(C * 0.017).toFixed(2)}) scale(0.983)`}
+                fill="none"
+                stroke={`url(#${ids.refractCrease})`}
+                strokeWidth="1.05"
+                strokeLinejoin="round"
+              />
+              {/* Bisel especular húmedo arriba-izquierda */}
               <path
                 ref={starBevelRef}
                 d={initialPath}
-                transform="translate(0.85 1.25)"
+                transform="translate(0.7 1.0)"
                 fill="none"
                 stroke={`url(#${ids.bevel})`}
-                strokeWidth="1.55"
-                strokeOpacity={glassContrast ? "0.46" : "0.36"}
+                strokeWidth="1.15"
+                strokeOpacity={glassContrast ? "0.52" : "0.42"}
                 strokeLinejoin="round"
               />
-              {/* Rebote interno fino abajo-derecha (reflejo zafiro-cristal sutil) */}
+              {/* Rebote Fresnel interno abajo-derecha siguiendo la curva exacta del pie */}
               <path
                 ref={starBounceRef}
                 d={initialPath}
-                transform="translate(-0.75 -1.1)"
+                transform="translate(-0.68 -0.95)"
                 fill="none"
                 stroke={`url(#${ids.bounce})`}
-                strokeWidth="1.45"
-                strokeOpacity={glassContrast ? "0.36" : "0.26"}
+                strokeWidth="1.1"
+                strokeOpacity={glassContrast ? "0.46" : "0.36"}
                 strokeLinejoin="round"
               />
-              {/* Puntos de luz cristalinos mínimos anclados en las 5 puntas redondeadas */}
-              {initialPeakApexes.map(([px, py], i) => (
-                <circle
-                  key={i}
-                  ref={(el) => {
-                    peakGlintRefs.current[i] = el;
-                  }}
-                  cx={px}
-                  cy={py}
-                  r="6.8"
-                  fill={`url(#${i === 2 || i === 3 ? ids.peakGlintAlt : ids.peakGlint})`}
-                  opacity={i === 0 || i === 4 ? "0.34" : i === 2 ? "0.30" : "0.22"}
-                />
-              ))}
-              {/* Reflejos especulares húmedos en dos etapas (cúpula suave + destello cristalino sutil sin bordes cortados) */}
+              {/* Reflejos húmedos de agua inscritos 100 % dentro de la frente convexa */}
               <ellipse
                 ref={glossTopRef}
-                cx="104"
-                cy="87"
-                rx="25"
-                ry="9.5"
-                transform="rotate(-33 104 87)"
+                cx="108"
+                cy="96"
+                rx="20"
+                ry="7.5"
+                transform="rotate(-32 108 96)"
                 fill={`url(#${ids.gloss})`}
               />
-              <ellipse
+              <path
                 ref={glossSpecRef}
-                cx="102.5"
-                cy="85.2"
-                rx="11"
-                ry="3.2"
-                transform="rotate(-34 102.5 85.2)"
+                d={CRESCENT_SPEC_PATH}
+                transform="translate(108.5 95.2) rotate(-32)"
                 fill={`url(#${ids.glossSpec})`}
               />
               <ellipse
-                ref={glossBotRef}
-                cx="141"
-                cy="152"
-                rx="18"
-                ry="6.2"
-                transform="rotate(-28 141 152)"
-                fill={`url(#${ids.gloss})`}
-                opacity="0.34"
+                ref={glossPinRef}
+                cx="98.8"
+                cy="106.0"
+                rx="1.85"
+                ry="0.95"
+                transform="rotate(-40 98.8 106.0)"
+                fill="#FFFFFF"
+                opacity="0.58"
               />
             </g>
+            {/* Filo exterior Fresnel fino dibujado encima del recorte interno para máxima nitidez óptica */}
+            <path
+              ref={starRimRef}
+              d={initialPath}
+              fill="none"
+              stroke={state === "alert" ? "#F87171" : `url(#${ids.rim})`}
+              strokeWidth={glassContrast ? "1.2" : "0.88"}
+              strokeLinejoin="round"
+            />
           </g>
 
           {/* Rostro */}
           <g ref={faceRef}>
-            {/* Mejillas con sonrojo orgánico (detrás de ojos y boca para mantener contraste nítido) */}
-            <g ref={cheekLRef} opacity="0" transform={`translate(${C - 14.5} ${C + 5.2}) scale(0.72 0.68)`}>
-              <ellipse cx="0" cy="0" rx="8.2" ry="4.7" transform="rotate(-9)" fill={`url(#${ids.blush})`} />
-              <ellipse ref={cheekLCoreRef} cx="0" cy="-0.2" rx="3.8" ry="2.0" transform="rotate(-9)" fill={initialColors.blushCore} opacity="0.20" />
-            </g>
-            <g ref={cheekRRef} opacity="0" transform={`translate(${C + 14.5} ${C + 5.2}) scale(0.72 0.68)`}>
-              <ellipse cx="0" cy="0" rx="8.2" ry="4.7" transform="rotate(9)" fill={`url(#${ids.blush})`} />
-              <ellipse ref={cheekRCoreRef} cx="0" cy="-0.2" rx="3.8" ry="2.0" transform="rotate(9)" fill={initialColors.blushCore} opacity="0.20" />
-            </g>
-
-            {/* Ojo izquierdo: esclerótica con borde óptico oscuro sutil + iris/pupila recortada ("ojo dentro del ojo") */}
-            <g ref={eyeLRef} transform={`translate(${C - 8} ${C - 3})`}>
-              <g ref={eyeOpenLRef}>
-                <ellipse
-                  ref={eyeScleraLRef}
-                  cx="0"
-                  cy="0"
-                  rx="3.4"
-                  ry="5.2"
-                  fill="#FFFFFF"
-                  opacity="0.98"
-                  stroke="rgba(6, 10, 22, 0.36)"
-                  strokeWidth="1.2"
-                  paintOrder="stroke"
-                />
-                <g clipPath={`url(#${ids.eyeClipL})`}>
-                  <circle ref={irisLRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.eye} opacity="0.42" />
-                  <circle ref={pupilLRef} cx="1.1" cy="-1.5" r="1.18" fill={currentColors.eye} />
-                  <circle ref={glintLRef} cx="0.65" cy="-2.0" r="0.4" fill="#FFFFFF" opacity="0.86" />
-                  <rect ref={lidShadeLRef} x="-5" y="-7.5" width="10" height="3.2" fill={currentColors.eye} opacity="0" />
-                </g>
+            {/* Rasgos de la carita: la lupa los vuelve a dibujar aumentados con <use> */}
+            <g id={ids.features}>
+              {/* Mejillas con sonrojo orgánico (detrás de ojos y boca para mantener contraste nítido) */}
+              <g ref={cheekLRef} opacity="0" transform={`translate(${C - 14.5} ${C + 5.2}) scale(0.72 0.68)`}>
+                <ellipse cx="0" cy="0" rx="8.2" ry="4.7" transform="rotate(-9)" fill={`url(#${ids.blush})`} />
+                <ellipse ref={cheekLCoreRef} cx="0" cy="-0.2" rx="3.8" ry="2.0" transform="rotate(-9)" fill={initialColors.blushCore} opacity="0.22" />
               </g>
+              <g ref={cheekRRef} opacity="0" transform={`translate(${C + 14.5} ${C + 5.2}) scale(0.72 0.68)`}>
+                <ellipse cx="0" cy="0" rx="8.2" ry="4.7" transform="rotate(9)" fill={`url(#${ids.blush})`} />
+                <ellipse ref={cheekRCoreRef} cx="0" cy="-0.2" rx="3.8" ry="2.0" transform="rotate(9)" fill={initialColors.blushCore} opacity="0.22" />
+              </g>
+
+              {/* Ojo izquierdo limpio sin pupila */}
+              <g ref={eyeLRef} transform={`translate(${C - 8} ${C - 3})`}>
+                <g ref={eyeOpenLRef}>
+                  <ellipse
+                    ref={eyeScleraLRef}
+                    cx="0"
+                    cy="0"
+                    rx="3.45"
+                    ry="5.25"
+                    fill={`url(#${ids.eyeFill})`}
+                    stroke="rgba(6, 10, 24, 0.24)"
+                    strokeWidth="0.95"
+                    paintOrder="stroke"
+                  />
+                </g>
+                <path
+                  ref={eyeHappyLRef}
+                  d="M -4.35 1.9 C -2.35 -4.8 2.15 -5.2 4.15 1.35"
+                  stroke="#FFFFFF"
+                  strokeWidth="2.35"
+                  strokeLinecap="round"
+                  fill="none"
+                  opacity="0"
+                />
+              </g>
+              {/* Ojo derecho limpio sin pupila */}
+              <g ref={eyeRRef} transform={`translate(${C + 8} ${C - 3})`}>
+                <g ref={eyeOpenRRef}>
+                  <ellipse
+                    ref={eyeScleraRRef}
+                    cx="0"
+                    cy="0"
+                    rx="3.45"
+                    ry="5.25"
+                    fill={`url(#${ids.eyeFill})`}
+                    stroke="rgba(6, 10, 24, 0.24)"
+                    strokeWidth="0.95"
+                    paintOrder="stroke"
+                  />
+                </g>
+                <path
+                  ref={eyeHappyRRef}
+                  d="M -4.15 1.35 C -2.15 -5.2 2.35 -4.8 4.35 1.9"
+                  stroke="#FFFFFF"
+                  strokeWidth="2.35"
+                  strokeLinecap="round"
+                  fill="none"
+                  opacity="0"
+                />
+              </g>
+
+              {/* Lengüita de concentración (programando); queda bajo la línea de la boca */}
               <path
-                ref={eyeHappyLRef}
-                d="M -4.5 1.5 Q 0 -5 4.5 1.5"
+                ref={tongueRef}
+                d="M -1.7 -0.3 C -1.7 3 1.7 3 1.7 -0.3 Z"
+                fill="#FF9EC4"
+                opacity="0"
+              />
+              {/* Boca de sonrisa / concentración (hover / lectura / programación) */}
+              <path
+                ref={mouthRef}
+                d={`M ${C - 3} ${C + 6.5} Q ${C} ${C + 9} ${C + 3} ${C + 6.5}`}
                 stroke="#FFFFFF"
-                strokeWidth="2.2"
+                strokeWidth="1.6"
                 strokeLinecap="round"
                 fill="none"
                 opacity="0"
               />
-            </g>
-            {/* Ojo derecho: esclerótica con borde óptico oscuro sutil + iris/pupila recortada ("ojo dentro del ojo") */}
-            <g ref={eyeRRef} transform={`translate(${C + 8} ${C - 3})`}>
-              <g ref={eyeOpenRRef}>
-                <ellipse
-                  ref={eyeScleraRRef}
-                  cx="0"
-                  cy="0"
-                  rx="3.4"
-                  ry="5.2"
+              {/* Boca blanca luminosa con tonalidades internas al hablar */}
+              <g ref={talkMouthGroupRef} opacity="0">
+                <path
+                  ref={talkMouthPathRef}
+                  d={buildOrganicTalkMouthPath(C, C + 6.8, 3.8, 0.4, 0.7)}
                   fill="#FFFFFF"
-                  opacity="0.98"
-                  stroke="rgba(6, 10, 22, 0.36)"
-                  strokeWidth="1.2"
-                  paintOrder="stroke"
+                  opacity="0.96"
                 />
-                <g clipPath={`url(#${ids.eyeClipR})`}>
-                  <circle ref={irisRRef} cx="1.1" cy="-1.5" r="1.9" fill={currentColors.eye} opacity="0.42" />
-                  <circle ref={pupilRRef} cx="1.1" cy="-1.5" r="1.18" fill={currentColors.eye} />
-                  <circle ref={glintRRef} cx="0.65" cy="-2.0" r="0.4" fill="#FFFFFF" opacity="0.86" />
-                  <rect ref={lidShadeRRef} x="-5" y="-7.5" width="10" height="3.2" fill={currentColors.eye} opacity="0" />
+                <g clipPath={`url(#${ids.mouthClip})`}>
+                  <ellipse
+                    ref={talkInnerShadeRef}
+                    cx={C}
+                    cy={C + 8.8}
+                    rx="3.0"
+                    ry="2.2"
+                    fill={initialColors.pupil}
+                    opacity="0.38"
+                  />
+                  <ellipse
+                    ref={talkTongueRef}
+                    cx={C}
+                    cy={C + 10.6}
+                    rx="2.4"
+                    ry="1.6"
+                    fill="#FCC6D9"
+                    opacity="0.78"
+                  />
                 </g>
+                <path
+                  ref={talkUpperLipRef}
+                  d={`M ${C - 3.8} ${C + 6.4} Q ${C} ${C + 5.8} ${C + 3.8} ${C + 6.4}`}
+                  fill="none"
+                  stroke="#FFFFFF"
+                  strokeWidth="1.35"
+                  strokeLinecap="round"
+                  opacity="0.98"
+                />
               </g>
-              <path
-                ref={eyeHappyRRef}
-                d="M -4.5 1.5 Q 0 -5 4.5 1.5"
-                stroke="#FFFFFF"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                fill="none"
-                opacity="0"
-              />
+
+              {/* Gota de sudor "¡ups!" cuando la terminal falla */}
+              <g ref={sweatRef} opacity="0" transform={`translate(${C + 21} ${C - 15}) scale(0.0001)`}>
+                <path
+                  d="M 0 -4.6 C 1.9 -1.7 3.2 0.2 3.2 1.7 A 3.2 3.2 0 0 1 -3.2 1.7 C -3.2 0.2 -1.9 -1.7 0 -4.6 Z"
+                  fill="#BFE3FF"
+                  fillOpacity="0.92"
+                  stroke="#FFFFFF"
+                  strokeOpacity="0.7"
+                  strokeWidth="0.6"
+                />
+                <ellipse cx="-1.1" cy="1.1" rx="0.7" ry="1.1" fill="#FFFFFF" opacity="0.85" />
+              </g>
             </g>
 
-            {/* Boca de sonrisa / concentración (hover / celebración / programación) */}
-            <path
-              ref={mouthRef}
-              d={`M ${C - 3} ${C + 6.5} Q ${C} ${C + 9} ${C + 3} ${C + 6.5}`}
-              stroke="#FFFFFF"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-              fill="none"
-              opacity="0"
-            />
-            {/* Boca blanca luminosa con tonalidades internas al hablar */}
-            <g ref={talkMouthGroupRef} opacity="0">
-              <path
-                ref={talkMouthPathRef}
-                d={buildOrganicTalkMouthPath(C, C + 6.8, 3.8, 0.4, 0.7)}
-                fill="#FFFFFF"
-                opacity="0.96"
-              />
-              <g clipPath={`url(#${ids.mouthClip})`}>
-                <ellipse
-                  ref={talkInnerShadeRef}
-                  cx={C}
-                  cy={C + 8.8}
-                  rx="3.0"
-                  ry="2.2"
-                  fill={initialColors.pupil}
-                  opacity="0.38"
-                />
-                <ellipse
-                  ref={talkTongueRef}
-                  cx={C}
-                  cy={C + 10.6}
-                  rx="2.4"
-                  ry="1.6"
-                  fill="#FCC6D9"
-                  opacity="0.78"
-                />
+            {/* Lupa de cristal (leyendo): barre de un ojo al otro y aumenta lo que queda debajo, como de detective */}
+            <g ref={lensRef} display="none" opacity="0" transform={`translate(${C + 9.4} ${C - 3.6}) scale(0.0001)`}>
+              <g transform="rotate(52)">
+                <rect x={LENS_R + 3.2} y="-2.2" width="12.5" height="4.4" rx="2.2" fill={`url(#${ids.lensHandle})`} />
+                <rect x={LENS_R + 4.2} y="-1.3" width="9.5" height="0.9" rx="0.45" fill="#FFFFFF" opacity="0.55" />
+                <rect ref={lensFerruleRef} x={LENS_R + 0.4} y="-2.9" width="3.6" height="5.8" rx="1.2" fill={initialColors.rim1} />
               </g>
+              {/* Fondo del lente: tapa la carita real para que solo se vea la aumentada */}
+              <circle r={LENS_R} fill={`url(#${ids.lensBack})`} />
+              <g clipPath={`url(#${ids.lensClip})`}>
+                <g ref={lensMagRef}>
+                  <use href={`#${ids.features}`} />
+                </g>
+              </g>
+              <circle r={LENS_R} fill={`url(#${ids.lensEdge})`} />
               <path
-                ref={talkUpperLipRef}
-                d={`M ${C - 3.8} ${C + 6.4} Q ${C} ${C + 5.8} ${C + 3.8} ${C + 6.4}`}
+                d={`M ${(-LENS_R * 0.68 * 0.94).toFixed(2)} ${(-LENS_R * 0.68 * 0.34).toFixed(2)} A ${LENS_R * 0.68} ${LENS_R * 0.68} 0 0 1 ${(-LENS_R * 0.68 * 0.34).toFixed(2)} ${(-LENS_R * 0.68 * 0.94).toFixed(2)}`}
                 fill="none"
                 stroke="#FFFFFF"
-                strokeWidth="1.35"
+                strokeWidth="1.5"
                 strokeLinecap="round"
-                opacity="0.98"
+                opacity="0.85"
               />
+              <circle cx={LENS_R * 0.42} cy={LENS_R * 0.5} r="0.85" fill="#FFFFFF" opacity="0.5" />
+              <circle r={LENS_R} fill="none" stroke={`url(#${ids.lensRim})`} strokeWidth="2.3" />
+              <circle r={LENS_R - 1.35} fill="none" stroke="rgba(6, 10, 24, 0.45)" strokeWidth="0.6" />
             </g>
           </g>
+        </g>
+
+        {/* Anillo de sincronización — mitad delantera: pasa frente al cuerpo */}
+        <g ref={syncFrontRef} display="none" opacity="0">
+          <g
+            ref={(el) => {
+              syncRingRefs.current[1] = el;
+            }}
+            transform={`translate(${C} ${C + 8}) rotate(${SYNC_TILT}) scale(1 ${SYNC_FLAT})`}
+            clipPath={`url(#${ids.syncFront})`}
+          >
+            <use href={`#${ids.syncSpin}`} />
+          </g>
+          {[2, 3].map((k) => (
+            <g
+              key={k}
+              ref={(el) => {
+                syncHeadRefs.current[k] = el;
+              }}
+              opacity="0"
+            >
+              <circle r="5" fill={`url(#${ids.syncHead})`} />
+              <path d="M -3 -3.6 L 1.6 0 L -3 3.6" fill="none" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </g>
+          ))}
         </g>
 
         {/* Ondas armónicas de voz al hablar (talking) */}
@@ -2829,41 +3454,7 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           />
         </g>
 
-        {/* Aro de sincronización (dos flechas circulares) */}
-        <g ref={syncRef} opacity="0" transform={`translate(${C} ${C}) scale(0.0001)`}>
-          {[0, 180].map((deg, idx) => (
-            <g key={deg} transform={`rotate(${deg})`}>
-              <path
-                ref={(el) => {
-                  syncPathRefs.current[idx] = el;
-                }}
-                d="M 82 0 A 82 82 0 0 1 0 82"
-                fill="none"
-                stroke={initialColors.accessory}
-                strokeWidth="2"
-                strokeLinecap="round"
-                opacity="0.85"
-              />
-              <polygon
-                ref={(el) => {
-                  syncArrowRefs.current[idx] = el;
-                }}
-                points="-7,82 2,77 2,87"
-                fill={initialColors.accessory}
-                opacity="0.95"
-              />
-            </g>
-          ))}
-        </g>
-
-        {/* Lupa (leyendo) */}
-        <g ref={lensRef} opacity="0" transform={`translate(${C} ${C + 38}) scale(0.0001)`}>
-          <line ref={lensHandleRef} x1="9.5" y1="9.5" x2="22" y2="22" stroke={initialColors.rim1} strokeWidth="4.5" strokeLinecap="round" />
-          <circle ref={lensRingRef} cx="0" cy="0" r="14" fill={initialColors.rim1} fillOpacity="0.14" stroke={initialColors.bodyTint} strokeWidth="2.6" />
-          <path d="M -8 -4 A 9 9 0 0 1 -2 -9" fill="none" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" opacity="0.8" />
-        </g>
-
-        {/* Mini-Laptop holográfica lateral en perspectiva 3/4 (edición de código + terminal, sin brazos) */}
+        {/* Mini-laptop holográfica abajo a la derecha en perspectiva 3/4 (edición de código + terminal, sin brazos) */}
         <g ref={laptopRef} opacity="0" transform={`translate(${C + 58} ${C + 20}) scale(0.0001)`}>
           {/* Resplandor difuminado con gradiente radial (sin bordes duros) */}
           <ellipse
@@ -3112,6 +3703,20 @@ export const XoxStar: React.FC<XoxStarProps> = ({
           <line x1="0" y1="-5" x2="0" y2="1.5" stroke="#FFFFFF" strokeWidth="2.2" strokeLinecap="round" />
           <circle cx="0" cy="5" r="1.3" fill="#FFFFFF" />
         </g>
+
+        {/* Destellos de festejo (brotan alrededor del cuerpo al celebrar) */}
+        {CHEER_SPARKLES.map((_, i) => (
+          <path
+            key={i}
+            ref={(el) => {
+              cheerSparkRefs.current[i] = el;
+            }}
+            d={SPARKLE_PATH}
+            fill="#FFFFFF"
+            opacity="0"
+            transform={`translate(${C} ${C}) scale(0.0001)`}
+          />
+        ))}
       </svg>
     </div>
   );

@@ -383,6 +383,10 @@ pub fn detect_sensitive_window(bundle_id: &str, app_name: &str, title: &str) -> 
 const HIGH_RISK_UI_PHRASES: &[&str] = &[
     "enviar",
     "send",
+    "entregar",
+    "turn in",
+    "hand in",
+    "submit",
     "eliminar",
     "borrar",
     "delete",
@@ -557,6 +561,18 @@ mod tests {
         assert!(detect_high_risk_ui_target("Cerrar sesión", "").is_some());
         assert!(detect_high_risk_ui_target("Guardar borrador", "Save draft").is_none());
         assert!(detect_high_risk_ui_target("Buscar", "Search").is_none());
+    }
+
+    #[test]
+    fn detects_assignment_turn_in_buttons() {
+        // Teams, Classroom y Moodle: entregar una tarea sale del equipo igual que enviar.
+        assert!(detect_high_risk_ui_target("Entregar", "").is_some());
+        assert!(detect_high_risk_ui_target("", "Turn in assignment").is_some());
+        assert!(detect_high_risk_ui_target("Hand in", "").is_some());
+        assert!(detect_high_risk_ui_target("Submit", "").is_some());
+        assert!(detect_high_risk_ui_target("Enviar tarea", "").is_some());
+        assert!(detect_high_risk_ui_target("Entregas", "Ver tareas entregadas").is_none());
+        assert!(detect_high_risk_ui_target("Adjuntar", "Agregar archivo").is_none());
     }
 
     #[test]

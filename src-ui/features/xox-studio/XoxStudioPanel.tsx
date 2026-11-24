@@ -371,12 +371,12 @@ const XOX_ANIMATION_CATALOG: Array<{
 }> = [
   { id: "auto", label: "En vivo", detail: "Sigue la actividad actual o toca a Xox" },
   { id: "idle", label: "Reposo", detail: "Respiración orgánica y mirada al cursor" },
-  { id: "success", label: "Feliz", detail: "Pirueta, ojos ^^ y sonrisa cálida" },
+  { id: "success", label: "Feliz", detail: "Saltitos con brazos arriba, ojos ^^ y destellos" },
   { id: "thinking", label: "Pensando", detail: "Anillo orbital de datos y núcleo profundo" },
-  { id: "reading", label: "Leyendo", detail: "Lupa escaneando el entorno con curiosidad" },
-  { id: "coding", label: "Programando", detail: "Mini-laptop editando código y terminal" },
+  { id: "reading", label: "Leyendo", detail: "Lupa de cristal que agranda su ojo al leer" },
+  { id: "coding", label: "Programando", detail: "Laptop a un lado, mirada concentrada y lengüita" },
   { id: "talking", label: "Hablando", detail: "Boca articulada con ondas armónicas de voz" },
-  { id: "syncing", label: "Sincronizando", detail: "Doble aro giratorio y piruetas periódicas" },
+  { id: "syncing", label: "Sincronizando", detail: "Anillo orbital con flechas que lo cruzan" },
   { id: "alert", label: "Alerta", detail: "Aviso en rojo semántico y señal '!'" },
 ];
 
@@ -544,8 +544,22 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     }
   }, [memoryLivePulse, activeTab]);
 
+  const normalizedSavedProfileRef = useRef<GlobalXoxProfile>({
+    ...DEFAULT_GLOBAL_XOX_PROFILE,
+    ...profile,
+  });
+
   useEffect(() => {
-    setDraft({ ...DEFAULT_GLOBAL_XOX_PROFILE, ...profile });
+    const nextBase = { ...DEFAULT_GLOBAL_XOX_PROFILE, ...profile };
+    setDraft((prev) => {
+      const prevWithoutAccent = { ...prev, accentPreset: "" };
+      const savedWithoutAccent = { ...normalizedSavedProfileRef.current, accentPreset: "" };
+      if (JSON.stringify(prevWithoutAccent) !== JSON.stringify(savedWithoutAccent)) {
+        return { ...prev, accentPreset: nextBase.accentPreset };
+      }
+      return nextBase;
+    });
+    normalizedSavedProfileRef.current = nextBase;
   }, [profile]);
 
   useEffect(() => {
@@ -1039,6 +1053,28 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   const selectAccent = (key: XoxAccentPreset) => {
     setDraft((p) => ({ ...p, accentPreset: key }));
     onPreviewAccentChange?.(key);
+    if (resolveXoxAccentPreset(normalizedSavedProfile.accentPreset) === key) {
+      return;
+    }
+    const base = normalizedSavedProfileRef.current;
+    void saveGlobalXoxProfile({
+      agentName: base.agentName.trim() || "Xox",
+      activeRole: base.activeRole.trim() || "Asistente Co-Constructor",
+      personality: base.personality.trim() || "Cercano, claro, práctico y directo.",
+      toneTags: base.toneTags,
+      initialInstructions: base.initialInstructions.trim(),
+      globalRules: base.globalRules,
+      likes: base.likes,
+      workflows: base.workflows,
+      donts: base.donts,
+      accentPreset: key,
+    })
+      .then((saved) => {
+        onProfileChanged(saved);
+      })
+      .catch(() => {
+        // Conserva el cambio en borrador si falla el guardado silencioso
+      });
   };
 
   const handleAccentKeyDown = (e: React.KeyboardEvent) => {
@@ -1077,8 +1113,8 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   };
 
   const handleStageXoxClick = () => {
-    setStageReplaySeq((n) => n + 1);
     if (catalogAnim !== "auto" && catalogAnim !== "idle") {
+      setStageReplaySeq((n) => n + 1);
       return;
     }
     setStageCheerState("success");
@@ -1086,7 +1122,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     stageCheerTimerRef.current = window.setTimeout(() => {
       setStageCheerState((curr) => (curr === "success" ? null : curr));
       stageCheerTimerRef.current = null;
-    }, 1800);
+    }, 2250);
   };
 
   const chatCustomizeHint =
@@ -1172,6 +1208,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
               state={stageXoxState}
               responsive
               hitArea="star"
+              clickBehavior="greet"
               accentPreset={activeAccent}
               glideTrigger={hideStar ? 0 : glideSeq}
               glideDir="right"
