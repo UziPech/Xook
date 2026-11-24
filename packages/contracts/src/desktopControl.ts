@@ -137,6 +137,10 @@ export function isQualifiedDesktopRef(raw: unknown): raw is string {
 const HIGH_RISK_UI_TOKENS = [
   "enviar",
   "send",
+  "entregar",
+  "turn in",
+  "hand in",
+  "submit",
   "eliminar",
   "borrar",
   "delete",
