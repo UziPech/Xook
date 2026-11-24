@@ -862,21 +862,22 @@ function XoxHeaderFace({
     >
       <svg viewBox="55 52 130 126" className="block w-full h-full" aria-hidden="true">
         <defs>
-          <linearGradient id={ids.body} x1="65" y1="60" x2="175" y2="170" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.22" />
-            <stop offset="35%" stopColor={colors.rim1} stopOpacity="0.14" />
-            <stop offset="62%" stopColor="#090B14" stopOpacity="0.14" />
-            <stop offset="100%" stopColor={colors.bodyGlow} stopOpacity="0.20" />
+          <linearGradient id={ids.body} x1="64" y1="58" x2="176" y2="172" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.18" />
+            <stop offset="24%" stopColor={colors.bodyTint} stopOpacity="0.10" />
+            <stop offset="52%" stopColor="#050814" stopOpacity="0.16" />
+            <stop offset="84%" stopColor={colors.bodyGlow} stopOpacity="0.16" />
+            <stop offset="100%" stopColor={colors.rim2} stopOpacity="0.24" />
           </linearGradient>
           <linearGradient id={ids.rim} x1="62" y1="58" x2="176" y2="172" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.82" />
-            <stop offset="34%" stopColor={colors.rim1} stopOpacity="0.48" />
-            <stop offset="60%" stopColor={colors.rim1} stopOpacity="0.18" />
-            <stop offset="100%" stopColor={colors.rim2} stopOpacity="0.44" />
+            <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.94" />
+            <stop offset="32%" stopColor={colors.rim1} stopOpacity="0.54" />
+            <stop offset="62%" stopColor={colors.rim2} stopOpacity="0.28" />
+            <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0.70" />
           </linearGradient>
-          <radialGradient id={ids.core} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor={isThinking || isAlert || isSuccess || isSyncing ? colors.glow : "#FFFFFF"} stopOpacity="0.55" />
-            <stop offset="55%" stopColor={colors.glow} stopOpacity="0.22" />
+          <radialGradient id={ids.core} cx="50%" cy="56%" r="52%">
+            <stop offset="0%" stopColor={isThinking || isAlert || isSuccess || isSyncing ? colors.glow : colors.bodyGlow} stopOpacity="0.26" />
+            <stop offset="58%" stopColor={colors.glow} stopOpacity="0.10" />
             <stop offset="100%" stopColor={colors.glow} stopOpacity="0" />
           </radialGradient>
           <radialGradient id={ids.blush} cx="50%" cy="50%" r="50%">
@@ -890,21 +891,17 @@ function XoxHeaderFace({
           d={XOX_MINI_STAR_PATH}
           fill={isAlert ? "rgba(239,68,68,0.24)" : `url(#${ids.body})`}
           stroke={isAlert ? "#F87171" : `url(#${ids.rim})`}
-          strokeWidth="4.2"
+          strokeWidth="3.3"
           strokeLinejoin="round"
         />
 
-        <circle cx="120" cy="117" r="30" fill={`url(#${ids.core})`} />
+        <circle cx="120" cy="120" r="32" fill={`url(#${ids.core})`} />
 
-        {/* Reflejo especular sutil */}
-        <ellipse
-          cx="104"
-          cy="94"
-          rx="12"
-          ry="4.2"
-          transform="rotate(-30 104 94)"
+        {/* Reflejo especular curvo de gota Liquid Glass */}
+        <path
+          d="M 93 99 Q 104 89 117 95 Q 105 93 93 99 Z"
           fill="#FFFFFF"
-          opacity="0.24"
+          opacity="0.62"
         />
 
         {/* Mejillas con sonrojo difuminado al interactuar o en sucesos */}
@@ -923,15 +920,15 @@ function XoxHeaderFace({
           <ellipse cx="140.5" cy="127" rx="9.5" ry="5.8" transform="rotate(8 140.5 127)" fill={`url(#${ids.blush})`} />
         </g>
 
-        {/* Ojos (ambas capas montadas con transición suave de opacidad/escala) */}
+        {/* Ojos limpios sin pupila (ambas capas montadas con transición suave de opacidad) */}
         <g
           className={`transition-opacity duration-200 ${
             isSuccess ? "opacity-100" : "opacity-0"
           }`}
         >
-          <path d="M104 117Q110.5 107.5 117 117" stroke="#FFFFFF" strokeWidth="4.4" strokeLinecap="round" fill="none" />
-          <path d="M123 117Q129.5 107.5 136 117" stroke="#FFFFFF" strokeWidth="4.4" strokeLinecap="round" fill="none" />
-          <path d="M113 128.5Q120 135.5 127 128.5" stroke="#FFFFFF" strokeWidth="3.6" strokeLinecap="round" fill="none" opacity="0.92" />
+          <path d="M103.5 117.5 C106 109.5 114.5 109.2 117 116.8" stroke="#FFFFFF" strokeWidth="4.5" strokeLinecap="round" fill="none" />
+          <path d="M123 116.8 C125.5 109.2 134 109.5 136.5 117.5" stroke="#FFFFFF" strokeWidth="4.5" strokeLinecap="round" fill="none" />
+          <path d="M113 128 Q120 135.5 127 128" stroke="#FFFFFF" strokeWidth="3.8" strokeLinecap="round" fill="none" opacity="0.95" />
         </g>
         <g
           className={`transition-opacity duration-200 ${
@@ -940,14 +937,12 @@ function XoxHeaderFace({
         >
           <g transform="translate(110.5 115)">
             <g className="xox-mini-eye">
-              <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
-              <circle cx="1.9" cy="-2.5" r="1.9" fill={colors.pupil} />
+              <ellipse cx="0" cy="0" rx="5.1" ry="7.8" fill="#FFFFFF" opacity="0.98" />
             </g>
           </g>
           <g transform="translate(129.5 115)">
             <g className="xox-mini-eye">
-              <ellipse cx="0" cy="0" rx="5.2" ry="7.8" fill="#FFFFFF" opacity="0.96" />
-              <circle cx="1.9" cy="-2.5" r="1.9" fill={colors.pupil} />
+              <ellipse cx="0" cy="0" rx="5.1" ry="7.8" fill="#FFFFFF" opacity="0.98" />
             </g>
           </g>
         </g>
@@ -2135,14 +2130,21 @@ export default function App() {
     const el = chatScrollRef.current;
     if (!el) return;
     const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceToBottom < 80) {
-      chatStickToBottomRef.current = true;
-    } else if (el.scrollTop < chatLastScrollTopRef.current) {
-      // Solo un desplazamiento hacia arriba suelta el chat: el texto que crece por
-      // debajo no mueve `scrollTop`, y el scroll propio hacia el final siempre baja.
+    const movedUp = el.scrollTop < chatLastScrollTopRef.current - 1;
+    if (movedUp && distanceToBottom > 2) {
+      // Cualquier desplazamiento hacia arriba suelta el chat, aunque sea de pocos
+      // píxeles: el trackpad manda pasos pequeños entre token y token. El texto que
+      // crece por debajo no mueve `scrollTop`, y el scroll propio siempre baja.
       chatStickToBottomRef.current = false;
+    } else if (!movedUp && distanceToBottom < 24) {
+      chatStickToBottomRef.current = true;
     }
     chatLastScrollTopRef.current = el.scrollTop;
+  }, []);
+
+  // La rueda o el trackpad hacia arriba sueltan el chat antes de que llegue otro token.
+  const handleChatWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY < 0) chatStickToBottomRef.current = false;
   }, []);
 
   useEffect(() => {
@@ -7720,6 +7722,7 @@ export default function App() {
           <div
             ref={chatScrollRef}
             onScroll={handleChatScroll}
+            onWheel={handleChatWheel}
             className="xook-chat-scroll-pad relative z-[1] flex-1 flex flex-col overflow-y-auto"
           >
             <div

@@ -2109,6 +2109,7 @@ export const QuickBar: React.FC = () => {
                   state={xoxState}
                   size={82}
                   glassContrast
+                  clickBehavior="greet"
                   accentPreset={quickAccentPreset}
                   active={isQuickVisible && !isLeaving}
                   summonTrigger={summonSeq}
@@ -2122,7 +2123,7 @@ export const QuickBar: React.FC = () => {
                     }
                     if (isStreamingRef.current || isBusy) return;
                     setXoxState("success");
-                    const t = setTimeout(() => setXoxState("idle"), 1800);
+                    const t = setTimeout(() => setXoxState("idle"), 2200);
                     timersRef.current.push(t);
                   }}
                 />

@@ -371,12 +371,12 @@ const XOX_ANIMATION_CATALOG: Array<{
 }> = [
   { id: "auto", label: "En vivo", detail: "Sigue la actividad actual o toca a Xox" },
   { id: "idle", label: "Reposo", detail: "Respiración orgánica y mirada al cursor" },
-  { id: "success", label: "Feliz", detail: "Pirueta, ojos ^^ y sonrisa cálida" },
+  { id: "success", label: "Feliz", detail: "Saltitos con brazos arriba, ojos ^^ y destellos" },
   { id: "thinking", label: "Pensando", detail: "Anillo orbital de datos y núcleo profundo" },
-  { id: "reading", label: "Leyendo", detail: "Lupa escaneando el entorno con curiosidad" },
-  { id: "coding", label: "Programando", detail: "Mini-laptop editando código y terminal" },
+  { id: "reading", label: "Leyendo", detail: "Lupa de cristal que agranda su ojo al leer" },
+  { id: "coding", label: "Programando", detail: "Laptop a un lado, mirada concentrada y lengüita" },
   { id: "talking", label: "Hablando", detail: "Boca articulada con ondas armónicas de voz" },
-  { id: "syncing", label: "Sincronizando", detail: "Doble aro giratorio y piruetas periódicas" },
+  { id: "syncing", label: "Sincronizando", detail: "Anillo orbital con flechas que lo cruzan" },
   { id: "alert", label: "Alerta", detail: "Aviso en rojo semántico y señal '!'" },
 ];
 
@@ -1077,8 +1077,8 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   };
 
   const handleStageXoxClick = () => {
-    setStageReplaySeq((n) => n + 1);
     if (catalogAnim !== "auto" && catalogAnim !== "idle") {
+      setStageReplaySeq((n) => n + 1);
       return;
     }
     setStageCheerState("success");
@@ -1086,7 +1086,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     stageCheerTimerRef.current = window.setTimeout(() => {
       setStageCheerState((curr) => (curr === "success" ? null : curr));
       stageCheerTimerRef.current = null;
-    }, 1800);
+    }, 2250);
   };
 
   const chatCustomizeHint =
@@ -1172,6 +1172,7 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
               state={stageXoxState}
               responsive
               hitArea="star"
+              clickBehavior="greet"
               accentPreset={activeAccent}
               glideTrigger={hideStar ? 0 : glideSeq}
               glideDir="right"
