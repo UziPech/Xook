@@ -118,13 +118,15 @@ class EncargoToolWiringTests(unittest.TestCase):
             (root / "datos" / "reporte.pdf").write_bytes(b"%PDF-1.4")
             ex = WorkspaceToolExecutor(root)
             when = (datetime.now() + timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M")
+            # Sin otra app, para que valga en los tres sistemas (fuera de macOS no hay control de escritorio).
+            args = _args(when=when, target_app="", may_finish=False)
 
-            ok = ex.execute("encargo_schedule", _args(when=when))
+            ok = ex.execute("encargo_schedule", args)
             self.assertTrue(ok["ok"], ok)
             self.assertEqual(len(ex.staged_tasks), 1)
             self.assertEqual(ex.staged_tasks[0]["stagingPayload"]["files"], ["datos/reporte.pdf"])
 
-            missing = ex.execute("encargo_schedule", _args(when=when, files=["datos/otro.pdf"]))
+            missing = ex.execute("encargo_schedule", {**args, "files": ["datos/otro.pdf"]})
             self.assertFalse(missing["ok"])
             self.assertEqual(len(ex.staged_tasks), 1)
 
