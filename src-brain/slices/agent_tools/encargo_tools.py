@@ -165,6 +165,15 @@ def _open_db_readonly(workspace_root: Path) -> Optional[sqlite3.Connection]:
         return None
 
 
+def _parse_iso(raw: Any) -> Optional[datetime]:
+    """Lee las horas de Rust aunque traigan fracciones de segundo o `Z` (Python 3.9 no las acepta)."""
+    text = re.sub(r"\.\d+", "", str(raw or "").strip()).replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(text).astimezone()
+    except ValueError:
+        return None
+
+
 def encargos_context_block(workspace_root: Path, now: Optional[datetime] = None, limit: int = 8) -> str:
     """
     Una línea por pendiente de hoy y mañana, más los que necesitan atención. Así Xox sabe qué tiene
@@ -188,9 +197,8 @@ def encargos_context_block(workspace_root: Path, now: Optional[datetime] = None,
     lines: List[str] = []
     horizon = (now + timedelta(days=1)).date()
     for name, next_run_at, status, target_app, may_finish in rows:
-        try:
-            when = datetime.fromisoformat(str(next_run_at)).astimezone()
-        except (TypeError, ValueError):
+        when = _parse_iso(next_run_at)
+        if when is None:
             continue
         if status == "programado" and when.date() > horizon:
             continue

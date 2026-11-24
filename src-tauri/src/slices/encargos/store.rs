@@ -104,6 +104,12 @@ fn normalize_recurrence(raw: Option<&str>) -> Option<String> {
     }
 }
 
+/// Hora en UTC, al segundo y con `+00:00`: se compara como texto en SQL y la lee cualquier
+/// Python (3.9 no acepta nanosegundos ni `Z` en `fromisoformat`).
+pub fn iso(dt: DateTime<Utc>) -> String {
+    dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+}
+
 fn local_label(rfc3339: &str) -> String {
     DateTime::parse_from_rfc3339(rfc3339)
         .map(|dt| {
@@ -354,7 +360,7 @@ pub fn create_from_staging(
         steps,
         files,
         folder,
-        next_run_at: Some(next_run.to_rfc3339()),
+        next_run_at: Some(iso(next_run)),
         recurrence,
         target_app,
         may_finish,
@@ -607,7 +613,7 @@ pub fn finish_run(
             .execute(
                 "UPDATE encargos SET status = 'programado', next_run_at = ?2, updated_at = ?3
                  WHERE id = ?1",
-                params![encargo.id, at.to_rfc3339(), now.to_rfc3339()],
+                params![encargo.id, iso(at), now.to_rfc3339()],
             )
             .map(|_| ())
             .map_err(|e| format!("No se pudo reprogramar el pendiente: {e}")),
@@ -620,7 +626,7 @@ pub fn schedule_now(conn: &Connection, id: &str, now: DateTime<Utc>) -> Result<b
     conn.execute(
         "UPDATE encargos SET status = 'programado', next_run_at = ?2, updated_at = ?2
          WHERE id = ?1 AND status IN ('perdido', 'detenido', 'hecho')",
-        params![id, now.to_rfc3339()],
+        params![id, iso(now)],
     )
     .map(|n| n > 0)
     .map_err(|e| format!("No se pudo reprogramar el pendiente: {e}"))
@@ -823,10 +829,9 @@ mod tests {
         let listed = list_encargos(&conn).unwrap();
         let d = listed.iter().find(|e| e.id == daily.id).unwrap();
         assert_eq!(d.status, "programado");
-        let next = DateTime::parse_from_rfc3339(d.next_run_at.as_deref().unwrap()).unwrap();
         assert_eq!(
-            next.with_timezone(&Utc),
-            now + ChronoDuration::minutes(5) + ChronoDuration::days(1)
+            d.next_run_at.as_deref(),
+            Some(iso(now + ChronoDuration::minutes(5) + ChronoDuration::days(1)).as_str())
         );
         assert_eq!(
             latest_report_path(&conn, &daily.id).as_deref(),

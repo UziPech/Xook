@@ -4,7 +4,7 @@ Tests de `encargo_schedule`: la tarjeta que prepara Xox para un pendiente.
 
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from slices.agent_tools import WorkspaceToolExecutor
@@ -171,6 +171,15 @@ class EncargoContextTests(unittest.TestCase):
         self.assertIn("Tarea vieja · se pasó la hora", block)
         self.assertNotIn("Lejano", block)
         self.assertNotIn("Ya hecho", block)
+
+    def test_context_block_reads_rust_timestamps_with_nanoseconds(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xook_encargo_ctx_") as tmp:
+            root = Path(tmp)
+            utc = (NOW + timedelta(hours=2)).astimezone(timezone.utc)
+            rust_style = utc.strftime("%Y-%m-%dT%H:%M:%S") + ".123456789+00:00"
+            _make_db(root, [("e1", "Con nanos", "agente/encargos/x", rust_style, "programado", None, 0)])
+            block = encargos_context_block(root, now=NOW)
+        self.assertIn("Con nanos", block)
 
     def test_context_block_is_empty_without_database(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xook_encargo_ctx_") as tmp:
