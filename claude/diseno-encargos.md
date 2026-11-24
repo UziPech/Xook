@@ -1,6 +1,6 @@
 # Diseño — Encargos: lo que Xox hace solo a la hora indicada
 
-Estado: **en ejecución**. Hecho: paso 1 (2026-11-23).
+Estado: **en ejecución**. Hechos: pasos 1 y 2 (2026-11-23).
 
 ## Qué es
 
@@ -50,26 +50,28 @@ Por qué no dejar que Xox edite la lista libremente: un guardián que el vigilad
 
 ## Modelo
 
-Tabla `encargos` en `.xook/xook.db`:
+Tabla `encargos` en `.xook/xook.db` (migración v3, `task_ledger/migrations.rs`). Las columnas van en inglés, como el resto de las tablas:
 
 | Campo | Para qué |
 |---|---|
-| `id`, `nombre` | El nombre lo pone Xox ("Práctica 3 · Física"); el usuario lo puede cambiar |
-| `instruccion` | Texto literal del usuario. Xox no lo reescribe: es la fuente de verdad y la prueba del permiso |
-| `plan_json` | Pasos en lenguaje claro, armados al crear el encargo y vistos por el usuario |
-| `carpeta` | `agente/encargos/<nombre>/`. La zona `agente/` ya es de escritura libre para Xox, así que no hace falta una zona nueva |
-| `proxima_ejecucion`, `repeticion` | Igual que `agenda_items` |
-| `app_objetivo` | Bundle id de la app que va a usar |
-| `puede_terminar`, `accion_final` | `true` solo si la instrucción lo dice ("entrégala", "envíalo"). `accion_final` describe el último clic esperado ("Entregar · Práctica 3") |
-| `estado` | `programado` → `en_curso` → `hecho` / `detenido` / `perdido` |
+| `id`, `name` | El nombre lo pone Xox ("Práctica 3 · Física"); el usuario lo puede cambiar |
+| `instruction` | Texto literal del usuario. Xox no lo reescribe: es la fuente de verdad y la prueba del permiso |
+| `steps_json` | Pasos en lenguaje claro, armados al crear el encargo y vistos por el usuario |
+| `files_json` | Copias de los archivos dentro de la carpeta del encargo |
+| `folder` | `agente/encargos/<nombre>/`. La zona `agente/` ya es de escritura libre para Xox, así que no hace falta una zona nueva |
+| `next_run_at`, `recurrence` | Igual que `agenda_items` |
+| `target_app` | La app que va a usar (por ahora, su nombre) |
+| `may_finish`, `final_action` | `true` solo si la instrucción lo dice ("entrégala", "envíalo"). `final_action` describe el último clic esperado ("Entregar · Práctica 3") |
+| `status` | `programado` → `en_curso` → `hecho` / `detenido` / `perdido` |
+| `source_card_id` | La tarjeta con la que el usuario lo aprobó |
 
-Tabla `encargo_ejecuciones`: inicio, fin, resultado y los pasos **en texto**. Nunca capturas en disco (`AGENTS.md`, sección 2).
+Tabla `encargo_runs`: inicio, fin, resultado, ruta del informe y los pasos **en texto**. Nunca capturas en disco (`AGENTS.md`, sección 2).
 
 Carpeta del encargo: `encargo.md` (instrucción y plan legibles), los archivos (copiados al crearlo, con su ruta original anotada, para que no cambien antes de la hora) y `resultado.md`.
 
 ## Flujo
 
-1. **Crear (en el chat).** Xox llama a `encargo_programar` (nombre, hora, instrucción, archivos y si puede terminar). En el chat aparece una tarjeta con el nombre, la hora, los pasos y una frase clara: "Lo dejaré **entregado**" o "Lo dejaré listo **sin entregar**". El botón **Programar** es la autorización. Si la instrucción es ambigua sobre el último clic, Xox pregunta en vez de suponer.
+1. **Crear (en el chat).** Xox llama a `encargo_schedule` (nombre, hora, instrucción, pasos, archivos y si puede terminar). En el chat aparece una tarjeta con el nombre, la hora, los pasos y una frase clara: "Lo dejaré **entregado**" o "Lo dejaré listo **sin entregar**". El botón **Programar** es la autorización. Si la instrucción es ambigua sobre el último clic, Xox pregunta en vez de suponer.
 2. **Preparar.** Si hay que generar un archivo, Xox lo genera **al crear el encargo**, no a la hora, y lo muestra en la tarjeta. Así el usuario lo puede revisar y, si la generación falla, todavía hay tiempo.
 3. **Ensayo** (unos minutos antes, solo lectura): comprobar que la app esté instalada y con sesión, que los archivos sigan ahí y que la Mac esté despierta y desbloqueada. Si algo falla, avisar mientras todavía hay margen.
 4. **Ejecutar.** El programador lanza una sesión de Xox en segundo plano con solo lo necesario: `encargo.md`, la ruta aprendida para esa app (si existe) y las herramientas del encargo. Usa el perfil de presupuesto `extended`.
@@ -106,13 +108,19 @@ No se ajusta el modelo: XOOK es agnóstico de proveedor y el modelo es intercamb
 - **Crear:** en el chat, que es la vía principal. Además, el botón **+ Pendiente** con opciones que se tocan: Hoy / Mañana / hora, y Avisarme / Dejarlo listo / Dejarlo entregado.
 - **Columna Pendientes** (reemplaza las pestañas Por aceptar, Agenda y Hechas): lo que viene por hora, lo que espera tu OK y, plegado, lo hecho. Cada pendiente muestra la actividad, el tipo (Entrega, Recordatorio, Documento), la hora y los detalles. El inventario sale de ahí: a una página propia del proyecto o se quita (por decidir).
 - **Página del pendiente:** nombre, instrucción, pasos, archivos de su carpeta e informes de cada ejecución.
-- **Contexto:** Xox solo ve una línea por cada encargo de hoy y mañana ("12:00 · Práctica 3 · programado"). El resto lo lee con `encargo_leer` cuando lo ejecuta o cuando el usuario lo menciona.
+- **Contexto:** Xox solo ve una línea por cada encargo de hoy y mañana ("12:00 · Práctica 3 · programado"). El resto lo lee con `encargo_read` cuando lo ejecuta o cuando el usuario lo menciona.
 - Código en `src-ui/features/encargos/`; en `App.tsx` solo entra la línea que lo integra.
 
 ## Plan por pasos
 
 1. **Seguridad** *(hecho, 2026-11-23)*: "entregar", "turn in", "hand in" y "submit" en la lista base, en Rust y en contratos, con tests. "Enviar tarea" ya lo cubría "enviar".
-2. **Modelo y creación:** tablas, herramienta `encargo_programar`, carpeta y tarjeta de confirmación en el chat.
+2. **Modelo y creación** *(hecho, 2026-11-23)*:
+   - Las tablas `encargos` y `encargo_runs`.
+   - La herramienta `encargo_schedule` (`agent_tools/encargo_tools.py`), con su grupo `pendientes` en el catálogo y dos casos de eval.
+   - El slice `src-tauri/src/slices/encargos/`: al aprobar la tarjeta crea la carpeta, `encargo.md` y la copia de los archivos. El comando `list_encargos` queda listo para la columna.
+   - La tarjeta se revisa completa **antes** de registrar la decisión. Una hora pasada o un archivo borrado dejan la tarjeta pendiente, sin nada a medias.
+   - El prompt ya distingue "hazlo a esta hora" (`encargo_schedule`) de "avísame" (Agenda).
+   - Falta: por ahora la tarjeta aparece en el panel lateral, no en el chat. Si la aprobación falla, la interfaz muestra un error genérico en vez del motivo. Las dos cosas se resuelven con la columna Pendientes (paso 6).
 3. **Ejecutor:** el programador lanza a Xox en segundo plano con el permiso acotado y avisa al terminar. Incluye la lista personal de botones de riesgo (Xox agrega, solo el usuario quita).
 4. **Verificación y registro:** comprobación obligatoria antes del último clic y registro de pasos en texto.
 5. **Siempre disponible:** arranque al iniciar sesión, encargos perdidos y evitar la suspensión.

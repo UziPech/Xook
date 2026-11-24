@@ -84,7 +84,11 @@ Criterio de salida: un eval de recuerdo (preguntas sobre hechos de hace 2+ seman
 
 Entregables:
 
-- [ ] **Encargos** *(diseño 2026-11-23 en [diseno-encargos.md](diseno-encargos.md))*: instrucciones con hora que Xox ejecuta solo, usando otras apps y generando archivos, y que avisa al terminar. Es el primer disparador de tiempo de punta a punta y reemplaza las pestañas Por aceptar, Agenda y Hechas por la columna Pendientes. Hecho el paso 1 (2026-11-23): "entregar", "turn in", "hand in" y "submit" ya cuentan como botones de alto riesgo. Deuda: control de otras apps en Windows y Linux. Más adelante: avisos por WhatsApp.
+- [ ] **Pendientes** (en el código, "encargos") *(diseño 2026-11-23 en [diseno-encargos.md](diseno-encargos.md))*: instrucciones con hora que Xox ejecuta solo, usando otras apps y generando archivos, y que avisa al terminar. Es el primer disparador de tiempo de punta a punta y reemplaza las pestañas Por aceptar, Agenda y Hechas por la columna Pendientes. Hecho (2026-11-23):
+  - **Paso 1:** "entregar", "turn in", "hand in" y "submit" ya cuentan como botones de alto riesgo.
+  - **Paso 2:** Xox prepara la tarjeta con `encargo_schedule`, y al aprobarla se guarda el pendiente con su carpeta.
+
+  Sigue el paso 3: que el programador despierte a Xox a la hora indicada. Deuda: control de otras apps en Windows y Linux. Más adelante: avisos por WhatsApp.
 - [ ] Motor de disparadores sobre `slices/scheduler` y `slices/screen_context`: tiempo (cron), archivos (`notify`), calendario/notas y contexto de pantalla deduplicado.
 - [ ] **Triage barato:** cada disparador pasa por un modelo pequeño (configurable: uno local, o uno barato vía API) que decide entre "ignorar", "sugerir" o "preparar" antes de despertar al modelo principal.
 - [ ] **Bandeja de sugerencias** en la UI: tarjetas con aceptar / posponer / "no vuelvas a sugerir esto". Cada respuesta del usuario alimenta la memoria de decisiones.
