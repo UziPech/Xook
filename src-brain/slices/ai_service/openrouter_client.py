@@ -18,6 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
+from slices.agent_tools.encargo_tools import encargo_run_rules, encargos_context_block
+from slices.agent_tools.tool_catalog import TOOLKIT_SPECS
 from slices.agent_tools import (
     AGENT_TOOL_DEFS,
     CHECKLIST_TOOL_DEF,
@@ -6105,6 +6107,7 @@ def stream_agent_completion(
     model_context_window: Optional[int] = None,
     session_id: Optional[str] = None,
     user_memory_facts: Optional[List[Dict[str, Any]]] = None,
+    encargo_run: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     primary_provider = normalize_provider_id(provider)
     ws_path = Path(workspace_root).resolve() if workspace_root and Path(workspace_root).is_dir() else None
@@ -6207,6 +6210,18 @@ def stream_agent_completion(
         document_window_block=doc_window_block,
         context_checkpoint_block=ckpt_block,
     )
+    # Pendientes: reglas del modo de ejecución, o una línea por pendiente en el chat normal.
+    pending_block = (
+        encargo_run_rules(encargo_run)
+        if encargo_run
+        else (encargos_context_block(ws_path) if ws_path is not None else "")
+    )
+    if pending_block and messages and messages[0].get("role") == "system":
+        sys_content = messages[0].get("content")
+        if isinstance(sys_content, str):
+            messages[0]["content"] = f"{sys_content}\n\n{pending_block}"
+        elif isinstance(sys_content, list):
+            sys_content.append({"type": "text", "text": pending_block})
 
     executor = (
         WorkspaceToolExecutor(
@@ -6254,6 +6269,10 @@ def stream_agent_completion(
         active_mode=norm_mode,
         enable_deferred=executor is not None,
     )
+    if encargo_run:
+        tool_exposure.mark_loaded(
+            set(TOOLKIT_SPECS["desktop_ui"]["tools"]) | set(TOOLKIT_SPECS["documents_pdf"]["tools"])
+        )
     active_tools = tool_exposure.active_tool_defs()
 
     stream_user_profile_mutated = False
@@ -7253,7 +7272,9 @@ def stream_agent_completion(
             emit_event({"type": "steps", "steps": steps})
 
         continuations_used = 0
-        budget_limits = BUDGET_PROFILES[budget_profile_for_task(routing_plan.task_profile.task_kind)]
+        budget_limits = BUDGET_PROFILES[
+            "extended" if encargo_run else budget_profile_for_task(routing_plan.task_profile.task_kind)
+        ]
         budget = AgentBudget(budget_limits)
 
         try:

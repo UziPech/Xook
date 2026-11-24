@@ -27,7 +27,7 @@ from slices.inventory_advisor.review_engine import run_workspace_review
 from slices.task_ui.schemas import sanitize_task_proposal
 from slices.agent_tools.system_capabilities import filter_tool_defs_for_system
 from slices.agent_tools.web_tools import WEB_TOOL_DEFS, execute_web_tool
-from slices.agent_tools.encargo_tools import ENCARGO_TOOL_DEFS, build_encargo_proposal
+from slices.agent_tools.encargo_tools import ENCARGO_TOOL_DEFS, build_encargo_proposal, read_encargo
 from slices.agent_tools.skills_hub import (
     USER_PROFILE_REL,
     discover_official_skills,
@@ -102,6 +102,7 @@ READ_ONLY_TOOL_NAMES = {
     "memory_search",
     "discover_official_skills",
     "tool_search",
+    "encargo_read",
 }
 STAGING_HITL_TOOL_NAMES = {
     "propose_company_file_edit",
@@ -2363,6 +2364,8 @@ class WorkspaceToolExecutor:
             "web_search": lambda a: execute_web_tool("web_search", a),
             "web_fetch": lambda a: execute_web_tool("web_fetch", a),
             "encargo_schedule": self._tool_encargo_schedule,
+            "encargo_read": lambda a: read_encargo(self.workspace_root, str(a.get("name") or "")),
+            "desktop_mark_risky_button": self._tool_desktop_mark_risky_button,
         }.get(name)
         if not handler:
             return {
@@ -4754,6 +4757,17 @@ class WorkspaceToolExecutor:
             "request_id": req_id,
             **payload,
         })
+
+    def _tool_desktop_mark_risky_button(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        label = str(args.get("label") or "").strip()
+        if not label:
+            return {"ok": False, "error": "Falta 'label' con el texto del botón."}
+        return self._require_bridge(
+            "mark_risky_button",
+            "risk",
+            {"label": label, "reason": str(args.get("reason") or "").strip()},
+            "Marcar botones de riesgo requiere la sesión de escritorio activa.",
+        )
 
     def _tool_list_desktop_apps(self, args: Dict[str, Any]) -> Dict[str, Any]:
         query = str(args.get("query") or "").strip()

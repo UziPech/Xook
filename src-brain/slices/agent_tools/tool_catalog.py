@@ -82,6 +82,7 @@ TOOLKIT_SPECS: Dict[str, Dict[str, Any]] = {
             "desktop_snapshot",
             "desktop_find",
             "desktop_act",
+            "desktop_mark_risky_button",
             "list_desktop_apps",
             "open_desktop_app",
             "query_screen_memory",
@@ -169,6 +170,7 @@ TOOLKIT_SPECS: Dict[str, Dict[str, Any]] = {
         "risk": "write_protected_hitl",
         "tools": {
             "encargo_schedule",
+            "encargo_read",
         },
         "keywords": {
             "a las", "entrega", "entregar", "entregala", "entregalo", "entregame", "sube", "subir",

@@ -11,6 +11,9 @@ from slices.agent_tools import WorkspaceToolExecutor
 from slices.agent_tools.encargo_tools import (
     blocked_final_action_phrase,
     build_encargo_proposal,
+    encargo_run_rules,
+    encargos_context_block,
+    read_encargo,
     when_label,
 )
 from slices.agent_tools.tool_catalog import detect_initial_toolkits
@@ -129,6 +132,90 @@ class EncargoToolWiringTests(unittest.TestCase):
         self.assertIn("pendientes", detect_initial_toolkits("entrega esto a las 4 de la tarde en Teams"))
         self.assertIn("pendientes", detect_initial_toolkits("súbelo mañana al Classroom"))
         self.assertNotIn("pendientes", detect_initial_toolkits("¿qué es la fotosíntesis?"))
+
+
+def _make_db(root: Path, rows) -> None:
+    import sqlite3
+
+    (root / ".xook").mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(root / ".xook" / "xook.db")
+    conn.executescript(
+        "CREATE TABLE encargos (id TEXT PRIMARY KEY, name TEXT, folder TEXT, next_run_at TEXT, status TEXT, "
+        "target_app TEXT, may_finish INTEGER);"
+        "CREATE TABLE encargo_runs (id TEXT PRIMARY KEY, encargo_id TEXT, started_at TEXT, report_path TEXT);"
+    )
+    conn.executemany(
+        "INSERT INTO encargos (id, name, folder, next_run_at, status, target_app, may_finish) VALUES (?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+class EncargoContextTests(unittest.TestCase):
+    def test_context_block_lists_today_tomorrow_and_attention_only(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xook_encargo_ctx_") as tmp:
+            root = Path(tmp)
+            at = lambda days, h: (NOW + timedelta(days=days)).replace(hour=h, minute=0).isoformat()
+            _make_db(root, [
+                ("e1", "Práctica 3", "agente/encargos/practica-3", at(0, 16), "programado", "Microsoft Teams", 1),
+                ("e2", "Reporte semanal", "agente/encargos/reporte", at(1, 9), "programado", None, 0),
+                ("e3", "Lejano", "agente/encargos/lejano", at(5, 9), "programado", None, 0),
+                ("e4", "Tarea vieja", "agente/encargos/vieja", at(-1, 9), "perdido", "Microsoft Teams", 1),
+                ("e5", "Ya hecho", "agente/encargos/hecho", at(-1, 8), "hecho", None, 0),
+            ])
+            block = encargos_context_block(root, now=NOW)
+
+        self.assertIn("Hoy 16:00 · Práctica 3 · programado (Microsoft Teams, lo deja hecho)", block)
+        self.assertIn("Mañana 09:00 · Reporte semanal · programado (lo deja listo)", block)
+        self.assertIn("Tarea vieja · se pasó la hora", block)
+        self.assertNotIn("Lejano", block)
+        self.assertNotIn("Ya hecho", block)
+
+    def test_context_block_is_empty_without_database(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xook_encargo_ctx_") as tmp:
+            self.assertEqual(encargos_context_block(Path(tmp), now=NOW), "")
+
+    def test_read_encargo_returns_md_and_latest_report(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xook_encargo_read_") as tmp:
+            root = Path(tmp)
+            folder = root / "agente" / "encargos" / "practica-3"
+            folder.mkdir(parents=True)
+            (folder / "encargo.md").write_text("# Práctica 3", encoding="utf-8")
+            (folder / "informe-2026-11-23-1600.md").write_text("# Práctica 3 · Hecho", encoding="utf-8")
+            _make_db(root, [("e1", "Práctica 3", "agente/encargos/practica-3", NOW.isoformat(), "hecho", None, 0)])
+            import sqlite3
+
+            conn = sqlite3.connect(root / ".xook" / "xook.db")
+            conn.execute(
+                "INSERT INTO encargo_runs VALUES ('r1', 'e1', ?, 'agente/encargos/practica-3/informe-2026-11-23-1600.md')",
+                (NOW.isoformat(),),
+            )
+            conn.commit()
+            conn.close()
+
+            found = read_encargo(root, "practica")
+            missing = read_encargo(root, "otra cosa")
+
+        self.assertTrue(found["ok"])
+        self.assertEqual(found["encargo_md"], "# Práctica 3")
+        self.assertEqual(found["last_report"], "# Práctica 3 · Hecho")
+        self.assertFalse(missing["ok"])
+        self.assertIn("Práctica 3", missing["error"])
+
+    def test_run_rules_depend_on_final_click_permission(self) -> None:
+        finish = encargo_run_rules({
+            "targetApp": "Microsoft Teams",
+            "mayFinish": True,
+            "finalAction": "Entregar · Práctica 3",
+            "procedurePath": "memoria/procedimientos/microsoft-teams.md",
+        })
+        self.assertIn("El último clic autorizado es «Entregar · Práctica 3»", finish)
+        self.assertIn("memoria/procedimientos/microsoft-teams.md", finish)
+        self.assertIn("RESULTADO: hecho", finish)
+
+        ready = encargo_run_rules({"targetApp": "Microsoft Teams", "mayFinish": False})
+        self.assertIn("NO des el último clic", ready)
 
 
 if __name__ == "__main__":
