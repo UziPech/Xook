@@ -1359,7 +1359,8 @@ def test_desktop_app_launcher_tools_and_routing():
 
         opened = executor.execute("open_desktop_app", {"app_name": "Notas"})
         assert opened["ok"] is True
-        assert captured[-1]["rpc_callback"] == "open_desktop_app"
+        # Después de abrirla consulta si ya muestra su ventana.
+        assert [c["rpc_callback"] for c in captured[1:]] == ["open_desktop_app", "desktop_list_windows"]
 
         n_list = executor.execute("os_list_notes", {"query": "café", "folder": "Compras", "limit": 10})
         assert n_list["ok"] is True

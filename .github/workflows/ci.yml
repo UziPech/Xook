@@ -30,6 +30,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:packages
+      - run: npm run test:ui
       - run: npm run build
 
   brain:

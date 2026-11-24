@@ -544,8 +544,22 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
     }
   }, [memoryLivePulse, activeTab]);
 
+  const normalizedSavedProfileRef = useRef<GlobalXoxProfile>({
+    ...DEFAULT_GLOBAL_XOX_PROFILE,
+    ...profile,
+  });
+
   useEffect(() => {
-    setDraft({ ...DEFAULT_GLOBAL_XOX_PROFILE, ...profile });
+    const nextBase = { ...DEFAULT_GLOBAL_XOX_PROFILE, ...profile };
+    setDraft((prev) => {
+      const prevWithoutAccent = { ...prev, accentPreset: "" };
+      const savedWithoutAccent = { ...normalizedSavedProfileRef.current, accentPreset: "" };
+      if (JSON.stringify(prevWithoutAccent) !== JSON.stringify(savedWithoutAccent)) {
+        return { ...prev, accentPreset: nextBase.accentPreset };
+      }
+      return nextBase;
+    });
+    normalizedSavedProfileRef.current = nextBase;
   }, [profile]);
 
   useEffect(() => {
@@ -1039,6 +1053,28 @@ export const XoxStudioPanel: React.FC<XoxStudioPanelProps> = ({
   const selectAccent = (key: XoxAccentPreset) => {
     setDraft((p) => ({ ...p, accentPreset: key }));
     onPreviewAccentChange?.(key);
+    if (resolveXoxAccentPreset(normalizedSavedProfile.accentPreset) === key) {
+      return;
+    }
+    const base = normalizedSavedProfileRef.current;
+    void saveGlobalXoxProfile({
+      agentName: base.agentName.trim() || "Xox",
+      activeRole: base.activeRole.trim() || "Asistente Co-Constructor",
+      personality: base.personality.trim() || "Cercano, claro, práctico y directo.",
+      toneTags: base.toneTags,
+      initialInstructions: base.initialInstructions.trim(),
+      globalRules: base.globalRules,
+      likes: base.likes,
+      workflows: base.workflows,
+      donts: base.donts,
+      accentPreset: key,
+    })
+      .then((saved) => {
+        onProfileChanged(saved);
+      })
+      .catch(() => {
+        // Conserva el cambio en borrador si falla el guardado silencioso
+      });
   };
 
   const handleAccentKeyDown = (e: React.KeyboardEvent) => {

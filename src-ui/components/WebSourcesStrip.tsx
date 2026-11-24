@@ -28,7 +28,7 @@ export function WebSourcesStrip({ sources }: { sources: WebSource[] }) {
   const markBroken = (image: string) => setBrokenImages((prev) => new Set(prev).add(image));
 
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-2.5 min-w-0 max-w-full">
       {gallery.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-w-2xl">
           {gallery.map((s) => (

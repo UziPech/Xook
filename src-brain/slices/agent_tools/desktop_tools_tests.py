@@ -1,7 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from slices.agent_tools import toolkit
 from slices.agent_tools import (
     AGENT_TOOL_DEFS,
     TOOL_SEARCH_TOOL_DEF,
@@ -27,6 +29,55 @@ class DesktopControlToolsTests(unittest.TestCase):
             act_enum = by_name["desktop_act"]["parameters"]["properties"]["action"]["enum"]
             for expected in ("click", "set_value", "type_text", "press_key", "focus", "scroll_to", "focus_window"):
                 self.assertIn(expected, act_enum)
+
+    def _open_app(self, window_lists: list, launch: dict = None) -> tuple:
+        """Abre una app con un puente falso; `window_lists` es lo que responde cada listado de ventanas."""
+        pending = list(window_lists)
+        queries = []
+
+        def fake_bridge(payload: dict) -> dict:
+            if payload.get("rpc_callback") == "open_desktop_app":
+                return launch or {
+                    "ok": True,
+                    "app": {"displayName": "Microsoft Teams", "bundleId": "com.microsoft.teams2", "fsName": "Microsoft Teams"},
+                }
+            queries.append(payload.get("query"))
+            return {"ok": True, "windows": pending.pop(0) if pending else []}
+
+        with tempfile.TemporaryDirectory(prefix="xook_open_") as tmp, patch.object(toolkit.time, "sleep") as slept:
+            ex = WorkspaceToolExecutor(Path(tmp), command_bridge=fake_bridge)
+            res = ex.execute("open_desktop_app", {"app_name": "Teams", "purpose": "Revisar tareas"})
+        return res, queries, slept.call_count
+
+    def test_open_desktop_app_waits_for_its_window_and_says_how_to_read_it(self) -> None:
+        window = {"windowId": 42, "appName": "Microsoft Teams"}
+        # Nombre y bundle no aparecen en la primera vuelta; en la segunda ya hay ventana.
+        res, queries, slept = self._open_app([[], [], [], [window]])
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["window"], window)
+        self.assertIn("desktop_snapshot(window_id=42)", res["next_step"])
+        self.assertEqual(queries[:3], ["Microsoft Teams", "com.microsoft.teams2", "Teams"])
+        self.assertEqual(slept, 1)
+
+    def test_open_desktop_app_without_window_does_not_claim_failure(self) -> None:
+        res, _, slept = self._open_app([])
+        self.assertTrue(res["ok"])
+        self.assertNotIn("window", res)
+        self.assertIn("desktop_list_windows", res["next_step"])
+        self.assertEqual(slept, toolkit.APP_WINDOW_WAIT_ATTEMPTS - 1)
+
+    def test_open_desktop_app_denied_by_the_user_is_returned_as_is(self) -> None:
+        res, queries, _ = self._open_app([], launch={"ok": False, "status": "denied", "error": "El usuario rechazó abrir 'Teams'."})
+        self.assertFalse(res["ok"])
+        self.assertNotIn("next_step", res)
+        self.assertEqual(queries, [])
+
+    def test_list_windows_without_matches_points_to_opening_the_app(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xook_win_") as tmp:
+            ex = WorkspaceToolExecutor(Path(tmp), command_bridge=lambda _p: {"ok": True, "windows": []})
+            res = ex.execute("desktop_list_windows", {"query": "teams"})
+            self.assertIn('open_desktop_app(app_name="teams")', res["next_step"])
+            self.assertNotIn("next_step", ex.execute("desktop_list_windows", {}))
 
     def test_desktop_act_rejects_bare_ref_before_calling_bridge(self) -> None:
         called = []

@@ -75,6 +75,7 @@ const ICONS = {
       <path className="xk-move xk-check" d="M8.8 12.2l2.2 2.2 4.4-4.6" stroke={ACTION} />
     </>
   ),
+  chevron: <path d="M7 10l5 5 5-5" />,
 } satisfies Record<string, ReactNode>;
 
 export type XkIconName = keyof typeof ICONS;

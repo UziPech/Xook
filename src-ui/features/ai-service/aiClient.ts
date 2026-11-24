@@ -2329,107 +2329,12 @@ export function detectApiKeyInText(text: string): DetectedApiKeyResult {
   };
 }
 
-export function detectKeySetupIntentWithProvider(text: string): {
-  isSetup: boolean;
-  providerHint: AiProviderId | null;
-} {
-  const lower = text.toLowerCase();
-  let providerHint: AiProviderId | null = null;
-  if (/\bdeepseek\b/i.test(lower)) providerHint = "deepseek";
-  else if (/\b(?:kimi|moonshot)\b/i.test(lower)) providerHint = "kimi";
-  else if (/\b(?:anthropic|antrophic|anhtropic|claude)\b/i.test(lower)) providerHint = "anthropic";
-  else if (/\bgroq\b/i.test(lower)) providerHint = "groq";
-  else if (/\b(?:gemini|google\s*ai|ai\s*studio)\b/i.test(lower)) providerHint = "gemini";
-  else if (/\b(?:openai|open\s*ia|openia|chatgpt|gpt-4|gpt4|gpt-5)\b/i.test(lower)) providerHint = "openai";
-  else if (/\bopenrouter\b/i.test(lower)) providerHint = "openrouter";
-
-  const isSetup =
-    /(api\s*key|clave\s*api|b[oó]veda|openrouter|deepseek|kimi|moonshot|groq|gemini|anthropic|antrophic|openai|open\s*ia|openia|token\s*de\s*ia|configur\w*\s*(?:la\s*|el\s*|mi\s*|tu\s*)?(?:ia|clave|api|key|modelo|b[oó]veda|provedor|proveedor)|cambia\w*\s*(?:clave|proveedor|modelo)|guarda\w*\s*(?:la\s*|mi\s*)?(?:clave|api|key))/i.test(
-      text
-    );
-  return { isSetup, providerHint };
-}
-
-export interface VaultConfigRequestDetection {
-  isVaultRequest: boolean;
-  intentKind: "switch_provider" | "save_or_edit_key" | "open_vault";
-  providerHint: AiProviderId | null;
-}
-
-/**
- * Detecta en lenguaje natural cuando el usuario pide a Xox configurar un proveedor,
- * cambiar de proveedor o guardar una API key en la bóveda de XOOK (sin filtrar código ajeno).
- */
-export function detectVaultConfigRequest(text: string): VaultConfigRequestDetection {
-  const trimmed = text.trim();
-  const { providerHint } = detectKeySetupIntentWithProvider(trimmed);
-  if (!trimmed || trimmed.length > 260) {
-    return { isVaultRequest: false, intentKind: "open_vault", providerHint };
-  }
-
-  const mentionsXookApp = /\b(?:xook|xox|b[oó]veda|esta\s+app|la\s+app|tus\s+ajustes|tu\s+configuraci[oó]n)\b/i.test(
-    trimmed
-  );
-  const mentionsExternalCoding =
-    /\b(?:python|node\.?js|typescript|javascript|react|rust|flask|fastapi|django|express|next\.?js|snippet|c[oó]digo\s+en|script\s+en|mi\s+proyecto|\.py|\.tsx?|\.jsx?)\b/i.test(
-      trimmed
-    );
-  if (mentionsExternalCoding && !mentionsXookApp) {
-    return { isVaultRequest: false, intentKind: "open_vault", providerHint };
-  }
-
-  const mentionsSecretOrVault =
-    /(?:\b(?:api\s*key|apikey|clave\s+(?:api|secreta|de\s+(?:ia|acceso|openrouter|deepseek|kimi|groq|gemini|openai|anthropic))|token\s+de\s+ia|b[oó]veda)\b|\b(?:la|mi|tu|una)\s+(?:key|clave(?:\s+(?:api|de\s+ia))?)\b)/i.test(
-      trimmed
-    );
-  const hasActionVerb =
-    /\b(?:configur\w*|agreg\w*|añad\w*|anad\w*|pon(?:er|le|me|ga)?|met(?:e|er|ele|eme)?|guard\w*|conect\w*|activ\w*|cambi\w*|us(?:a|ar|emos)|seleccion\w*|abr(?:e|ir|eme)|edita\w*|actualiz\w*|ingres\w*|peg(?:a|ar)|dej\w*\s+configurar|deja\w*\s+configurar)\b/i.test(
-      trimmed
-    );
-  const mentionsProviderEntity =
-    providerHint !== null || /\b(?:provedor(?:es)?|proveedor(?:es)?|modelos?\s+de\s+ia)\b/i.test(trimmed);
-
-  // Evitar capturar preguntas meramente informativas (ej. "¿cuánto cuesta deepseek?" o "compara gemini vs groq")
-  const isPureQuestion =
-    !hasActionVerb &&
-    !/\b(?:b[oó]veda)\b/i.test(trimmed) &&
-    /\b(?:cu[aá]nto\s+cuesta|tarifas?|precios?|l[ií]mites?|compar\w*|qu[eé]\s+es|por\s+qu[eé]|conviene|mejor)\b/i.test(
-      trimmed
-    );
-
-  if (isPureQuestion) {
-    return { isVaultRequest: false, intentKind: "open_vault", providerHint };
-  }
-
-  const explicitlyWantsVaultAction =
-    (/\b(?:b[oó]veda)\b/i.test(trimmed) && (hasActionVerb || mentionsSecretOrVault || mentionsProviderEntity)) ||
-    (mentionsSecretOrVault && hasActionVerb) ||
-    (Boolean(providerHint) && hasActionVerb);
-
-  if (!explicitlyWantsVaultAction) {
-    return { isVaultRequest: false, intentKind: "open_vault", providerHint };
-  }
-
-  const isExplicitSwitch =
-    Boolean(providerHint) &&
-    !mentionsSecretOrVault &&
-    !/\b(?:configur\w*|agreg\w*|añad\w*|anad\w*|guard\w*|edita\w*|peg\w*|b[oó]veda|pon(?:er|le|me)?\s+(?:la|mi|una)\b)\b/i.test(
-      trimmed
-    ) &&
-    /\b(?:cambi\w*|us(?:a|ar|emos)|activ\w*|p[aá]sa\w*|seleccion\w*)\b/i.test(trimmed);
-
-  if (isExplicitSwitch) {
-    return { isVaultRequest: true, intentKind: "switch_provider", providerHint };
-  }
-  if (/\b(?:abr(?:e|ir|eme)|ver|muestra\w*)\b/i.test(trimmed) && !mentionsSecretOrVault && !providerHint) {
-    return { isVaultRequest: true, intentKind: "open_vault", providerHint };
-  }
-  return { isVaultRequest: true, intentKind: "save_or_edit_key", providerHint };
-}
-
-export function isKeySetupIntent(text: string): boolean {
-  return detectKeySetupIntentWithProvider(text).isSetup;
-}
+export {
+  detectKeySetupIntentWithProvider,
+  detectVaultConfigRequest,
+  isKeySetupIntent,
+  type VaultConfigRequestDetection,
+} from "./vaultIntent";
 
 export function resolveProviderBaseUrlClient(
   providerId: AiProviderId | string,

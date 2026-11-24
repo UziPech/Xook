@@ -58,6 +58,15 @@ from slices.ai_service.agent_loop_policy import (
     wrap_up_nudge,
     wrap_up_step_label,
 )
+from slices.ai_service.desktop_action_policy import (
+    DESKTOP_RETRY_LABEL,
+    DESKTOP_RETRY_NUDGE,
+    DESKTOP_TOOLKIT,
+    ReplyHold,
+    attempted_desktop,
+    desktop_action_rules,
+    gave_up_on_desktop,
+)
 from slices.ai_service.agent_trace import AgentTraceWriter
 from slices.ai_service.context_manager import (
     build_turn_working_memory,
@@ -3068,6 +3077,8 @@ HERRAMIENTAS DEL ESPACIO DE TRABAJO Y EQUIPO DEL USUARIO (OBLIGATORIO CUANDO OPE
         skills_index_section += "\n\nHABILIDADES ACTIVAS EN ESTE TURNO:\n" + "\n\n".join(active_skills_bodies)
 
     mode_section = _build_active_mode_section(active_mode, subagent_roster)
+    desktop_rules = desktop_action_rules() if ws_active and workspace_root is not None else ""
+    desktop_rules_section = f"{desktop_rules}\n" if desktop_rules else ""
 
     # Perfil enfocado de Co-Editor de Documento: reduce ruido (~60% menos tokens de sistema)
     # para que Xox mantenga máxima precisión durante sesiones largas de feedback sobre un archivo.
@@ -3115,7 +3126,7 @@ Puedes operar en cualquier ámbito — negocio/empresa, ingeniería de software,
 {output_rules}
 
 REGLAS CRÍTICAS:
-- Tienes plena libertad expresiva y de formato: adapta el tono, la estructura, la extensión y el nivel de detalle a lo que pida el usuario, sin envolver el texto en etiquetas XML.
+{desktop_rules_section}- Tienes plena libertad expresiva y de formato: adapta el tono, la estructura, la extensión y el nivel de detalle a lo que pida el usuario, sin envolver el texto en etiquetas XML.
 - MEMORIA DURADERA DEL USUARIO: Cuando el usuario comparta datos estables sobre sí mismo (nombre o cómo prefiere que le llamen, ocupación, ciudad/zona horaria, preferencias de formato/estilo o te pida explícitamente "recuerda que..."), guárdalos proactivamente con `save_user_info` (usando una `key` estable si actualiza un dato previo). Si pide olvidar algo guardado, usa `forget_user_info`. Nunca guardes contraseñas, API keys, tokens ni charla pasajera.
 - CO-CONSTRUCCIÓN Y ADAPTACIÓN DE ROL: Si el usuario quiere construir un proyecto, empresa, flujo técnico o sistema desde cero o cambiar de enfoque, colabora con él proponiendo roles, reglas o estructura real mediante `propose_workspace_blueprint` o `propose_company_file_edit`, y aprende su forma de trabajar con `learn_skill` y `update_user_preferences`.
 - Si el usuario hace una pregunta general o cotidiana (ej. "¿qué hora es?", "¿qué día es hoy?", análisis de imágenes, dudas técnicas, matemáticas, redacción, charla o conocimiento general), respóndele directa y útilmente usando tu conocimiento y la fecha/hora local abajo, sin forzar temas de negocio/inventario ni crear tareas innecesarias.
@@ -5387,6 +5398,12 @@ def run_agent_completion(
         enable_deferred=executor is not None,
     )
     active_tools = tool_exposure.active_tool_defs()
+    desktop_ready = (
+        executor is not None
+        and command_bridge is not None
+        and effective_scope != "document"
+        and tool_exposure.has_tool("desktop_list_windows")
+    )
 
     nonstream_user_profile_mutated = False
     nonstream_user_memory_mutated = False
@@ -5546,6 +5563,7 @@ def run_agent_completion(
             tools_supported = True
             vision_supported = True
             continuations_used = 0
+            desktop_retry_used = False
             budget = AgentBudget(BUDGET_PROFILES[budget_profile_for_task(plan.task_profile.task_kind)])
             if executor is not None:
                 executor.transient_tool_images.clear()
@@ -5614,6 +5632,19 @@ def run_agent_completion(
                         tmp_reasoning = str(
                             local_message_obj.get("reasoning") or local_message_obj.get("reasoning_content") or ""
                         ).strip()
+                        if (
+                            desktop_ready
+                            and allow_tools_now
+                            and not desktop_retry_used
+                            and not attempted_desktop(sync_tool_records)
+                            and not (local_ui_tool_calls or parsed_tmp.get("tasks") or parsed_tmp.get("clarification"))
+                            and gave_up_on_desktop(tmp_reply, user_message)
+                        ):
+                            desktop_retry_used = True
+                            tool_exposure.load_toolkit(DESKTOP_TOOLKIT)
+                            loop_messages.append({"role": "assistant", "content": local_raw_content or tmp_reply})
+                            loop_messages.append({"role": "user", "content": DESKTOP_RETRY_NUDGE})
+                            continue
                         cont = (
                             _needs_agent_continuation(
                                 tmp_reply,
@@ -5742,6 +5773,7 @@ def run_agent_completion(
                                 ),
                                 "disposition": tool_out.get("disposition"),
                             })
+                            tool_exposure.note_tool_used(fn_name)
                             tool_results_nonstream.append((tc_id, with_delivery_check(fn_name, tool_out)))
 
                     budget.record_tool_round(tool_calls)
@@ -6256,6 +6288,12 @@ def stream_agent_completion(
         enable_deferred=executor is not None,
     )
     active_tools = tool_exposure.active_tool_defs()
+    desktop_ready = (
+        executor is not None
+        and command_bridge is not None
+        and effective_scope != "document"
+        and tool_exposure.has_tool("desktop_list_windows")
+    )
 
     stream_user_profile_mutated = False
     stream_user_memory_mutated = False
@@ -7254,6 +7292,7 @@ def stream_agent_completion(
             emit_event({"type": "steps", "steps": steps})
 
         continuations_used = 0
+        desktop_retry_used = False
         budget_limits = BUDGET_PROFILES[budget_profile_for_task(routing_plan.task_profile.task_kind)]
         budget = AgentBudget(budget_limits)
 
@@ -7285,20 +7324,28 @@ def stream_agent_completion(
                     round_reasoning_chunks.append(chunk)
                     on_reasoning_delta(chunk)
 
+                allow_tools_now = tools_supported and not is_final_round
+                can_retry_desktop = (
+                    desktop_ready
+                    and allow_tools_now
+                    and not desktop_retry_used
+                    and not attempted_desktop(turn_tool_records)
+                )
+                reply_hold = ReplyHold(on_reply_delta, on_phase_change, enabled=can_retry_desktop)
+
                 def _round_on_reply(chunk: str) -> None:
                     if not chunk:
                         return
                     if not round_reply_chunks and reply_chunks and not "".join(reply_chunks[-3:]).endswith("\n"):
-                        on_reply_delta("\n\n")
+                        reply_hold.feed("\n\n")
                     round_reply_chunks.append(chunk)
-                    on_reply_delta(chunk)
+                    reply_hold.feed(chunk)
 
                 round_router = _StreamTagRouter(
                     on_reasoning=_round_on_reasoning,
                     on_reply=_round_on_reply,
-                    on_phase=on_phase_change,
+                    on_phase=reply_hold.phase,
                 )
-                allow_tools_now = tools_supported and not is_final_round
                 can_failover_here = (
                     (has_next_candidate or has_next_provider)
                     and round_idx == 0
@@ -7329,6 +7376,7 @@ def stream_agent_completion(
                             round_reply_chunks.clear()
                             if stripped_dsml_rep:
                                 round_reply_chunks.append(stripped_dsml_rep)
+                            reply_hold.replace(stripped_dsml_rep)
                             if reply_chunks:
                                 full_cur = _strip_dsml_markup("".join(reply_chunks))
                                 reply_chunks.clear()
@@ -7384,6 +7432,26 @@ def stream_agent_completion(
                     )
                 ]
                 replays_reasoning = _provider_replays_reasoning(active_provider, active_model)
+                if (
+                    can_retry_desktop
+                    and not pass_tool_calls
+                    and not (all_ui_tool_calls or round_router.canvas_buf.strip() or round_router.actions_buf.strip())
+                    and gave_up_on_desktop("".join(round_reply_chunks), user_message)
+                ):
+                    desktop_retry_used = True
+                    reply_hold.discard()
+                    tool_exposure.load_toolkit(DESKTOP_TOOLKIT)
+                    _set_think_step(status="done")
+                    _upsert_step("desktop_retry", DESKTOP_RETRY_LABEL, "done")
+                    emit_event({"type": "phase", "xox_state": "thinking", "label": f"{DESKTOP_RETRY_LABEL}..."})
+                    emit_event({"type": "steps", "steps": steps})
+                    assist_gave_up: Dict[str, Any] = {"role": "assistant", "content": "".join(round_reply_chunks)}
+                    if replays_reasoning:
+                        assist_gave_up["reasoning_content"] = round_reasoning_text
+                    loop_messages.append(assist_gave_up)
+                    loop_messages.append({"role": "user", "content": DESKTOP_RETRY_NUDGE})
+                    continue
+                reply_hold.release()
                 if not exec_calls:
                     round_reply_text = "".join(round_reply_chunks)
                     round_reas_text = round_reasoning_text
@@ -7656,6 +7724,7 @@ def stream_agent_completion(
                                 ),
                                 "disposition": tool_res.get("disposition"),
                             })
+                        tool_exposure.note_tool_used(fn_name)
                         pass_tool_results.append((tc_id, with_delivery_check(fn_name, tool_res)))
 
                 budget.record_tool_round(pass_tool_calls)

@@ -191,6 +191,7 @@ export function getXoxBubbleVars(accentPreset?: string | null): React.CSSPropert
 export function getXoxCosmosVars(accentPreset?: string | null): React.CSSProperties {
   const preset = resolveXoxAccentPreset(accentPreset);
   const spec = XOX_ACCENT_PRESETS[preset];
+  const secondaryTone = spec.bodyLower ?? spec.deep;
   if (preset === "classic") {
     return {
       "--xox-cosmos-bloom": "var(--ref-gemini-bloom-core)",
@@ -200,7 +201,10 @@ export function getXoxCosmosVars(accentPreset?: string | null): React.CSSPropert
       "--xox-cosmos-whisper": spec.glow,
       "--xox-input-accent": spec.glow,
       "--xox-input-rim": spec.rim,
+      "--xox-input-rim-secondary": spec.rim2,
       "--xox-input-mid": spec.mid,
+      "--xox-input-secondary": secondaryTone,
+      "--xox-input-caret": spec.accessory,
       "--xox-cosmos-border": "color-mix(in oklab, var(--ref-gemini-bloom-core) 58%, rgba(255, 255, 255, 0.16))",
     } as React.CSSProperties;
   }
@@ -212,7 +216,10 @@ export function getXoxCosmosVars(accentPreset?: string | null): React.CSSPropert
     "--xox-cosmos-whisper": spec.glow,
     "--xox-input-accent": spec.glow,
     "--xox-input-rim": spec.rim,
+    "--xox-input-rim-secondary": spec.rim2,
     "--xox-input-mid": spec.mid,
+    "--xox-input-secondary": secondaryTone,
+    "--xox-input-caret": spec.accessory,
     "--xox-cosmos-border": `color-mix(in oklab, ${spec.glow} 38%, rgba(255, 255, 255, 0.14))`,
   } as React.CSSProperties;
 }

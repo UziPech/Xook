@@ -100,6 +100,29 @@
     }
   },
   {
+    "id": "escritorio-revisar-app",
+    "categoria": "escritorio",
+    "mensaje": "Revísame si en Teams tengo algunas tareas pendientes.",
+    "herramientas": ["desktop_list_windows", "open_desktop_app", "desktop_snapshot", "read_screen_now", "propose_tasks", "os_create_note"],
+    "espera": {
+      "herramienta_en": ["desktop_list_windows", "open_desktop_app", "desktop_snapshot"],
+      "args_texto_coincide": ["teams"],
+      "prohibidas": ["propose_tasks", "os_create_note"],
+      "aceptables": ["read_screen_now"]
+    }
+  },
+  {
+    "id": "escritorio-mensaje-a-otro-asistente",
+    "categoria": "escritorio",
+    "mensaje": "Dile a Claude, en su app, que no pudiste abrir Teams.",
+    "herramientas": ["desktop_list_windows", "open_desktop_app", "desktop_find", "desktop_act", "os_create_note", "memory_record_fact"],
+    "espera": {
+      "herramienta_en": ["desktop_list_windows", "open_desktop_app", "desktop_find"],
+      "args_texto_coincide": ["claude"],
+      "prohibidas": ["os_create_note", "memory_record_fact"]
+    }
+  },
+  {
     "id": "agenda-crear-evento",
     "categoria": "agenda",
     "mensaje": "Agéndame una cita con el dentista el 3 de diciembre de 2026 a las 4 de la tarde.",

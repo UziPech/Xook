@@ -314,8 +314,8 @@ export const CodeBlockCard: React.FC<CodeBlockCardProps> = ({
       data-no-drag="true"
       className={
         isLiquid
-          ? "my-1.5 rounded-xl quick-liquid-subcard overflow-hidden [text-shadow:none]"
-          : "my-2.5 rounded-2xl bg-[#131417] border border-white/[0.08] overflow-hidden shadow-[0_6px_24px_rgba(0,0,0,0.32)]"
+          ? "my-1.5 max-w-full min-w-0 rounded-xl quick-liquid-subcard overflow-hidden [text-shadow:none]"
+          : "my-2.5 max-w-full min-w-0 rounded-2xl bg-[#131417] border border-white/[0.08] overflow-hidden shadow-[0_6px_24px_rgba(0,0,0,0.32)]"
       }
     >
       <div className={headerClasses}>

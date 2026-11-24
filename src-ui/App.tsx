@@ -4,7 +4,7 @@ import {
   Brain, 
   Store, 
   Plus,
-  Send,
+  ArrowUp,
   Zap,
   Check,
   X,
@@ -1024,21 +1024,13 @@ export default function App() {
   const [previewAccentPreset, setPreviewAccentPreset] = useState<XoxAccentPreset | null>(null);
   const [xoxTravelPhase, setXoxTravelPhase] = useState<"idle" | "to-studio" | "from-studio">("idle");
   const [xoxGlideSeq, setXoxGlideSeq] = useState<number>(0);
-  const [xoxExitingStage, setXoxExitingStage] = useState<boolean>(false);
   const [xoxFlight, setXoxFlight] = useState<XoxFlightSpec | null>(null);
   const [xoxFlightPending, setXoxFlightPending] = useState<boolean>(false);
   const xoxInFlight = Boolean(xoxFlight) || xoxFlightPending;
   const xoxFlightIdRef = useRef<number>(0);
   const pendingXoxFlightRef = useRef<{
-    direction: "to-studio";
+    direction: "to-studio" | "from-studio";
     from: XoxFlightPoint;
-  } | null>(null);
-  const lastChatXoxSnapshotRef = useRef<{
-    cx: number;
-    cy: number;
-    size: number;
-    viewportH: number;
-    isHero: boolean;
   } | null>(null);
   const prevShowStudioRef = useRef<boolean>(false);
 
@@ -1132,15 +1124,14 @@ export default function App() {
     prevShowStudioRef.current = showXoxStudio;
     if (showXoxStudio) {
       setXoxTravelPhase("to-studio");
-      setXoxExitingStage(true);
       setXoxGlideSeq((n) => n + 1);
-      const t = window.setTimeout(() => setXoxExitingStage(false), 380);
-      return () => window.clearTimeout(t);
+      return undefined;
     }
-    pendingXoxFlightRef.current = null;
-    setXoxFlightPending(false);
+    if (pendingXoxFlightRef.current?.direction === "to-studio") {
+      pendingXoxFlightRef.current = null;
+      setXoxFlightPending(false);
+    }
     setXoxFlight((curr) => (curr?.direction === "to-studio" ? null : curr));
-    setXoxExitingStage(false);
     setXoxTravelPhase("from-studio");
     setXoxGlideSeq((n) => n + 1);
     setPreviewAccentPreset(null);
@@ -1169,15 +1160,10 @@ export default function App() {
       const liveFlightFrom = measureFlightPoint("[data-xox-flight-mover]");
       const heroFrom = measureFlightPoint('[data-xox-stage="chat-hero"]');
       const laneFrom = heroFrom ? null : measureFlightPoint('[data-xox-stage="chat-lane"]');
-      const from = liveFlightFrom ?? heroFrom ?? laneFrom;
+      const perchFrom =
+        heroFrom || laneFrom ? null : measureFlightPoint('[data-xox-stage="chat-perch"]');
+      const from = liveFlightFrom ?? heroFrom ?? laneFrom ?? perchFrom;
       if (from) {
-        if (!liveFlightFrom) {
-          lastChatXoxSnapshotRef.current = {
-            ...from,
-            viewportH: window.innerHeight,
-            isHero: Boolean(heroFrom),
-          };
-        }
         pendingXoxFlightRef.current = { direction: "to-studio", from };
         setXoxFlightPending(true);
       }
@@ -1195,61 +1181,9 @@ export default function App() {
       const from =
         measureFlightPoint("[data-xox-flight-mover]") ??
         measureFlightPoint('[data-xox-stage="studio"]');
-      const chatSec = document.querySelector<HTMLElement>("[data-xox-chat-section]");
-      if (from && chatSec) {
-        const chatRect = chatSec.getBoundingClientRect();
-        const finalRight = getStudioRightEdge();
-        const finalChatW = Math.max(300, finalRight - chatRect.left);
-        const hasHeroDom = Boolean(document.querySelector('[data-xox-stage="chat-hero"]'));
-        const snap = lastChatXoxSnapshotRef.current;
-        let to: XoxFlightPoint | null = null;
-
-        if (hasHeroDom) {
-          const responsiveSize =
-            window.innerWidth >= 1280
-              ? 456
-              : window.innerWidth >= 1024
-                ? 408
-                : window.innerWidth >= 640
-                  ? 384
-                  : 308;
-          const sameViewportH =
-            Boolean(snap && snap.isHero && Math.abs(snap.viewportH - window.innerHeight) < 8);
-          const toSize = sameViewportH && snap ? snap.size : responsiveSize;
-          const toCy =
-            sameViewportH && snap
-              ? snap.cy
-              : chatRect.top + Math.max(180, (chatRect.height - 170) * 0.44);
-          to = {
-            cx: chatRect.left + finalChatW / 2,
-            cy: toCy,
-            size: toSize,
-          };
-        } else if (snap && !snap.isHero) {
-          const laneSlot = document.querySelector<HTMLElement>('[data-xox-lane-slot="active"]');
-          if (laneSlot) {
-            const lr = laneSlot.getBoundingClientRect();
-            if (lr.top >= 0 && lr.top <= window.innerHeight - 60) {
-              to = {
-                cx: snap.cx,
-                cy: lr.top + snap.size / 2 - 4,
-                size: snap.size,
-              };
-            }
-          }
-        }
-
-        if (to) {
-          pendingXoxFlightRef.current = null;
-          setXoxFlightPending(false);
-          xoxFlightIdRef.current += 1;
-          setXoxFlight({
-            id: xoxFlightIdRef.current,
-            direction: "from-studio",
-            from,
-            to,
-          });
-        }
+      if (from) {
+        pendingXoxFlightRef.current = { direction: "from-studio", from };
+        setXoxFlightPending(true);
       }
     }
     setShowXoxStudio(false);
@@ -1916,7 +1850,20 @@ export default function App() {
   const [learningToast, setLearningToast] = useState<MemoryPattern | null>(null);
   const [inputExpanded, setInputExpanded] = useState<boolean>(false);
 
+  const chatSectionRef = useRef<HTMLElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  const [chatInlineWidth, setChatInlineWidth] = useState<number>(() =>
+    typeof window !== "undefined" ? window.innerWidth : 1200
+  );
+  const prevChatInlineWidthRef = useRef<number>(0);
+  const isAdjustingScrollOnResizeRef = useRef<boolean>(false);
+  const resizeScrollUnlockRafRef = useRef<number | null>(null);
+  const chatReadAnchorRef = useRef<{
+    msgId: string;
+    ratio: number;
+    pixelOffset: number;
+    usePixelOffset: boolean;
+  } | null>(null);
   // El chat sigue al último mensaje solo mientras el usuario esté abajo. Si sube a
   // leer durante el streaming, cada token ya no lo regresa al final.
   const chatStickToBottomRef = useRef<boolean>(true);
@@ -2126,9 +2073,72 @@ export default function App() {
     xoxState === "reading" ||
     xoxState === "coding" ||
     xoxState === "syncing";
+  const isChatCompactLane = isEffectiveSplitLayout || chatInlineWidth < 720;
+
+  const captureChatReadAnchor = useCallback((el: HTMLDivElement) => {
+    const scrollRect = el.getBoundingClientRect();
+    if (scrollRect.height <= 0) return;
+    const nodes = el.querySelectorAll<HTMLElement>("[data-chat-msg-id]");
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i];
+      const msgId = node.dataset.chatMsgId;
+      if (!msgId) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.height <= 0) continue;
+      if (rect.bottom > scrollRect.top + 8) {
+        const scrolledInto = scrollRect.top - rect.top;
+        chatReadAnchorRef.current = {
+          msgId,
+          ratio: scrolledInto > 0 ? scrolledInto / rect.height : 0,
+          pixelOffset: scrolledInto,
+          usePixelOffset: scrolledInto <= 0,
+        };
+        return;
+      }
+    }
+  }, []);
+
+  const restoreChatScrollAfterWidthChange = useCallback((el: HTMLDivElement) => {
+    if (chatMessagesRef.current.length === 0) return;
+    isAdjustingScrollOnResizeRef.current = true;
+    if (resizeScrollUnlockRafRef.current !== null) {
+      window.cancelAnimationFrame(resizeScrollUnlockRafRef.current);
+    }
+    if (chatStickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    } else if (chatReadAnchorRef.current) {
+      const anchor = chatReadAnchorRef.current;
+      const safeId =
+        typeof CSS !== "undefined" && typeof CSS.escape === "function"
+          ? CSS.escape(anchor.msgId)
+          : anchor.msgId.replace(/["\\]/g, "\\$&");
+      const target = el.querySelector<HTMLElement>(`[data-chat-msg-id="${safeId}"]`);
+      if (target) {
+        const scrollRect = el.getBoundingClientRect();
+        const msgRect = target.getBoundingClientRect();
+        if (msgRect.height > 0) {
+          const currentScrolledInto = scrollRect.top - msgRect.top;
+          const desiredScrolledInto = anchor.usePixelOffset
+            ? anchor.pixelOffset
+            : anchor.ratio * msgRect.height;
+          el.scrollTop += desiredScrolledInto - currentScrolledInto;
+        }
+      }
+    }
+    chatLastScrollTopRef.current = el.scrollTop;
+    resizeScrollUnlockRafRef.current = window.requestAnimationFrame(() => {
+      resizeScrollUnlockRafRef.current = null;
+      isAdjustingScrollOnResizeRef.current = false;
+    });
+  }, []);
+
   const handleChatScroll = useCallback(() => {
     const el = chatScrollRef.current;
     if (!el) return;
+    if (isAdjustingScrollOnResizeRef.current) {
+      chatLastScrollTopRef.current = el.scrollTop;
+      return;
+    }
     const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     const movedUp = el.scrollTop < chatLastScrollTopRef.current - 1;
     if (movedUp && distanceToBottom > 2) {
@@ -2136,16 +2146,61 @@ export default function App() {
       // píxeles: el trackpad manda pasos pequeños entre token y token. El texto que
       // crece por debajo no mueve `scrollTop`, y el scroll propio siempre baja.
       chatStickToBottomRef.current = false;
+      captureChatReadAnchor(el);
     } else if (!movedUp && distanceToBottom < 24) {
       chatStickToBottomRef.current = true;
+      chatReadAnchorRef.current = null;
+    } else if (!chatStickToBottomRef.current) {
+      captureChatReadAnchor(el);
     }
     chatLastScrollTopRef.current = el.scrollTop;
-  }, []);
+  }, [captureChatReadAnchor]);
 
   // La rueda o el trackpad hacia arriba sueltan el chat antes de que llegue otro token.
-  const handleChatWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    if (e.deltaY < 0) chatStickToBottomRef.current = false;
-  }, []);
+  const handleChatWheel = useCallback(
+    (e: React.WheelEvent<HTMLDivElement>) => {
+      if (e.deltaY < 0) {
+        chatStickToBottomRef.current = false;
+        if (chatScrollRef.current) {
+          captureChatReadAnchor(chatScrollRef.current);
+        }
+      }
+    },
+    [captureChatReadAnchor]
+  );
+
+  // Mantiene el ancho medido de la columna de chat y preserva la posición de lectura en WebKit
+  // cuando se redimensionan divisores o la ventana del sistema (sin interferir con el streaming).
+  useEffect(() => {
+    const secEl = chatSectionRef.current;
+    if (!secEl || typeof ResizeObserver === "undefined") return;
+    const initialW = secEl.getBoundingClientRect().width;
+    if (initialW > 0) {
+      prevChatInlineWidthRef.current = initialW;
+      setChatInlineWidth(initialW);
+    }
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const nextW = entry.contentRect.width;
+      if (nextW <= 0) return;
+      const prevW = prevChatInlineWidthRef.current;
+      if (Math.abs(nextW - prevW) <= 0.5) return;
+      prevChatInlineWidthRef.current = nextW;
+      setChatInlineWidth((curr) => (curr < 720 !== nextW < 720 ? nextW : curr));
+      if (chatScrollRef.current) {
+        restoreChatScrollAfterWidthChange(chatScrollRef.current);
+      }
+    });
+    ro.observe(secEl);
+    return () => {
+      ro.disconnect();
+      if (resizeScrollUnlockRafRef.current !== null) {
+        window.cancelAnimationFrame(resizeScrollUnlockRafRef.current);
+        resizeScrollUnlockRafRef.current = null;
+      }
+    };
+  }, [restoreChatScrollAfterWidthChange]);
 
   useEffect(() => {
     const el = chatScrollRef.current;
@@ -2156,6 +2211,7 @@ export default function App() {
     if (!el) return;
     if (chatMessages.length === 0) {
       chatStickToBottomRef.current = true;
+      chatReadAnchorRef.current = null;
       if (el.scrollTop !== 0) {
         el.scrollTop = 0;
       }
@@ -2168,6 +2224,7 @@ export default function App() {
       chatMessages.slice(prevLength).some((msg) => msg.role === "user")
     ) {
       chatStickToBottomRef.current = true;
+      chatReadAnchorRef.current = null;
     }
     if (!chatStickToBottomRef.current) return;
     // `scrollTo` sobre el contenedor, no `scrollIntoView`: este también desplaza a
@@ -6562,51 +6619,105 @@ export default function App() {
 
   const pendingCount = tasks.length;
 
-  // Estados de presencia animada para ventanas laterales y emergentes (entrada y salida)
-  const leftPresence = useAnimatedPresence(showLeftSidebar, 290);
-  const rightPresence = useAnimatedPresence(showRightSidebar, 290);
-  const canvasPresence = useAnimatedPresence(showCanvas && Boolean(activeCanvas), 290);
-  const studioPresence = useAnimatedPresence(showXoxStudio, 400);
-  const docViewerPresence = useAnimatedPresence(
-    showDocViewer && Boolean(pdfPanelState || pdfDraftProgress),
-    290
-  );
+  // Estados de presencia animada para drawers superpuestos en vistas compactas;
+  // en escritorio el ancho del split se aplica en un solo paso de layout para evitar
+  // refluir el texto del chat cuadro a cuadro mientras el contenido entra en GPU.
+  const isCanvasOpen = showCanvas && Boolean(activeCanvas);
+  const isDocViewerOpen = showDocViewer && Boolean(pdfPanelState || pdfDraftProgress);
+  const leftPresence = useAnimatedPresence(showLeftSidebar, 230);
+  const rightPresence = useAnimatedPresence(showRightSidebar, 230);
+  const canvasPresence = useAnimatedPresence(isCanvasOpen, 230);
+  const studioPresence = useAnimatedPresence(showXoxStudio, 230);
+  const docViewerPresence = useAnimatedPresence(isDocViewerOpen, 230);
 
-  // Calcula la coordenada destino exacta del santuario antes del primer paint para iniciar el vuelo físico
+  const leftMounted = isCompactViewport ? leftPresence.mounted : showLeftSidebar;
+  const rightMounted = isCompactViewport ? rightPresence.mounted : showRightSidebar;
+  const canvasMounted = isCompactViewport ? canvasPresence.mounted : isCanvasOpen;
+  const studioMounted = isCompactViewport ? studioPresence.mounted : showXoxStudio;
+  const docViewerMounted = isCompactViewport ? docViewerPresence.mounted : isDocViewerOpen;
+
+  // Ancla la posición de lectura antes del primer paint al abrir/cerrar/expandir cualquier ventana lateral
   useLayoutEffect(() => {
-    if (!showXoxStudio || !studioPresence.mounted) return;
-    const pending = pendingXoxFlightRef.current;
-    if (!pending || pending.direction !== "to-studio") return;
-    pendingXoxFlightRef.current = null;
+    const secEl = chatSectionRef.current;
+    if (secEl) {
+      const w = secEl.getBoundingClientRect().width;
+      if (w > 0) {
+        prevChatInlineWidthRef.current = w;
+        setChatInlineWidth((curr) => (curr < 720 !== w < 720 ? w : curr));
+      }
+    }
+    if (chatScrollRef.current) {
+      restoreChatScrollAfterWidthChange(chatScrollRef.current);
+    }
+  }, [
+    showLeftSidebar,
+    showRightSidebar,
+    isCanvasOpen,
+    isDocViewerOpen,
+    showXoxStudio,
+    canvasExpanded,
+    isMemoryWideMode,
+    isEffectiveSplitLayout,
+    isCompactViewport,
+    restoreChatScrollAfterWidthChange,
+  ]);
 
-    const innerEl = document.querySelector<HTMLElement>("[data-xox-studio-inner]");
-    const starEl = document.querySelector<HTMLElement>('[data-xox-stage="studio"]');
-    if (!innerEl || !starEl) {
+  // Calcula la coordenada destino exacta antes del primer paint para iniciar el vuelo físico de Xox
+  useLayoutEffect(() => {
+    const pending = pendingXoxFlightRef.current;
+    if (!pending) return;
+
+    if (pending.direction === "to-studio") {
+      if (!showXoxStudio || !studioMounted) return;
+      pendingXoxFlightRef.current = null;
+
+      const innerEl = document.querySelector<HTMLElement>("[data-xox-studio-inner]");
+      const starEl = document.querySelector<HTMLElement>('[data-xox-stage="studio"]');
+      if (!innerEl || !starEl) {
+        setXoxFlightPending(false);
+        return;
+      }
+
+      const innerRect = innerEl.getBoundingClientRect();
+      const starRect = starEl.getBoundingClientRect();
+      const finalStudioRight = getStudioRightEdge();
+      const finalInnerLeft = finalStudioRight - studioPanelWidth;
+      const relX = starRect.left - innerRect.left;
+
+      const to: XoxFlightPoint = {
+        cx: finalInnerLeft + relX + starRect.width / 2,
+        cy: starRect.top + starRect.height / 2,
+        size: starRect.width,
+      };
+
+      xoxFlightIdRef.current += 1;
       setXoxFlightPending(false);
+      setXoxFlight({
+        id: xoxFlightIdRef.current,
+        direction: "to-studio",
+        from: pending.from,
+        to,
+      });
       return;
     }
 
-    const innerRect = innerEl.getBoundingClientRect();
-    const starRect = starEl.getBoundingClientRect();
-    const finalStudioRight = getStudioRightEdge();
-    const finalInnerLeft = finalStudioRight - studioPanelWidth;
-    const relX = starRect.left - innerRect.left;
-
-    const to: XoxFlightPoint = {
-      cx: finalInnerLeft + relX + starRect.width / 2,
-      cy: starRect.top + starRect.height / 2,
-      size: starRect.width,
-    };
-
-    xoxFlightIdRef.current += 1;
-    setXoxFlightPending(false);
-    setXoxFlight({
-      id: xoxFlightIdRef.current,
-      direction: "to-studio",
-      from: pending.from,
-      to,
-    });
-  }, [showXoxStudio, studioPresence.mounted, studioPanelWidth, showRightSidebar]);
+    if (pending.direction === "from-studio" && !showXoxStudio) {
+      pendingXoxFlightRef.current = null;
+      const to =
+        measureFlightPoint('[data-xox-stage="chat-hero"]') ??
+        measureFlightPoint('[data-xox-stage="chat-lane"]') ??
+        measureFlightPoint('[data-xox-stage="chat-perch"]');
+      setXoxFlightPending(false);
+      if (!to) return;
+      xoxFlightIdRef.current += 1;
+      setXoxFlight({
+        id: xoxFlightIdRef.current,
+        direction: "from-studio",
+        from: pending.from,
+        to,
+      });
+    }
+  }, [showXoxStudio, studioMounted, studioPanelWidth, showRightSidebar]);
 
   const handleOpenCanvas = (canvas: CanvasArtifact) => {
     setShowXoxStudio(false);
@@ -7496,7 +7607,7 @@ export default function App() {
         {/* ========================================================================= */}
         {/* COLUMNA 1: CONTEXTO DEL LADO IZQUIERDO                                    */}
         {/* ========================================================================= */}
-        {leftPresence.mounted && (
+        {leftMounted && (
           <>
             <div
               role={isCompactViewport ? "dialog" : undefined}
@@ -7504,16 +7615,20 @@ export default function App() {
               aria-label={isCompactViewport ? "Panel de contexto y chats" : undefined}
               aria-hidden={!showLeftSidebar}
               inert={!showLeftSidebar}
-              style={{ width: leftPresence.visible ? `${effectiveLeftWidth}px` : "0px" }}
+              style={{ width: `${effectiveLeftWidth}px` }}
               className={`sidebar-slot flex justify-end shrink-0 overflow-hidden ${
-                isCompactViewport ? "xook-compact-drawer-surface is-left" : ""
-              } ${
-                isResizingLeft ? "is-resizing" : ""
-              } ${leftPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+                isCompactViewport
+                  ? `xook-compact-drawer-surface is-left ${
+                      leftPresence.visible ? "opacity-100" : "is-closed opacity-0 pointer-events-none"
+                    }`
+                  : ""
+              } ${isResizingLeft ? "is-resizing" : ""}`}
             >
               <aside
                 style={{ width: `${effectiveLeftWidth}px` }}
-                className="h-full bg-[#07080b] flex flex-col shrink-0 overflow-hidden select-none"
+                className={`h-full bg-[#07080b] flex flex-col shrink-0 overflow-hidden select-none ${
+                  !isCompactViewport ? "xook-panel-enter-left" : ""
+                }`}
               >
               
               {/* Cabecera del Panel Lateral: identidad XOOK (los chats van primero; el proyecto se abre aparte) */}
@@ -7630,10 +7745,7 @@ export default function App() {
                   setIsResizingLeft(true);
                 }}
                 onDoubleClick={() => setLeftWidth(280)}
-                style={!leftPresence.visible ? { width: "0px" } : undefined}
-                className={`splitter-aurora-glass ${isResizingLeft ? "is-resizing" : ""} ${
-                  leftPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
-                }`}
+                className={`splitter-aurora-glass ${isResizingLeft ? "is-resizing" : ""}`}
               >
                 {/* Zona de captura ampliada invisible para fácil arrastre */}
                 <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
@@ -7644,6 +7756,7 @@ export default function App() {
 
         {/* COLUMNA CENTRAL: Xox + Conversación + Input Pinned al fondo */}
         <section
+          ref={chatSectionRef}
           data-xox-chat-section
           data-xox-split={isEffectiveSplitLayout ? "true" : "false"}
           inert={hasCompactOverlayOpen}
@@ -7723,10 +7836,10 @@ export default function App() {
             ref={chatScrollRef}
             onScroll={handleChatScroll}
             onWheel={handleChatWheel}
-            className="xook-chat-scroll-pad relative z-[1] flex-1 flex flex-col overflow-y-auto"
+            className="xook-chat-scroll-pad relative z-[1] flex-1 min-w-0 flex flex-col overflow-y-auto overflow-x-hidden"
           >
             <div
-              className={`w-full max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto transition-[padding] duration-200 ${
+              className={`w-full min-w-0 max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto ${
                 chatMessages.length === 0 ? "flex-[1_0_auto] flex flex-col" : "shrink-0 space-y-6"
               } ${
                 activeChecklist && !checklistCollapsed && !hasRightSplitOpen && !isCompactViewport
@@ -7882,7 +7995,7 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <div className="space-y-4">
+                  <div className="space-y-4 min-w-0">
                     <ChatMessageList
                       messages={chatMessages}
                       xoxState={xoxState}
@@ -7920,12 +8033,13 @@ export default function App() {
                       onSpeakMessage={handleSpeakMessage}
                       accentPreset={displayAccentPreset}
                       agentName={effectiveAgentName}
-                      xoxAwayInStudio={showXoxStudio && !xoxExitingStage}
+                      xoxAwayInStudio={showXoxStudio}
                       xoxInFlight={xoxInFlight}
                       xoxTravelPhase={xoxTravelPhase}
                       glideSeq={showXoxStudio || xoxInFlight ? 0 : xoxGlideSeq}
                       xoxTerminal={xoxTerminalFeed}
                       isSplitMode={isEffectiveSplitLayout}
+                      isChatCompactLane={isChatCompactLane}
                       rosterSubagents={
                         activeMode === "agent" && subagentTeamMode === "custom"
                           ? subagentRoster
@@ -7946,10 +8060,10 @@ export default function App() {
                     className={`${
                       activeClarification || permissionItems.some((p) => p.state === "pending")
                         ? "h-[21rem] sm:h-[25rem]"
-                        : isEffectiveSplitLayout
+                        : isChatCompactLane
                           ? "h-[19rem] sm:h-[21rem]"
                           : "h-60 sm:h-56"
-                    } shrink-0 transition-[height]`}
+                    } shrink-0`}
                   />
                 </>
               )}
@@ -8012,10 +8126,11 @@ export default function App() {
           {/* 4. INPUT / CHAT FIJO EN LA PARTE INFERIOR (PINNED DOCK)                    */}
           {/* ========================================================================= */}
           <div className="xook-composer-pad absolute inset-x-0 bottom-0 bg-gradient-to-t from-[#060709] via-[#060709]/95 to-transparent pointer-events-none z-10">
-            <div className="@container max-w-5xl xl:max-w-[1360px] 2xl:max-w-[1440px] mx-auto pointer-events-auto relative">
-              {/* Xox fija en la esquina derecha sobre el input cuando la columna de chat es angosta (<560px) */}
+            <div className="@container w-full max-w-[51rem] 2xl:max-w-[53rem] mx-auto pointer-events-auto relative">
+              {/* Xox fija en la esquina derecha sobre el input cuando la columna de chat es compacta (<720px) */}
               {chatMessages.length > 0 && (
                 <div
+                  data-xox-stage="chat-perch"
                   className={`xox-compact-dock-perch items-center justify-center select-none ${
                     showXoxStudio || xoxFlight || showModelMenu || showContextMenu || showCommandMenu
                       ? "opacity-0 scale-95"
@@ -8028,14 +8143,7 @@ export default function App() {
                     hitArea="star"
                     clickBehavior="greet"
                     accentPreset={displayAccentPreset}
-                    active={
-                      !showXoxStudio &&
-                      !xoxFlight &&
-                      (isEffectiveSplitLayout ||
-                        viewportWidth < 620 ||
-                        hasRightSplitOpen ||
-                        showLeftSidebar)
-                    }
+                    active={!showXoxStudio && !xoxFlight && isChatCompactLane}
                     className="xox-compact-perch-star"
                     summonTrigger={summonSeq}
                     onClick={handleXoxClick}
@@ -8116,22 +8224,21 @@ export default function App() {
                     setIsDraggingOverChat(false);
                   }
                 }}
-                className={`liquid-glass-hero input-console rounded-2xl p-3 sm:p-3.5 relative group shadow-2xl ${
+                className={`liquid-glass-hero input-console rounded-[22px] px-4 pt-3.5 pb-3 relative group ${
                   inputExpanded || attachments.length > 0 ? "is-expanded" : ""
                 } ${isDraggingOverChat ? "ring-1 ring-white/30 border-white/25" : ""}`}
               >
-                {/* Borde iridiscente 1px estilo Stitch (esquina superior izquierda violeta -> izquierda azul/cian) */}
+                {/* Contorno Fresnel de 1px sincronizado con Xox que recorre suavemente el perímetro */}
                 <span aria-hidden="true" className="xook-stitch-rim" />
                 <span aria-hidden="true" className="xook-stitch-pointer-rim" />
 
-                {/* Capa de recorte para los efectos de luz internos (los menús desplegables pueden sobresalir) */}
+                {/* Capa de recorte para el bisel interno de cristal (los menús desplegables pueden sobresalir) */}
                 <div className="xook-stitch-fx absolute inset-0 rounded-[inherit] overflow-hidden pointer-events-none">
-                  {/* Bruma luminosa interna en la esquina y borde izquierdo */}
                   <span aria-hidden="true" className="xook-stitch-bloom" />
-                  {/* Destello reactivo al puntero */}
+                  {/* Destello especular sutil reactivo al puntero */}
                   <span aria-hidden="true" className="xook-stitch-pointer-glow" />
-                  {/* Reflejo especular superior tenue */}
-                  <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-violet-200/12 via-white/[0.06] to-transparent" />
+                  {/* Filo especular superior de cristal pulido */}
+                  <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.08] to-transparent" />
                   {/* Barrido de luz de encendido */}
                   <span key={summonSeq} aria-hidden="true" className="console-sweep" />
                 </div>
@@ -8453,12 +8560,12 @@ export default function App() {
                       }}
                       disabled={isChatStreaming}
                       placeholder={chatInputPlaceholder}
-                      className="input-bubble w-full min-w-0 resize-none overflow-hidden bg-transparent text-sm sm:text-[15.5px] text-zinc-100 placeholder:text-zinc-500 focus:outline-none py-1 font-normal leading-relaxed disabled:opacity-50 select-text"
+                      className="input-bubble w-full min-w-0 resize-none overflow-hidden bg-transparent text-[15px] sm:text-[15.5px] text-zinc-100 placeholder:text-zinc-400/65 focus:outline-none py-1 font-normal leading-[1.55] disabled:opacity-50 select-text"
                     />
                   </div>
 
                   {/* Barra inferior unificada: adjuntar + modos + contexto a la izquierda · modelo + atajos + enviar a la derecha */}
-                  <div className="pt-1.5 flex items-center justify-between gap-1.5">
+                  <div className="pt-2 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-1 @[460px]:gap-1.5 min-w-0 shrink-0">
                       {/* Botón + para subir archivos o imágenes */}
                       <button
@@ -8611,28 +8718,24 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center gap-1 @[460px]:gap-1.5 min-w-0">
-                      <div className="hidden @[620px]:flex items-center gap-1 mr-0.5 shrink-0">
-                        {isTauriEnv && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              try {
-                                const { invoke } = await import("@tauri-apps/api/core");
-                                await invoke("toggle_quick_bar_cmd");
-                              } catch {
-                                // Ignore
-                              }
-                            }}
-                            title="Abrir Xox Quick Bar flotante (⌘⇧X)"
-                            className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 hover:text-zinc-200 bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] rounded transition-colors cursor-pointer"
-                          >
-                            ⌘⇧X
-                          </button>
-                        )}
-                        <kbd className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-500 bg-white/[0.03] border border-white/[0.06] rounded">
-                          ⌘K
-                        </kbd>
-                      </div>
+                      {isTauriEnv && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const { invoke } = await import("@tauri-apps/api/core");
+                              await invoke("toggle_quick_bar_cmd");
+                            } catch {
+                              // Ignore
+                            }
+                          }}
+                          aria-label="Abrir barra rápida flotante (⌘⇧X)"
+                          title="Abrir Xox Quick Bar flotante (⌘⇧X)"
+                          className="hidden @[620px]:inline-flex items-center justify-center h-8 px-2.5 text-[10.5px] font-mono text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.05] rounded-full transition-colors cursor-pointer shrink-0"
+                        >
+                          ⌘⇧X
+                        </button>
+                      )}
 
                       {/* Desplegable de modelos */}
                       <div ref={modelMenuRef} className="relative min-w-0">
@@ -8844,14 +8947,14 @@ export default function App() {
                             !inputPrompt.trim() && attachments.length === 0 && activeMode !== "compact"
                           }
                           aria-label="Enviar mensaje"
-                          className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
+                          className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-all ${
                             !inputPrompt.trim() && attachments.length === 0 && activeMode !== "compact"
-                              ? "quick-liquid-btn text-zinc-200/70 cursor-not-allowed"
+                              ? "xook-composer-send-idle text-zinc-500 cursor-not-allowed"
                               : "quick-liquid-btn-ready active:scale-95 cursor-pointer"
                           }`}
                           title="Enviar instrucción (Enter)"
                         >
-                          <Send className="w-3.5 h-3.5" />
+                          <ArrowUp className="w-4 h-4 stroke-[2.15]" />
                         </button>
                       )}
                     </div>
@@ -8864,29 +8967,31 @@ export default function App() {
         </section>
 
         {/* PANEL ESPACIO DE XOX (IDENTIDAD GLOBAL, VOZ, SKILLS EN BLOQUES Y PROMPT INICIAL) */}
-        {studioPresence.mounted && (
+        {studioMounted && (
           <div
             role={isCompactViewport ? "dialog" : undefined}
             aria-modal={isCompactViewport && showXoxStudio ? true : undefined}
             aria-label={isCompactViewport ? `Espacio de ${effectiveAgentName}` : undefined}
             aria-hidden={!showXoxStudio}
             inert={!showXoxStudio}
-            style={{ width: studioPresence.visible ? `${studioPanelWidth}px` : "0px" }}
+            style={{ width: `${studioPanelWidth}px` }}
             className={`sidebar-slot sidebar-studio-slot h-full flex flex-col min-h-0 shrink-0 bg-[#060709] overflow-hidden ${
-              isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
-            } ${
-              studioPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+              isCompactViewport
+                ? `xook-compact-drawer-surface is-right ${
+                    studioPresence.visible ? "opacity-100" : "is-closed opacity-0 pointer-events-none"
+                  }`
+                : ""
             }`}
           >
             <div
               data-xox-studio-inner
               style={{ width: `${studioPanelWidth}px` }}
-              className={`flex-1 h-full flex flex-col min-h-0 border-l border-white/[0.07] shrink-0 transition-[width] duration-300 ease-out ${
-                isMemoryWideStudio ? "p-1.5" : "p-2.5"
-              }`}
+              className={`flex-1 h-full flex flex-col min-h-0 border-l border-white/[0.07] shrink-0 ${
+                !isCompactViewport ? "xook-panel-enter-right" : ""
+              } ${isMemoryWideStudio ? "p-1.5" : "p-2.5"}`}
             >
               <XoxStudioPanel
-                visible={studioPresence.visible}
+                visible={isCompactViewport ? studioPresence.visible : true}
                 hideStar={xoxInFlight}
                 initialTab={xoxStudioTab}
                 onTabChange={(tab) => setXoxStudioTab(tab)}
@@ -8977,23 +9082,27 @@ export default function App() {
         )}
 
         {/* PANEL CANVAS INTERACTIVO ESTILO GEMINI (TABLAS COMPARATIVAS Y DATOS) */}
-        {canvasPresence.mounted && activeCanvas && (
+        {canvasMounted && activeCanvas && (
           <div
             role={isCompactViewport ? "dialog" : undefined}
             aria-modal={isCompactViewport && showCanvas ? true : undefined}
             aria-label={isCompactViewport ? "Canvas interactivo" : undefined}
             aria-hidden={!showCanvas}
             inert={!showCanvas}
-            style={{ width: canvasPresence.visible ? `${canvasPanelWidth}px` : "0px" }}
+            style={{ width: `${canvasPanelWidth}px` }}
             className={`sidebar-slot shrink-0 bg-[#060709] overflow-hidden ${
-              isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
-            } ${
-              canvasPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+              isCompactViewport
+                ? `xook-compact-drawer-surface is-right ${
+                    canvasPresence.visible ? "opacity-100" : "is-closed opacity-0 pointer-events-none"
+                  }`
+                : ""
             }`}
           >
             <div
               style={{ width: `${canvasPanelWidth}px` }}
-              className="h-full border-l border-white/[0.07] p-2.5 shrink-0"
+              className={`h-full border-l border-white/[0.07] p-2.5 shrink-0 ${
+                !isCompactViewport ? "xook-panel-enter-right" : ""
+              }`}
             >
               <CanvasPanel
                 canvas={activeCanvas}
@@ -9008,7 +9117,7 @@ export default function App() {
                     : undefined;
                 })()}
                 onSelectSiblingCanvas={handleOpenCanvas}
-                visible={canvasPresence.visible}
+                visible={isCompactViewport ? canvasPresence.visible : true}
                 expanded={canvasExpanded}
                 onToggleExpand={() => setCanvasExpanded((v) => !v)}
                 onUpdateCanvas={handleUpdateCanvas}
@@ -9025,23 +9134,27 @@ export default function App() {
         )}
 
         {/* PANEL DEDICADO DEL VISOR Y EDITOR DE DOCUMENTOS (INDEPENDIENTE DE TAREAS) */}
-        {docViewerPresence.mounted && (pdfPanelState || pdfDraftProgress) && (
+        {docViewerMounted && (pdfPanelState || pdfDraftProgress) && (
           <div
             role={isCompactViewport ? "dialog" : undefined}
             aria-modal={isCompactViewport && showDocViewer ? true : undefined}
             aria-label={isCompactViewport ? "Visor de documentos" : undefined}
             aria-hidden={!showDocViewer}
             inert={!showDocViewer}
-            style={{ width: docViewerPresence.visible ? `${docViewerPanelWidth}px` : "0px" }}
+            style={{ width: `${docViewerPanelWidth}px` }}
             className={`sidebar-slot shrink-0 bg-[#060709] overflow-hidden ${
-              isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
-            } ${
-              docViewerPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
+              isCompactViewport
+                ? `xook-compact-drawer-surface is-right ${
+                    docViewerPresence.visible ? "opacity-100" : "is-closed opacity-0 pointer-events-none"
+                  }`
+                : ""
             }`}
           >
             <div
               style={{ width: `${docViewerPanelWidth}px` }}
-              className="h-full border-l border-white/[0.07] p-2.5 shrink-0"
+              className={`h-full border-l border-white/[0.07] p-2.5 shrink-0 ${
+                !isCompactViewport ? "xook-panel-enter-right" : ""
+              }`}
             >
               <PdfWorkspacePanel
               state={pdfPanelState}
@@ -9164,7 +9277,7 @@ export default function App() {
         {/* ========================================================================= */}
         {/* COLUMNA 3: TAREAS Y DECISIONES DEL LADO DERECHO (EXCLUSIVA PARA TAREAS)   */}
         {/* ========================================================================= */}
-        {rightPresence.mounted && (
+        {rightMounted && (
           <>
             {/* Separador redimensionable derecho (Splitter Aurora de Vidrio) */}
             {!isCompactViewport && (
@@ -9176,10 +9289,7 @@ export default function App() {
                   setIsResizingRight(true);
                 }}
                 onDoubleClick={() => setRightWidth(340)}
-                style={!rightPresence.visible ? { width: "0px" } : undefined}
-                className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""} ${
-                  rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"
-                }`}
+                className={`splitter-aurora-glass ${isResizingRight ? "is-resizing" : ""}`}
               >
                 {/* Zona de captura ampliada invisible para fácil arrastre */}
                 <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize" />
@@ -9192,14 +9302,20 @@ export default function App() {
               aria-label={isCompactViewport ? "Panel de tareas y decisiones" : undefined}
               aria-hidden={!showRightSidebar}
               inert={!showRightSidebar}
-              style={{ width: rightPresence.visible ? `${effectiveRightWidth}px` : "0px" }}
+              style={{ width: `${effectiveRightWidth}px` }}
               className={`sidebar-slot flex flex-col shrink-0 overflow-hidden bg-[#08090d] ${
-                isCompactViewport ? "xook-compact-drawer-surface is-right" : ""
-              } ${
-                isResizingRight ? "is-resizing" : ""
-              } ${rightPresence.visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+                isCompactViewport
+                  ? `xook-compact-drawer-surface is-right ${
+                      rightPresence.visible ? "opacity-100" : "is-closed opacity-0 pointer-events-none"
+                    }`
+                  : ""
+              } ${isResizingRight ? "is-resizing" : ""}`}
             >
-              <div className="flex-1 min-h-0 flex">
+              <div
+                className={`flex-1 min-h-0 flex ${
+                  !isCompactViewport ? "xook-panel-enter-right" : ""
+                }`}
+              >
                 <TaskDecisionsPanel
                   width={effectiveRightWidth}
                   tasks={tasks}
@@ -9326,7 +9442,6 @@ export default function App() {
           onComplete={(flightId) => {
             setXoxFlight((curr) => (curr && curr.id === flightId ? null : curr));
             setXoxTravelPhase("idle");
-            setXoxExitingStage(false);
           }}
         />
       )}

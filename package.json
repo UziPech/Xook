@@ -13,6 +13,7 @@
     "tauri": "tauri",
     "typecheck": "tsc --noEmit && npm run typecheck --workspaces --if-present",
     "test:packages": "npm run test --workspaces --if-present",
+    "test:ui": "node --test \"src-ui/**/*.test.ts\"",
     "test:brain": "src-brain/.venv/bin/python3 -m unittest discover -s src-brain/slices -t src-brain -p '*_tests.py' -v",
     "agent:inspect": "node packages/agent-inspector/src/cli.ts",
     "clean:rust": "cargo clean --manifest-path src-tauri/Cargo.toml",
