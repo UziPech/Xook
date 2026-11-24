@@ -131,6 +131,8 @@ export type TaskBlock =
 export type ActionIntentType =
   | "stock_reorder"
   | "schedule_event"
+  /** Pendiente que Xox hará solo a la hora indicada; lo crea Rust al aprobar (`slices/encargos`). */
+  | "schedule_encargo"
   | "start_timer"
   | "save_note"
   | "apply_rule"

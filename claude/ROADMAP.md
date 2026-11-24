@@ -26,6 +26,8 @@ Cada tipo de acción tiene un nivel máximo permitido (`locked` como techo, idea
 
 Las mutaciones destructivas, de dinero o hacia fuera del equipo nunca pasan del nivel 2.
 
+Excepción (2026-11-23): un **encargo** puede dar el último clic hacia fuera (Entregar, Enviar) si el usuario lo dejó dicho en la instrucción, con un permiso acotado a ese encargo y verificación previa. Ver [diseno-encargos.md](diseno-encargos.md).
+
 ---
 
 ## Fase 0 — Cimientos
@@ -82,6 +84,13 @@ Criterio de salida: un eval de recuerdo (preguntas sobre hechos de hace 2+ seman
 
 Entregables:
 
+- [x] **Pendientes** (en el código, "encargos") *(2026-11-23, diseño en [diseno-encargos.md](diseno-encargos.md); construido y con tests, falta probarlo en la app con Teams)*. Son instrucciones con hora que Xox ejecuta solo, usando otras apps y generando archivos, y que avisan al terminar con un informe. Es el primer disparador de tiempo de punta a punta.
+  - Xox los programa con `encargo_schedule` y se crean al aprobar la tarjeta.
+  - El programador los ejecuta con un permiso acotado: una app, el último clic solo si se pidió y solo después de mirar la pantalla.
+  - Ensaya 10 minutos antes, mantiene la Mac despierta y marca como perdidos los que no alcanzó.
+  - Aprende la ruta en cada app.
+  - La columna Pendientes reemplaza las pestañas Por aceptar, Agenda y Hechas.
+  - Deuda: control de otras apps en Windows y Linux, y evals con árboles grabados. Más adelante: avisos por WhatsApp.
 - [ ] Motor de disparadores sobre `slices/scheduler` y `slices/screen_context`: tiempo (cron), archivos (`notify`), calendario/notas y contexto de pantalla deduplicado.
 - [ ] **Triage barato:** cada disparador pasa por un modelo pequeño (configurable: uno local, o uno barato vía API) que decide entre "ignorar", "sugerir" o "preparar" antes de despertar al modelo principal.
 - [ ] **Bandeja de sugerencias** en la UI: tarjetas con aceptar / posponer / "no vuelvas a sugerir esto". Cada respuesta del usuario alimenta la memoria de decisiones.

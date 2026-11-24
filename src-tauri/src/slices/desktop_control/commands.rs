@@ -37,6 +37,8 @@ pub struct PreparedDesktopAction {
     pub press_enter: bool,
     pub headed: bool,
     pub coord_xy: Option<(f64, f64)>,
+    /// Botón o tecla de compromiso (Entregar, Enviar…) que toca esta acción, si lo hay.
+    pub commit_phrase: Option<String>,
 }
 
 pub struct DesktopActionParams<'a> {
@@ -117,6 +119,13 @@ fn window_info_from_ref(entry: &RefEntry) -> DesktopWindowInfo {
 
 /// Valida argumentos, resuelve la ref o ventana y determina el riesgo HITL exacto
 /// ANTES de mostrar la tarjeta de permiso al usuario.
+/// Botón de compromiso de la lista base o de la lista personal del usuario.
+fn detect_commit_target<R: Runtime>(app: &AppHandle<R>, name: &str, description: &str) -> Option<String> {
+    detect_high_risk_ui_target(name, description)
+        .map(str::to_string)
+        .or_else(|| super::user_risk::matching_phrase(&super::user_risk::load(app), name, description))
+}
+
 pub fn prepare_desktop_action<R: Runtime>(
     app: &AppHandle<R>,
     params: DesktopActionParams<'_>,
@@ -152,6 +161,7 @@ pub fn prepare_desktop_action<R: Runtime>(
             press_enter: false,
             headed: false,
             coord_xy: None,
+            commit_phrase: None,
         });
     }
 
@@ -230,6 +240,7 @@ pub fn prepare_desktop_action<R: Runtime>(
             press_enter: false,
             headed: true,
             coord_xy: None,
+            commit_phrase: is_commit.then(|| "enviar".to_string()),
         });
     }
 
@@ -279,9 +290,12 @@ pub fn prepare_desktop_action<R: Runtime>(
         let short_v: String = text.chars().take(120).collect();
         let high_risk_target = ref_entry
             .as_ref()
-            .and_then(|e| detect_high_risk_ui_target(&e.name, &e.description));
+            .and_then(|e| detect_commit_target(app, &e.name, &e.description));
         let uses_coords = ref_entry.is_none() && params.coord_xy.is_some();
         let force_ask = params.press_enter || high_risk_target.is_some() || uses_coords;
+        let commit_phrase = high_risk_target
+            .clone()
+            .or_else(|| params.press_enter.then(|| "enviar".to_string()));
         let capability_key =
             desktop_app_capability_key(&target_window.bundle_id, &target_window.app_name);
         let verb = if params.press_enter {
@@ -320,6 +334,7 @@ pub fn prepare_desktop_action<R: Runtime>(
             press_enter: params.press_enter,
             headed: true,
             coord_xy: if uses_coords { params.coord_xy } else { None },
+            commit_phrase,
         });
     }
 
@@ -352,6 +367,7 @@ pub fn prepare_desktop_action<R: Runtime>(
                 press_enter: false,
                 headed: true,
                 coord_xy: Some((x, y)),
+                commit_phrase: None,
             });
         }
     }
@@ -375,7 +391,7 @@ pub fn prepare_desktop_action<R: Runtime>(
     }
 
     let high_risk_match = if matches!(op, DesktopOperation::Click | DesktopOperation::SetValue) {
-        detect_high_risk_ui_target(&entry.name, &entry.description)
+        detect_commit_target(app, &entry.name, &entry.description)
     } else {
         None
     };
@@ -412,7 +428,7 @@ pub fn prepare_desktop_action<R: Runtime>(
         let short_v: String = v.chars().take(80).collect();
         preview.push_str(&format!("\nTexto: \"{short_v}\""));
     }
-    if let Some(flag) = high_risk_match {
+    if let Some(ref flag) = high_risk_match {
         preview.push_str(&format!(
             "\nConfirmación obligatoria: acción sensible detectada ('{flag}')."
         ));
@@ -433,6 +449,7 @@ pub fn prepare_desktop_action<R: Runtime>(
         press_enter: false,
         headed: params.headed,
         coord_xy: None,
+        commit_phrase: high_risk_match,
     })
 }
 

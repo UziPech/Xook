@@ -82,6 +82,7 @@ TOOLKIT_SPECS: Dict[str, Dict[str, Any]] = {
             "desktop_snapshot",
             "desktop_find",
             "desktop_act",
+            "desktop_mark_risky_button",
             "list_desktop_apps",
             "open_desktop_app",
             "query_screen_memory",
@@ -162,6 +163,20 @@ TOOLKIT_SPECS: Dict[str, Dict[str, Any]] = {
             "revision", "auditoria", "limpia", "limpiar", "limpieza", "basura", "temporales",
             "borra", "borrar", "elimina", "eliminar", "papelera", "programa", "programar",
             "recurrente", "automatiza", "automatizacion", "blueprint", "reestructura",
+        },
+    },
+    "pendientes": {
+        "label": "Pendientes que Xox hace solo a una hora indicada",
+        "risk": "write_protected_hitl",
+        "tools": {
+            "encargo_schedule",
+            "encargo_read",
+        },
+        "keywords": {
+            "a las", "entrega", "entregar", "entregala", "entregalo", "entregame", "sube", "subir",
+            "subelo", "subela", "manda", "mandalo", "pendiente", "pendientes", "manana", "hoy a",
+            "esta tarde", "esta noche", "teams", "classroom", "moodle", "programa", "programalo",
+            "cuando sea hora",
         },
     },
     "skills_profile": {

@@ -45,6 +45,7 @@ import {
 } from "../workspace-store/workspaceApi";
 import type { LocalUserProfile } from "../workspace-store/localStore";
 import { WorkspacePermissionsSection } from "../workspace-store/WorkspacePermissionsSection";
+import { RiskyButtonsSection } from "../encargos/RiskyButtonsSection";
 import {
   deleteTtsModels,
   downloadTtsModels,
@@ -1164,6 +1165,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   activeWorkspaceId={activeWorkspaceId}
                   onStatusNotice={onStatusNotice}
                 />
+
+                <RiskyButtonsSection onStatusNotice={onStatusNotice} />
 
                 {onOpenXoxStudio && (
                   <section className="xook-obsidian-surface rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">

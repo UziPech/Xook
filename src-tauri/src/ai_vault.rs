@@ -269,6 +269,9 @@ pub struct XoxChatRequest {
     pub model_context_window: Option<u64>,
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Solo lo llena el ejecutor de pendientes (`slices/encargos/runner.rs`), nunca la interfaz.
+    #[serde(default, skip_deserializing)]
+    pub encargo_run: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1954,7 +1957,7 @@ fn handle_open_app_rpc_callback<R: Runtime>(
         .or_else(|| resolve_active_workspace_root(app));
     let conn = root.as_deref().and_then(|r| open_workspace_db(r).ok());
 
-    let eval = if let Some(ref ws_root) = root {
+    let mut eval = if let Some(ref ws_root) = root {
         evaluate_app_launch(
             ws_root,
             target_app.bundle_id.as_deref(),
@@ -1975,6 +1978,15 @@ fn handle_open_app_rpc_callback<R: Runtime>(
             &target_app.fs_name,
         )
     };
+    // Un pendiente en ejecución solo abre su app, sin preguntar; lo negado en las reglas sigue negado.
+    if let Some(sid) = stream_id.as_deref() {
+        use crate::slices::encargos::grant::{GrantVerdict, check_open_app};
+        match check_open_app(sid, &target_app.display_name, chrono::Utc::now().timestamp_millis()) {
+            Some(GrantVerdict::Deny(reason)) => eval.verdict = PolicyVerdict::Deny(reason),
+            Some(_) if matches!(eval.verdict, PolicyVerdict::Ask) => eval.verdict = PolicyVerdict::Allow,
+            _ => {}
+        }
+    }
 
     let cmd_id = format!("{request_id}_{}", chrono::Utc::now().timestamp_millis());
 
@@ -2230,6 +2242,8 @@ struct CapabilityActionSpec {
     rule_description: std::borrow::Cow<'static, str>,
     detail_preview: Option<String>,
     force_ask_once: bool,
+    /// Decisión del permiso de un pendiente en ejecución (`slices/encargos/grant.rs`).
+    encargo_verdict: Option<crate::slices::encargos::grant::GrantVerdict>,
 }
 
 fn execute_and_record_capability_action<R, F>(
@@ -2440,6 +2454,21 @@ where
         eval.allow_always_allowed = false;
         if matches!(eval.verdict, PolicyVerdict::Allow) {
             eval.verdict = PolicyVerdict::Ask;
+        }
+    }
+
+    // Un pendiente en ejecución no tiene a nadie mirando: su permiso decide en lugar de preguntar.
+    // Lo que el usuario negó en sus reglas sigue negado.
+    {
+        use crate::slices::encargos::grant::GrantVerdict;
+        match spec.encargo_verdict.as_ref() {
+            Some(GrantVerdict::Allow | GrantVerdict::AllowFinal) => {
+                if matches!(eval.verdict, PolicyVerdict::Ask) {
+                    eval.verdict = PolicyVerdict::Allow;
+                }
+            }
+            Some(GrantVerdict::Deny(reason)) => eval.verdict = PolicyVerdict::Deny(reason.clone()),
+            None => {}
         }
     }
 
@@ -3426,6 +3455,7 @@ fn handle_notes_list_rpc_callback<R: Runtime>(
             Some(preview_parts.join(" · "))
         },
         force_ask_once: false,
+        encargo_verdict: None,
     };
 
     run_capability_gated_action(app, parsed, fallback_workspace_root, spec, move || {
@@ -3493,6 +3523,7 @@ fn handle_notes_create_rpc_callback<R: Runtime>(
         rule_description: "Crear notas en Notas de Mac".into(),
         detail_preview: Some(preview),
         force_ask_once: false,
+        encargo_verdict: None,
     };
 
     run_capability_gated_action(app, parsed, fallback_workspace_root, spec, move || {
@@ -3562,6 +3593,7 @@ fn handle_calendar_list_rpc_callback<R: Runtime>(
         rule_description: "Consultar eventos en Calendario de Mac".into(),
         detail_preview: Some(preview),
         force_ask_once: false,
+        encargo_verdict: None,
     };
 
     run_capability_gated_action(app, parsed, fallback_workspace_root, spec, move || {
@@ -3669,6 +3701,7 @@ fn handle_calendar_create_rpc_callback<R: Runtime>(
         rule_description: "Crear eventos en Calendario de Mac".into(),
         detail_preview: Some(preview),
         force_ask_once: false,
+        encargo_verdict: None,
     };
 
     run_capability_gated_action(app, parsed, fallback_workspace_root, spec, move || {
@@ -3708,6 +3741,28 @@ fn handle_desktop_list_windows_rpc_callback(parsed: &serde_json::Value) -> serde
     serde_json::to_value(&out).unwrap_or_else(|e| {
         serde_json::json!({ "ok": false, "error": e.to_string() })
     })
+}
+
+/// Xox solo puede agregar botones a la lista personal de riesgo; quitarlos es cosa del usuario.
+fn handle_mark_risky_button_rpc<R: Runtime>(
+    app: &AppHandle<R>,
+    parsed: &serde_json::Value,
+) -> serde_json::Value {
+    let label = parsed.get("label").and_then(|v| v.as_str()).unwrap_or("");
+    match crate::slices::desktop_control::user_risk::add(app, label) {
+        Ok((phrase, added)) => serde_json::json!({ "ok": true, "phrase": phrase, "added": added }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
+}
+
+/// Un pendiente solo puede dar su último clic después de mirar la pantalla (`encargos::grant`).
+fn note_encargo_observation(parsed: &serde_json::Value, result: &serde_json::Value) {
+    if result.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return;
+    }
+    if let Some(sid) = parsed.get("stream_id").and_then(|v| v.as_str()) {
+        crate::slices::encargos::grant::note_observation(sid, chrono::Utc::now().timestamp_millis());
+    }
 }
 
 fn handle_desktop_snapshot_rpc_callback<R: Runtime>(
@@ -3750,9 +3805,11 @@ fn handle_desktop_snapshot_rpc_callback<R: Runtime>(
     };
 
     let out = snapshot_for_agent(app, &opts);
-    serde_json::to_value(&out).unwrap_or_else(|e| {
+    let val = serde_json::to_value(&out).unwrap_or_else(|e| {
         serde_json::json!({ "ok": false, "error": e.to_string() })
-    })
+    });
+    note_encargo_observation(parsed, &val);
+    val
 }
 
 fn handle_desktop_find_rpc_callback<R: Runtime>(
@@ -3807,9 +3864,11 @@ fn handle_desktop_find_rpc_callback<R: Runtime>(
     };
 
     let out = find_for_agent(app, &opts);
-    serde_json::to_value(&out).unwrap_or_else(|e| {
+    let val = serde_json::to_value(&out).unwrap_or_else(|e| {
         serde_json::json!({ "ok": false, "error": e.to_string() })
-    })
+    });
+    note_encargo_observation(parsed, &val);
+    val
 }
 
 fn handle_desktop_act_rpc_callback<R: Runtime>(
@@ -3910,6 +3969,23 @@ fn handle_desktop_act_rpc_callback<R: Runtime>(
 
     let target_app_name = prepared.target_window.app_name.clone();
     let target_bundle_id = prepared.target_window.bundle_id.clone();
+    let encargo_stream = parsed
+        .get("stream_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let encargo_verdict = encargo_stream.as_deref().and_then(|sid| {
+        crate::slices::encargos::grant::check_action(
+            sid,
+            &target_app_name,
+            prepared.commit_phrase.as_deref(),
+            prepared.ref_entry.is_none() && prepared.coord_xy.is_some(),
+            chrono::Utc::now().timestamp_millis(),
+        )
+    });
+    let is_final_click = matches!(
+        encargo_verdict,
+        Some(crate::slices::encargos::grant::GrantVerdict::AllowFinal)
+    );
     let kind = match prepared.op {
         DesktopOperation::FocusWindow => "desktop_ui_focus",
         DesktopOperation::TypeText | DesktopOperation::PressKey => "desktop_ui_type",
@@ -3932,10 +4008,16 @@ fn handle_desktop_act_rpc_callback<R: Runtime>(
         rule_description: rule_desc.into(),
         detail_preview: Some(prepared.detail_preview.clone()),
         force_ask_once: prepared.force_ask_once,
+        encargo_verdict: encargo_verdict.clone(),
     };
 
     let result = run_capability_gated_action(app, parsed, fallback_workspace_root, spec, move || {
         let out = execute_prepared_desktop_action(&prepared);
+        if !out.ok && is_final_click {
+            if let Some(ref sid) = encargo_stream {
+                crate::slices::encargos::grant::release_final(sid);
+            }
+        }
         let val = serde_json::to_value(&out).map_err(|e| e.to_string())?;
         if out.ok {
             Ok((val, out.summary))
@@ -4612,6 +4694,7 @@ fn call_python_sidecar_streaming<R: Runtime>(
                 "desktop_snapshot" => Some(handle_desktop_snapshot_rpc_callback(app, &parsed)),
                 "desktop_find" => Some(handle_desktop_find_rpc_callback(app, &parsed)),
                 "desktop_act" => Some(handle_desktop_act_rpc_callback(app, &parsed, ws_ref)),
+                "mark_risky_button" => Some(handle_mark_risky_button_rpc(app, &parsed)),
                 "query_screen_memory" => {
                     Some(handle_query_screen_memory_rpc_callback(app, &parsed, ws_ref))
                 }
@@ -4812,6 +4895,7 @@ pub async fn run_xox_chat_stream<R: Runtime>(
                 "context_checkpoint": payload.context_checkpoint,
                 "model_context_window": payload.model_context_window,
                 "session_id": payload.session_id,
+                "encargo_run": payload.encargo_run,
                 "unified_memory": {
                     "facts": facts,
                     "screen_summary": screen_summary,

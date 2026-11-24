@@ -191,6 +191,44 @@ CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts USING fts5(
 );
 "#;
 
+// Pendientes que Xox hace solo a la hora indicada (en el código, "encargos").
+// Diseño: claude/diseno-encargos.md.
+const MIGRATION_V3_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS encargos (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    instruction TEXT NOT NULL,
+    steps_json TEXT NOT NULL DEFAULT '[]',
+    files_json TEXT NOT NULL DEFAULT '[]',
+    folder TEXT NOT NULL,
+    next_run_at TEXT,
+    recurrence TEXT,
+    target_app TEXT,
+    may_finish INTEGER NOT NULL DEFAULT 0,
+    final_action TEXT,
+    status TEXT NOT NULL DEFAULT 'programado',
+    source_card_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_encargos_status_next_run
+    ON encargos (status, next_run_at);
+
+CREATE TABLE IF NOT EXISTS encargo_runs (
+    id TEXT PRIMARY KEY,
+    encargo_id TEXT NOT NULL REFERENCES encargos(id) ON DELETE CASCADE,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    outcome TEXT,
+    report_path TEXT,
+    steps_json TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE INDEX IF NOT EXISTS idx_encargo_runs_encargo
+    ON encargo_runs (encargo_id, started_at DESC);
+"#;
+
 pub fn db_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join(".xook").join("xook.db")
 }
@@ -258,6 +296,21 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<(), String> {
             .map_err(|e| format!("Error confirmando migración v2: {e}"))?;
     }
 
+    if current_version < 3 {
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Error iniciando transacción de migración v3: {e}"))?;
+        tx.execute_batch(MIGRATION_V3_SQL)
+            .map_err(|e| format!("Error aplicando migración v3: {e}"))?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![3i64, Utc::now().to_rfc3339()],
+        )
+        .map_err(|e| format!("Error registrando migración v3: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("Error confirmando migración v3: {e}"))?;
+    }
+
     Ok(())
 }
 
@@ -303,6 +356,8 @@ mod tests {
                 "agent_memory_items",
                 "command_executions",
                 "decision_history",
+                "encargo_runs",
+                "encargos",
                 "inventory_items",
                 "review_runs",
                 "schema_migrations",
@@ -318,7 +373,7 @@ mod tests {
         let count: i64 = conn2
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 2);
+        assert_eq!(count, 3);
 
         let fk: i64 = conn2
             .query_row("PRAGMA foreign_keys;", [], |r| r.get(0))

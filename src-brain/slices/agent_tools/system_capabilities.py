@@ -16,7 +16,9 @@ from typing import Any, Dict, FrozenSet, List, Sequence, Set
 # Capacidad -> herramientas que la necesitan (slice de Rust que la implementa).
 CAPABILITY_TOOLS: Dict[str, FrozenSet[str]] = {
     # Accesibilidad + CGEvent (`desktop_control`, `window_assist`).
-    "desktop_control": frozenset({"desktop_list_windows", "desktop_snapshot", "desktop_find", "desktop_act"}),
+    "desktop_control": frozenset(
+        {"desktop_list_windows", "desktop_snapshot", "desktop_find", "desktop_act", "desktop_mark_risky_button"}
+    ),
     # Búsqueda y apertura de apps instaladas (`app_launcher`).
     "app_launcher": frozenset({"list_desktop_apps", "open_desktop_app"}),
     # Lectura de pantalla con helper nativo (`screen_context`).

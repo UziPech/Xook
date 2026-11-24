@@ -309,6 +309,7 @@ def handle_rpc_request(request_line):
                 context_checkpoint=params.get("context_checkpoint"),
                 model_context_window=params.get("model_context_window"),
                 session_id=params.get("session_id"),
+                encargo_run=params.get("encargo_run"),
             )
         elif method == "test_ai_key":
             prov = str(params.get("provider") or "openrouter")
