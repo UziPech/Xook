@@ -42,7 +42,7 @@ pub struct AutomationTickSummary {
     pub should_run_scheduled_review: bool,
 }
 
-fn compute_next_run_iso(current: DateTime<Utc>, rule_hint: Option<&str>) -> Option<String> {
+pub(crate) fn compute_next_run_iso(current: DateTime<Utc>, rule_hint: Option<&str>) -> Option<String> {
     let lower = rule_hint.unwrap_or("").trim().to_ascii_lowercase();
     if lower.is_empty() || lower == "una vez" || lower == "unico" || lower == "único" {
         return None;
@@ -279,6 +279,7 @@ pub fn start_background_automation<R: Runtime>(app: AppHandle<R>) {
                 let Ok(mut conn) = open_workspace_db(&root) else {
                     return;
                 };
+                crate::slices::encargos::runner::tick(&app_clone, &root, &conn, Utc::now());
                 let Ok(summary) = advance_due_agenda_and_timers(&mut conn, Utc::now()) else {
                     return;
                 };

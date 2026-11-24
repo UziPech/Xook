@@ -7,6 +7,10 @@ mod workspace_store;
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(quick_summon::SummonState::default())
         .manage(slices::command_runner::runner::CommandPermissionBroker::default())
         .manage(slices::screen_context::watcher::ScreenContextState::default())
@@ -56,6 +60,11 @@ pub fn run() {
             slices::task_ledger::commands::update_task_proposal,
             slices::task_ledger::commands::decide_task_hitl,
             slices::encargos::commands::list_encargos,
+            slices::encargos::commands::run_encargo_now,
+            slices::encargos::commands::remove_encargo,
+            slices::encargos::commands::read_encargo_report,
+            slices::desktop_control::user_risk::list_risky_buttons,
+            slices::desktop_control::user_risk::remove_risky_button,
             slices::task_ledger::commands::list_agenda_items,
             slices::task_ledger::commands::upsert_agenda_item,
             slices::task_ledger::commands::toggle_timer_state,

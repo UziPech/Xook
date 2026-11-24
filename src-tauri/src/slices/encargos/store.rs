@@ -438,21 +438,213 @@ fn row_to_encargo(row: &Row<'_>) -> rusqlite::Result<EncargoDto> {
     })
 }
 
-/// Encargos ordenados por la hora de su próxima ejecución.
-pub fn list_encargos(conn: &Connection) -> Result<Vec<EncargoDto>, String> {
+const SELECT_ENCARGO: &str =
+    "SELECT id, name, instruction, steps_json, files_json, folder, next_run_at, recurrence,
+            target_app, may_finish, final_action, status, source_card_id, created_at, updated_at
+     FROM encargos";
+
+fn query_encargos(
+    conn: &Connection,
+    filter: &str,
+    args: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<EncargoDto>, String> {
+    let sql = format!("{SELECT_ENCARGO} {filter}");
     let mut stmt = conn
-        .prepare(
-            "SELECT id, name, instruction, steps_json, files_json, folder, next_run_at, recurrence,
-                    target_app, may_finish, final_action, status, source_card_id, created_at, updated_at
-             FROM encargos
-             ORDER BY next_run_at IS NULL, next_run_at ASC",
-        )
+        .prepare(&sql)
         .map_err(|e| format!("Error consultando pendientes: {e}"))?;
     let rows = stmt
-        .query_map([], row_to_encargo)
+        .query_map(args, row_to_encargo)
         .map_err(|e| format!("Error leyendo pendientes: {e}"))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Error leyendo pendientes: {e}"))
+}
+
+/// Encargos ordenados por la hora de su próxima ejecución.
+pub fn list_encargos(conn: &Connection) -> Result<Vec<EncargoDto>, String> {
+    query_encargos(conn, "ORDER BY next_run_at IS NULL, next_run_at ASC", &[])
+}
+
+/// Encargos programados cuya hora ya llegó. Las horas se guardan en UTC y RFC 3339,
+/// así que se pueden comparar como texto.
+pub fn due_encargos(conn: &Connection, now: DateTime<Utc>) -> Result<Vec<EncargoDto>, String> {
+    query_encargos(
+        conn,
+        "WHERE status = 'programado' AND next_run_at IS NOT NULL AND next_run_at <= ?1
+         ORDER BY next_run_at ASC",
+        &[&now.to_rfc3339()],
+    )
+}
+
+/// Encargos programados para dentro del intervalo `(from, to]`.
+pub fn scheduled_between(
+    conn: &Connection,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<EncargoDto>, String> {
+    query_encargos(
+        conn,
+        "WHERE status = 'programado' AND next_run_at > ?1 AND next_run_at <= ?2
+         ORDER BY next_run_at ASC",
+        &[&from.to_rfc3339(), &to.to_rfc3339()],
+    )
+}
+
+/// La hora del próximo encargo programado que usa otra app, si cae dentro de `window`.
+pub fn next_desktop_run_within(
+    conn: &Connection,
+    now: DateTime<Utc>,
+    window: ChronoDuration,
+) -> Option<DateTime<Utc>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT MIN(next_run_at) FROM encargos
+             WHERE status = 'programado' AND target_app IS NOT NULL
+               AND next_run_at > ?1 AND next_run_at <= ?2",
+            params![now.to_rfc3339(), (now + window).to_rfc3339()],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+    raw.and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+pub fn has_scheduled(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM encargos WHERE status = 'programado')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
+}
+
+pub fn set_status(
+    conn: &Connection,
+    id: &str,
+    status: &str,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE encargos SET status = ?2, updated_at = ?3 WHERE id = ?1",
+        params![id, status, now.to_rfc3339()],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("No se pudo actualizar el pendiente: {e}"))
+}
+
+/// Ejecuciones que quedaron a medias (la app se cerró mientras corrían).
+pub fn close_interrupted(conn: &Connection, now: DateTime<Utc>) -> usize {
+    let now_iso = now.to_rfc3339();
+    let _ = conn.execute(
+        "UPDATE encargo_runs SET finished_at = ?1, outcome = 'detenido'
+         WHERE finished_at IS NULL",
+        params![now_iso],
+    );
+    conn.execute(
+        "UPDATE encargos SET status = 'detenido', updated_at = ?1 WHERE status = 'en_curso'",
+        params![now_iso],
+    )
+    .unwrap_or(0)
+}
+
+pub fn start_run(
+    conn: &Connection,
+    encargo_id: &str,
+    now: DateTime<Utc>,
+) -> Result<String, String> {
+    let run_id = format!("run_{}_{encargo_id}", now.timestamp_millis());
+    conn.execute(
+        "INSERT INTO encargo_runs (id, encargo_id, started_at) VALUES (?1, ?2, ?3)",
+        params![run_id, encargo_id, now.to_rfc3339()],
+    )
+    .map_err(|e| format!("No se pudo registrar la ejecución: {e}"))?;
+    set_status(conn, encargo_id, "en_curso", now)?;
+    Ok(run_id)
+}
+
+/// Cierra la ejecución y deja el encargo listo para la próxima vez (si se repite) o con su resultado.
+pub fn finish_run(
+    conn: &Connection,
+    encargo: &EncargoDto,
+    run_id: &str,
+    outcome: &str,
+    report_path: Option<&str>,
+    steps: &[String],
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE encargo_runs SET finished_at = ?2, outcome = ?3, report_path = ?4, steps_json = ?5
+         WHERE id = ?1",
+        params![
+            run_id,
+            now.to_rfc3339(),
+            outcome,
+            report_path,
+            serde_json::to_string(steps).unwrap_or_else(|_| "[]".to_string()),
+        ],
+    )
+    .map_err(|e| format!("No se pudo cerrar la ejecución: {e}"))?;
+
+    let next = encargo.recurrence.as_deref().and_then(|rule| {
+        let mut at = encargo
+            .next_run_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or(now);
+        for _ in 0..400 {
+            at = crate::slices::scheduler::compute_next_run_iso(at, Some(rule))
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())?
+                .with_timezone(&Utc);
+            if at > now {
+                return Some(at);
+            }
+        }
+        None
+    });
+    match next {
+        Some(at) => conn
+            .execute(
+                "UPDATE encargos SET status = 'programado', next_run_at = ?2, updated_at = ?3
+                 WHERE id = ?1",
+                params![encargo.id, at.to_rfc3339(), now.to_rfc3339()],
+            )
+            .map(|_| ())
+            .map_err(|e| format!("No se pudo reprogramar el pendiente: {e}")),
+        None => set_status(conn, &encargo.id, outcome, now),
+    }
+}
+
+/// "Hacerlo ahora" para un pendiente perdido o detenido: el programador lo toma en su siguiente vuelta.
+pub fn schedule_now(conn: &Connection, id: &str, now: DateTime<Utc>) -> Result<bool, String> {
+    conn.execute(
+        "UPDATE encargos SET status = 'programado', next_run_at = ?2, updated_at = ?2
+         WHERE id = ?1 AND status IN ('perdido', 'detenido', 'hecho')",
+        params![id, now.to_rfc3339()],
+    )
+    .map(|n| n > 0)
+    .map_err(|e| format!("No se pudo reprogramar el pendiente: {e}"))
+}
+
+/// Quita el pendiente y su historial. La carpeta se conserva: son archivos del usuario.
+pub fn delete_encargo(conn: &Connection, id: &str) -> Result<bool, String> {
+    conn.execute(
+        "DELETE FROM encargos WHERE id = ?1 AND status != 'en_curso'",
+        params![id],
+    )
+    .map(|n| n > 0)
+    .map_err(|e| format!("No se pudo quitar el pendiente: {e}"))
+}
+
+pub fn latest_report_path(conn: &Connection, encargo_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT report_path FROM encargo_runs
+         WHERE encargo_id = ?1 AND report_path IS NOT NULL
+         ORDER BY started_at DESC LIMIT 1",
+        params![encargo_id],
+        |row| row.get(0),
+    )
+    .ok()
 }
 
 #[cfg(test)]
@@ -594,6 +786,68 @@ mod tests {
         assert!(!enc.may_finish);
         let md = fs::read_to_string(root.join(&enc.folder).join("encargo.md")).unwrap();
         assert!(md.contains("lo dejo listo, sin el último clic"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lifecycle_due_run_repeat_interrupt_retry_and_remove() {
+        let root = temp_ws("lifecycle");
+        let conn = open_workspace_db(&root).unwrap();
+        let now = Utc::now();
+        let mut sp = staging(now + ChronoDuration::minutes(5));
+        sp["files"] = json!([]);
+        sp["recurrence"] = json!("Diario");
+        let daily = create_from_staging(&conn, &root, &sp, "c1", now).unwrap();
+        let mut once_sp = staging(now + ChronoDuration::minutes(10));
+        once_sp["files"] = json!([]);
+        once_sp["name"] = json!("Una sola vez");
+        let once = create_from_staging(&conn, &root, &once_sp, "c2", now).unwrap();
+
+        assert!(due_encargos(&conn, now).unwrap().is_empty());
+        let later = now + ChronoDuration::minutes(11);
+        assert_eq!(due_encargos(&conn, later).unwrap().len(), 2);
+        assert!(next_desktop_run_within(&conn, now, ChronoDuration::minutes(60)).is_some());
+
+        // El diario vuelve a quedar programado para mañana a la misma hora.
+        let run = start_run(&conn, &daily.id, later).unwrap();
+        finish_run(
+            &conn,
+            &daily,
+            &run,
+            "hecho",
+            Some("x/informe.md"),
+            &[],
+            later,
+        )
+        .unwrap();
+        let listed = list_encargos(&conn).unwrap();
+        let d = listed.iter().find(|e| e.id == daily.id).unwrap();
+        assert_eq!(d.status, "programado");
+        let next = DateTime::parse_from_rfc3339(d.next_run_at.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            next.with_timezone(&Utc),
+            now + ChronoDuration::minutes(5) + ChronoDuration::days(1)
+        );
+        assert_eq!(
+            latest_report_path(&conn, &daily.id).as_deref(),
+            Some("x/informe.md")
+        );
+
+        // Uno que quedó a medias (la app se cerró) pasa a detenido y se puede rehacer.
+        start_run(&conn, &once.id, later).unwrap();
+        assert_eq!(close_interrupted(&conn, later), 1);
+        let o = list_encargos(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.id == once.id)
+            .unwrap();
+        assert_eq!(o.status, "detenido");
+        assert!(schedule_now(&conn, &once.id, later).unwrap());
+        assert_eq!(due_encargos(&conn, later).unwrap().len(), 1);
+
+        assert!(delete_encargo(&conn, &once.id).unwrap());
+        assert_eq!(list_encargos(&conn).unwrap().len(), 1);
+        assert!(root.join(&once.folder).join("encargo.md").is_file());
         let _ = fs::remove_dir_all(&root);
     }
 }
