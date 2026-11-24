@@ -67,6 +67,7 @@ CORE_ALWAYS_LOADED_TOOLS: Set[str] = {
     "study_create_deck",
     "web_search",
     "web_fetch",
+    "image_search",
     TOOL_SEARCH_NAME,
 }
 

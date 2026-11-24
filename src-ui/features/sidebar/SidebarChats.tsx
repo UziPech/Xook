@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronRight, Search, Trash2 } from "lucide-react";
 import type { ConversationThread } from "../workspace-store/localStore";
-import { FolderGlyph } from "./FolderGlyph";
-import { CompactGlyph, NewChatGlyph } from "./guideIcons";
+import { FolderIcon, ICON_ANIMATE_ALWAYS, ICON_ANIMATE_ON_HOVER, XkIcon } from "../../components/icons";
 
 interface SidebarChatsProps {
   conversations: ConversationThread[];
@@ -67,9 +66,9 @@ export function SidebarChats({
           type="button"
           onClick={onNewChat}
           disabled={isStreaming}
-          className="xk-hover w-full h-10 flex items-center gap-2.5 px-3 rounded-[10px] border border-white/[0.1] bg-white/[0.06] hover:bg-white/[0.1] text-[13px] font-medium text-zinc-100 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-white/60"
+          className={`${ICON_ANIMATE_ON_HOVER} w-full h-10 flex items-center gap-2.5 px-3 rounded-[10px] border border-white/[0.1] bg-white/[0.06] hover:bg-white/[0.1] text-[13px] font-medium text-zinc-100 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-2 focus-visible:outline-white/60`}
         >
-          <NewChatGlyph size={18} />
+          <XkIcon name="new-chat" size={18} />
           <span>Nuevo chat</span>
         </button>
         <div className="relative">
@@ -99,7 +98,7 @@ export function SidebarChats({
           title="Abrir los ajustes del proyecto"
           className="mt-1.5 w-full h-10 flex items-center gap-2.5 px-3 rounded-[10px] border border-white/[0.07] bg-[#0b0c10] hover:bg-white/[0.05] text-left transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-white/60"
         >
-          <FolderGlyph size={18} />
+          <FolderIcon size={18} tone="blue" hasContent />
           <span className="flex-1 min-w-0 truncate text-[13px] font-medium text-zinc-100">
             {projectName ?? "Sin proyecto"}
           </span>
@@ -163,8 +162,8 @@ export function SidebarChats({
       </div>
 
       {showLongConversationNotice && (
-        <div className="xk-live mx-2.5 mb-2.5 p-3 rounded-xl border border-[#2a2b31] bg-[#16171c] flex gap-2.5 items-start shrink-0">
-          <CompactGlyph size={18} className="text-zinc-200 shrink-0 mt-0.5" />
+        <div className={`${ICON_ANIMATE_ALWAYS} mx-2.5 mb-2.5 p-3 rounded-xl border border-[#2a2b31] bg-[#16171c] flex gap-2.5 items-start shrink-0`}>
+          <XkIcon name="compact" size={18} className="text-zinc-200 shrink-0 mt-0.5" />
           <div className="min-w-0 flex flex-col gap-2">
             <p className="text-[12px] leading-relaxed text-zinc-100">
               Esta conversación ya es larga. Resúmela para que Xox no olvide lo importante.

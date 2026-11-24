@@ -52,8 +52,9 @@ XOOK lo usan personas que no saben qué es un agente. Cada pantalla debe decir q
 - Línea fina (`stroke-width` 1.6) en gris claro. La parte que se mueve es la acción: el + que late en "Nuevo chat", las líneas que se juntan en "Resumir".
 - Se animan al pasar el mouse o con foco, o siempre en un aviso que pide actuar. Nunca en bucle sin motivo. Respeta `prefers-reduced-motion`.
 - Un ícono sin texto lleva `aria-label` y `title`. Nada de puntos de color sin explicación.
-- Carpetas: estilo Finder pero más redondeadas, en colores planos de dos tonos (`FolderGlyph`).
-- Los íconos reutilizables viven en `src-ui/features/sidebar/guideIcons.tsx` y `FolderGlyph.tsx`.
+- Carpetas: estilo Finder pero más redondeadas, en colores planos de dos tonos (`FolderIcon`). Cada zona del espacio de trabajo tiene su color y sus subcarpetas lo heredan.
+- Todos los íconos viven en `src-ui/components/icons/`: las pantallas usan `<XkIcon name="…" />` y `<FolderIcon tone="…" />`, nunca trazos SVG sueltos. La animación se activa con la clase del contenedor (`ICON_ANIMATE_ON_HOVER` o `ICON_ANIMATE_ALWAYS`).
+- Para íconos nuevos o animados se sigue la skill `svg-animations` (supermemoryai/skills), la misma con la que se hizo Xox.
 
 **Edición**
 - Se guarda solo; evita los botones de "Guardar cambios".

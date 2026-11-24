@@ -203,6 +203,8 @@ def _tool_step_meta(fn_name: str, args: Dict[str, Any]) -> Tuple[str, str]:
         return "Buscando en internet", target
     if fn_name == "web_fetch":
         return "Leyendo página web", str(args.get("url") or "")
+    if fn_name == "image_search":
+        return "Buscando imágenes", target
     if fn_name == "workspace_list":
         return "Explorando archivos", target or "."
     if fn_name == "workspace_read":

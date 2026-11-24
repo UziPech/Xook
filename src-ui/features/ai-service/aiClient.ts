@@ -1744,6 +1744,10 @@ export interface WebSource {
   title: string;
   domain: string;
   image?: string;
+  /** `image`: resultado de `image_search`, se muestra en la galería. */
+  kind?: "page" | "image";
+  license?: string;
+  source?: string;
 }
 
 function isHttpUrl(value: unknown): value is string {
@@ -1770,6 +1774,9 @@ export function sanitizeWebSourceList(raw: unknown): WebSource[] {
       title: typeof obj.title === "string" && obj.title ? obj.title.slice(0, 200) : domain,
       domain,
       ...(isHttpUrl(obj.image) ? { image: obj.image } : {}),
+      ...(obj.kind === "image" ? { kind: "image" as const } : {}),
+      ...(typeof obj.license === "string" && obj.license ? { license: obj.license.slice(0, 60) } : {}),
+      ...(typeof obj.source === "string" && obj.source ? { source: obj.source.slice(0, 60) } : {}),
     });
   }
   return out;

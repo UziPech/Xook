@@ -213,7 +213,7 @@ interface ChatMessageListProps {
   isSplitMode?: boolean;
 }
 
-function FormattedReply({
+function FormattedReplyContent({
   text,
   streaming,
   onOpenCanvas,
@@ -342,6 +342,19 @@ function FormattedReply({
     />
   );
 }
+
+// Durante el streaming la lista se vuelve a dibujar con cada token. Sin memo, cada
+// mensaje viejo vuelve a procesar su Markdown y el scroll se traba en conversaciones
+// largas. De `onOpenCanvas` solo importa si existe (muestra el botón de las tablas).
+const FormattedReply = React.memo(
+  FormattedReplyContent,
+  (prev, next) =>
+    prev.text === next.text &&
+    prev.streaming === next.streaming &&
+    prev.compact === next.compact &&
+    prev.messageId === next.messageId &&
+    Boolean(prev.onOpenCanvas) === Boolean(next.onOpenCanvas)
+);
 
 const STREAM_PHASE_LABEL: Partial<Record<XoxState, string>> = {
   reading: "Leyendo contexto…",

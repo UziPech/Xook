@@ -37,6 +37,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
+import { StructuredDataEditor, structuredViewFormat } from "../structured-data/StructuredDataEditor";
 import {
   formatTokenCount,
   type DocumentContextSnapshot,
@@ -233,6 +234,8 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
   // Estado de edición de archivos de texto (.md, .txt, .csv, .json, código)
   const [textDraft, setTextDraft] = useState("");
   const [isEditingTextFile, setIsEditingTextFile] = useState(false);
+  // JSON y JSONL se muestran como formulario o lista; el código queda a un clic.
+  const [showRawStructured, setShowRawStructured] = useState(false);
   const [savingTextFile, setSavingTextFile] = useState(false);
   const [exportingTextPdf, setExportingTextPdf] = useState(false);
 
@@ -284,6 +287,7 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
 
     if (state.fileKind === "text") {
       setTextDraft(state.textContent ?? state.universalDoc?.text ?? "");
+      setShowRawStructured(false);
       setIsEditingTextFile(
         state.initialMode === "edit_blocks" || state.initialMode === "edit_page"
       );
@@ -1911,9 +1915,33 @@ export const PdfWorkspacePanel: React.FC<PdfWorkspacePanelProps> = ({
         )}
 
         {/* 6. Visor / Editor de archivos de texto y tablas CSV (.md, .txt, .csv, .json, código) */}
+        {!isDraftingLive && state && isTextDocument && (() => {
+          const structuredFormat = structuredViewFormat(textDraft, state.fileExtension || "");
+          if (!structuredFormat) return null;
+          return (
+            <div className="flex justify-end -mb-1">
+              <button
+                type="button"
+                onClick={() => setShowRawStructured((v) => !v)}
+                className="h-8 px-3 rounded-lg text-[12px] text-zinc-300 hover:text-white hover:bg-white/[0.06] cursor-pointer"
+              >
+                {showRawStructured ? "Ver como formulario" : "Ver código"}
+              </button>
+            </div>
+          );
+        })()}
         {!isDraftingLive && state && isTextDocument && (
           <div className="h-full flex flex-col space-y-3">
-            {isEditingTextFile ? (
+            {!showRawStructured && structuredViewFormat(textDraft, state.fileExtension || "") ? (
+              <div className="rounded-2xl border border-white/[0.08] bg-zinc-950/80 p-5 select-text">
+                <StructuredDataEditor
+                  text={textDraft}
+                  extension={state.fileExtension || ""}
+                  editable={isEditingTextFile}
+                  onChange={setTextDraft}
+                />
+              </div>
+            ) : isEditingTextFile ? (
               <textarea
                 value={textDraft}
                 onChange={(e) => setTextDraft(e.target.value)}

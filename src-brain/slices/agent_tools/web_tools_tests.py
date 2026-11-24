@@ -69,6 +69,29 @@ WIKI_JSON = {
 }
 
 
+COMMONS_JSON = {
+    "query": {"pages": {
+        "2": {"index": 2, "title": "File:Botella de champú.png", "imageinfo": [{
+            "mime": "image/png", "thumburl": "http://upload.wikimedia.org/thumb/botella.png",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Botella.png",
+            "extmetadata": {"LicenseShortName": {"value": "CC BY-SA 4.0"}, "Artist": {"value": "<a href='x'>Ana</a>"}}}]},
+        "1": {"index": 1, "title": "File:Champú Marca.jpg", "imageinfo": [{
+            "mime": "image/jpeg", "thumburl": "https://upload.wikimedia.org/thumb/marca.jpg",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Marca.jpg",
+            "extmetadata": {"LicenseShortName": {"value": "CC0"}}}]},
+        "3": {"index": 3, "title": "File:Diagrama.svg", "imageinfo": [{
+            "mime": "image/svg+xml", "thumburl": "https://upload.wikimedia.org/thumb/diagrama.svg.png",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Diagrama.svg"}]},
+    }}
+}
+
+OPENVERSE_JSON = {"results": [{
+    "title": "Champú en el baño", "thumbnail": "https://api.openverse.org/v1/images/abc/thumb/",
+    "foreign_landing_url": "https://www.flickr.com/photos/x/1", "license": "by", "license_version": "2.0",
+    "creator": "Luis",
+}]}
+
+
 class _FakeWebResponse:
     def __init__(self, url: str, body: bytes, content_type: str = "text/html; charset=utf-8", status: int = 200) -> None:
         self._url = url
@@ -92,13 +115,22 @@ class _FakeWebResponse:
 class _FakeWeb:
     """Hace de internet: responde según la URL y registra cada petición."""
 
-    def __init__(self, ddg_blocked: bool = False) -> None:
+    def __init__(self, ddg_blocked: bool = False, openverse_down: bool = False) -> None:
         self.requests: List[str] = []
         self.ddg_blocked = ddg_blocked
+        self.openverse_down = openverse_down
+        self.user_agents: Dict[str, str] = {}
 
     def __call__(self, req: urllib.request.Request, timeout: float) -> _FakeWebResponse:
         url = req.full_url
         self.requests.append(url)
+        self.user_agents[url.split("?")[0]] = req.get_header("User-agent") or ""
+        if url.startswith(web_tools.COMMONS_API_URL):
+            return _FakeWebResponse(url, json.dumps(COMMONS_JSON).encode("utf-8"), "application/json")
+        if url.startswith(web_tools.OPENVERSE_API_URL):
+            if self.openverse_down:
+                raise urllib.error.HTTPError(url, 504, "Gateway Timeout", {}, None)
+            return _FakeWebResponse(url, json.dumps(OPENVERSE_JSON).encode("utf-8"), "application/json")
         if url.startswith(web_tools.DDG_HTML_URL):
             if self.ddg_blocked:
                 return _FakeWebResponse(url, b"<html>anomaly challenge</html>", status=202)
@@ -141,6 +173,8 @@ class WebSearchTests(_WebTestCase):
         self.assertEqual(first["image"], "https://marca.example/img/botella.jpg")
         self.assertEqual(second["image"], "https://cdn.resenas.example/foto.png")
         self.assertFalse(any("tienda.com" in u for u in web.requests))
+        # Las páginas ya traen dos vistas previas: no hace falta galería extra.
+        self.assertNotIn("imagenes", res)
 
     def test_falls_back_to_wikipedia_when_duckduckgo_asks_for_a_challenge(self) -> None:
         res = self.run_with_web(_FakeWeb(ddg_blocked=True), execute_web_tool, "web_search", {"query": "champú"})
@@ -152,6 +186,10 @@ class WebSearchTests(_WebTestCase):
         self.assertEqual(page["image"], "https://upload.wikimedia.org/champu.jpg")
         self.assertIn("producto de higiene", page["snippet"])
         self.assertNotIn("<span", page["snippet"])
+        # Con menos de dos vistas previas, la búsqueda trae fotos relacionadas para la galería.
+        self.assertEqual([img["source"] for img in res["imagenes"]][:2], ["Wikimedia Commons", "Openverse"])
+        gallery = [src for src in web_sources_from_result("web_search", res) if src.get("kind") == "image"]
+        self.assertEqual(len(gallery), len(res["imagenes"]))
 
     def test_reports_failure_when_no_engine_answers(self) -> None:
         def offline(req: urllib.request.Request, timeout: float) -> Any:
@@ -165,6 +203,35 @@ class WebSearchTests(_WebTestCase):
 
     def test_empty_query(self) -> None:
         self.assertFalse(execute_web_tool("web_search", {"query": "  "})["ok"])
+
+
+class ImageSearchTests(_WebTestCase):
+    def test_mixes_commons_and_openverse_photos_with_license(self) -> None:
+        web = _FakeWeb()
+        res = self.run_with_web(web, execute_web_tool, "image_search", {"query": "champú marca"})
+        self.assertTrue(res["ok"], res)
+        self.assertIn("galería", res["nota"])
+        titles = [img["title"] for img in res["images"]]
+        # Commons en orden de relevancia, intercalado con Openverse; el SVG se descarta.
+        self.assertEqual(titles, ["Champú Marca", "Champú en el baño", "Botella de champú"])
+        commons_png = res["images"][2]
+        self.assertEqual(commons_png["image"], "https://upload.wikimedia.org/thumb/botella.png")
+        self.assertEqual((commons_png["license"], commons_png["author"]), ("CC BY-SA 4.0", "Ana"))
+        self.assertEqual(res["images"][1]["license"], "CC BY 2.0")
+        # Las APIs públicas reciben un agente que identifica a XOOK.
+        self.assertIn("XOOK", web.user_agents[web_tools.COMMONS_API_URL])
+
+    def test_one_source_down_does_not_break_the_search(self) -> None:
+        res = self.run_with_web(_FakeWeb(openverse_down=True), execute_web_tool, "image_search", {"query": "champú"})
+        self.assertTrue(res["ok"], res)
+        self.assertEqual([img["source"] for img in res["images"]], ["Wikimedia Commons", "Wikimedia Commons"])
+
+    def test_sources_are_marked_as_gallery_images(self) -> None:
+        res = self.run_with_web(_FakeWeb(), execute_web_tool, "image_search", {"query": "champú", "max_results": 1})
+        sources = web_sources_from_result("image_search", res)
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["kind"], "image")
+        self.assertEqual(sources[0]["url"], "https://commons.wikimedia.org/wiki/File:Marca.jpg")
 
 
 class WebFetchTests(_WebTestCase):

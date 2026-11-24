@@ -6,8 +6,6 @@ import {
   ChevronRight,
   ExternalLink,
   FileText,
-  Folder,
-  FolderOpen,
   FolderPlus,
   Image as ImageIcon,
   ListChecks,
@@ -25,6 +23,8 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { FolderIcon, type FolderTone } from "../../components/icons";
+import { StructuredDataEditor, structuredViewFormat } from "../structured-data/StructuredDataEditor";
 import {
   PdfSummaryInfo,
   WorkspaceNodeEntry,
@@ -97,6 +97,15 @@ interface WorkspaceTreePanelProps {
 }
 
 type PanelViewMode = "simple" | "files";
+
+/** Color de carpeta por zona del espacio de trabajo; las subcarpetas heredan el de su zona. */
+const ZONE_FOLDER_TONES: Record<string, FolderTone> = {
+  empresa: "blue",
+  datos: "green",
+  memoria: "purple",
+  habilidades: "amber",
+  agente: "orange",
+};
 
 function buildZoneMeta(domainType?: string, domainLabel?: string): Record<
   string,
@@ -306,6 +315,12 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
     setIsEditingFile(false);
     setPanelError(null);
   }, [overview?.active.id, selectedFile?.relativePath]);
+
+  // Carpetas con algo dentro: el ícono muestra hojas asomando, como en Finder.
+  const dirsWithContent = useMemo(
+    () => new Set((overview?.entries ?? []).map((entry) => entry.parentPath).filter(Boolean)),
+    [overview]
+  );
 
   const visibleEntries = useMemo(() => {
     if (!overview) return [];
@@ -1776,7 +1791,6 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
               const isHighlighted = highlightedPath === entry.relativePath;
               const isPinned = pinnedPaths.has(entry.relativePath);
               const zoneInfo = entry.depth === 0 ? zoneMeta[entry.zone] : undefined;
-              const ZoneIcon = zoneInfo?.icon;
 
               return (
                 <div
@@ -1810,13 +1824,13 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                             isExpanded ? "is-open" : ""
                           }`}
                         />
-                        {ZoneIcon ? (
-                          <ZoneIcon className="w-3.5 h-3.5 text-zinc-300 shrink-0" />
-                        ) : isExpanded ? (
-                          <FolderOpen aria-hidden="true" className="w-3.5 h-3.5 text-zinc-200 shrink-0" />
-                        ) : (
-                          <Folder aria-hidden="true" className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-                        )}
+                        <FolderIcon
+                          size={16}
+                          tone={ZONE_FOLDER_TONES[entry.zone] ?? "gray"}
+                          open={isExpanded}
+                          hasContent={dirsWithContent.has(entry.relativePath)}
+                          className="shrink-0"
+                        />
                         <span
                           className={`truncate ${
                             entry.depth === 0 ? "font-medium text-zinc-100" : "text-zinc-300"
@@ -1894,7 +1908,10 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                       typeof selectedFile.pdfSummary?.page_count === "number"
                         ? `${selectedFile.pdfSummary.page_count} pág(s) · `
                         : ""}
-                      {formatReadableFileSize(selectedFile.sizeBytes)}
+                      {formatReadableFileSize(
+                        selectedFile.sizeBytes ||
+                          (selectedFile.content ? new TextEncoder().encode(selectedFile.content).length : 0)
+                      )}
                     </div>
                   </div>
 
@@ -1911,27 +1928,21 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                       </button>
                     )}
                     {selectedFile.editable && !isEditingFile && (
-                      <>
-                        {onOpenInDocumentViewer && (
-                          <button
-                            type="button"
-                            onClick={() => onOpenInDocumentViewer(selectedFile, true)}
-                            title="Abrir en el visor dedicado para editar cómodamente"
-                            className="quick-liquid-btn px-2 py-1 rounded-md text-[10.5px] text-zinc-100 flex items-center gap-1 cursor-pointer"
-                          >
-                            <FileText aria-hidden="true" className="w-2.5 h-2.5" />
-                            <span>Visor</span>
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={handleStartEdit}
-                          className="px-2 py-1 rounded-md text-[10.5px] bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-zinc-200 flex items-center gap-1 cursor-pointer"
-                        >
-                          <Pencil aria-hidden="true" className="w-2.5 h-2.5" />
-                          <span>Editar</span>
-                        </button>
-                      </>
+                      // Editar abre la vista previa en modo edición, que guarda el archivo;
+                      // la edición dentro del lateral queda solo si no hay vista previa.
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpenInDocumentViewer
+                            ? onOpenInDocumentViewer(selectedFile, true)
+                            : handleStartEdit()
+                        }
+                        title="Abrir en la vista previa para editar y guardar"
+                        className="px-2 py-1 rounded-md text-[10.5px] bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-zinc-200 flex items-center gap-1 cursor-pointer"
+                      >
+                        <Pencil aria-hidden="true" className="w-2.5 h-2.5" />
+                        <span>Editar</span>
+                      </button>
                     )}
                     {isEditingFile && (
                       <>
@@ -2081,6 +2092,19 @@ export const WorkspaceTreePanel: React.FC<WorkspaceTreePanelProps> = ({
                       onChange={(e) => setDraftContent(e.target.value)}
                       className="w-full h-full min-h-[160px] text-[11px] font-mono text-zinc-100 bg-[#07080b] p-2.5 rounded-xl border border-white/[0.2] focus:outline-none resize-none select-text leading-relaxed"
                     />
+                  ) : structuredViewFormat(selectedFile.content, selectedFile.relativePath.split(".").pop() ?? "") ? (
+                    // JSON y JSONL se leen como formulario; para cambiarlos, "Editar" abre la vista previa.
+                    <div
+                      className={`p-3 rounded-xl border bg-black/40 select-text transition-colors ${
+                        saveFlashed ? "xook-save-flash" : "border-white/[0.05]"
+                      }`}
+                    >
+                      <StructuredDataEditor
+                        text={selectedFile.content}
+                        extension={selectedFile.relativePath.split(".").pop() ?? ""}
+                        editable={false}
+                      />
+                    </div>
                   ) : (
                     <pre
                       className={`text-[11px] font-mono text-zinc-300 bg-black/55 p-2.5 rounded-xl border overflow-x-auto whitespace-pre-wrap leading-relaxed select-text transition-colors ${
